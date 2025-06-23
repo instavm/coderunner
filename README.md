@@ -54,10 +54,10 @@ cd coderunner
 
 Configure Claude Desktop to use CodeRunner as an MCP server:
 
-<div style="display: flex; justify-content: space-between;">
-  <img src="demo.png" alt="Image 1" style="width: 48%;">
-  <img src="demo2.png" alt="Image 2" style="width: 48%;">
-</div>
+(demo1)[demo.png]
+
+(demo2)[demo2.png]
+
 
 1. **Copy the example configuration:**
    ```bash
