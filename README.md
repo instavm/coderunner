@@ -94,6 +94,8 @@ Configure Claude Desktop to use CodeRunner as an MCP server:
 
 Use CodeRunner with OpenAI's Python agents library:
 
+![demo3](demo3.png)
+
 1. **Set your OpenAI API key:**
    ```bash
    export OPENAI_API_KEY="your-openai-api-key-here"
