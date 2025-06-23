@@ -54,9 +54,9 @@ cd coderunner
 
 Configure Claude Desktop to use CodeRunner as an MCP server:
 
-(demo1)[demo.png]
+![demo1](demo.png)
 
-(demo2)[demo2.png]
+![demo2](demo2.png)
 
 
 1. **Copy the example configuration:**
