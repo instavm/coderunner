@@ -20,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Initialize the MCP server with a descriptive name for the toolset
-mcp = FastMCP("jupyter_tools")
+mcp = FastMCP("CodeRunner")
 
 
 # Jupyter connection settings

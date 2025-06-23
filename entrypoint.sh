@@ -46,4 +46,4 @@ echo $kernel_id > /app/uploads/python_kernel_id.txt
 # exec python mcp_main.py
 
 # Start FastAPI application
-exec uvicorn mcp_main:app --host 0.0.0.0 --port 8222 --workers 1 --no-access-log
+exec uvicorn server:app --host 0.0.0.0 --port 8222 --workers 1 --no-access-log
