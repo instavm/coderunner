@@ -42,6 +42,12 @@ git clone https://github.com/BandarLabs/coderunner.git
 cd coderunner
 ```
 
+### Step 4: Install required packages
+
+   ```bash
+   pip install -r examples/requirements.txt
+   ```
+
 ## 🔌 Integration Options
 
 ### Option 1: Claude Desktop Integration
@@ -50,13 +56,14 @@ Configure Claude Desktop to use CodeRunner as an MCP server:
 
 1. **Copy the example configuration:**
    ```bash
-   cp claude_mcp_proxy/claude_desktop_config.example.json claude_mcp_proxy/claude_desktop_config.json
+   cd examples
+   cp claude_desktop/claude_desktop_config.example.json claude_desktop/claude_desktop_config.json
    ```
 
 2. **Edit the configuration file** and replace the placeholder paths:
    - Replace `/path/to/your/python` with your actual Python path (e.g., `/usr/bin/python3` or `/opt/homebrew/bin/python3`)
    - Replace `/path/to/coderunner` with the actual path to your cloned repository
-   
+
    Example after editing:
    ```json
    {
@@ -87,14 +94,9 @@ Use CodeRunner with OpenAI's Python agents library:
    export OPENAI_API_KEY="your-openai-api-key-here"
    ```
 
-2. **Install required dependencies:**
+2. **Run the client:**
    ```bash
-   pip install openai-agents
-   ```
-
-3. **Run the client:**
-   ```bash
-   python examples/openai_client.py
+   python examples/openai_agents/openai_client.py
    ```
 
 4. **Start coding:**
@@ -105,7 +107,7 @@ Use CodeRunner with OpenAI's Python agents library:
 ### Sandboxed Execution
 All code runs in an isolated container environment, ensuring your host system remains secure.
 
-From [@apple/container](https://github.com/apple/container/blob/main/docs/technical-overview.md) documentation - 
+From [@apple/container](https://github.com/apple/container/blob/main/docs/technical-overview.md) documentation -
 >Security: Each container has the isolation properties of a full VM, using a minimal set of core utilities and dynamic libraries to reduce resource utilization and attack surface.
 
 ## 🏗️ Architecture
@@ -118,8 +120,9 @@ CodeRunner consists of:
 ## 📚 Examples
 
 The `examples/` directory contains:
-- `openai_client.py` - Example OpenAI agents integration
-- `systemprompt.txt` - Sample system prompt for AI models
+- `openai-agents` - Example OpenAI agents integration
+- `claude-desktop` - Example Claude Desktop integration
+
 
 ## 🤝 Contributing
 
