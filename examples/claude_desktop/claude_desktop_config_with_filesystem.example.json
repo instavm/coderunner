@@ -3,7 +3,7 @@
       "coderunner": {
       "command": "/path/to/your/python",
       "args": [
-        "/path/to/coderunner/claude_mcp_proxy/mcp.py"
+        "/path/to/coderunner/examples/claude_desktop/mcpproxy.py"
       ]
     },
     "filesystem": {
