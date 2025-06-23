@@ -11,32 +11,6 @@ from agents.mcp import MCPServer, MCPServerSse
 from agents.model_settings import ModelSettings
 
 
-# async def run(mcp_server: MCPServer):
-#     agent = Agent(
-#         name="Assistant",
-#         instructions="Use the tools to answer the questions.",
-#         mcp_servers=[mcp_server],
-#         model_settings=ModelSettings(tool_choice="required"),
-#     )
-
-#     # Use the `add` tool to add two numbers
-#     message = "list files in current directory using python"
-#     print(f"Running: {message}")
-#     result = await Runner.run(starting_agent=agent, input=message)
-#     print(result.final_output)
-
-#     # Run the `get_weather` tool
-#     message = "Fetch ETH price on 15th June 2025. First pip install libraries needed like yfinance, then write the code and fetch data."
-#     print(f"\n\nRunning: {message}")
-#     result = await Runner.run(starting_agent=agent, input=message)
-#     print(result.final_output)
-
-#     # Run the `get_secret_word` tool
-#     message = "What's the secret word?"
-#     print(f"\n\nRunning: {message}")
-#     result = await Runner.run(starting_agent=agent, input=message)
-#     print(result.final_output)
-
 
 async def run(mcp_server: MCPServer):
     agent = Agent(
