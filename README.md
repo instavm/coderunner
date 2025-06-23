@@ -45,8 +45,12 @@ container run \
 Finally, run the script from your terminal:
 
 ```bash
-git clone https://github.com/instavm/coderunner.git
+git clone https://github.com/BandarLabs/coderunner.git
 cd coderunner
+
+# Configure Claude Desktop MCP integration (optional)
+cp claude_mcp_proxy/claude_desktop_config.example.json claude_mcp_proxy/claude_desktop_config.json
+# Edit the config file with your local paths
 ```
 
 Now you can give it prompts like `write python code to generate 100 primes` and watch it execute the code safely in the sandbox!
@@ -56,14 +60,14 @@ Now you can give it prompts like `write python code to generate 100 primes` and 
 Download `mcphost` from [releases](https://github.com/mark3labs/mcphost/releases/tag/v0.14.0)
 
 ```bash
-cp cookbooks/.mcp.json ~/.mcp.json
+cp examples/.mcp.json ~/.mcp.json
 ~/Downloads/mcphost_Darwin_arm64/mcphost  -m ollama:llama3.1:8b
 ```
 
 ### Can also run via python openai agents
 
 ```bash
-python cookbooks/openai_testmcp.py
+python examples/openai_client.py
 ```
 
 ### Use via Curl

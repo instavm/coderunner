@@ -42,8 +42,8 @@ RUN python -m bash_kernel.install
 # Copy the application code (main.py)
 COPY ./main.py /app/main.py
 
-# Copy the application code (main.py)
-COPY ./mcp_main.py /app/mcp_main.py
+# Copy the application code (server.py)
+COPY ./server.py /app/server.py
 
 # Create application/jupyter directories
 RUN mkdir -p /app/uploads /app/jupyter_runtime
