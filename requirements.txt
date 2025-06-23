@@ -1,0 +1,32 @@
+
+# Core Jupyter Server
+jupyter-server
+
+# Bash Kernel for Jupyter
+bash_kernel
+
+
+# Web Framework
+fastapi
+
+
+# ASGI Server (with standard extras like websockets, httptools)
+uvicorn[standard]
+
+# WebSocket client library (explicitly needed by main.py)
+websockets
+
+# Async HTTP client (used by main.py to talk to Jupyter API)
+httpx
+
+# For FastAPI file uploads
+python-multipart
+
+# For async file operations in FastAPI uploads
+aiofiles
+
+openai
+
+requests==2.32.4
+
+mcp[cli]

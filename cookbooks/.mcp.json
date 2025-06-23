@@ -1,0 +1,15 @@
+{
+  "system-prompt": "cookbooks/systemprompt.txt",
+  "mcpServers": {
+    "coderunner": {
+		"url": "http://coderunner.local:8222/sse"
+     },
+    "filesystem": {
+      "command": "mcp-filesystem-server",
+      "args": [
+        "/Users/manish/Desktop/assets",
+        "/Users/manish/Downloads/chota"
+      ]
+    }
+  }
+}

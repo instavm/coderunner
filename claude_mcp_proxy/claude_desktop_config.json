@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+      "jejus": {
+      "command": "/Users/manish/Work/venv/bin/python",
+      "args": [
+        "/Users/manish/Work/proxymcp.py"
+      ]
+    },
+    "filesystem2": {
+      "command": "/Users/manish/.nvm/versions/node/v23.9.0/bin/node",
+      "args": [
+        "/Users/manish/.nvm/versions/node/v23.9.0/lib/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js",
+        "/Users/manish/Desktop/assets",
+        "/Users/manish/Downloads/chota"
+      ]
+    }
+  }
+}
