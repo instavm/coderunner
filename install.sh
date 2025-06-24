@@ -36,7 +36,7 @@ echo "Running: container system dns default set local"
 container system dns default set local
 
 echo "Starting the Sandbox Container..."
-
+container system start
 # Run the command to start the sandbox container
 echo "Running: container run --name coderunner --detach --rm --cpus 8 --memory 4g instavm/coderunner"
 container run --name coderunner --detach --rm --cpus 8 --memory 4g instavm/coderunner
