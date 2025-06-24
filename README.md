@@ -18,7 +18,7 @@ The examples below are just a sample of what's possible. CodeRunner can handle a
 | **Data Analysis & Charts** <br/> *(e.g., with Python, R)* | ❌ **Provides the script.** You must set up your environment to run it. | ✅ **Performs analysis & shows charts.** Processes data and displays visualizations directly. |
 | **Working with Files** <br/> *(e.g., CSV, JSON, images)* | ❌ **Analyzes text content.** Cannot modify or generate new files for you. | ✅ **Processes & creates files.** Upload a file, have it transformed, and download the result. |
 | **Software Dependencies** | ❌ **You manage everything.** Relies entirely on your local installations. | ✅ **Self-contained sandbox.** Comes with many tools; can install more on-the-fly. |
-| **Overall Experience** | ❌ **A "What-to-do" Guide.** Gives you the recipe to follow. | ✅ **A "Done-for-you" Tool.** Takes your request and delivers the final product. |
+
 
 
 This guide shows you how to use the pre-built CodeRunner sandbox.
