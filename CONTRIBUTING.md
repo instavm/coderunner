@@ -5,7 +5,7 @@ Thank you for your interest in contributing to CodeRunner! We welcome contributi
 ## Getting Started
 
 1. Fork the repository
-2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/coderunner.git`
+2. Clone your fork: `git clone https://github.com/BandarLabs/coderunner.git`
 3. Create a new branch: `git checkout -b feature/your-feature-name`
 4. Make your changes
 5. Test your changes thoroughly
@@ -15,8 +15,8 @@ Thank you for your interest in contributing to CodeRunner! We welcome contributi
 
 ## Development Setup
 
-1. Install dependencies: `pip install -r requirements.txt`
-2. Copy the example config: `cp claude_mcp_proxy/claude_desktop_config.example.json claude_mcp_proxy/claude_desktop_config.json`
+1. Install dependencies: `pip install -r examples/requirements.txt`
+2. Copy the example config: `cp examples/claude_desktop/claude_desktop_config.example.json examples/claude_desktop/claude_desktop_config.json`
 3. Update the config file with your local paths
 4. Follow the setup instructions in the README
 
