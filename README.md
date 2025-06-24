@@ -5,11 +5,19 @@ CodeRunner provides a secure MCP (Model Context Protocol) code execution server 
 
 Leverage powerful remote LLMs (like ChatGPT or Claude Sonnet 4) to work with your local files—such as videos—securely on your Mac. The LLM runs in a sandboxed environment where it can install external libraries, generate code, and execute it `locally` without uploading your data to the cloud.
 
-With CodeRunner, you can achieve the following examples and more:
 
- * trim and combine video segments using `ffmpeg` without manual installation.
- * generate prime numbers simply
- * visualize cryptocurrency trends by generating a chart for the last four days of ETH prices using matplotlib, all within a secure, sandboxed environment.
+### **Claude Desktop / OpenAI / Local LLM: With vs. Without CodeRunner**
+
+The examples below are just a sample of what's possible. CodeRunner can handle a wide range of tasks involving code execution, file manipulation, and data processing.
+
+| Capability | Without CodeRunner (Instructions Only) | With CodeRunner (Interactive Execution) |
+| :--- | :--- | :--- |
+| **Core Function** | ❌ **Writes code & commands.** You must run everything yourself locally. | ✅ **Writes AND runs code.** Get results, files, and charts instantly in the chat. |
+| **Using System Tools** <br/> *(e.g., ffmpeg, git, awk)* | ❌ **Provides the command.** Requires you to install and run tools manually. | ✅ **Runs tools for you.** Processes your uploaded files directly. No installation needed. |
+| **Data Analysis & Charts** <br/> *(e.g., with Python, R)* | ❌ **Provides the script.** You must set up your environment to run it. | ✅ **Performs analysis & shows charts.** Processes data and displays visualizations directly. |
+| **Working with Files** <br/> *(e.g., CSV, JSON, images)* | ❌ **Analyzes text content.** Cannot modify or generate new files for you. | ✅ **Processes & creates files.** Upload a file, have it transformed, and download the result. |
+| **Software Dependencies** | ❌ **You manage everything.** Relies entirely on your local installations. | ✅ **Self-contained sandbox.** Comes with many tools; can install more on-the-fly. |
+| **Overall Experience** | ❌ **A "What-to-do" Guide.** Gives you the recipe to follow. | ✅ **A "Done-for-you" Tool.** Takes your request and delivers the final product. |
 
 
 This guide shows you how to use the pre-built CodeRunner sandbox.
