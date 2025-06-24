@@ -13,6 +13,7 @@ The examples below are just a sample of what's possible. CodeRunner can handle a
 | Capability | Without CodeRunner (Instructions Only) | With CodeRunner (Interactive Execution) |
 | :--- | :--- | :--- |
 | **Core Function** | ❌ **Writes code & commands.** You must run everything yourself locally. | ✅ **Writes AND runs code.** Get results, files, and charts instantly in the chat. |
+| **Local Data Processing** | ❌ **Uploads your data to cloud servers** You must upload your data to openai/claude cloud if you want AI to do any processing on them. | ✅ **Data never leaves your computer** Your data is not uploaded to their cloud. |
 | **Using System Tools** <br/> *(e.g., ffmpeg, git, awk)* | ❌ **Provides the command.** Requires you to install and run tools manually. | ✅ **Runs tools for you.** Processes your uploaded files directly. No installation needed. |
 | **Data Analysis & Charts** <br/> *(e.g., with Python, R)* | ❌ **Provides the script.** You must set up your environment to run it. | ✅ **Performs analysis & shows charts.** Processes data and displays visualizations directly. |
 | **Working with Files** <br/> *(e.g., CSV, JSON, images)* | ❌ **Analyzes text content.** Cannot modify or generate new files for you. | ✅ **Processes & creates files.** Upload a file, have it transformed, and download the result. |
