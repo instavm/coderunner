@@ -46,7 +46,7 @@ cd coderunner
 ### Step 3: Run the Script
 
    ```bash
-   sudo ./install.sh
+   ./install.sh
    ```
 
 **MCP server will be available at:**
