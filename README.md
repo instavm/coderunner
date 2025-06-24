@@ -54,7 +54,7 @@ cd coderunner
 
 
 ### Step 4: Install required packages
-
+> You should do this in a virtualenv and note the python path for later use.
 ```bash
 pip install -r examples/requirements.txt
 ```
