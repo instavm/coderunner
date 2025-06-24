@@ -99,7 +99,7 @@ async def execute_python_code(command: str) -> str:
             logger.info(f"Sent execute_request (msg_id: {sent_msg_id})")
 
             execution_complete = False
-            loop_timeout = 30.0  # Total time to wait for a result
+            loop_timeout = 300.0  # Total time to wait for a result
             start_time = time.time()
 
             while not execution_complete and (time.time() - start_time) < loop_timeout:
@@ -133,7 +133,7 @@ async def execute_python_code(command: str) -> str:
 
             if not execution_complete:
                  logger.error(f"Execution timed out for msg_id: {sent_msg_id}")
-                 return "Error: Execution timed out after 30 seconds."
+                 return f"Error: Execution timed out after {loop_timeout} seconds."
 
             return "".join(output_lines) if output_lines else "[Execution successful with no output]"
 

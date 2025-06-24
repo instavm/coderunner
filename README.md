@@ -27,46 +27,37 @@ This guide shows you how to use the pre-built CodeRunner sandbox.
 
 ### Prerequisites
 
-- Mac with preferably macOS 26.0 (currently in Developer beta) or later and Apple Silicon (M1/M2/M3/M4 series)
-- **[Apple `container` Tool](https://github.com/apple/container)** - [Download installer](https://github.com/apple/container/releases/download/0.1.0/container-0.1.0-installer-signed.pkg)
+- Mac with preferably macOS and Apple Silicon (M1/M2/M3/M4 series)
 - **Python 3.10+**
 
-### Step 1: Set Up Local Network
-
-Run these commands once to configure the `.local` domain:
-
-```bash
-sudo container system dns create local
-container system dns default set local
-```
-
-### Step 2: Start the Sandbox Container
-
-This command downloads and runs the CodeRunner sandbox from Docker Hub:
-
-```bash
-# Run the container and make it available at http://coderunner.local:8222/sse
-container run \
-  --name coderunner \
-  --detach --rm  --cpus 8 --memory 4g \
-  instavm/coderunner
-```
-
-**MCP server will be available at:**
-> http://coderunner.local:8222/sse
-
-### Step 3: Clone the Repository
+### Step 1: Clone the Repository
 
 ```bash
 git clone https://github.com/BandarLabs/coderunner.git
 cd coderunner
 ```
 
-### Step 4: Install required packages
+### Step 2: Make the Script Executable
 
    ```bash
-   pip install -r examples/requirements.txt
+   chmod +x install.sh
    ```
+
+### Step 3: Run the Script
+
+   ```bash
+   sudo ./install.sh
+   ```
+
+**MCP server will be available at:**
+> http://coderunner.local:8222/sse
+
+
+### Step 4: Install required packages
+
+```bash
+pip install -r examples/requirements.txt
+```
 
 ## 🔌 Integration Options
 
