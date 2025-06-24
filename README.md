@@ -5,6 +5,13 @@ CodeRunner provides a secure MCP (Model Context Protocol) code execution server 
 
 Leverage powerful remote LLMs (like ChatGPT or Claude Sonnet 4) to work with your local files—such as videos—securely on your Mac. The LLM runs in a sandboxed environment where it can install external libraries, generate code, and execute it locally without uploading your data to the cloud.
 
+With CodeRunner, you can achieve the following examples and more:
+
+ * trim and combine video segments using `ffmpeg` without manual installation.
+ * generate prime numbers simply
+ * visualize cryptocurrency trends by generating a chart for the last four days of ETH prices using matplotlib, all within a secure, sandboxed environment.
+
+
 This guide shows you how to use the pre-built CodeRunner sandbox.
 
 ## 🚀 Quick Start
@@ -29,12 +36,15 @@ container system dns default set local
 This command downloads and runs the CodeRunner sandbox from Docker Hub:
 
 ```bash
-# Run the container and make it available at http://coderunner.local:8222
+# Run the container and make it available at http://coderunner.local:8222/sse
 container run \
   --name coderunner \
-  --detach --rm \
+  --detach --rm  --cpus 8 --memory 4g \
   instavm/coderunner
 ```
+
+**MCP server will be available at:**
+> http://coderunner.local:8222/sse
 
 ### Step 3: Clone the Repository
 
