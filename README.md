@@ -93,6 +93,28 @@ Use CodeRunner with OpenAI's Python agents library:
 3. **Start coding:**
    Enter prompts like "write python code to generate 100 prime numbers" and watch it execute safely in the sandbox!
 
+### Option 3: Gemini-CLI
+<details>
+<summary>settings json</summary>
+
+```json
+{
+  "theme": "Default",
+  "selectedAuthType": "oauth-personal",
+  "mcpServers": {
+    "coderunner": {
+      "url": "http://coderunner.local:8222/sse"
+    }
+  }
+}
+```
+
+</details>
+
+![gemini1](images/gemini1.png)
+
+![gemini2](images/gemini2.png)
+
 ## Security
 
 Code runs in an isolated container with VM-level isolation. Your host system and files outside the sandbox remain protected.
