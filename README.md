@@ -94,8 +94,10 @@ Use CodeRunner with OpenAI's Python agents library:
    Enter prompts like "write python code to generate 100 prime numbers" and watch it execute safely in the sandbox!
 
 ### Option 3: Gemini-CLI
+[Gemini CLI](https://github.com/google-gemini/gemini-cli) is recently launched by Google.
+
 <details>
-<summary>settings json</summary>
+<summary>~/.gemini/settings.json</summary>
 
 ```json
 {
