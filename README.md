@@ -1,3 +1,10 @@
+
+<div align="center">
+
+[![Start](https://img.shields.io/github/stars/BandarLabs/coderunner?color=yellow&style=flat&label=%E2%AD%90%20stars)](https://github.com/BandarLabs/coderunner/stargazers)
+[![License](http://img.shields.io/:license-Apache%202.0-green.svg?style=flat)](https://github.com/BandarLabs/coderunner/blob/master/LICENSE)
+</div>
+
 # CodeRunner: Run AI Generated Code Locally
 
 CodeRunner is an MCP (Model Context Protocol) server that executes AI-generated code in a sandboxed environment on your Mac using Apple's native [containers](https://github.com/apple/container).
