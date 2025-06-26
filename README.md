@@ -129,7 +129,6 @@ From [@apple/container](https://github.com/apple/container/blob/main/docs/techni
 CodeRunner consists of:
 - **Sandbox Container:** Isolated execution environment with Jupyter kernel
 - **MCP Server:** Handles communication between AI models and the sandbox
-- **Proxy Layer:** Manages connections and security
 
 ## Examples
 
