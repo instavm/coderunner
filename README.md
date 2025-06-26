@@ -36,8 +36,8 @@ pip install -r examples/requirements.txt
 ## Integration Options
 
 ### Option 1: Claude Desktop Integration
-
-Configure Claude Desktop to use CodeRunner as an MCP server:
+<details>
+<summary>Configure Claude Desktop to use CodeRunner as an MCP server:</summary>
 
 ![demo1](images/demo.png)
 ![demo2](images/demo2.png)
@@ -73,10 +73,11 @@ Configure Claude Desktop to use CodeRunner as an MCP server:
 
 4. **Start using CodeRunner in Claude:**
    You can now ask Claude to execute code, and it will run safely in the sandbox!
+</details>
 
 ### Option 2: Python OpenAI Agents
-
-Use CodeRunner with OpenAI's Python agents library:
+<details>
+<summary>Use CodeRunner with OpenAI's Python agents library:</summary>
 
 ![demo3](images/demo3.png)
 
@@ -92,6 +93,7 @@ Use CodeRunner with OpenAI's Python agents library:
 
 3. **Start coding:**
    Enter prompts like "write python code to generate 100 prime numbers" and watch it execute safely in the sandbox!
+</details>
 
 ### Option 3: Gemini-CLI
 [Gemini CLI](https://github.com/google-gemini/gemini-cli) is recently launched by Google.
