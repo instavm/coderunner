@@ -43,10 +43,10 @@ pip install -r examples/requirements.txt
 ## Integration Options
 
 ### Option 1: Claude Desktop Integration
+![demo1](images/demo.png)
+
 <details>
 <summary>Configure Claude Desktop to use CodeRunner as an MCP server:</summary>
-
-![demo1](images/demo.png)
 ![demo2](images/demo2.png)
 ![demo4](images/demo4.png)
 
@@ -120,11 +120,13 @@ pip install -r examples/requirements.txt
 }
 ```
 
-</details>
-
 ![gemini1](images/gemini1.png)
 
 ![gemini2](images/gemini2.png)
+
+</details>
+
+
 
 ## Security
 
