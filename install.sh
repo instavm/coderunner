@@ -19,12 +19,21 @@ else
   echo "✅ macOS system detected."
 fi
 
-# Download and install the Apple 'container' tool
-echo "Downloading Apple 'container' tool..."
-curl -Lo container-installer.pkg https://github.com/apple/container/releases/download/0.1.0/container-0.1.0-installer-signed.pkg
+# Check if container is installed and display its version
+if command -v container &> /dev/null
+then
+    echo "Apple 'container' tool detected. Current version:"
+    container --version
+else
+    echo "Apple 'container' tool not detected. Proceeding with installation..."
 
-echo "Installing Apple 'container' tool..."
-sudo installer -pkg container-installer.pkg -target /
+    # Download and install the Apple 'container' tool
+    echo "Downloading Apple 'container' tool..."
+    curl -Lo container-installer.pkg https://github.com/apple/container/releases/download/0.2.0/container-0.2.0-installer-signed.pkg
+
+    echo "Installing Apple 'container' tool..."
+    sudo installer -pkg container-installer.pkg -target /
+fi
 
 echo "Setting up local network domain..."
 
