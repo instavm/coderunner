@@ -30,3 +30,7 @@ openai
 requests==2.32.4
 
 mcp[cli]
+
+fastmcp
+
+openai-agents
