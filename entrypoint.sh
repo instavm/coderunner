@@ -55,9 +55,9 @@ done
 echo
 echo "Jupyter Server is ready!"
 
-# Start a Python3 kernel session and store the kernel ID
+# Start Python3 kernel session and store the kernel ID
 echo "Starting Python3 kernel..."
-response=$(curl -s -X POST "http://localhost:${JUPYTER_PORT}/api/kernels" \
+python_response=$(curl -s -X POST "http://localhost:${JUPYTER_PORT}/api/kernels" \
     -H "Content-Type: application/json" \
     -d '{"name":"python3"}')
 
@@ -67,17 +67,33 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-kernel_id=$(echo "$response" | jq -r '.id')
-if [ "$kernel_id" == "null" ] || [ -z "$kernel_id" ]; then
-    echo "Error: Failed to get kernel ID from response: $response"
+python_kernel_id=$(echo "$python_response" | jq -r '.id')
+if [ "$python_kernel_id" == "null" ] || [ -z "$python_kernel_id" ]; then
+    echo "Error: Failed to get Python kernel ID from response: $python_response"
     kill $JUPYTER_PID 2>/dev/null || true
     exit 1
 fi
 
-echo "Python3 kernel started with ID: $kernel_id"
+echo "Python3 kernel started with ID: $python_kernel_id"
+echo "$python_kernel_id" > "${SHARED_DIR}/python_kernel_id.txt"
 
-# Write the kernel ID to a file for later use
-echo "$kernel_id" > "${SHARED_DIR}/python_kernel_id.txt"
+# Start Bash kernel session and store the kernel ID
+echo "Starting Bash kernel..."
+bash_response=$(curl -s -X POST "http://localhost:${JUPYTER_PORT}/api/kernels" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"bash"}')
+
+if [ $? -ne 0 ]; then
+    echo "Warning: Failed to start Bash kernel (continuing without it)"
+else
+    bash_kernel_id=$(echo "$bash_response" | jq -r '.id')
+    if [ "$bash_kernel_id" == "null" ] || [ -z "$bash_kernel_id" ]; then
+        echo "Warning: Failed to get Bash kernel ID from response: $bash_response"
+    else
+        echo "Bash kernel started with ID: $bash_kernel_id"
+        echo "$bash_kernel_id" > "${SHARED_DIR}/bash_kernel_id.txt"
+    fi
+fi
 
 echo "Starting FastAPI application on ${FASTMCP_HOST}:${FASTMCP_PORT}..."
 

@@ -46,11 +46,12 @@ def jupyter_client_with_kernel(mock_config):
 
 class TestJupyterClient:
     
-    def test_init_no_kernel_file(self, mock_config):
-        """Test initialization when kernel ID file doesn't exist"""
+    def test_init_no_kernel_files(self, mock_config):
+        """Test initialization when kernel ID files don't exist"""
         client = JupyterClient()
         assert client.kernel_id is None
-        assert not client.is_kernel_available()
+        assert not client.is_kernel_available("python")
+        assert not client.is_kernel_available("bash")
     
     def test_init_empty_kernel_file(self, mock_config):
         """Test initialization when kernel ID file is empty"""
@@ -60,12 +61,43 @@ class TestJupyterClient:
         
         client = JupyterClient()
         assert client.kernel_id is None
-        assert not client.is_kernel_available()
+        assert not client.is_kernel_available("python")
     
     def test_init_with_kernel_file(self, jupyter_client_with_kernel):
         """Test initialization when kernel ID file exists and has content"""
         assert jupyter_client_with_kernel.kernel_id == "test-kernel-123"
-        assert jupyter_client_with_kernel.is_kernel_available()
+        assert jupyter_client_with_kernel.is_kernel_available("python")
+    
+    def test_init_with_bash_kernel(self, mock_config):
+        """Test initialization with bash kernel"""
+        # Create both python and bash kernel files
+        python_kernel_id = "python-kernel-123"
+        bash_kernel_id = "bash-kernel-456"
+        
+        with open(mock_config.kernel_id_file, 'w') as f:
+            f.write(python_kernel_id)
+        
+        bash_kernel_file = mock_config.kernel_id_file.replace("python_kernel_id.txt", "bash_kernel_id.txt")
+        with open(bash_kernel_file, 'w') as f:
+            f.write(bash_kernel_id)
+        
+        client = JupyterClient()
+        assert client.kernels["python"] == python_kernel_id
+        assert client.kernels["bash"] == bash_kernel_id
+        assert client.is_kernel_available("python")
+        assert client.is_kernel_available("bash")
+    
+    def test_get_available_kernels(self, mock_config):
+        """Test getting available kernels status"""
+        # Create only python kernel file
+        with open(mock_config.kernel_id_file, 'w') as f:
+            f.write("python-kernel-123")
+        
+        client = JupyterClient()
+        available = client.get_available_kernels()
+        
+        assert available["python"] is True
+        assert available["bash"] is False
     
     def test_create_execute_request(self, jupyter_client_with_kernel):
         """Test creation of Jupyter execute request"""
@@ -86,8 +118,17 @@ class TestJupyterClient:
         """Test execute_code when no kernel is available"""
         client = JupyterClient()
         
-        with pytest.raises(JupyterConnectionError, match="Kernel is not running"):
-            await client.execute_code("print('test')")
+        with pytest.raises(JupyterConnectionError, match="Python kernel is not running"):
+            await client.execute_code("print('test')", kernel_type="python")
+        
+        with pytest.raises(JupyterConnectionError, match="Bash kernel is not running"):
+            await client.execute_code("echo 'test'", kernel_type="bash")
+    
+    @pytest.mark.asyncio
+    async def test_execute_code_unsupported_kernel(self, jupyter_client_with_kernel):
+        """Test execute_code with unsupported kernel type"""
+        with pytest.raises(JupyterConnectionError, match="Unsupported kernel type"):
+            await jupyter_client_with_kernel.execute_code("print('test')", kernel_type="unsupported")
     
     @pytest.mark.asyncio
     async def test_execute_code_success(self, jupyter_client_with_kernel):
@@ -193,8 +234,95 @@ class TestJupyterClient:
             with pytest.raises(JupyterConnectionError, match="Could not connect to Jupyter kernel"):
                 await jupyter_client_with_kernel.execute_code(code)
     
-    def test_reload_kernel_id(self, mock_config):
-        """Test reloading kernel ID from file"""
+    @pytest.mark.asyncio
+    async def test_execute_bash_code_success(self, mock_config):
+        """Test successful bash code execution"""
+        # Create bash kernel file
+        bash_kernel_file = mock_config.kernel_id_file.replace("python_kernel_id.txt", "bash_kernel_id.txt")
+        with open(bash_kernel_file, 'w') as f:
+            f.write("bash-kernel-789")
+        
+        client = JupyterClient()
+        code = "echo 'hello bash'"
+        expected_output = "hello bash\n"
+        
+        # Mock WebSocket connection
+        mock_websocket = AsyncMock()
+        mock_websocket.send = AsyncMock()
+        mock_websocket.recv = AsyncMock()
+        
+        # Mock the message sequence
+        execute_request_msg = None
+        def capture_request(msg):
+            nonlocal execute_request_msg
+            execute_request_msg = json.loads(msg)
+        
+        mock_websocket.send.side_effect = capture_request
+        
+        # Mock response messages
+        async def mock_recv():
+            if execute_request_msg is None:
+                raise asyncio.TimeoutError()
+            
+            msg_id = execute_request_msg["header"]["msg_id"]
+            
+            # First return stream output
+            stream_msg = {
+                "header": {"msg_type": "stream"},
+                "parent_header": {"msg_id": msg_id},
+                "content": {"text": expected_output}
+            }
+            
+            # Then return status idle
+            status_msg = {
+                "header": {"msg_type": "status"},
+                "parent_header": {"msg_id": msg_id},
+                "content": {"execution_state": "idle"}
+            }
+            
+            # Return messages in sequence
+            if not hasattr(mock_recv, 'call_count'):
+                mock_recv.call_count = 0
+            
+            mock_recv.call_count += 1
+            if mock_recv.call_count == 1:
+                return json.dumps(stream_msg)
+            else:
+                return json.dumps(status_msg)
+        
+        mock_websocket.recv.side_effect = mock_recv
+        
+        # Mock websockets.connect
+        with patch('websockets.connect') as mock_connect:
+            mock_connect.return_value.__aenter__.return_value = mock_websocket
+            
+            result = await client.execute_code(code, kernel_type="bash")
+            
+            assert result == expected_output
+            mock_websocket.send.assert_called_once()
+    
+    def test_reload_kernel_ids(self, mock_config):
+        """Test reloading kernel IDs from files"""
+        client = JupyterClient()
+        assert client.kernel_id is None
+        assert not client.is_kernel_available("bash")
+        
+        # Write kernel IDs to files
+        with open(mock_config.kernel_id_file, 'w') as f:
+            f.write("new-python-kernel-456")
+        
+        bash_kernel_file = mock_config.kernel_id_file.replace("python_kernel_id.txt", "bash_kernel_id.txt")
+        with open(bash_kernel_file, 'w') as f:
+            f.write("new-bash-kernel-789")
+        
+        client.reload_kernel_ids()
+        assert client.kernel_id == "new-python-kernel-456"
+        assert client.kernels["bash"] == "new-bash-kernel-789"
+        assert client.is_kernel_available("python")
+        assert client.is_kernel_available("bash")
+    
+    def test_reload_kernel_id_backward_compatibility(self, mock_config):
+        """Test backward compatibility method"""
         client = JupyterClient()
         assert client.kernel_id is None
         
@@ -202,6 +330,6 @@ class TestJupyterClient:
         with open(mock_config.kernel_id_file, 'w') as f:
             f.write("new-kernel-456")
         
-        client.reload_kernel_id()
+        client.reload_kernel_id()  # Should call reload_kernel_ids()
         assert client.kernel_id == "new-kernel-456"
-        assert client.is_kernel_available()
+        assert client.is_kernel_available("python")

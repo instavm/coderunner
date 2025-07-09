@@ -9,7 +9,7 @@
 
 CodeRunner is an MCP (Model Context Protocol) server that executes AI-generated code in a sandboxed environment on your Mac using Apple's native [containers](https://github.com/apple/container).
 
-**Key use case:** Process your local files (videos, images, documents, data) with remote LLMs like Claude or ChatGPT without uploading your files to the cloud. The LLM generates code that runs locally on your machine to analyze, transform, or process your files.
+**Key use case:** Process your local files (videos, images, documents, data) with remote LLMs like Claude or ChatGPT without uploading your files to the cloud. The LLM generates Python code or bash scripts that run locally on your machine to analyze, transform, or process your files.
 
 ## What CodeRunner Enables
 
@@ -21,6 +21,7 @@ CodeRunner is an MCP (Model Context Protocol) server that executes AI-generated 
 | Copy/paste scripts to run elsewhere | Code runs immediately, shows output/files |
 | LLM analyzes text descriptions of files | LLM directly processes your actual files |
 | Manage Python environments and packages | Pre-configured environment ready to use |
+| Limited to one programming language | Supports both Python and Bash execution |
 
 ## Quick Start
 
@@ -140,8 +141,9 @@ From [@apple/container](https://github.com/apple/container/blob/main/docs/techni
 ## Architecture
 
 CodeRunner consists of:
-- **Sandbox Container:** Isolated execution environment with Jupyter kernel
+- **Sandbox Container:** Isolated execution environment with Python and Bash Jupyter kernels
 - **MCP Server:** Handles communication between AI models and the sandbox
+- **Multi-Kernel Support:** Automatically routes Python and Bash code to appropriate kernels
 
 ## Examples
 
@@ -173,6 +175,69 @@ The `examples/` directory contains:
    ```bash
    python server.py
    ```
+
+### Available MCP Tools
+
+CodeRunner provides the following MCP tools for AI models:
+
+1. **`execute_python_code`** - Execute Python code in a persistent Jupyter kernel
+   ```
+   execute_python_code(command="print('Hello, World!')")
+   ```
+
+2. **`execute_bash_code`** - Execute Bash commands in a persistent Jupyter bash kernel
+   ```
+   execute_bash_code(command="ls -la && echo 'Directory listing complete'")
+   ```
+
+3. **`get_kernel_status`** - Check the status of available kernels
+   ```
+   get_kernel_status()
+   ```
+
+### Usage Examples
+
+**Python Code Execution:**
+```python
+# Data analysis
+execute_python_code("""
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Create sample data
+data = {'x': [1, 2, 3, 4, 5], 'y': [2, 4, 6, 8, 10]}
+df = pd.DataFrame(data)
+print(df.describe())
+""")
+```
+
+**Bash Script Execution:**
+```bash
+# File operations
+execute_bash_code("""
+# Create directory structure
+mkdir -p /tmp/test_dir
+cd /tmp/test_dir
+
+# Create files
+echo "Hello World" > hello.txt
+echo "Goodbye World" > goodbye.txt
+
+# List files with details
+ls -la
+""")
+```
+
+**Combined Usage:**
+```python
+# Use bash to prepare data, then Python to analyze
+execute_bash_code("curl -o data.csv https://example.com/data.csv")
+execute_python_code("""
+import pandas as pd
+df = pd.read_csv('data.csv')
+print(df.head())
+""")
+```
 
 ### Configuration
 
@@ -223,12 +288,17 @@ python -m pytest tests/ --cov=. --cov-report=html
    - Proper signal handling with `tini`
    - Better entrypoint script with error handling
 
-5. **Testing Framework**
+5. **Multi-Kernel Support**
+   - Added Bash kernel support alongside Python
+   - New `execute_bash_code` MCP tool for shell commands
+   - Kernel status monitoring with `get_kernel_status` tool
+
+6. **Testing Framework**
    - Comprehensive test suite with pytest
    - Unit tests for configuration and Jupyter client
    - Mock-based testing for isolated components
 
-6. **Code Quality Improvements**
+7. **Code Quality Improvements**
    - Pinned dependency versions for reproducible builds
    - Cleaner, more maintainable code structure
    - Better documentation and type hints

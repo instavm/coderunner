@@ -28,24 +28,39 @@ class JupyterClient:
     """Client for executing code in Jupyter kernels via WebSocket"""
     
     def __init__(self):
-        self.kernel_id: Optional[str] = None
-        self._load_kernel_id()
+        self.kernels: Dict[str, Optional[str]] = {
+            "python": None,
+            "bash": None
+        }
+        self._load_kernel_ids()
     
-    def _load_kernel_id(self) -> None:
-        """Load kernel ID from file"""
-        if not os.path.exists(config.kernel_id_file):
-            logger.error(f"Kernel ID file not found at: {config.kernel_id_file}")
-            return
+    def _load_kernel_ids(self) -> None:
+        """Load kernel IDs from files"""
+        kernel_files = {
+            "python": config.kernel_id_file,
+            "bash": config.kernel_id_file.replace("python_kernel_id.txt", "bash_kernel_id.txt")
+        }
         
-        try:
-            with open(config.kernel_id_file, 'r') as file:
-                self.kernel_id = file.read().strip()
-                if not self.kernel_id:
-                    logger.error("Kernel ID file is empty")
-                    self.kernel_id = None
-        except Exception as e:
-            logger.error(f"Error reading kernel ID file: {e}")
-            self.kernel_id = None
+        for kernel_type, kernel_file in kernel_files.items():
+            if not os.path.exists(kernel_file):
+                logger.info(f"{kernel_type.title()} kernel ID file not found at: {kernel_file}")
+                continue
+            
+            try:
+                with open(kernel_file, 'r') as file:
+                    kernel_id = file.read().strip()
+                    if kernel_id:
+                        self.kernels[kernel_type] = kernel_id
+                        logger.info(f"Loaded {kernel_type} kernel ID: {kernel_id}")
+                    else:
+                        logger.warning(f"{kernel_type.title()} kernel ID file is empty")
+            except Exception as e:
+                logger.error(f"Error reading {kernel_type} kernel ID file: {e}")
+    
+    @property
+    def kernel_id(self) -> Optional[str]:
+        """Backward compatibility property for Python kernel"""
+        return self.kernels.get("python")
     
     def _create_execute_request(self, code: str) -> Tuple[str, str]:
         """
@@ -77,12 +92,13 @@ class JupyterClient:
         }
         return msg_id, json.dumps(request)
     
-    async def execute_code(self, code: str) -> str:
+    async def execute_code(self, code: str, kernel_type: str = "python") -> str:
         """
-        Execute Python code in the Jupyter kernel and return the output.
+        Execute code in the specified Jupyter kernel and return the output.
         
         Args:
-            code: The Python code to execute
+            code: The code to execute
+            kernel_type: Type of kernel to use ("python" or "bash")
             
         Returns:
             The execution output as a string
@@ -91,10 +107,14 @@ class JupyterClient:
             JupyterConnectionError: If unable to connect to Jupyter
             JupyterExecutionError: If code execution fails
         """
-        if not self.kernel_id:
-            raise JupyterConnectionError("Kernel is not running. The kernel ID is not available.")
+        if kernel_type not in self.kernels:
+            raise JupyterConnectionError(f"Unsupported kernel type: {kernel_type}")
         
-        jupyter_ws_url = f"{config.jupyter_ws_base_url}/api/kernels/{self.kernel_id}/channels"
+        kernel_id = self.kernels[kernel_type]
+        if not kernel_id:
+            raise JupyterConnectionError(f"{kernel_type.title()} kernel is not running. The kernel ID is not available.")
+        
+        jupyter_ws_url = f"{config.jupyter_ws_base_url}/api/kernels/{kernel_id}/channels"
         output_lines = []
         sent_msg_id = None
         
@@ -177,10 +197,18 @@ class JupyterClient:
         
         return False
     
-    def reload_kernel_id(self) -> None:
-        """Reload kernel ID from file (useful if kernel was restarted)"""
-        self._load_kernel_id()
+    def reload_kernel_ids(self) -> None:
+        """Reload kernel IDs from files (useful if kernels were restarted)"""
+        self._load_kernel_ids()
     
-    def is_kernel_available(self) -> bool:
-        """Check if kernel ID is available"""
-        return self.kernel_id is not None
+    def reload_kernel_id(self) -> None:
+        """Backward compatibility method"""
+        self.reload_kernel_ids()
+    
+    def is_kernel_available(self, kernel_type: str = "python") -> bool:
+        """Check if kernel ID is available for the specified kernel type"""
+        return self.kernels.get(kernel_type) is not None
+    
+    def get_available_kernels(self) -> Dict[str, bool]:
+        """Get availability status of all kernels"""
+        return {kernel_type: kernel_id is not None for kernel_type, kernel_id in self.kernels.items()}
