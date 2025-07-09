@@ -333,3 +333,48 @@ class TestJupyterClient:
         client.reload_kernel_id()  # Should call reload_kernel_ids()
         assert client.kernel_id == "new-kernel-456"
         assert client.is_kernel_available("python")
+    
+    def test_load_kernel_ids_file_read_error(self, mock_config):
+        """Test handling of file read errors during kernel ID loading"""
+        # Create a kernel file
+        with open(mock_config.kernel_id_file, 'w') as f:
+            f.write("test-kernel-123")
+        
+        # Mock file reading to raise an exception
+        with patch('builtins.open', side_effect=PermissionError("Access denied")):
+            client = JupyterClient()
+            
+            # Should handle the exception gracefully
+            assert client.kernels["python"] is None
+            assert client.kernels["bash"] is None
+    
+    @pytest.mark.asyncio
+    async def test_execute_code_timeout(self, jupyter_client_with_kernel):
+        """Test code execution timeout"""
+        code = "import time; time.sleep(10)"
+        
+        # Mock WebSocket connection that never sends completion
+        mock_websocket = AsyncMock()
+        mock_websocket.send = AsyncMock()
+        
+        # Mock recv to always timeout
+        async def mock_recv():
+            raise asyncio.TimeoutError()
+        
+        mock_websocket.recv.side_effect = mock_recv
+        
+        # Mock the request creation
+        with patch.object(jupyter_client_with_kernel, '_create_execute_request') as mock_create:
+            mock_create.return_value = ("test-msg-id", '{"test": "request"}')
+            
+            with patch('websockets.connect') as mock_connect:
+                mock_connect.return_value.__aenter__.return_value = mock_websocket
+                
+                # Mock config to have short timeout
+                with patch('jupyter_client.config') as mock_config:
+                    mock_config.execution_timeout = 0.1  # Very short timeout
+                    mock_config.websocket_timeout = 0.01
+                    mock_config.jupyter_ws_base_url = "ws://localhost:8888"
+                    
+                    with pytest.raises(JupyterExecutionError, match="timed out"):
+                        await jupyter_client_with_kernel.execute_code(code)

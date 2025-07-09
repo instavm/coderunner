@@ -15,7 +15,8 @@ def test_config_defaults():
     assert config.jupyter_ws_url == "ws://127.0.0.1:8888"
     assert config.jupyter_port == 8888
     assert config.jupyter_host == "127.0.0.1"
-    assert config.shared_dir == pathlib.Path("/app/uploads")
+    # Default shared_dir is "./uploads" for local development or "/app/uploads" in container
+    assert config.shared_dir in [pathlib.Path("./uploads"), pathlib.Path("/app/uploads")]
     assert config.execution_timeout == 300.0
     assert config.websocket_timeout == 1.0
     assert config.max_wait_jupyter == 30
@@ -90,3 +91,18 @@ def test_config_bash_kernel_id_file_with_custom_path():
         
         expected_bash_path = os.path.join(tmp_dir, "custom", "bash_kernel_id.txt")
         assert config.bash_kernel_id_file == expected_bash_path
+
+
+def test_config_resource_settings():
+    """Test resource settings configuration with CPU conversion"""
+    env_vars = {
+        "CODERUNNER_MAX_KERNEL_MEMORY": "2G",
+        "CODERUNNER_MAX_KERNEL_CPU": "1.5"
+    }
+    
+    with patch.dict(os.environ, env_vars):
+        config = Config()
+        
+        assert config.max_kernel_memory == "2G"
+        assert config.max_kernel_cpu == 1.5
+        assert isinstance(config.max_kernel_cpu, float)
