@@ -149,6 +149,106 @@ The `examples/` directory contains:
 - `openai-agents` - Example OpenAI agents integration
 - `claude-desktop` - Example Claude Desktop integration
 
+## Development
+
+### Running Locally
+
+1. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Set up configuration:**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your preferred settings
+   ```
+
+3. **Run tests:**
+   ```bash
+   python -m pytest tests/ -v
+   ```
+
+4. **Run the server:**
+   ```bash
+   python server.py
+   ```
+
+### Configuration
+
+CodeRunner can be configured via environment variables. See `.env.example` for available options:
+
+- `CODERUNNER_JUPYTER_HOST`: Jupyter server host (default: 127.0.0.1)
+- `CODERUNNER_JUPYTER_PORT`: Jupyter server port (default: 8888)
+- `CODERUNNER_FASTMCP_HOST`: FastMCP server host (default: 0.0.0.0)
+- `CODERUNNER_FASTMCP_PORT`: FastMCP server port (default: 8222)
+- `CODERUNNER_EXECUTION_TIMEOUT`: Code execution timeout in seconds (default: 300)
+- `CODERUNNER_LOG_LEVEL`: Logging level (default: INFO)
+
+### Testing
+
+Run the test suite:
+```bash
+# Run all tests
+python -m pytest tests/
+
+# Run specific test files
+python -m pytest tests/test_config.py -v
+
+# Run tests with coverage (if installed)
+python -m pytest tests/ --cov=. --cov-report=html
+```
+
+## Recent Changes (Refactor Branch)
+
+### Major Refactoring Improvements
+
+1. **Modularized Architecture**
+   - Extracted Jupyter client logic into `jupyter_client.py`
+   - Created centralized configuration system in `config.py`
+   - Improved separation of concerns
+
+2. **Enhanced Configuration Management**
+   - Environment variable support with `CODERUNNER_` prefix
+   - Centralized configuration with sensible defaults
+   - Better local development support
+
+3. **Improved Error Handling**
+   - Custom exception classes for better error categorization
+   - More robust WebSocket connection handling
+   - Comprehensive logging and error reporting
+
+4. **Container Optimizations**
+   - Multi-stage Docker build for smaller images
+   - Proper signal handling with `tini`
+   - Better entrypoint script with error handling
+
+5. **Testing Framework**
+   - Comprehensive test suite with pytest
+   - Unit tests for configuration and Jupyter client
+   - Mock-based testing for isolated components
+
+6. **Code Quality Improvements**
+   - Pinned dependency versions for reproducible builds
+   - Cleaner, more maintainable code structure
+   - Better documentation and type hints
+
+### File Structure
+```
+coderunner/
+├── config.py              # Configuration management
+├── jupyter_client.py      # Jupyter WebSocket client
+├── server.py              # Main FastMCP server
+├── requirements.txt       # Pinned dependencies
+├── Dockerfile             # Optimized multi-stage build
+├── entrypoint.sh          # Improved container entrypoint
+├── .env.example           # Configuration template
+├── pytest.ini            # Test configuration
+└── tests/                 # Test suite
+    ├── test_config.py
+    └── test_jupyter_client.py
+```
+
 ## Contributing
 
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.

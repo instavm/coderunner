@@ -1,36 +1,34 @@
-
 # Core Jupyter Server
-jupyter-server
+jupyter-server==2.14.2
 
 # Bash Kernel for Jupyter
-bash_kernel
-
+bash_kernel==0.7.2
 
 # Web Framework
-fastapi
-
+fastapi==0.115.6
 
 # ASGI Server (with standard extras like websockets, httptools)
-uvicorn[standard]
+uvicorn[standard]==0.32.1
 
-# WebSocket client library (explicitly needed by main.py)
-websockets
+# WebSocket client library
+websockets==13.1
 
-# Async HTTP client (used by main.py to talk to Jupyter API)
-httpx
+# For async file operations
+aiofiles==24.1.0
 
-# For FastAPI file uploads
-python-multipart
 
-# For async file operations in FastAPI uploads
-aiofiles
+# MCP framework
+mcp[cli]==1.1.0
+fastmcp==0.6.0
 
-openai
+# Development and testing dependencies
+pytest==8.3.4
+pytest-asyncio==0.25.0
+pytest-mock==3.14.0
 
+# OpenAI integration (optional)
+openai==1.59.3
+openai-agents==0.0.18
+
+# System requests
 requests==2.32.4
-
-mcp[cli]
-
-fastmcp
-
-openai-agents
