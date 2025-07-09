@@ -38,7 +38,7 @@ class JupyterClient:
         """Load kernel IDs from files"""
         kernel_files = {
             "python": config.kernel_id_file,
-            "bash": config.kernel_id_file.replace("python_kernel_id.txt", "bash_kernel_id.txt")
+            "bash": config.bash_kernel_id_file
         }
         
         for kernel_type, kernel_file in kernel_files.items():

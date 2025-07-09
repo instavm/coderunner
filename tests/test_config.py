@@ -73,5 +73,20 @@ def test_config_kernel_id_file_path():
         shared_dir = pathlib.Path(tmp_dir) / "uploads"
         config = Config(shared_dir=shared_dir)
         
-        expected_path = str(shared_dir / "python_kernel_id.txt")
-        assert config.kernel_id_file == expected_path
+        expected_python_path = str(shared_dir / "python_kernel_id.txt")
+        expected_bash_path = str(shared_dir / "bash_kernel_id.txt")
+        
+        assert config.kernel_id_file == expected_python_path
+        assert config.bash_kernel_id_file == expected_bash_path
+
+
+def test_config_bash_kernel_id_file_with_custom_path():
+    """Test that bash kernel ID file path is robust to custom python kernel path"""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        custom_python_path = os.path.join(tmp_dir, "custom", "my_python_kernel.txt")
+        os.makedirs(os.path.dirname(custom_python_path), exist_ok=True)
+        
+        config = Config(kernel_id_file=custom_python_path)
+        
+        expected_bash_path = os.path.join(tmp_dir, "custom", "bash_kernel_id.txt")
+        assert config.bash_kernel_id_file == expected_bash_path

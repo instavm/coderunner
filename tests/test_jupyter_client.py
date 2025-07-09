@@ -77,7 +77,7 @@ class TestJupyterClient:
         with open(mock_config.kernel_id_file, 'w') as f:
             f.write(python_kernel_id)
         
-        bash_kernel_file = mock_config.kernel_id_file.replace("python_kernel_id.txt", "bash_kernel_id.txt")
+        bash_kernel_file = mock_config.bash_kernel_id_file
         with open(bash_kernel_file, 'w') as f:
             f.write(bash_kernel_id)
         
@@ -238,7 +238,7 @@ class TestJupyterClient:
     async def test_execute_bash_code_success(self, mock_config):
         """Test successful bash code execution"""
         # Create bash kernel file
-        bash_kernel_file = mock_config.kernel_id_file.replace("python_kernel_id.txt", "bash_kernel_id.txt")
+        bash_kernel_file = mock_config.bash_kernel_id_file
         with open(bash_kernel_file, 'w') as f:
             f.write("bash-kernel-789")
         
@@ -311,7 +311,7 @@ class TestJupyterClient:
         with open(mock_config.kernel_id_file, 'w') as f:
             f.write("new-python-kernel-456")
         
-        bash_kernel_file = mock_config.kernel_id_file.replace("python_kernel_id.txt", "bash_kernel_id.txt")
+        bash_kernel_file = mock_config.bash_kernel_id_file
         with open(bash_kernel_file, 'w') as f:
             f.write("new-bash-kernel-789")
         

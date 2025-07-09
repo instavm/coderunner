@@ -45,6 +45,11 @@ class Config:
             self.kernel_id_file = str(self.shared_dir / "python_kernel_id.txt")
     
     @property
+    def bash_kernel_id_file(self) -> str:
+        """Get the path for the bash kernel ID file"""
+        return os.path.join(os.path.dirname(self.kernel_id_file), "bash_kernel_id.txt")
+    
+    @property
     def jupyter_ws_base_url(self) -> str:
         """Get the base WebSocket URL for Jupyter"""
         return f"ws://{self.jupyter_host}:{self.jupyter_port}"
