@@ -241,7 +241,7 @@ print(df.head())
 
 ### Configuration
 
-CodeRunner can be configured via environment variables. See `.env.example` for available options:
+CodeRunner can be configured via environment variables with the `CODERUNNER_` prefix for consistency across all components (Python application, Docker container, and entrypoint script). See `.env.example` for available options:
 
 - `CODERUNNER_JUPYTER_HOST`: Jupyter server host (default: 127.0.0.1)
 - `CODERUNNER_JUPYTER_PORT`: Jupyter server port (default: 8888)
@@ -287,6 +287,7 @@ python -m pytest tests/ --cov=. --cov-report=html
    - Multi-stage Docker build for smaller images
    - Proper signal handling with `tini`
    - Better entrypoint script with error handling
+   - Unified configuration with `CODERUNNER_` prefix across all components
 
 5. **Multi-Kernel Support**
    - Added Bash kernel support alongside Python
