@@ -43,11 +43,13 @@ pip install -r examples/requirements.txt
 ## Integration Options
 
 ### Option 1: Claude Desktop Integration
-![demo1](images/demo.png)
+
 
 <details>
 <summary>Configure Claude Desktop to use CodeRunner as an MCP server:</summary>
-   
+
+![demo1](images/demo.png)
+
 ![demo2](images/demo2.png)
 
 ![demo4](images/demo4.png)
@@ -129,6 +131,32 @@ pip install -r examples/requirements.txt
 </details>
 
 
+### Option 4: Kiro by Amazon
+[Kiro](https://kiro.dev/blog/introducing-kiro/) is recently launched by Amazon.
+
+<details>
+<summary>~/.kiro/settings/mcp.json</summary>
+
+```json
+{
+  "mcpServers": {
+    "coderunner": {
+      "command": "/path/to/venv/bin/python",
+      "args": [
+        "/path/to/coderunner/examples/claude_desktop/mcpproxy.py"
+      ],
+      "disabled": false,
+      "autoApprove": [
+        "execute_python_code"
+      ]
+    }
+  }
+}
+```
+
+</details>
+
+![kiro](images/kiro.png)
 
 ## Security
 
