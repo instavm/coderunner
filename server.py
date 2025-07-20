@@ -99,7 +99,7 @@ async def execute_python_code(command: str) -> str:
             logger.info(f"Sent execute_request (msg_id: {sent_msg_id})")
 
             execution_complete = False
-            loop_timeout = 300.0  # Total time to wait for a result
+            loop_timeout = 3600.0  # Total time to wait for a result
             start_time = time.time()
 
             while not execution_complete and (time.time() - start_time) < loop_timeout:
