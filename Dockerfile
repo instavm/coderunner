@@ -35,7 +35,6 @@ COPY ./requirements.txt /app/requirements.txt
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-
 # Install the bash kernel spec for Jupyter (not working with uv)
 RUN python -m bash_kernel.install
 

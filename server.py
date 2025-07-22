@@ -12,7 +12,9 @@ import uuid
 import aiofiles
 import websockets
 from mcp.server.fastmcp import FastMCP
-
+from playwright.async_api import async_playwright
+from bs4 import BeautifulSoup
+import socket
 # --- CONFIGURATION & SETUP ---
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -31,6 +33,16 @@ JUPYTER_WS_URL = "ws://127.0.0.1:8888"
 SHARED_DIR = pathlib.Path("/app/uploads")
 SHARED_DIR.mkdir(exist_ok=True)
 KERNEL_ID_FILE_PATH = SHARED_DIR / "python_kernel_id.txt"
+
+def resolve_with_system_dns(hostname):
+    try:
+        return socket.gethostbyname(hostname)
+    except socket.gaierror as e:
+        print(f"Error resolving {hostname}: {e}")
+        return None
+
+PLAYWRIGHT_WS_URL =f"ws://{resolve_with_system_dns('play20.local')}:3000/"
+
 
 
 # --- HELPER FUNCTION ---
@@ -143,6 +155,107 @@ async def execute_python_code(command: str) -> str:
     except Exception as e:
         logger.error(f"An unexpected error occurred during execution: {e}", exc_info=True)
         return f"Error: An internal server error occurred: {str(e)}"
+
+@mcp.tool()
+async def open_page(url: str) -> str:
+    """
+    Opens a webpage using Playwright.
+
+    Args:
+        url: The URL of the webpage to open.
+    """
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.connect(PLAYWRIGHT_WS_URL)
+            page = await browser.new_page()
+            await page.goto(url)
+            await browser.close()
+
+            return f"Page opened successfully: {url}"
+
+    except Exception as e:
+        logger.error(f"Failed to open page: {e}")
+        return f"Error: Failed to open page: {str(e)}"
+
+
+@mcp.tool()
+async def click_element_on_page(selector: str) -> str:
+    """
+    Clicks an element specified by the selector using Playwright.
+
+    Args:
+        selector: The CSS selector of the element to click.
+    """
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.connect(PLAYWRIGHT_WS_URL)
+            page = await browser.new_page()
+
+            # Assuming that the page is already navigated to the desired URL
+            locator = page.locator(selector)
+            await locator.click()
+            await browser.close()
+
+            return f"Clicked element with selector: {selector}"
+
+    except Exception as e:
+        logger.error(f"Failed to click element: {e}")
+        return f"Error: Failed to click element: {str(e)}"
+
+
+@mcp.tool()
+async def get_visible_text_on_page(selector: str) -> str:
+    """
+    Retrieves visible text from a specified element using a selector with Playwright.
+
+    Args:
+        selector: The CSS selector of the element whose text is to be retrieved.
+    """
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.connect(PLAYWRIGHT_WS_URL)
+            page = await browser.new_page()
+
+            # Assuming the page is already navigated to the desired URL
+            element_text = await page.text_content(selector)
+            await browser.close()
+
+            return element_text or f"No visible text found for selector: {selector}"
+
+    except Exception as e:
+        logger.error(f"Failed to retrieve visible text: {e}")
+        return f"Error: Failed to retrieve visible text: {str(e)}"
+
+@mcp.tool()
+async def navigate_and_get_all_visible_text(url: str) -> str:
+    """
+    Retrieves all visible text from the entire webpage using Playwright.
+
+    Args:
+        url: The URL of the webpage from which to retrieve text.
+    """
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.connect("ws://play20.local:3000/")
+            page = await browser.new_page()
+            await page.goto(url)
+
+            # Get the full HTML content
+            html_content = await page.content()
+
+            # Use BeautifulSoup to parse the HTML and extract visible text
+            soup = BeautifulSoup(html_content, 'html.parser')
+            visible_text = soup.get_text(separator="\n", strip=True)
+
+            await browser.close()
+
+            return visible_text
+
+    except Exception as e:
+        logger.error(f"Failed to retrieve all visible text: {e}")
+        return f"Error: Failed to retrieve all visible text: {str(e)}"
 
 
 app = mcp.sse_app()

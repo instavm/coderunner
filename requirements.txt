@@ -34,3 +34,9 @@ mcp[cli]
 fastmcp
 
 openai-agents
+
+playwright==1.53.0
+
+beautifulsoup4
+
+lxml

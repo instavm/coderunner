@@ -63,3 +63,11 @@ jupyter_runtime/
 
 # Node modules (if any)
 node_modules/
+
+# Playwright ones
+playw/node_modules/
+playw/.pytest_cache/
+playw/__pycache__/
+playw/penv/
+
+
