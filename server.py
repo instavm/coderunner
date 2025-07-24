@@ -11,7 +11,8 @@ import uuid
 
 import aiofiles
 import websockets
-from mcp.server.fastmcp import FastMCP
+# Import Context for progress reporting
+from mcp.server.fastmcp import FastMCP, Context
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 import socket
@@ -78,20 +79,21 @@ def create_jupyter_request(code: str) -> tuple[str, str]:
 
 
 # --- MCP TOOLS ---
-
 @mcp.tool()
-async def execute_python_code(command: str) -> str:
+async def execute_python_code(command: str, ctx: Context) -> str:
     """
-    Executes a string of Python code in a persistent Jupyter kernel and returns the output.
-    This is suitable for calculations, data analysis, and interacting with previously defined variables.
+    Executes a string of Python code in a persistent Jupyter kernel and returns the final output.
+    Streams intermediate output (stdout) as progress updates.
 
     Args:
         command: The Python code to execute as a single string.
+        ctx: The MCP Context object, used for reporting progress.
     """
     # 1. Get Kernel ID
     if not os.path.exists(KERNEL_ID_FILE_PATH):
-        logger.error(f"Kernel ID file not found at: {KERNEL_ID_FILE_PATH}")
-        return "Error: Kernel is not running. The kernel ID file was not found."
+        error_msg = f"Error: Kernel is not running. The kernel ID file was not found at: {KERNEL_ID_FILE_PATH}"
+        logger.error(error_msg)
+        return error_msg
 
     with open(KERNEL_ID_FILE_PATH, 'r') as file:
         kernel_id = file.read().strip()
@@ -101,7 +103,7 @@ async def execute_python_code(command: str) -> str:
 
     # 2. Connect and Execute via WebSocket
     jupyter_ws_url = f"{JUPYTER_WS_URL}/api/kernels/{kernel_id}/channels"
-    output_lines = []
+    final_output_lines = []
     sent_msg_id = None
 
     try:
@@ -111,12 +113,11 @@ async def execute_python_code(command: str) -> str:
             logger.info(f"Sent execute_request (msg_id: {sent_msg_id})")
 
             execution_complete = False
-            loop_timeout = 3600.0  # Total time to wait for a result
+            loop_timeout = 3600.0
             start_time = time.time()
 
             while not execution_complete and (time.time() - start_time) < loop_timeout:
                 try:
-                    # Wait for a message with a short timeout to keep the loop responsive
                     message_str = await asyncio.wait_for(jupyter_ws.recv(), timeout=1.0)
                 except asyncio.TimeoutError:
                     continue
@@ -124,7 +125,6 @@ async def execute_python_code(command: str) -> str:
                 message_data = json.loads(message_str)
                 parent_msg_id = message_data.get("parent_header", {}).get("msg_id")
 
-                # Ignore messages not related to our request
                 if parent_msg_id != sent_msg_id:
                     continue
 
@@ -132,101 +132,35 @@ async def execute_python_code(command: str) -> str:
                 content = message_data.get("content", {})
 
                 if msg_type == "stream":
-                    output_lines.append(content.get("text", ""))
-                elif msg_type == "execute_result" or msg_type == "display_data":
-                    output_lines.append(content.get("data", {}).get("text/plain", ""))
+                    stream_text = content.get("text", "")
+                    final_output_lines.append(stream_text)
+                    # --- THIS IS THE CORRECTED LINE ---
+                    await ctx.report_progress(progress=stream_text)
+
+                elif msg_type in ["execute_result", "display_data"]:
+                    final_output_lines.append(content.get("data", {}).get("text/plain", ""))
                 elif msg_type == "error":
                     error_traceback = "\n".join(content.get("traceback", []))
                     logger.error(f"Execution error for msg_id {sent_msg_id}:\n{error_traceback}")
                     return f"Execution Error:\n{error_traceback}"
+
                 elif msg_type == "status" and content.get("execution_state") == "idle":
-                    # The kernel is idle, meaning our execution is finished.
                     execution_complete = True
 
             if not execution_complete:
+                 timeout_msg = f"Error: Execution timed out after {loop_timeout} seconds."
                  logger.error(f"Execution timed out for msg_id: {sent_msg_id}")
-                 return f"Error: Execution timed out after {loop_timeout} seconds."
+                 return timeout_msg
 
-            return "".join(output_lines) if output_lines else "[Execution successful with no output]"
+            return "".join(final_output_lines) if final_output_lines else "[Execution successful with no output]"
 
     except websockets.exceptions.ConnectionClosed as e:
+        error_msg = f"Error: Could not connect to the Jupyter kernel. It may be offline. Details: {e}"
         logger.error(f"WebSocket connection failed: {e}")
-        return f"Error: Could not connect to the Jupyter kernel. It may be offline. Details: {e}"
+        return error_msg
     except Exception as e:
         logger.error(f"An unexpected error occurred during execution: {e}", exc_info=True)
         return f"Error: An internal server error occurred: {str(e)}"
-
-@mcp.tool()
-async def open_page(url: str) -> str:
-    """
-    Opens a webpage using Playwright.
-
-    Args:
-        url: The URL of the webpage to open.
-    """
-
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.connect(PLAYWRIGHT_WS_URL)
-            page = await browser.new_page()
-            await page.goto(url)
-            await browser.close()
-
-            return f"Page opened successfully: {url}"
-
-    except Exception as e:
-        logger.error(f"Failed to open page: {e}")
-        return f"Error: Failed to open page: {str(e)}"
-
-
-@mcp.tool()
-async def click_element_on_page(selector: str) -> str:
-    """
-    Clicks an element specified by the selector using Playwright.
-
-    Args:
-        selector: The CSS selector of the element to click.
-    """
-
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.connect(PLAYWRIGHT_WS_URL)
-            page = await browser.new_page()
-
-            # Assuming that the page is already navigated to the desired URL
-            locator = page.locator(selector)
-            await locator.click()
-            await browser.close()
-
-            return f"Clicked element with selector: {selector}"
-
-    except Exception as e:
-        logger.error(f"Failed to click element: {e}")
-        return f"Error: Failed to click element: {str(e)}"
-
-
-@mcp.tool()
-async def get_visible_text_on_page(selector: str) -> str:
-    """
-    Retrieves visible text from a specified element using a selector with Playwright.
-
-    Args:
-        selector: The CSS selector of the element whose text is to be retrieved.
-    """
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.connect(PLAYWRIGHT_WS_URL)
-            page = await browser.new_page()
-
-            # Assuming the page is already navigated to the desired URL
-            element_text = await page.text_content(selector)
-            await browser.close()
-
-            return element_text or f"No visible text found for selector: {selector}"
-
-    except Exception as e:
-        logger.error(f"Failed to retrieve visible text: {e}")
-        return f"Error: Failed to retrieve visible text: {str(e)}"
 
 @mcp.tool()
 async def navigate_and_get_all_visible_text(url: str) -> str:
@@ -236,26 +170,30 @@ async def navigate_and_get_all_visible_text(url: str) -> str:
     Args:
         url: The URL of the webpage from which to retrieve text.
     """
+    # This function doesn't have intermediate steps, so it only needs 'return'.
     try:
+        # Note: 'async with async_playwright() as p:' can be slow.
+        # For performance, consider managing a single Playwright instance
+        # outside the tool function if this tool is called frequently.
         async with async_playwright() as p:
-            browser = await p.chromium.connect("ws://play20.local:3000/")
+            browser = await p.chromium.connect(PLAYWRIGHT_WS_URL)
             page = await browser.new_page()
             await page.goto(url)
 
-            # Get the full HTML content
             html_content = await page.content()
-
-            # Use BeautifulSoup to parse the HTML and extract visible text
             soup = BeautifulSoup(html_content, 'html.parser')
             visible_text = soup.get_text(separator="\n", strip=True)
 
             await browser.close()
 
+            # The operation is complete, return the final result.
             return visible_text
 
     except Exception as e:
         logger.error(f"Failed to retrieve all visible text: {e}")
+        # An error occurred, return the final error message.
         return f"Error: Failed to retrieve all visible text: {str(e)}"
 
 
-app = mcp.sse_app()
+# Use the streamable_http_app as it's the modern standard
+app = mcp.streamable_http_app()
