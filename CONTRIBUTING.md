@@ -20,6 +20,34 @@ Thank you for your interest in contributing to CodeRunner! We welcome contributi
 3. Update the config file with your local paths
 4. Follow the setup instructions in the README
 
+## Build
+<details>
+<summary>Build Instructions</summary>
+
+To start building the container, you might need to perform the following commands:
+
+```bash
+# Stop any running container services
+sudo pkill -f container
+
+# Start the container system
+container system start
+
+# Remove existing buildkit if necessary
+container rm buildkit
+
+# Build the container with the specified Dockerfile and tag
+container build --tag cr --file Dockerfile .
+
+# Tag the newly built container
+container images tag cr instavm/coderunner
+
+# Push the image to the registry
+container images push instavm/coderunner
+```
+
+</details>
+
 ## Code Style
 
 - Follow PEP 8 for Python code
