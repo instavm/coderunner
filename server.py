@@ -32,6 +32,16 @@ SHARED_DIR = pathlib.Path("/app/uploads")
 SHARED_DIR.mkdir(exist_ok=True)
 KERNEL_ID_FILE_PATH = SHARED_DIR / "python_kernel_id.txt"
 
+def resolve_with_system_dns(hostname):
+    try:
+        return socket.gethostbyname(hostname)
+    except socket.gaierror as e:
+        print(f"Error resolving {hostname}: {e}")
+        return None
+
+PLAYWRIGHT_WS_URL =f"ws://127.0.0.1:3000/"
+
+
 
 # --- HELPER FUNCTION ---
 def create_jupyter_request(code: str) -> tuple[str, str]:

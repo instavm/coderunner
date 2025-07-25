@@ -43,6 +43,8 @@ echo "Python3 kernel started with ID: $kernel_id"
 # Write the kernel ID to a file for later use
 echo $kernel_id > /app/uploads/python_kernel_id.txt
 
+npx -y playwright@1.53.0 run-server --port 3000 --host 0.0.0.0 &
+
 # exec python mcp_main.py
 
 # Start FastAPI application
