@@ -25,9 +25,6 @@ then
     echo "Apple 'container' tool detected. Current version:"
     container --version
     echo "Stopping any running Apple 'container' processes..."
-    echo "Ensuring a clean installation of Apple 'container' tool..."
-    uninstall-container.sh -k
-    sudo pkill -f container
 else
     echo "Apple 'container' tool not detected. Proceeding with installation..."
 
