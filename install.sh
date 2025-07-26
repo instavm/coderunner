@@ -24,6 +24,10 @@ if command -v container &> /dev/null
 then
     echo "Apple 'container' tool detected. Current version:"
     container --version
+    echo "Stopping any running Apple 'container' processes..."
+    echo "Ensuring a clean installation of Apple 'container' tool..."
+    uninstall-container.sh -k
+    sudo pkill -f container
 else
     echo "Apple 'container' tool not detected. Proceeding with installation..."
 
@@ -34,6 +38,9 @@ else
     echo "Installing Apple 'container' tool..."
     sudo installer -pkg container-installer.pkg -target /
 fi
+
+echo "Starting the Sandbox Container..."
+container system start
 
 echo "Setting up local network domain..."
 
@@ -46,6 +53,11 @@ container system dns default set local
 
 echo "Starting the Sandbox Container..."
 container system start
+
+
+echo "Pulling the latest image: instavm/coderunner"
+container image pull instavm/coderunner
+
 # Run the command to start the sandbox container
 echo "Running: container run --name coderunner --detach --rm --cpus 8 --memory 4g instavm/coderunner"
 container run --name coderunner --detach --rm --cpus 8 --memory 4g instavm/coderunner
