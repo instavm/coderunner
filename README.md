@@ -33,7 +33,7 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-MCP server will be available at: http://coderunner.local:8222/sse
+MCP server will be available at: http://coderunner.local:8222/mcp
 
 **Install required packages** (use virtualenv and note the python path):
 ```bash
@@ -118,7 +118,7 @@ pip install -r examples/requirements.txt
   "selectedAuthType": "oauth-personal",
   "mcpServers": {
     "coderunner": {
-      "url": "http://coderunner.local:8222/sse"
+      "httpUrl": "http://coderunner.local:8222/mcp"
     }
   }
 }

@@ -40,7 +40,7 @@ async def main():
     async with MCPServerSse(
         name="SSE Python Server",
         params={
-            "url": f"http://{address}:8222/sse",
+            "url": f"http://{address}:8222/mcp",
             "sse_read_timeout": 60,
             "timeout": 60,
         },

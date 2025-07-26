@@ -13,7 +13,7 @@ def resolve_with_system_dns(hostname):
 
 hostname = "coderunner.local"
 address = resolve_with_system_dns(hostname)
-proxy = FastMCP.as_proxy(f"http://{address}:8222/sse", name="SSE to Stdio Proxy")
+proxy = FastMCP.as_proxy(f"http://{address}:8222/mcp", name="SSE to Stdio Proxy")
 # Run the proxy with stdio transport for local access
 if __name__ == "__main__":
     proxy.run()

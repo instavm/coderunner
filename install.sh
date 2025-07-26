@@ -50,4 +50,4 @@ container system start
 echo "Running: container run --name coderunner --detach --rm --cpus 8 --memory 4g instavm/coderunner"
 container run --name coderunner --detach --rm --cpus 8 --memory 4g instavm/coderunner
 
-echo "✅ Setup complete. MCP server is available at http://coderunner.local:8222/sse"
+echo "✅ Setup complete. MCP server is available at http://coderunner.local:8222/mcp"
