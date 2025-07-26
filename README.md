@@ -124,11 +124,12 @@ pip install -r examples/requirements.txt
 }
 ```
 
+
+</details>
+
 ![gemini1](images/gemini1.png)
 
 ![gemini2](images/gemini2.png)
-
-</details>
 
 
 ### Option 4: Kiro by Amazon
@@ -154,9 +155,12 @@ pip install -r examples/requirements.txt
 }
 ```
 
-</details>
 
 ![kiro](images/kiro.png)
+
+</details>
+
+
 
 ## Security
 
