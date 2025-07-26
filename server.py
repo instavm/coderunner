@@ -11,7 +11,6 @@ import uuid
 from typing import Dict, Optional, Set
 from dataclasses import dataclass, field
 from enum import Enum
-import threading
 from datetime import datetime, timedelta
 
 import aiofiles
@@ -63,6 +62,24 @@ def resolve_with_system_dns(hostname):
 
 PLAYWRIGHT_WS_URL =f"ws://127.0.0.1:3000/"
 
+# --- CUSTOM EXCEPTIONS ---
+
+class KernelError(Exception):
+    """Base exception for kernel-related errors"""
+    pass
+
+class NoKernelAvailableError(KernelError):
+    """Raised when no kernels are available in the pool"""
+    pass
+
+class KernelExecutionError(KernelError):
+    """Raised when kernel execution fails"""
+    pass
+
+class KernelTimeoutError(KernelError):
+    """Raised when kernel operation times out"""
+    pass
+
 # --- KERNEL MANAGEMENT CLASSES ---
 
 class KernelState(Enum):
@@ -70,7 +87,6 @@ class KernelState(Enum):
     BUSY = "busy"
     UNRESPONSIVE = "unresponsive"
     FAILED = "failed"
-    RESTARTING = "restarting"
 
 @dataclass
 class KernelInfo:
@@ -80,13 +96,9 @@ class KernelInfo:
     last_health_check: datetime = field(default_factory=datetime.now)
     current_operation: Optional[str] = None
     failure_count: int = 0
-    websocket: Optional[object] = None
     
     def is_available(self) -> bool:
         return self.state == KernelState.HEALTHY
-    
-    def is_stale(self) -> bool:
-        return datetime.now() - self.last_used > timedelta(seconds=KERNEL_TIMEOUT)
     
     def needs_health_check(self) -> bool:
         return datetime.now() - self.last_health_check > timedelta(seconds=KERNEL_HEALTH_CHECK_INTERVAL)
@@ -184,13 +196,15 @@ class KernelPool:
     async def _get_existing_kernel(self) -> Optional[str]:
         """Try to get kernel ID from existing file"""
         try:
-            if os.path.exists(KERNEL_ID_FILE_PATH):
-                with open(KERNEL_ID_FILE_PATH, 'r') as file:
-                    kernel_id = file.read().strip()
-                    if kernel_id and await self._check_kernel_health(kernel_id):
-                        return kernel_id
+            async with aiofiles.open(KERNEL_ID_FILE_PATH, mode='r') as f:
+                kernel_id = (await f.read()).strip()
+                if kernel_id and await self._check_kernel_health(kernel_id):
+                    return kernel_id
+        except FileNotFoundError:
+            # This is a normal case if the server is starting for the first time.
+            pass
         except Exception as e:
-            logger.warning(f"Could not read existing kernel: {e}")
+            logger.warning(f"Could not read or validate existing kernel from {KERNEL_ID_FILE_PATH}: {e}")
         return None
     
     async def _create_new_kernel(self) -> Optional[str]:
@@ -338,7 +352,7 @@ async def execute_with_retry(command: str, ctx: Context, max_attempts: int = MAX
             # Get kernel from pool
             kernel_id = await kernel_pool.get_available_kernel()
             if not kernel_id:
-                raise Exception("No available kernels in pool")
+                raise NoKernelAvailableError("No available kernels in pool")
             
             try:
                 result = await _execute_on_kernel(kernel_id, command, ctx)
@@ -431,7 +445,7 @@ async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
                 elif msg_type == "error":
                     error_traceback = "\n".join(content.get("traceback", []))
                     logger.error(f"Execution error on kernel {kernel_id} for msg_id {sent_msg_id}:\n{error_traceback}")
-                    raise Exception(f"Execution Error:\n{error_traceback}")
+                    raise KernelExecutionError(f"Execution Error:\n{error_traceback}")
 
                 elif msg_type == "status" and content.get("execution_state") == "idle":
                     execution_complete = True
@@ -441,18 +455,18 @@ async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
                 elapsed = time.time() - start_time
                 timeout_msg = f"Execution timed out after {elapsed:.0f} seconds on kernel {kernel_id}"
                 logger.error(f"Execution timed out for msg_id: {sent_msg_id}")
-                raise Exception(timeout_msg)
+                raise KernelTimeoutError(timeout_msg)
 
             return "".join(final_output_lines) if final_output_lines else "[Execution successful with no output]"
 
     except websockets.exceptions.ConnectionClosed as e:
         error_msg = f"WebSocket connection to kernel {kernel_id} closed unexpectedly: {e}"
         logger.error(error_msg)
-        raise Exception(error_msg)
+        raise KernelError(error_msg)
     except websockets.exceptions.WebSocketException as e:
         error_msg = f"WebSocket error with kernel {kernel_id}: {e}"
         logger.error(error_msg)
-        raise Exception(error_msg)
+        raise KernelError(error_msg)
     except Exception as e:
         logger.error(f"Unexpected error during execution on kernel {kernel_id}: {e}", exc_info=True)
         raise e
