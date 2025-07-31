@@ -5,7 +5,7 @@ Thank you for your interest in contributing to CodeRunner! We welcome contributi
 ## Getting Started
 
 1. Fork the repository
-2. Clone your fork: `git clone https://github.com/BandarLabs/coderunner.git`
+2. Clone your fork: `git clone https://github.com/instavm/coderunner.git`
 3. Create a new branch: `git checkout -b feature/your-feature-name`
 4. Make your changes
 5. Test your changes thoroughly

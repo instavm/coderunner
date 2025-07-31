@@ -1,8 +1,8 @@
 
 <div align="center">
 
-[![Start](https://img.shields.io/github/stars/BandarLabs/coderunner?color=yellow&style=flat&label=%E2%AD%90%20stars)](https://github.com/BandarLabs/coderunner/stargazers)
-[![License](http://img.shields.io/:license-Apache%202.0-green.svg?style=flat)](https://github.com/BandarLabs/coderunner/blob/master/LICENSE)
+[![Start](https://img.shields.io/github/stars/instavm/coderunner?color=yellow&style=flat&label=%E2%AD%90%20stars)](https://github.com/instavm/coderunner/stargazers)
+[![License](http://img.shields.io/:license-Apache%202.0-green.svg?style=flat)](https://github.com/instavm/coderunner/blob/master/LICENSE)
 </div>
 
 # CodeRunner: Run AI Generated Code Locally
@@ -27,7 +27,7 @@ CodeRunner is an MCP (Model Context Protocol) server that executes AI-generated 
 **Prerequisites:** Mac with macOS and Apple Silicon (M1/M2/M3/M4), Python 3.10+
 
 ```bash
-git clone https://github.com/BandarLabs/coderunner.git
+git clone https://github.com/instavm/coderunner.git
 cd coderunner
 chmod +x install.sh
 sudo ./install.sh
