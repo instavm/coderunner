@@ -28,7 +28,7 @@ then
     container --version
     current_version=$(container --version | awk '{print $4}')
     echo $current_version
-    target_version=$(echo $download_url | awk -F'/' '{print $6}' | awk -F'-' '{print $2}')
+    target_version=$(echo $download_url | awk -F'/' '{print $8}')
 
 
     if [ "$current_version" != "$target_version" ]; then
