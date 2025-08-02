@@ -19,18 +19,29 @@ else
   echo "✅ macOS system detected."
 fi
 
+download_url="https://github.com/apple/container/releases/download/0.3.0/container-0.3.0-installer-signed.pkg"
+
 # Check if container is installed and display its version
 if command -v container &> /dev/null
 then
     echo "Apple 'container' tool detected. Current version:"
     container --version
+    current_version=$(container --version | awk '{print $4}')
+    echo $current_version
+    target_version=$(echo $download_url | awk -F'/' '{print $6}' | awk -F'-' '{print $2}')
+
+
+    if [ "$current_version" != "$target_version" ]; then
+        echo "Consider updating to version $target_version. Download it here: $download_url"
+    fi
+
     echo "Stopping any running Apple 'container' processes..."
 else
     echo "Apple 'container' tool not detected. Proceeding with installation..."
 
     # Download and install the Apple 'container' tool
     echo "Downloading Apple 'container' tool..."
-    curl -Lo container-installer.pkg https://github.com/apple/container/releases/download/0.2.0/container-0.2.0-installer-signed.pkg
+    curl -Lo container-installer.pkg "$download_url"
 
     echo "Installing Apple 'container' tool..."
     sudo installer -pkg container-installer.pkg -target /
