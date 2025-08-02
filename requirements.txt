@@ -1,4 +1,6 @@
 
+duckdb
+
 # Core Jupyter Server
 jupyter-server
 

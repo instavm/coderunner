@@ -96,10 +96,10 @@ class KernelInfo:
     last_health_check: datetime = field(default_factory=datetime.now)
     current_operation: Optional[str] = None
     failure_count: int = 0
-    
+
     def is_available(self) -> bool:
         return self.state == KernelState.HEALTHY
-    
+
     def needs_health_check(self) -> bool:
         return datetime.now() - self.last_health_check > timedelta(seconds=KERNEL_HEALTH_CHECK_INTERVAL)
 
@@ -110,21 +110,21 @@ class KernelPool:
         self.busy_kernels: Set[str] = set()
         self._initialized = False
         self._health_check_task: Optional[asyncio.Task] = None
-        
+
     async def initialize(self):
         """Initialize the kernel pool with minimum number of kernels"""
         if self._initialized:
             return
-            
+
         async with self.lock:
             logger.info("Initializing kernel pool...")
-            
+
             # Try to use existing kernel first
             existing_kernel = await self._get_existing_kernel()
             if existing_kernel:
                 self.kernels[existing_kernel] = KernelInfo(kernel_id=existing_kernel)
                 logger.info(f"Added existing kernel to pool: {existing_kernel}")
-            
+
             # Create additional kernels to reach minimum
             while len(self.kernels) < MIN_KERNELS:
                 kernel_id = await self._create_new_kernel()
@@ -134,17 +134,17 @@ class KernelPool:
                 else:
                     logger.warning("Failed to create minimum number of kernels")
                     break
-            
+
             self._initialized = True
             # Start health check background task
             self._health_check_task = asyncio.create_task(self._health_check_loop())
             logger.info(f"Kernel pool initialized with {len(self.kernels)} kernels")
-    
+
     async def get_available_kernel(self) -> Optional[str]:
         """Get an available kernel from the pool"""
         if not self._initialized:
             await self.initialize()
-        
+
         async with self.lock:
             # Find healthy, available kernel
             for kernel_id, kernel_info in self.kernels.items():
@@ -154,7 +154,7 @@ class KernelPool:
                     kernel_info.last_used = datetime.now()
                     logger.info(f"Assigned kernel {kernel_id} to operation")
                     return kernel_id
-            
+
             # No available kernels, try to create a new one if under limit
             if len(self.kernels) < MAX_KERNELS:
                 kernel_id = await self._create_new_kernel()
@@ -164,23 +164,23 @@ class KernelPool:
                     self.busy_kernels.add(kernel_id)
                     logger.info(f"Created and assigned new kernel: {kernel_id}")
                     return kernel_id
-            
+
             logger.warning("No available kernels in pool")
             return None
-    
+
     async def release_kernel(self, kernel_id: str, failed: bool = False):
         """Release a kernel back to the pool"""
         async with self.lock:
             if kernel_id in self.busy_kernels:
                 self.busy_kernels.remove(kernel_id)
-            
+
             if kernel_id in self.kernels:
                 kernel_info = self.kernels[kernel_id]
                 if failed:
                     kernel_info.failure_count += 1
                     kernel_info.state = KernelState.FAILED
                     logger.warning(f"Kernel {kernel_id} marked as failed (failures: {kernel_info.failure_count})")
-                    
+
                     # Remove failed kernel if it has too many failures
                     if kernel_info.failure_count >= MAX_RETRY_ATTEMPTS:
                         await self._remove_kernel(kernel_id)
@@ -192,7 +192,7 @@ class KernelPool:
                     kernel_info.state = KernelState.HEALTHY
                     kernel_info.current_operation = None
                     logger.info(f"Released kernel {kernel_id} back to pool")
-    
+
     async def _get_existing_kernel(self) -> Optional[str]:
         """Try to get kernel ID from existing file"""
         try:
@@ -206,7 +206,7 @@ class KernelPool:
         except Exception as e:
             logger.warning(f"Could not read or validate existing kernel from {KERNEL_ID_FILE_PATH}: {e}")
         return None
-    
+
     async def _create_new_kernel(self) -> Optional[str]:
         """Create a new Jupyter kernel"""
         try:
@@ -226,7 +226,7 @@ class KernelPool:
         except Exception as e:
             logger.error(f"Error creating kernel: {e}")
         return None
-    
+
     async def _remove_kernel(self, kernel_id: str):
         """Remove and shutdown a kernel"""
         try:
@@ -238,12 +238,12 @@ class KernelPool:
             logger.info(f"Removed kernel: {kernel_id}")
         except Exception as e:
             logger.warning(f"Error removing kernel {kernel_id}: {e}")
-        
+
         if kernel_id in self.kernels:
             del self.kernels[kernel_id]
         if kernel_id in self.busy_kernels:
             self.busy_kernels.remove(kernel_id)
-    
+
     async def _check_kernel_health(self, kernel_id: str) -> bool:
         """Check if a kernel is healthy by sending a simple command"""
         try:
@@ -256,7 +256,7 @@ class KernelPool:
                 # Send simple health check command
                 msg_id, request_json = create_jupyter_request("1+1")
                 await ws.send(request_json)
-                
+
                 # Wait for response with timeout
                 start_time = time.time()
                 while time.time() - start_time < 10:  # 10 second timeout for health check
@@ -264,7 +264,7 @@ class KernelPool:
                         message_str = await asyncio.wait_for(ws.recv(), timeout=2.0)
                         message_data = json.loads(message_str)
                         parent_msg_id = message_data.get("parent_header", {}).get("msg_id")
-                        
+
                         if parent_msg_id == msg_id:
                             msg_type = message_data.get("header", {}).get("msg_type")
                             if msg_type == "status" and message_data.get("content", {}).get("execution_state") == "idle":
@@ -275,7 +275,7 @@ class KernelPool:
         except Exception as e:
             logger.warning(f"Health check failed for kernel {kernel_id}: {e}")
             return False
-    
+
     async def _health_check_loop(self):
         """Background task to monitor kernel health"""
         while True:
@@ -291,7 +291,7 @@ class KernelPool:
                             else:
                                 kernel_info.state = KernelState.UNRESPONSIVE
                                 unhealthy_kernels.append(kernel_id)
-                    
+
                     # Remove unhealthy kernels and create replacements
                     for kernel_id in unhealthy_kernels:
                         logger.warning(f"Removing unhealthy kernel: {kernel_id}")
@@ -346,14 +346,14 @@ def create_jupyter_request(code: str) -> tuple[str, str]:
 async def execute_with_retry(command: str, ctx: Context, max_attempts: int = MAX_RETRY_ATTEMPTS) -> str:
     """Execute code with retry logic and exponential backoff"""
     last_error = None
-    
+
     for attempt in range(max_attempts):
         try:
             # Get kernel from pool
             kernel_id = await kernel_pool.get_available_kernel()
             if not kernel_id:
                 raise NoKernelAvailableError("No available kernels in pool")
-            
+
             try:
                 result = await _execute_on_kernel(kernel_id, command, ctx)
                 # Release kernel back to pool on success
@@ -363,7 +363,7 @@ async def execute_with_retry(command: str, ctx: Context, max_attempts: int = MAX
                 # Release kernel as failed
                 await kernel_pool.release_kernel(kernel_id, failed=True)
                 raise e
-                
+
         except Exception as e:
             last_error = e
             if attempt < max_attempts - 1:
@@ -372,7 +372,7 @@ async def execute_with_retry(command: str, ctx: Context, max_attempts: int = MAX
                 await asyncio.sleep(backoff_time)
             else:
                 logger.error(f"All {max_attempts} execution attempts failed. Last error: {e}")
-    
+
     return f"Error: Execution failed after {max_attempts} attempts. Last error: {str(last_error)}"
 
 async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
@@ -396,26 +396,26 @@ async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
             execution_complete = False
             start_time = time.time()
             last_activity = start_time
-            
+
             # Progress reporting for long operations
-            await ctx.report_progress(progress=f"Executing on kernel {kernel_id[:8]}...")
+            await ctx.report_progress(progress=10, message=f"Executing on kernel {kernel_id[:8]}...")
 
             while not execution_complete and (time.time() - start_time) < WEBSOCKET_TIMEOUT:
                 try:
                     # Adaptive timeout based on recent activity
                     current_time = time.time()
                     time_since_activity = current_time - last_activity
-                    
+
                     # Use shorter timeout if no recent activity, longer if active
                     recv_timeout = 30.0 if time_since_activity > 60 else 5.0
-                    
+
                     message_str = await asyncio.wait_for(jupyter_ws.recv(), timeout=recv_timeout)
                     last_activity = current_time
-                    
+
                 except asyncio.TimeoutError:
                     # Send periodic progress updates during long operations
                     elapsed = time.time() - start_time
-                    await ctx.report_progress(progress=f"Still executing... ({elapsed:.0f}s elapsed)")
+                    await ctx.report_progress(progress=30, message=f"Still executing... ({elapsed:.0f}s elapsed)")
                     continue
 
                 try:
@@ -423,7 +423,7 @@ async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
                 except json.JSONDecodeError:
                     logger.warning(f"Received invalid JSON from kernel {kernel_id}")
                     continue
-                    
+
                 parent_msg_id = message_data.get("parent_header", {}).get("msg_id")
 
                 if parent_msg_id != sent_msg_id:
@@ -436,12 +436,12 @@ async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
                     stream_text = content.get("text", "")
                     final_output_lines.append(stream_text)
                     # Stream output as progress
-                    await ctx.report_progress(progress=stream_text.strip())
+                    await ctx.report_progress(progress=50, message=stream_text.strip())
 
                 elif msg_type in ["execute_result", "display_data"]:
                     result_text = content.get("data", {}).get("text/plain", "")
                     final_output_lines.append(result_text)
-                    
+
                 elif msg_type == "error":
                     error_traceback = "\n".join(content.get("traceback", []))
                     logger.error(f"Execution error on kernel {kernel_id} for msg_id {sent_msg_id}:\n{error_traceback}")
@@ -449,7 +449,7 @@ async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
 
                 elif msg_type == "status" and content.get("execution_state") == "idle":
                     execution_complete = True
-                    await ctx.report_progress(progress="Execution completed")
+                    await ctx.report_progress(progress=100, message="Execution completed")
 
             if not execution_complete:
                 elapsed = time.time() - start_time
@@ -486,13 +486,13 @@ async def execute_python_code(command: str, ctx: Context) -> str:
     try:
         # Initialize kernel pool if not already done
         if not kernel_pool._initialized:
-            await ctx.report_progress(progress="Initializing kernel pool...")
+            await ctx.report_progress(progress=10, message="Initializing kernel pool...")
             await kernel_pool.initialize()
-        
+
         # Execute with retry logic
         result = await execute_with_retry(command, ctx)
         return result
-        
+
     except Exception as e:
         logger.error(f"Fatal error in execute_python_code: {e}", exc_info=True)
         return f"Error: Failed to execute code: {str(e)}"
