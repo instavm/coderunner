@@ -7,7 +7,7 @@
 
 # CodeRunner: Run AI Generated Code Locally
 
-CodeRunner is an MCP (Model Context Protocol) server that executes AI-generated code in a sandboxed environment on your Mac using Apple's native [containers](https://github.com/apple/container).
+CodeRunner is a cross-platform MCP (Model Context Protocol) server that executes AI-generated code in a secure, sandboxed environment. It supports macOS via Apple's native [containers](https://github.com/apple/container) and Linux/Windows via Docker.
 
 **Key use case:** Process your local files (videos, images, documents, data) with remote LLMs like Claude or ChatGPT without uploading your files to the cloud. The LLM generates code that runs locally on your machine to analyze, transform, or process your files.
 
@@ -24,18 +24,23 @@ CodeRunner is an MCP (Model Context Protocol) server that executes AI-generated 
 
 ## Quick Start
 
-**Prerequisites:** Mac with macOS and Apple Silicon (M1/M2/M3/M4), Python 3.10+
+**Prerequisites:**
+*   **For macOS:** Apple Silicon (M1/M2/M3/M4) and the [Apple Container](https://github.com/apple/container/releases) tool installed.
+*   **For Linux/Windows:** [Docker](https://docs.docker.com/get-docker/) installed and running.
 
 ```bash
 git clone https://github.com/instavm/coderunner.git
 cd coderunner
 chmod +x install.sh
-sudo ./install.sh
+./install.sh
 ```
 
-MCP server will be available at: http://coderunner.local:8222/mcp
+The script will detect your operating system and set up CodeRunner accordingly.
 
-**Install required packages** (use virtualenv and note the python path):
+*   **On macOS:** The MCP server will be available at `http://coderunner.local:8222/mcp`
+*   **On Linux/Windows:** The MCP server will be available at `http://localhost:8222/mcp`
+
+**Install required packages for examples:**
 ```bash
 pip install -r examples/requirements.txt
 ```
@@ -169,11 +174,13 @@ Code runs in an isolated container with VM-level isolation. Your host system and
 From [@apple/container](https://github.com/apple/container/blob/main/docs/technical-overview.md):
 >Each container has the isolation properties of a full VM, using a minimal set of core utilities and dynamic libraries to reduce resource utilization and attack surface.
 
+On Linux and Windows, CodeRunner uses Docker for similar containerization and security benefits.
+
 ## Architecture
 
 CodeRunner consists of:
-- **Sandbox Container:** Isolated execution environment with Jupyter kernel
-- **MCP Server:** Handles communication between AI models and the sandbox
+- **Sandbox Container:** Isolated execution environment (Apple Container or Docker) with a Jupyter kernel.
+- **MCP Server:** Handles communication between AI models and the sandbox.
 
 ## Examples
 
