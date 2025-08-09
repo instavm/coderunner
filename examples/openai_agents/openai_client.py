@@ -3,7 +3,7 @@ import socket
 
 
 from agents import Agent, Runner, gen_trace_id, trace
-from agents.mcp import MCPServer, MCPServerSse
+from agents.mcp import MCPServer, MCPServerStreamableHttp
 from agents.model_settings import ModelSettings
 
 
@@ -37,7 +37,7 @@ def resolve_with_system_dns(hostname):
 async def main():
     hostname = "coderunner.local"
     address = resolve_with_system_dns(hostname)
-    async with MCPServerSse(
+    async with MCPServerStreamableHttp(
         name="SSE Python Server",
         params={
             "url": f"http://{address}:8222/mcp",
