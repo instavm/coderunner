@@ -161,6 +161,15 @@ pip install -r examples/requirements.txt
 </details>
 
 
+### Option 5: Coderunner-UI (Offline AI Workspace)
+[Coderunner-UI](https://github.com/instavm/coderunner-ui) is our own offline AI workspace tool designed for full privacy and local processing.
+
+<details>
+<summary>coderunner-ui</summary>
+
+![coderunner-ui](images/coderunnerui.jpg)
+
+</details>
 
 ## Security
 
