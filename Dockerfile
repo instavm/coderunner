@@ -97,5 +97,11 @@ RUN npm install playwright@1.53.0 -g
 RUN npx playwright@1.53.0 install
 
 
+# Create a non-root user
+RUN useradd -ms /bin/bash coderunner
+
+# Switch to the non-root user
+USER coderunner
+
 # Use the entrypoint script
 ENTRYPOINT ["/entrypoint.sh"]
