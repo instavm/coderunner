@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  coderunner:
+    image: instavm/coderunner:docker-latest
+    container_name: coderunner
+    ports:
+      - "8222:8222"
+    volumes:
+      - ./uploads:/app/uploads
+    environment:
+      - FASTMCP_HOST=0.0.0.0
+      - FASTMCP_PORT=8222
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8222/mcp"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  uploads:
+    driver: local
