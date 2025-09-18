@@ -1,77 +1,89 @@
 #!/bin/bash
 
+# --- Helper Functions ---
+
+# Function to check if a command exists
+command_exists() {
+  command -v "$1" &> /dev/null
+}
+
 # Function to get current macOS version
 get_macos_version() {
   sw_vers -productVersion | awk -F. '{print $1 "." $2}'
 }
 
-# Check the system type
-if [[ "$OSTYPE" != "darwin"* ]]; then
-  echo "❌ This script is intended for macOS systems only. Exiting."
-  exit 1
-fi
+# --- Main Installation Logic ---
 
-# Check macOS version
-macos_version=$(get_macos_version)
-if (( $(echo "$macos_version < 26.0" | bc -l) )); then
-  echo "Warning: Your macOS version is $macos_version. Version 26.0 or later is recommended. Some features of 'container' might not work properly."
-else
+echo "Starting CodeRunner Setup..."
+
+# --- macOS Specific Setup ---
+if [[ "$OSTYPE" == "darwin"* ]]; then
   echo "✅ macOS system detected."
-fi
 
-download_url="https://github.com/apple/container/releases/download/0.3.0/container-0.3.0-installer-signed.pkg"
+  # Check macOS version
+  macos_version=$(get_macos_version)
+  if (( $(echo "$macos_version < 26.0" | bc -l) )); then
+    echo "⚠️ Warning: Your macOS version is $macos_version. Version 26.0 or later is recommended for Apple Container."
+  fi
 
-# Check if container is installed and display its version
-if command -v container &> /dev/null
-then
-    echo "Apple 'container' tool detected. Current version:"
+  # Check for Apple Container tool
+  if command_exists container; then
+    echo "✅ Apple 'container' tool detected."
     container --version
-    current_version=$(container --version | awk '{print $4}')
-    echo $current_version
-    target_version=$(echo $download_url | awk -F'/' '{print $8}')
+  else
+    echo "❌ Apple 'container' tool not found."
+    echo "Please install it from: https://github.com/apple/container/releases"
+    exit 1
+  fi
 
+  echo "Starting Apple Container services..."
+  container system start
+  sudo container system dns create local
+  container system dns default set local
 
-    if [ "$current_version" != "$target_version" ]; then
-        echo "Consider updating to version $target_version. Download it here: $download_url"
-    fi
+  echo "Pulling the latest image for Apple Container..."
+  container image pull instavm/coderunner
 
-    echo "Stopping any running Apple 'container' processes..."
+  echo "→ Ensuring coderunner assets directory exists..."
+  ASSETS_SRC="$HOME/.coderunner/assets"
+  mkdir -p "$ASSETS_SRC"
+
+  echo "🚀 Starting CodeRunner container..."
+  container run --volume "$ASSETS_SRC:/app/uploads" --name coderunner --detach --rm --cpus 8 --memory 4g instavm/coderunner
+
+  echo "✅ Setup complete! MCP server is available at http://coderunner.local:8222/mcp"
+
+# --- Docker-based Setup for Linux/Other ---
 else
-    echo "Apple 'container' tool not detected. Proceeding with installation..."
+  echo "✅ Non-macOS system detected. Setting up with Docker."
 
-    # Download and install the Apple 'container' tool
-    echo "Downloading Apple 'container' tool..."
-    curl -Lo container-installer.pkg "$download_url"
+  # Check for Docker
+  if ! command_exists docker; then
+    echo "❌ Docker is not installed. Please install Docker to continue."
+    echo "Visit: https://docs.docker.com/get-docker/"
+    exit 1
+  fi
 
-    echo "Installing Apple 'container' tool..."
-    sudo installer -pkg container-installer.pkg -target /
+  echo "✅ Docker is installed."
+
+  # Check if Docker daemon is running
+  if ! docker info &> /dev/null; then
+    echo "❌ Docker daemon is not running. Please start Docker and re-run this script."
+    exit 1
+  fi
+
+  echo "Pulling the latest image from Docker Hub..."
+  docker pull instavm/coderunner
+
+  echo "→ Ensuring coderunner assets directory exists..."
+  ASSETS_SRC="$HOME/.coderunner/assets"
+  mkdir -p "$ASSETS_SRC"
+
+  echo "🚀 Starting CodeRunner container using Docker..."
+  docker run -d --rm --name coderunner \
+    -p 8222:8222 \
+    -v "$ASSETS_SRC:/app/uploads" \
+    instavm/coderunner
+
+  echo "✅ Setup complete! MCP server is available at http://localhost:8222/mcp"
 fi
-
-echo "Starting the Sandbox Container..."
-container system start
-
-echo "Setting up local network domain..."
-
-# Run the commands for setting up the local network
-echo "Running: sudo container system dns create local"
-sudo container system dns create local
-
-echo "Running: container system dns default set local"
-container system dns default set local
-
-echo "Starting the Sandbox Container..."
-container system start
-
-
-echo "Pulling the latest image: instavm/coderunner"
-container image pull instavm/coderunner
-
-echo "→ Ensuring coderunner assets directory…"
-ASSETS_SRC="$HOME/.coderunner/assets"
-mkdir -p "$ASSETS_SRC"
-
-# Run the command to start the sandbox container
-echo "Running: container run --name coderunner --detach --rm --cpus 8 --memory 4g instavm/coderunner"
-container run  --volume "$ASSETS_SRC:/app/uploads" --name coderunner --detach --rm --cpus 8 --memory 4g instavm/coderunner
-
-echo "✅ Setup complete. MCP server is available at http://coderunner.local:8222/mcp"
