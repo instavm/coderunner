@@ -172,7 +172,7 @@ class SessionManager:
         
         try:
             # Import here to avoid circular imports
-            from server import kernel_pool
+            from .kernel_pool import kernel_pool
             
             # Release kernel back to pool
             await kernel_pool.release_kernel(session.kernel_id)
