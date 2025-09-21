@@ -304,6 +304,86 @@ class KernelPool:
             except Exception as e:
                 logger.error(f"Error in health check loop: {e}")
 
+# Add session support methods to KernelPool
+async def execute_on_kernel_for_session(kernel_id: str, command: str) -> dict:
+    """Execute code on specific kernel for session management"""
+    jupyter_ws_url = f"{JUPYTER_WS_URL}/api/kernels/{kernel_id}/channels"
+    final_output_lines = []
+    error_output = []
+    sent_msg_id = None
+
+    try:
+        async with websockets.connect(
+            jupyter_ws_url,
+            ping_interval=WEBSOCKET_PING_INTERVAL,
+            ping_timeout=WEBSOCKET_PING_TIMEOUT,
+            close_timeout=10
+        ) as jupyter_ws:
+            sent_msg_id, jupyter_request_json = create_jupyter_request(command)
+            await jupyter_ws.send(jupyter_request_json)
+            logger.info(f"Sent execute_request to kernel {kernel_id} (msg_id: {sent_msg_id})")
+
+            execution_complete = False
+            start_time = time.time()
+            
+            while not execution_complete and (time.time() - start_time) < WEBSOCKET_TIMEOUT:
+                try:
+                    message_str = await asyncio.wait_for(jupyter_ws.recv(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    continue
+
+                try:
+                    message_data = json.loads(message_str)
+                except json.JSONDecodeError:
+                    continue
+
+                parent_msg_id = message_data.get("parent_header", {}).get("msg_id")
+                if parent_msg_id != sent_msg_id:
+                    continue
+
+                msg_type = message_data.get("header", {}).get("msg_type")
+                content = message_data.get("content", {})
+
+                if msg_type == "stream":
+                    stream_text = content.get("text", "")
+                    final_output_lines.append(stream_text)
+
+                elif msg_type in ["execute_result", "display_data"]:
+                    result_text = content.get("data", {}).get("text/plain", "")
+                    final_output_lines.append(result_text)
+
+                elif msg_type == "error":
+                    error_traceback = "\n".join(content.get("traceback", []))
+                    error_output.append(error_traceback)
+
+                elif msg_type == "status" and content.get("execution_state") == "idle":
+                    execution_complete = True
+
+            if not execution_complete:
+                elapsed = time.time() - start_time
+                raise KernelTimeoutError(f"Execution timed out after {elapsed:.0f} seconds")
+
+            execution_time = time.time() - start_time
+            
+            return {
+                "stdout": "".join(final_output_lines),
+                "stderr": "\n".join(error_output),
+                "execution_time": execution_time,
+                "success": len(error_output) == 0
+            }
+
+    except Exception as e:
+        logger.error(f"Error executing on kernel {kernel_id}: {e}")
+        return {
+            "stdout": "",
+            "stderr": str(e),
+            "execution_time": 0.0,
+            "success": False
+        }
+
+# Add methods to KernelPool class
+KernelPool.execute_on_kernel = lambda self, kernel_id, command: execute_on_kernel_for_session(kernel_id, command)
+
 # Global kernel pool instance
 kernel_pool = KernelPool()
 

@@ -75,8 +75,8 @@ ENV FASTMCP_HOST="0.0.0.0"
 ENV FASTMCP_PORT="8222"
 
 
-# Expose the FastAPI port
-EXPOSE 8222
+# Expose both MCP and REST API ports
+EXPOSE 8222 8223
 
 # Start the FastAPI application
 # CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "1", "--no-access-log"]
