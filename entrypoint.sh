@@ -47,8 +47,5 @@ npx -y playwright@1.53.0 run-server --port 3000 --host 0.0.0.0 &
 
 # exec python mcp_main.py
 
-# Start REST API server alongside MCP server
-uvicorn api.rest_server:app --host 0.0.0.0 --port 8223 --workers 1 --no-access-log &
-
-# Start FastAPI application (MCP server)
-exec uvicorn server:app --host 0.0.0.0 --port 8222 --workers 1 --no-access-log
+# Start unified application with both MCP and REST API
+exec uvicorn main:app --host 0.0.0.0 --port 8222 --workers 1 --no-access-log

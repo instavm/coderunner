@@ -55,13 +55,13 @@ class CodeRunner:
             # Create isolated fresh container
             try:
                 self.container_id, ports = ContainerManager.create_isolated_container()
-                self.base_url = f"http://localhost:{ports['rest']}"
-                logger.info(f"Created isolated container {self.container_id} on port {ports['rest']}")
+                self.base_url = f"http://localhost:{ports['mcp']}/api"
+                logger.info(f"Created isolated container {self.container_id} on port {ports['mcp']}")
             except Exception as e:
                 raise CodeRunnerError(f"Failed to create isolated container: {e}")
         else:
-            # Use shared container (backward compatibility)
-            self.base_url = base_url or "http://localhost:8223"
+            # Use shared container (backward compatibility) - now unified on port 8222
+            self.base_url = base_url or "http://localhost:8222/api"
             if auto_start:
                 try:
                     ContainerManager.ensure_running()
@@ -106,7 +106,7 @@ class CodeRunner:
                 try:
                     error_data = response.json()
                     error_detail = error_data.get("detail", error_detail)
-                except:
+                except (ValueError, requests.exceptions.JSONDecodeError):
                     error_detail = response.text
                     
                 raise ExecutionError(f"Execution failed: {error_detail}")
@@ -159,7 +159,7 @@ class CodeRunner:
                 try:
                     error_data = response.json()
                     error_detail = error_data.get("detail", error_detail)
-                except:
+                except (ValueError, requests.exceptions.JSONDecodeError):
                     error_detail = response.text
                     
                 raise ExecutionError(f"Async execution failed: {error_detail}")
@@ -250,7 +250,7 @@ class CodeRunner:
         try:
             response = self._session.get(f"{self.base_url}/sessions/{self.session_id}")
             return response.status_code == 200
-        except:
+        except requests.exceptions.RequestException:
             return False
             
     def list_sessions(self) -> Dict[str, Any]:
@@ -331,7 +331,7 @@ class CodeRunner:
                 try:
                     error_data = response.json()
                     error_detail = error_data.get("detail", error_detail)
-                except:
+                except (ValueError, requests.exceptions.JSONDecodeError):
                     error_detail = response.text
                     
                 raise SessionError(f"Failed to create session: {error_detail}")

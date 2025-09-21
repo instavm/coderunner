@@ -1,6 +1,6 @@
 """REST API server for CodeRunner - InstaVM compatible interface"""
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
@@ -69,7 +69,7 @@ async def health_check():
         session_count = len(session_manager.sessions)
         
         # Check kernel pool
-        from server import kernel_pool
+        from core.kernel_pool import kernel_pool
         kernel_status = {
             "total_kernels": len(kernel_pool.kernels),
             "available_kernels": len([k for k in kernel_pool.kernels.values() if k.is_available()]),
@@ -165,13 +165,70 @@ async def execute_command(request: CommandRequest):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+async def _execute_task_background(task_id: str, command: str, language: str, session_id: str):
+    """Background task to execute code asynchronously"""
+    try:
+        # Update status to running
+        async_tasks[task_id]["status"] = "running"
+        
+        # Get or create session
+        if not session_id:
+            session_id = await session_manager.create_session(language)
+        elif not await session_manager.get_session(session_id):
+            async_tasks[task_id]["status"] = "failed"
+            async_tasks[task_id]["error"] = "Session not found"
+            return
+        
+        # Execute command
+        result = await session_manager.execute_in_session(session_id, command)
+        
+        # Extract output from result
+        stdout = ""
+        stderr = ""
+        
+        if isinstance(result, dict):
+            if "stdout" in result:
+                stdout = result["stdout"]
+            elif "output" in result:
+                stdout = result["output"]
+            else:
+                stdout = str(result)
+                
+            if "stderr" in result:
+                stderr = result["stderr"]
+            elif "error" in result and result.get("error"):
+                stderr = str(result["error"])
+        else:
+            stdout = str(result)
+        
+        # Update task with results
+        async_tasks[task_id].update({
+            "status": "completed",
+            "result": {
+                "stdout": stdout,
+                "stderr": stderr,
+                "session_id": session_id
+            },
+            "completed_at": time.time()
+        })
+        
+    except Exception as e:
+        logger.error(f"Background task {task_id} failed: {e}")
+        async_tasks[task_id].update({
+            "status": "failed",
+            "error": str(e),
+            "completed_at": time.time()
+        })
+
+
 @app.post("/execute_async", response_model=AsyncExecutionResponse)
-async def execute_command_async(request: CommandRequest):
+async def execute_command_async(request: CommandRequest, background_tasks: BackgroundTasks):
     """
     Execute command asynchronously - InstaVM compatible interface
     
     Args:
         request: Command execution request
+        background_tasks: FastAPI background tasks
         
     Returns:
         Task ID for checking execution status
@@ -199,9 +256,14 @@ async def execute_command_async(request: CommandRequest):
             "error": None
         }
         
-        # TODO: Implement actual async execution with background tasks
-        # For now, just return the task ID
-        # In a full implementation, this would use Celery or similar
+        # Add background task for execution
+        background_tasks.add_task(
+            _execute_task_background,
+            task_id,
+            request.command,
+            request.language,
+            request.session_id
+        )
         
         return AsyncExecutionResponse(task_id=task_id, status="queued")
         
