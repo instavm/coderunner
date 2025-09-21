@@ -6,8 +6,10 @@ import time
 import os
 import platform
 import logging
+import uuid
+import socket
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -333,3 +335,158 @@ class ContainerManager:
                 "error": str(e),
                 "docker_available": cls.check_docker()
             }
+            
+    # Isolated container methods for fresh instances
+    
+    @classmethod
+    def create_isolated_container(cls) -> Tuple[str, Dict[str, int]]:
+        """
+        Create a fresh isolated container with unique ports
+        
+        Returns:
+            Tuple of (container_id, port_mapping)
+            
+        Raises:
+            RuntimeError: If container creation fails
+        """
+        if not cls.check_docker():
+            raise RuntimeError("Docker not available")
+            
+        # Generate unique container name
+        container_name = f"coderunner-{uuid.uuid4().hex[:8]}"
+        
+        # Find available ports
+        ports = cls._find_available_ports()
+        
+        try:
+            # Pull image if needed
+            cls._pull_image_if_needed()
+            
+            # Create isolated container
+            result = subprocess.run([
+                "docker", "run", "-d",
+                "--name", container_name,
+                "-p", f"{ports['rest']}:8223",
+                "-p", f"{ports['mcp']}:8222",
+                "-p", f"{ports['jupyter']}:8888", 
+                "-p", f"{ports['playwright']}:3000",
+                "--rm",  # Auto-remove when stopped
+                cls.DOCKER_IMAGE
+            ], capture_output=True, text=True, check=True)
+            
+            container_id = result.stdout.strip()
+            
+            # Wait for container to be healthy
+            cls._wait_for_isolated_health(ports['rest'])
+            
+            logger.info(f"Created isolated container {container_id} ({container_name})")
+            return container_id, ports
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to create isolated container: {e}")
+            raise RuntimeError(f"Failed to create isolated container: {e.stderr}")
+            
+    @classmethod
+    def _find_available_ports(cls) -> Dict[str, int]:
+        """Find available ports for isolated container"""
+        def is_port_available(port: int) -> bool:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                try:
+                    s.bind(('localhost', port))
+                    return True
+                except OSError:
+                    return False
+        
+        # Start from base ports and find available ones
+        base_ports = {
+            'rest': 8223,
+            'mcp': 8222,
+            'jupyter': 8888,
+            'playwright': 3000
+        }
+        
+        ports = {}
+        for service, base_port in base_ports.items():
+            # Try ports starting from base + 100 to avoid conflicts
+            for port in range(base_port + 100, base_port + 200):
+                if is_port_available(port):
+                    ports[service] = port
+                    break
+            else:
+                raise RuntimeError(f"No available port found for {service}")
+                
+        return ports
+        
+    @classmethod
+    def _wait_for_isolated_health(cls, rest_port: int, timeout: int = 120):
+        """Wait for isolated container to be healthy"""
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                response = requests.get(
+                    f"http://localhost:{rest_port}/health",
+                    timeout=3
+                )
+                if response.status_code == 200:
+                    return
+            except:
+                pass
+                
+            time.sleep(2)
+            
+        raise TimeoutError(f"Isolated container on port {rest_port} failed to become healthy")
+        
+    @classmethod
+    def remove_isolated_container(cls, container_id: str) -> bool:
+        """
+        Remove isolated container
+        
+        Args:
+            container_id: Container ID to remove
+            
+        Returns:
+            True if removed successfully
+        """
+        try:
+            # Stop container (will auto-remove due to --rm flag)
+            subprocess.run(
+                ["docker", "stop", container_id],
+                capture_output=True,
+                check=True
+            )
+            logger.info(f"Removed isolated container {container_id}")
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to remove container {container_id}: {e}")
+            return False
+            
+    @classmethod
+    def list_isolated_containers(cls) -> Dict[str, Dict]:
+        """List all isolated CodeRunner containers"""
+        try:
+            result = subprocess.run([
+                "docker", "ps", "-a",
+                "--filter", "name=coderunner-",
+                "--format", "table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}"
+            ], capture_output=True, text=True, check=True)
+            
+            containers = {}
+            lines = result.stdout.strip().split('\n')[1:]  # Skip header
+            
+            for line in lines:
+                if line.strip():
+                    parts = line.split('\t')
+                    if len(parts) >= 4:
+                        containers[parts[0]] = {
+                            "id": parts[0],
+                            "name": parts[1], 
+                            "status": parts[2],
+                            "ports": parts[3]
+                        }
+                        
+            return containers
+            
+        except subprocess.CalledProcessError:
+            return {}
