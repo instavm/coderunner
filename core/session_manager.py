@@ -82,7 +82,7 @@ class SessionManager:
         session_id = str(uuid.uuid4())
         
         # Import here to avoid circular imports
-        from server import kernel_pool
+        from core.kernel_pool import kernel_pool
         
         # Get dedicated kernel from existing pool
         try:
@@ -140,7 +140,7 @@ class SessionManager:
         processed_code = LanguageProcessor.preprocess_command(code, session.language)
         
         # Import here to avoid circular imports
-        from server import kernel_pool
+        from core.kernel_pool import kernel_pool
         
         try:
             # Execute using existing kernel pool with specific kernel

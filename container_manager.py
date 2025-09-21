@@ -61,11 +61,11 @@ class ContainerManager:
         """
         try:
             response = requests.get(
-                f"http://localhost:{cls.REST_PORT}/health", 
+                f"http://localhost:{cls.MCP_PORT}/api/health", 
                 timeout=3
             )
             return response.status_code == 200
-        except:
+        except requests.exceptions.RequestException:
             return False
             
     @classmethod
@@ -238,7 +238,7 @@ class ContainerManager:
                 print(result.stdout)
             if result.stderr:
                 print("STDERR:", result.stderr)
-        except:
+        except subprocess.CalledProcessError:
             print("   Could not retrieve container logs")
         
     @classmethod
@@ -366,7 +366,6 @@ class ContainerManager:
             result = subprocess.run([
                 "docker", "run", "-d",
                 "--name", container_name,
-                "-p", f"{ports['rest']}:8223",
                 "-p", f"{ports['mcp']}:8222",
                 "-p", f"{ports['jupyter']}:8888", 
                 "-p", f"{ports['playwright']}:3000",
@@ -377,7 +376,7 @@ class ContainerManager:
             container_id = result.stdout.strip()
             
             # Wait for container to be healthy
-            cls._wait_for_isolated_health(ports['rest'])
+            cls._wait_for_isolated_health(ports['mcp'])
             
             logger.info(f"Created isolated container {container_id} ({container_name})")
             return container_id, ports
@@ -418,24 +417,24 @@ class ContainerManager:
         return ports
         
     @classmethod
-    def _wait_for_isolated_health(cls, rest_port: int, timeout: int = 120):
+    def _wait_for_isolated_health(cls, mcp_port: int, timeout: int = 120):
         """Wait for isolated container to be healthy"""
         start_time = time.time()
         
         while time.time() - start_time < timeout:
             try:
                 response = requests.get(
-                    f"http://localhost:{rest_port}/health",
+                    f"http://localhost:{mcp_port}/api/health",
                     timeout=3
                 )
                 if response.status_code == 200:
                     return
-            except:
+            except requests.exceptions.RequestException:
                 pass
                 
             time.sleep(2)
             
-        raise TimeoutError(f"Isolated container on port {rest_port} failed to become healthy")
+        raise TimeoutError(f"Isolated container on port {mcp_port} failed to become healthy")
         
     @classmethod
     def remove_isolated_container(cls, container_id: str) -> bool:

@@ -38,13 +38,7 @@ setup(
     url="https://github.com/coderunner/coderunner",
     packages=find_packages(exclude=["tests*"]),
     include_package_data=True,
-    install_requires=[
-        "requests>=2.25.0",
-        "fastapi>=0.68.0",
-        "uvicorn[standard]>=0.15.0",
-        "pydantic>=1.8.0",
-        "beautifulsoup4>=4.9.0",
-    ],
+    install_requires=read_requirements(),
     extras_require={
         "cloud": [
             "instavm>=1.0.0"
