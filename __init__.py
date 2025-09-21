@@ -3,12 +3,15 @@ CodeRunner - Local code execution without API keys or cloud setup
 
 Zero-configuration local code execution with seamless cloud migration.
 
-Basic Usage:
+Basic Usage (Isolated Fresh Container):
     from coderunner import CodeRunner
     
-    runner = CodeRunner()  # Auto-starts container
+    runner = CodeRunner()  # Creates fresh isolated container
     result = runner.execute("print('Hello World!')")
     print(result['stdout'])  # "Hello World!"
+
+Shared Container (for backward compatibility):
+    runner = CodeRunner(isolated=False)  # Reuses shared container
 
 Cloud Migration:
     from coderunner.cloud import InstaVM as CodeRunner
@@ -32,26 +35,40 @@ logger = logging.getLogger(__name__)
 class CodeRunner:
     """Local code execution without API keys or cloud setup"""
     
-    def __init__(self, auto_start: bool = True, base_url: str = None):
+    def __init__(self, auto_start: bool = True, base_url: str = None, isolated: bool = True):
         """
         Initialize CodeRunner client
         
         Args:
             auto_start: Automatically start container if not running
             base_url: Custom REST API base URL (for testing)
+            isolated: Create isolated fresh container (True) or reuse shared (False)
         """
-        self.base_url = base_url or "http://localhost:8223"
-        self.session_id: Optional[str] = None
+        self.isolated = isolated
+        self.container_id: Optional[str] = None
         self._session = requests.Session()
         
         # Set reasonable timeouts
         self._session.timeout = 30
         
-        if auto_start:
+        if isolated and auto_start:
+            # Create isolated fresh container
             try:
-                ContainerManager.ensure_running()
+                self.container_id, ports = ContainerManager.create_isolated_container()
+                self.base_url = f"http://localhost:{ports['rest']}"
+                logger.info(f"Created isolated container {self.container_id} on port {ports['rest']}")
             except Exception as e:
-                raise CodeRunnerError(f"Failed to start CodeRunner: {e}")
+                raise CodeRunnerError(f"Failed to create isolated container: {e}")
+        else:
+            # Use shared container (backward compatibility)
+            self.base_url = base_url or "http://localhost:8223"
+            if auto_start:
+                try:
+                    ContainerManager.ensure_running()
+                except Exception as e:
+                    raise CodeRunnerError(f"Failed to start CodeRunner: {e}")
+        
+        self.session_id: Optional[str] = None
             
     def execute(self, code: str, language: str = "python", timeout: int = 30) -> Dict[str, Any]:
         """
@@ -207,6 +224,19 @@ class CodeRunner:
             finally:
                 self.session_id = None
                 
+    def cleanup(self):
+        """Cleanup resources including isolated container if created"""
+        self.close_session()
+        
+        if self.isolated and self.container_id:
+            try:
+                ContainerManager.remove_isolated_container(self.container_id)
+                logger.info(f"Cleaned up isolated container {self.container_id}")
+            except Exception as e:
+                logger.warning(f"Error cleaning up container {self.container_id}: {e}")
+            finally:
+                self.container_id = None
+                
     def is_session_active(self) -> bool:
         """
         Check if current session is active (InstaVM compatible)
@@ -331,14 +361,39 @@ class CodeRunner:
         
     def get_container_status(self) -> Dict[str, Any]:
         """Get container status information"""
-        return ContainerManager.get_container_status()
+        if self.isolated and self.container_id:
+            # For isolated containers, get specific status
+            containers = ContainerManager.list_isolated_containers()
+            container_info = containers.get(self.container_id, {})
+            return {
+                "isolated": True,
+                "container_id": self.container_id,
+                "base_url": self.base_url,
+                **container_info
+            }
+        else:
+            # For shared container, get standard status
+            status = ContainerManager.get_container_status()
+            status["isolated"] = False
+            return status
+            
+    def is_isolated(self) -> bool:
+        """Check if this instance uses an isolated container"""
+        return self.isolated
+        
+    def get_container_id(self) -> Optional[str]:
+        """Get the container ID (for isolated containers)"""
+        return self.container_id
         
     # Context manager support (InstaVM compatible)
     def __enter__(self):
         return self
         
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close_session()
+        if self.isolated:
+            self.cleanup()  # Cleanup isolated container
+        else:
+            self.close_session()  # Just close session for shared container
 
 
 # Import cloud migration support
