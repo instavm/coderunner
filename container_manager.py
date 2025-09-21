@@ -18,7 +18,6 @@ class ContainerManager:
     """Manage CodeRunner Docker container lifecycle"""
     
     CONTAINER_NAME = "coderunner"
-    REST_PORT = 8223
     MCP_PORT = 8222
     JUPYTER_PORT = 8888
     PLAYWRIGHT_PORT = 3000
@@ -175,7 +174,6 @@ class ContainerManager:
             subprocess.run([
                 "docker", "run", "-d",
                 "--name", cls.CONTAINER_NAME,
-                "-p", f"{cls.REST_PORT}:8223",
                 "-p", f"{cls.MCP_PORT}:8222", 
                 "-p", f"{cls.JUPYTER_PORT}:8888",
                 "-p", f"{cls.PLAYWRIGHT_PORT}:3000",

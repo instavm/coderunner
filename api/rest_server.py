@@ -37,6 +37,7 @@ app.add_middleware(
 )
 
 # Async task storage (simple in-memory for now)
+# TODO: Replace with persistent storage (Redis/database) for production to survive server restarts
 async_tasks: Dict[str, Dict[str, Any]] = {}
 
 
@@ -69,7 +70,7 @@ async def health_check():
         session_count = len(session_manager.sessions)
         
         # Check kernel pool
-        from core.kernel_pool import kernel_pool
+        from ..core.kernel_pool import kernel_pool
         kernel_status = {
             "total_kernels": len(kernel_pool.kernels),
             "available_kernels": len([k for k in kernel_pool.kernels.values() if k.is_available()]),
