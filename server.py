@@ -9,7 +9,8 @@ import zipfile
 import pathlib
 import time
 import uuid
-from typing import Dict, Optional, Set
+import subprocess
+from typing import Dict, Optional, Set, List, Any
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime, timedelta
@@ -67,6 +68,381 @@ def resolve_with_system_dns(hostname):
         return None
 
 PLAYWRIGHT_WS_URL =f"ws://127.0.0.1:3000/"
+
+# --- UNIVERSAL NPX MCP BRIDGE ---
+
+@dataclass
+class MCPServer:
+    """Represents a stdio-based MCP server"""
+    name: str
+    command: List[str]
+    process: Optional[subprocess.Popen] = None
+    tools: List[Dict[str, Any]] = field(default_factory=list)
+    resources: List[Dict[str, Any]] = field(default_factory=list)
+    prompts: List[Dict[str, Any]] = field(default_factory=list)
+
+class UniversalMCPBridge:
+    """
+    Universal bridge to expose any stdio-based MCP server via HTTP.
+
+    This class allows you to run any NPX-based MCP server and expose its tools
+    through your existing FastMCP HTTP endpoint.
+
+    Example:
+        bridge = UniversalMCPBridge()
+        await bridge.add_server("filesystem", ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/path"])
+        result = await bridge.call_tool("filesystem", "read_file", {"path": "/path/file.txt"})
+    """
+
+    def __init__(self):
+        self.servers: Dict[str, MCPServer] = {}
+        self.pending_requests: Dict[str, asyncio.Future] = {}
+        self.reader_tasks: Dict[str, asyncio.Task] = {}
+
+    async def add_server(self, name: str, command: List[str]) -> bool:
+        """
+        Add and initialize an MCP server.
+
+        Args:
+            name: Unique name for this server
+            command: Command array (e.g., ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/path"])
+
+        Returns:
+            True if server started successfully
+        """
+        try:
+            logger.info(f"Starting MCP server '{name}' with command: {' '.join(command)}")
+
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1
+            )
+
+            server = MCPServer(name=name, command=command, process=process)
+            self.servers[name] = server
+
+            # Start reader task for this server
+            self.reader_tasks[name] = asyncio.create_task(self._read_responses(name))
+
+            # Initialize the server
+            init_response = await self._send_request(name, "initialize", {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "coderunner-bridge", "version": "1.0.0"}
+            })
+
+            if "error" in init_response:
+                logger.error(f"Failed to initialize server '{name}': {init_response['error']}")
+                return False
+
+            # Send initialized notification
+            await self._send_notification(name, "notifications/initialized")
+
+            # Discover capabilities
+            await self._discover_capabilities(name)
+
+            logger.info(f"Successfully initialized MCP server '{name}' with {len(server.tools)} tools")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to start MCP server '{name}': {e}")
+            return False
+
+    async def _read_responses(self, server_name: str):
+        """Background task to read responses from a server's stdout"""
+        server = self.servers.get(server_name)
+        if not server or not server.process:
+            return
+
+        loop = asyncio.get_event_loop()
+
+        while server.process.poll() is None:
+            try:
+                # Read line from stdout in executor to avoid blocking
+                line = await loop.run_in_executor(None, server.process.stdout.readline)
+
+                if not line:
+                    break
+
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    response = json.loads(line)
+                    msg_id = response.get("id")
+
+                    # Handle response to a request
+                    if msg_id and msg_id in self.pending_requests:
+                        future = self.pending_requests.pop(msg_id)
+                        if not future.done():
+                            future.set_result(response)
+
+                    # Handle notifications (no id field)
+                    elif "method" in response:
+                        logger.debug(f"Received notification from '{server_name}': {response.get('method')}")
+
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Invalid JSON from '{server_name}': {line[:100]}")
+
+            except Exception as e:
+                logger.error(f"Error reading from '{server_name}': {e}")
+                break
+
+    async def _send_request(self, server_name: str, method: str, params: Any) -> Dict:
+        """Send a JSON-RPC request to a server"""
+        server = self.servers.get(server_name)
+        if not server or not server.process:
+            return {"error": f"Server '{server_name}' not found or not running"}
+
+        msg_id = str(uuid.uuid4())
+        request = {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "method": method,
+            "params": params
+        }
+
+        # Create future for response
+        future = asyncio.Future()
+        self.pending_requests[msg_id] = future
+
+        # Send request
+        try:
+            request_json = json.dumps(request) + "\n"
+            server.process.stdin.write(request_json)
+            server.process.stdin.flush()
+
+            # Wait for response with timeout
+            response = await asyncio.wait_for(future, timeout=60.0)
+            return response
+
+        except asyncio.TimeoutError:
+            self.pending_requests.pop(msg_id, None)
+            return {"error": f"Request timeout for method '{method}'"}
+        except Exception as e:
+            self.pending_requests.pop(msg_id, None)
+            return {"error": f"Request failed: {str(e)}"}
+
+    async def _send_notification(self, server_name: str, method: str, params: Any = None):
+        """Send a JSON-RPC notification (no response expected)"""
+        server = self.servers.get(server_name)
+        if not server or not server.process:
+            return
+
+        notification = {
+            "jsonrpc": "2.0",
+            "method": method,
+        }
+        if params is not None:
+            notification["params"] = params
+
+        try:
+            notification_json = json.dumps(notification) + "\n"
+            server.process.stdin.write(notification_json)
+            server.process.stdin.flush()
+        except Exception as e:
+            logger.error(f"Failed to send notification to '{server_name}': {e}")
+
+    async def _discover_capabilities(self, server_name: str):
+        """Discover tools, resources, and prompts from a server"""
+        server = self.servers.get(server_name)
+        if not server:
+            return
+
+        # List tools
+        tools_response = await self._send_request(server_name, "tools/list", {})
+        if "result" in tools_response:
+            server.tools = tools_response["result"].get("tools", [])
+            logger.info(f"Discovered {len(server.tools)} tools from '{server_name}'")
+
+        # List resources (optional)
+        resources_response = await self._send_request(server_name, "resources/list", {})
+        if "result" in resources_response:
+            server.resources = resources_response["result"].get("resources", [])
+            logger.info(f"Discovered {len(server.resources)} resources from '{server_name}'")
+
+        # List prompts (optional)
+        prompts_response = await self._send_request(server_name, "prompts/list", {})
+        if "result" in prompts_response:
+            server.prompts = prompts_response["result"].get("prompts", [])
+            logger.info(f"Discovered {len(server.prompts)} prompts from '{server_name}'")
+
+    async def call_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """
+        Call a tool on a specific server.
+
+        Args:
+            server_name: Name of the server
+            tool_name: Name of the tool to call
+            arguments: Tool arguments
+
+        Returns:
+            Tool result or error
+        """
+        response = await self._send_request(server_name, "tools/call", {
+            "name": tool_name,
+            "arguments": arguments
+        })
+
+        if "error" in response:
+            return {"error": response["error"]}
+
+        return response.get("result", {})
+
+    def list_all_tools(self) -> Dict[str, List[Dict]]:
+        """List all tools from all servers"""
+        all_tools = {}
+        for name, server in self.servers.items():
+            all_tools[name] = server.tools or []
+        return all_tools
+
+    async def shutdown(self):
+        """Shutdown all servers"""
+        for server in self.servers.values():
+            if server.process:
+                server.process.terminate()
+                try:
+                    server.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    server.process.kill()
+
+        # Cancel all reader tasks
+        for task in self.reader_tasks.values():
+            task.cancel()
+
+# Global bridge instance
+mcp_bridge = UniversalMCPBridge()
+
+# --- MCP BRIDGE CONFIGURATION ---
+
+# Configuration for NPX-based MCP servers to expose via HTTP
+# Add any NPX MCP server here with its command and optional environment variables
+MCP_BRIDGE_SERVERS = [
+    {
+        "name": "filesystem",
+        "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", str(SHARED_DIR)],
+        "description": "File system operations (read, write, list, etc.)",
+        "enabled": True
+    },
+    {
+        "name": "chrome-devtools",
+        "command": ["npx", "-y", "chrome-devtools-mcp@latest", "--headless=true"],
+        "description": "Chrome DevTools Protocol for browser automation and debugging (headless mode)",
+        "enabled": True
+    },
+    # Uncomment and configure as needed:
+    # {
+    #     "name": "github",
+    #     "command": ["npx", "-y", "@modelcontextprotocol/server-github"],
+    #     "description": "GitHub repository operations",
+    #     "enabled": bool(os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN"))  # Only enable if token is set
+    # },
+    # {
+    #     "name": "puppeteer",
+    #     "command": ["npx", "-y", "@modelcontextprotocol/server-puppeteer"],
+    #     "description": "Web scraping and browser automation",
+    #     "enabled": True
+    # },
+    # {
+    #     "name": "memory",
+    #     "command": ["npx", "-y", "@modelcontextprotocol/server-memory"],
+    #     "description": "Persistent memory across conversations",
+    #     "enabled": True
+    # },
+    # {
+    #     "name": "brave-search",
+    #     "command": ["npx", "-y", "@modelcontextprotocol/server-brave-search"],
+    #     "description": "Web search via Brave Search API",
+    #     "enabled": bool(os.getenv("BRAVE_API_KEY"))
+    # },
+]
+
+async def initialize_mcp_bridges():
+    """Initialize all enabled NPX-based MCP servers"""
+    logger.info("Initializing MCP bridge servers...")
+
+    initialized_count = 0
+    for config in MCP_BRIDGE_SERVERS:
+        if not config.get("enabled", True):
+            logger.info(f"Skipping disabled server: {config['name']}")
+            continue
+
+        success = await mcp_bridge.add_server(config["name"], config["command"])
+        if success:
+            logger.info(f"✅ Loaded MCP server: {config['name']} - {config.get('description', '')}")
+            initialized_count += 1
+        else:
+            logger.error(f"❌ Failed to load MCP server: {config['name']}")
+
+    logger.info(f"MCP bridge initialization complete: {initialized_count}/{len([c for c in MCP_BRIDGE_SERVERS if c.get('enabled', True)])} servers loaded")
+    return initialized_count
+
+def create_bridge_tool_wrapper(server_name: str, tool_name: str, tool_description: str):
+    """
+    Create a wrapper function for a bridged MCP tool.
+
+    This dynamically creates a function that can be registered with FastMCP
+    to expose tools from NPX-based MCP servers.
+    """
+    async def wrapper(**kwargs):
+        """Dynamically created wrapper for bridged MCP tool"""
+        try:
+            result = await mcp_bridge.call_tool(server_name, tool_name, kwargs)
+
+            if "error" in result:
+                return f"Error: {result['error']}"
+
+            # Extract text content from MCP response
+            content = result.get("content", [])
+            if isinstance(content, list) and len(content) > 0:
+                first_item = content[0]
+                if isinstance(first_item, dict):
+                    return first_item.get("text", str(result))
+            return str(result)
+
+        except Exception as e:
+            logger.error(f"Error calling bridged tool {server_name}.{tool_name}: {e}")
+            return f"Error: {str(e)}"
+
+    # Set function metadata for FastMCP
+    wrapper.__name__ = f"{server_name}_{tool_name}"
+    wrapper.__doc__ = f"[{server_name}] {tool_description}"
+
+    return wrapper
+
+async def register_bridge_tools():
+    """
+    Dynamically register all tools from all bridged MCP servers.
+
+    This function discovers all tools from the bridged servers and registers
+    them as FastMCP tools, making them available via the HTTP endpoint.
+    """
+    logger.info("Registering bridged MCP tools...")
+
+    all_tools = mcp_bridge.list_all_tools()
+    total_tools = 0
+
+    for server_name, tools in all_tools.items():
+        for tool in tools:
+            tool_name = tool["name"]
+            tool_description = tool.get("description", f"Tool from {server_name} server")
+
+            # Create wrapper function
+            wrapper = create_bridge_tool_wrapper(server_name, tool_name, tool_description)
+
+            # Register with FastMCP
+            mcp.tool()(wrapper)
+
+            logger.info(f"Registered: {server_name}_{tool_name}")
+            total_tools += 1
+
+    logger.info(f"Successfully registered {total_tools} bridged tools from {len(all_tools)} servers")
+    return total_tools
 
 # --- CUSTOM EXCEPTIONS ---
 
@@ -731,5 +1107,110 @@ async def get_skill_file(skill_name: str, filename: str) -> str:
     return header + content
 
 
+# --- STARTUP INITIALIZATION ---
+
+_bridge_initialized = False
+
+async def ensure_bridges_initialized():
+    """
+    Ensure MCP bridges are initialized (lazy initialization).
+    This is called on first request to avoid blocking module import.
+    """
+    global _bridge_initialized
+
+    if _bridge_initialized:
+        return
+
+    logger.info("Starting MCP bridge initialization...")
+
+    try:
+        bridge_count = await initialize_mcp_bridges()
+        if bridge_count > 0:
+            # Register all discovered tools
+            tool_count = await register_bridge_tools()
+            logger.info(f"MCP bridges ready: {bridge_count} servers, {tool_count} tools")
+        else:
+            logger.info("No MCP bridge servers configured or enabled")
+    except Exception as e:
+        logger.error(f"Failed to initialize MCP bridges: {e}")
+        # Continue even if bridges fail - the main functionality should still work
+
+    _bridge_initialized = True
+    logger.info("MCP bridge initialization complete!")
+
+
+# Add a tool to manually trigger bridge initialization
+@mcp.tool()
+async def initialize_bridges() -> str:
+    """
+    Initialize all configured NPX-based MCP server bridges.
+    This is called automatically on first use, but can be called manually if needed.
+
+    Returns:
+        Status message indicating how many servers and tools were initialized.
+    """
+    global _bridge_initialized
+
+    if _bridge_initialized:
+        all_tools = mcp_bridge.list_all_tools()
+        total_tools = sum(len(tools) for tools in all_tools.values())
+        return f"MCP bridges already initialized: {len(all_tools)} servers, {total_tools} tools"
+
+    await ensure_bridges_initialized()
+
+    all_tools = mcp_bridge.list_all_tools()
+    total_tools = sum(len(tools) for tools in all_tools.values())
+    return f"MCP bridges initialized successfully: {len(all_tools)} servers, {total_tools} tools"
+
+
+@mcp.tool()
+async def list_bridged_tools() -> str:
+    """
+    List all available tools from bridged NPX MCP servers.
+
+    Returns:
+        Formatted list of all bridged MCP servers and their tools.
+    """
+    if not _bridge_initialized:
+        await ensure_bridges_initialized()
+
+    all_tools = mcp_bridge.list_all_tools()
+
+    if not all_tools:
+        return "No MCP bridge servers configured. Edit MCP_BRIDGE_SERVERS in server.py to add NPX-based MCP servers."
+
+    result = "Bridged MCP Servers and Tools:\n\n"
+
+    for server_name, tools in all_tools.items():
+        # Find server description from config
+        server_desc = next(
+            (s.get("description", "") for s in MCP_BRIDGE_SERVERS if s["name"] == server_name),
+            ""
+        )
+
+        result += f"📦 {server_name}"
+        if server_desc:
+            result += f" - {server_desc}"
+        result += f"\n  {len(tools)} tool(s):\n"
+
+        for tool in tools:
+            tool_name = tool["name"]
+            tool_desc = tool.get("description", "No description")
+            result += f"  • {server_name}_{tool_name}: {tool_desc}\n"
+
+        result += "\n"
+
+    return result
+
+
 # Use the streamable_http_app as it's the modern standard
 app = mcp.streamable_http_app()
+
+
+# Add lifespan handler to initialize on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services when the app starts"""
+    logger.info("CodeRunner MCP Server starting up...")
+    await ensure_bridges_initialized()
+    logger.info("CodeRunner MCP Server ready!")
