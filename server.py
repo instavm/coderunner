@@ -22,6 +22,8 @@ from mcp.server.fastmcp import FastMCP, Context
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 import socket
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 # --- CONFIGURATION & SETUP ---
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -731,5 +733,199 @@ async def get_skill_file(skill_name: str, filename: str) -> str:
     return header + content
 
 
+# --- REST API ENDPOINTS FOR SANDBOX CLIENT COMPATIBILITY ---
+# These endpoints provide REST API access compatible with the instavm SDK client
+# allowing local execution without cloud API
+
+class MockContext:
+    """Mock context for REST API calls that don't have MCP context"""
+    async def report_progress(self, progress: int, message: str):
+        # Log progress instead of reporting through MCP
+        logger.info(f"Progress {progress}%: {message}")
+
+
 # Use the streamable_http_app as it's the modern standard
 app = mcp.streamable_http_app()
+
+# Add custom REST API endpoints compatible with instavm SDK client
+async def api_execute(request: Request):
+    """
+    REST API endpoint for executing Python code (compatible with InstaVM SDK).
+
+    Request body (JSON):
+        {
+            "command": "print('hello world')",
+            "session_id": "optional-ignored-for-local",
+            "language": "python",  // optional, only python supported
+            "timeout": 300  // optional, not used in local execution
+        }
+
+    Response (JSON):
+        {
+            "output": "hello world\\n",
+            "status": "success"
+        }
+    or
+        {
+            "output": "",
+            "error": "error message",
+            "status": "error"
+        }
+    """
+    try:
+        # Parse request body
+        body = await request.json()
+        command = body.get("command")
+
+        if not command:
+            return {
+                "output": "",
+                "error": "Missing 'command' field in request body",
+                "status": "error"
+            }
+
+        # Create mock context for progress reporting
+        ctx = MockContext()
+
+        # Execute the code
+        result = await execute_python_code(command, ctx)
+
+        # Check if result contains an error
+        if result.startswith("Error:"):
+            return JSONResponse({
+                "output": "",
+                "error": result,
+                "status": "error"
+            })
+
+        return JSONResponse({
+            "output": result,
+            "status": "success"
+        })
+
+    except Exception as e:
+        logger.error(f"Error in /execute endpoint: {e}", exc_info=True)
+        return JSONResponse({
+            "output": "",
+            "error": f"Error: {str(e)}",
+            "status": "error"
+        })
+
+
+async def api_browser_navigate(request: Request):
+    """
+    REST API endpoint for browser navigation (compatible with InstaVM SDK).
+
+    Request body (JSON):
+        {
+            "url": "https://example.com",
+            "session_id": "optional-ignored-for-local",
+            "wait_timeout": 30000  // optional
+        }
+
+    Response (JSON):
+        {
+            "status": "success",
+            "url": "https://example.com",
+            "title": "Example Domain"
+        }
+    or
+        {
+            "status": "error",
+            "error": "error message"
+        }
+    """
+    try:
+        # Parse request body
+        body = await request.json()
+        url = body.get("url")
+
+        if not url:
+            return JSONResponse({
+                "status": "error",
+                "error": "Missing 'url' field in request body"
+            })
+
+        # Navigate and get text
+        result = await navigate_and_get_all_visible_text(url)
+
+        # Check if result contains an error
+        if result.startswith("Error:"):
+            return JSONResponse({
+                "status": "error",
+                "error": result
+            })
+
+        return JSONResponse({
+            "status": "success",
+            "url": url,
+            "content": result,
+            "title": "Navigation successful"
+        })
+
+    except Exception as e:
+        logger.error(f"Error in /v1/browser/interactions/navigate endpoint: {e}", exc_info=True)
+        return JSONResponse({
+            "status": "error",
+            "error": f"Error: {str(e)}"
+        })
+
+
+async def api_browser_extract_content(request: Request):
+    """
+    REST API endpoint for extracting browser content (compatible with InstaVM SDK).
+
+    Request body (JSON):
+        {
+            "session_id": "optional-ignored-for-local",
+            "url": "https://example.com",  // required for local execution
+            "include_interactive": true,
+            "include_anchors": true,
+            "max_anchors": 50
+        }
+
+    Response (JSON):
+        {
+            "readable_content": {"content": "text content"},
+            "status": "success"
+        }
+    """
+    try:
+        # Parse request body
+        body = await request.json()
+        url = body.get("url")
+
+        if not url:
+            return JSONResponse({
+                "status": "error",
+                "error": "Missing 'url' field in request body (required for local execution)"
+            })
+
+        # Navigate and get text
+        result = await navigate_and_get_all_visible_text(url)
+
+        # Check if result contains an error
+        if result.startswith("Error:"):
+            return JSONResponse({
+                "status": "error",
+                "error": result
+            })
+
+        return JSONResponse({
+            "readable_content": {
+                "content": result
+            },
+            "status": "success"
+        })
+
+    except Exception as e:
+        logger.error(f"Error in /v1/browser/interactions/content endpoint: {e}", exc_info=True)
+        return JSONResponse({
+            "status": "error",
+            "error": f"Error: {str(e)}"
+        })
+
+# Add routes to the Starlette app
+app.add_route("/execute", api_execute, methods=["POST"])
+app.add_route("/v1/browser/interactions/navigate", api_browser_navigate, methods=["POST"])
+app.add_route("/v1/browser/interactions/content", api_browser_extract_content, methods=["POST"])

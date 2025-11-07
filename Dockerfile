@@ -100,7 +100,9 @@ EXPOSE 8222
 RUN apt-get --fix-broken install
 # Ensure Node.js, npm (and npx) are set up
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-RUN apt-get install -y nodejs
+RUN apt-get update \
+ && apt --fix-broken install -y \
+ && apt-get install -y nodejs
 
 
 
