@@ -335,6 +335,7 @@ class KernelPool:
 # Global kernel pool instance
 kernel_pool = KernelPool()
 
+
 # --- GRACEFUL SHUTDOWN ---
 
 _shutdown_event = asyncio.Event()
@@ -360,25 +361,6 @@ async def graceful_shutdown():
         logger.info("Graceful shutdown complete")
     except Exception as e:
         logger.error(f"Error during graceful shutdown: {e}")
-
-
-def handle_sigterm(signum, frame):
-    """Handle SIGTERM signal for graceful shutdown."""
-    logger.info(f"Received signal {signum}, initiating shutdown...")
-    # Schedule shutdown in the event loop
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(graceful_shutdown())
-    except RuntimeError:
-        # No running loop, we're probably not started yet
-        pass
-    # Allow uvicorn to handle the actual shutdown
-    sys.exit(0)
-
-
-# Register signal handlers
-signal.signal(signal.SIGTERM, handle_sigterm)
-signal.signal(signal.SIGINT, handle_sigterm)
 
 
 # --- HELPER FUNCTION ---
@@ -810,6 +792,12 @@ class MockContext:
 
 # Use the streamable_http_app as it's the modern standard
 app = mcp.streamable_http_app()
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """Handle application shutdown."""
+    await graceful_shutdown()
 
 # Add custom REST API endpoints compatible with instavm SDK client
 async def api_execute(request: Request):

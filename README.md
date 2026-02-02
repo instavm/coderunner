@@ -28,7 +28,8 @@ brew install instavm/cli/coderunner
 ```bash
 git clone https://github.com/instavm/coderunner.git
 cd coderunner
-./install.sh
+chmod +x install.sh
+sudo ./install.sh
 ```
 
 Server runs at: `http://coderunner.local:8222`
@@ -39,7 +40,7 @@ Server runs at: `http://coderunner.local:8222`
 
 Install the client (server must be running locally):
 ```bash
-pip install coderunner
+pip install git+https://github.com/instavm/coderunner.git
 ```
 
 ```python

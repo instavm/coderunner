@@ -61,37 +61,12 @@ name: broken-skill
     @pytest.mark.asyncio
     async def test_parse_valid_frontmatter(self, valid_frontmatter, tmp_path):
         """Parses valid frontmatter correctly."""
-        # Import here to avoid import issues
-        import sys
-        sys.path.insert(0, str(tmp_path.parent.parent))
+        from server import _parse_skill_frontmatter
 
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(valid_frontmatter)
 
-        # Inline implementation of parsing logic for testing
-        async def parse_frontmatter(file_path):
-            async with aiofiles.open(file_path, mode='r') as f:
-                content = await f.read()
-                frontmatter = []
-                in_frontmatter = False
-                for line in content.splitlines():
-                    if line.strip() == '---':
-                        if in_frontmatter:
-                            break
-                        else:
-                            in_frontmatter = True
-                            continue
-                    if in_frontmatter:
-                        frontmatter.append(line)
-
-                metadata = {}
-                for line in frontmatter:
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        metadata[key.strip()] = value.strip()
-                return metadata
-
-        result = await parse_frontmatter(skill_file)
+        result = await _parse_skill_frontmatter(skill_file)
 
         assert result["name"] == "pdf-text-replace"
         assert result["description"] == "Replace text in PDF forms"
@@ -101,68 +76,30 @@ name: broken-skill
     @pytest.mark.asyncio
     async def test_parse_no_frontmatter(self, no_frontmatter, tmp_path):
         """Returns empty dict when no frontmatter."""
+        from server import _parse_skill_frontmatter
+
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(no_frontmatter)
 
-        async def parse_frontmatter(file_path):
-            async with aiofiles.open(file_path, mode='r') as f:
-                content = await f.read()
-                frontmatter = []
-                in_frontmatter = False
-                for line in content.splitlines():
-                    if line.strip() == '---':
-                        if in_frontmatter:
-                            break
-                        else:
-                            in_frontmatter = True
-                            continue
-                    if in_frontmatter:
-                        frontmatter.append(line)
-
-                metadata = {}
-                for line in frontmatter:
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        metadata[key.strip()] = value.strip()
-                return metadata
-
-        result = await parse_frontmatter(skill_file)
+        result = await _parse_skill_frontmatter(skill_file)
         assert result == {}
 
     @pytest.mark.asyncio
     async def test_parse_empty_frontmatter(self, empty_frontmatter, tmp_path):
         """Returns empty dict for empty frontmatter."""
+        from server import _parse_skill_frontmatter
+
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(empty_frontmatter)
 
-        async def parse_frontmatter(file_path):
-            async with aiofiles.open(file_path, mode='r') as f:
-                content = await f.read()
-                frontmatter = []
-                in_frontmatter = False
-                for line in content.splitlines():
-                    if line.strip() == '---':
-                        if in_frontmatter:
-                            break
-                        else:
-                            in_frontmatter = True
-                            continue
-                    if in_frontmatter:
-                        frontmatter.append(line)
-
-                metadata = {}
-                for line in frontmatter:
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        metadata[key.strip()] = value.strip()
-                return metadata
-
-        result = await parse_frontmatter(skill_file)
+        result = await _parse_skill_frontmatter(skill_file)
         assert result == {}
 
     @pytest.mark.asyncio
     async def test_parse_handles_colons_in_value(self, tmp_path):
         """Handles colons in values correctly."""
+        from server import _parse_skill_frontmatter
+
         content = """---
 name: test-skill
 url: https://example.com:8080/path
@@ -171,29 +108,7 @@ url: https://example.com:8080/path
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(content)
 
-        async def parse_frontmatter(file_path):
-            async with aiofiles.open(file_path, mode='r') as f:
-                content = await f.read()
-                frontmatter = []
-                in_frontmatter = False
-                for line in content.splitlines():
-                    if line.strip() == '---':
-                        if in_frontmatter:
-                            break
-                        else:
-                            in_frontmatter = True
-                            continue
-                    if in_frontmatter:
-                        frontmatter.append(line)
-
-                metadata = {}
-                for line in frontmatter:
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        metadata[key.strip()] = value.strip()
-                return metadata
-
-        result = await parse_frontmatter(skill_file)
+        result = await _parse_skill_frontmatter(skill_file)
         assert result["url"] == "https://example.com:8080/path"
 
 
