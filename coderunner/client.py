@@ -122,7 +122,7 @@ class CodeRunner:
         try:
             response = self._client.get(f"{self.base_url}/health")
             return response.status_code == 200
-        except Exception:
+        except httpx.RequestError:
             return False
 
     def close(self):

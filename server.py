@@ -338,8 +338,6 @@ kernel_pool = KernelPool()
 
 # --- GRACEFUL SHUTDOWN ---
 
-_shutdown_event = asyncio.Event()
-
 
 async def graceful_shutdown():
     """Clean up kernels on shutdown."""
