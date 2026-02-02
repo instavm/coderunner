@@ -57,9 +57,26 @@ sleep 2
 
 # Start the container system (this is blocking and will wait for kernel download if needed)
 echo "Starting the Sandbox Container system (this may take a few minutes if downloading kernel)..."
-if ! container system start; then
-    echo "❌ Failed to start container system."
-    exit 1
+echo "Note: First run may take 5+ minutes to download the kernel image."
+
+# Use timeout to prevent indefinite blocking (10 minutes max)
+if command -v timeout &> /dev/null; then
+    if ! timeout 600 container system start; then
+        if [ $? -eq 124 ]; then
+            echo "❌ Container system start timed out after 10 minutes."
+            echo "This usually means the kernel download is taking too long."
+            echo "Try running manually: container system start"
+        else
+            echo "❌ Failed to start container system."
+        fi
+        exit 1
+    fi
+else
+    # timeout command not available (older macOS), run without timeout
+    if ! container system start; then
+        echo "❌ Failed to start container system."
+        exit 1
+    fi
 fi
 
 # Quick verification that system is ready

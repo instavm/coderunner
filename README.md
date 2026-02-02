@@ -21,8 +21,7 @@ CodeRunner runs Python code in an isolated container on your Mac using [Apple's 
 
 ### Homebrew (coming soon)
 ```bash
-brew tap instavm/tap
-brew install coderunner
+brew install instavm/cli/coderunner
 ```
 
 ### Manual

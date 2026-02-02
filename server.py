@@ -5,6 +5,8 @@ import binascii
 import json
 import logging
 import os
+import signal
+import sys
 import zipfile
 import pathlib
 import time
@@ -333,6 +335,50 @@ class KernelPool:
 # Global kernel pool instance
 kernel_pool = KernelPool()
 
+# --- GRACEFUL SHUTDOWN ---
+
+_shutdown_event = asyncio.Event()
+
+
+async def graceful_shutdown():
+    """Clean up kernels on shutdown."""
+    logger.info("Initiating graceful shutdown...")
+    try:
+        # Stop health check task if running
+        if kernel_pool._health_check_task:
+            kernel_pool._health_check_task.cancel()
+            try:
+                await kernel_pool._health_check_task
+            except asyncio.CancelledError:
+                pass
+
+        # Remove all kernels
+        for kernel_id in list(kernel_pool.kernels.keys()):
+            logger.info(f"Shutting down kernel: {kernel_id}")
+            await kernel_pool._remove_kernel(kernel_id)
+
+        logger.info("Graceful shutdown complete")
+    except Exception as e:
+        logger.error(f"Error during graceful shutdown: {e}")
+
+
+def handle_sigterm(signum, frame):
+    """Handle SIGTERM signal for graceful shutdown."""
+    logger.info(f"Received signal {signum}, initiating shutdown...")
+    # Schedule shutdown in the event loop
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(graceful_shutdown())
+    except RuntimeError:
+        # No running loop, we're probably not started yet
+        pass
+    # Allow uvicorn to handle the actual shutdown
+    sys.exit(0)
+
+
+# Register signal handlers
+signal.signal(signal.SIGTERM, handle_sigterm)
+signal.signal(signal.SIGINT, handle_sigterm)
 
 
 # --- HELPER FUNCTION ---
