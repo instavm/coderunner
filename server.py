@@ -1150,20 +1150,25 @@ async def deprecated_browser_content(request: Request):
 
 
 # Add routes to the Starlette app
+# IMPORTANT: Route order matters in Starlette - specific routes must come before parameterized ones
 
-# New endpoints (primary)
+# Health check
 app.add_route("/health", api_health, methods=["GET"])
+
+# Execute endpoints
 app.add_route("/v1/execute", api_execute, methods=["POST"])
+app.add_route("/execute", deprecated_execute, methods=["POST"])  # Deprecated
+
+# Session endpoints - deprecated literal path MUST come before parameterized path
 app.add_route("/v1/sessions", api_start_session, methods=["POST"])
+app.add_route("/v1/sessions/session", deprecated_session_post, methods=["POST"])  # Deprecated
+app.add_route("/v1/sessions/session", deprecated_session_get, methods=["GET"])  # Deprecated
+app.add_route("/v1/sessions/session", deprecated_session_delete, methods=["DELETE"])  # Deprecated
 app.add_route("/v1/sessions/{session_id}", api_get_session_by_id, methods=["GET"])
 app.add_route("/v1/sessions/{session_id}", api_stop_session_by_id, methods=["DELETE"])
+
+# Browser endpoints
 app.add_route("/v1/browser/navigate", api_browser_navigate, methods=["POST"])
 app.add_route("/v1/browser/content", api_browser_extract_content, methods=["POST"])
-
-# Deprecated endpoints (backward compatibility - will be removed in v1.0)
-app.add_route("/execute", deprecated_execute, methods=["POST"])
-app.add_route("/v1/sessions/session", deprecated_session_post, methods=["POST"])
-app.add_route("/v1/sessions/session", deprecated_session_get, methods=["GET"])
-app.add_route("/v1/sessions/session", deprecated_session_delete, methods=["DELETE"])
-app.add_route("/v1/browser/interactions/navigate", deprecated_browser_navigate, methods=["POST"])
-app.add_route("/v1/browser/interactions/content", deprecated_browser_content, methods=["POST"])
+app.add_route("/v1/browser/interactions/navigate", deprecated_browser_navigate, methods=["POST"])  # Deprecated
+app.add_route("/v1/browser/interactions/content", deprecated_browser_content, methods=["POST"])  # Deprecated
