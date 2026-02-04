@@ -1,5 +1,91 @@
 #!/bin/bash
 
+# CodeRunner Install Script
+# Installs and starts the CodeRunner sandbox container
+
+set -e
+
+# --- Configuration ---
+CONFIG_FILE="${CODERUNNER_CONFIG:-$HOME/.coderunner.config}"
+CODERUNNER_HOME="${CODERUNNER_HOME:-$HOME/.coderunner}"
+
+# --- Default options ---
+WITH_SSH_AGENT=false
+WITH_CREDENTIALS=false
+ENV_FILE=""
+
+# --- Parse command line arguments ---
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --with-ssh-agent)
+            WITH_SSH_AGENT=true
+            shift
+            ;;
+        --with-credentials)
+            WITH_CREDENTIALS=true
+            shift
+            ;;
+        --env-file)
+            ENV_FILE="$2"
+            shift 2
+            ;;
+        --config)
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: install.sh [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --with-ssh-agent    Forward SSH agent for git operations"
+            echo "  --with-credentials  Mount config directories (~/.claude, ~/.config/gh, etc.)"
+            echo "  --env-file FILE     Load environment variables from file"
+            echo "  --config FILE       Use custom config file (default: ~/.coderunner.config)"
+            echo ""
+            echo "Config file format (~/.coderunner.config):"
+            echo "  ANTHROPIC_API_KEY=sk-xxx"
+            echo "  OPENAI_API_KEY=sk-xxx"
+            echo "  GITHUB_TOKEN=ghp_xxx"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# --- Load config file if exists ---
+declare -a ENV_VARS
+if [[ -f "$CONFIG_FILE" ]]; then
+    echo "Loading config from $CONFIG_FILE"
+    while IFS='=' read -r key value; do
+        # Skip comments and empty lines
+        [[ "$key" =~ ^#.*$ ]] && continue
+        [[ -z "$key" ]] && continue
+        # Trim whitespace
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs)
+        if [[ -n "$key" && -n "$value" ]]; then
+            ENV_VARS+=("--env" "$key=$value")
+        fi
+    done < "$CONFIG_FILE"
+fi
+
+# --- Load env file if specified ---
+if [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]]; then
+    echo "Loading environment from $ENV_FILE"
+    while IFS='=' read -r key value; do
+        [[ "$key" =~ ^#.*$ ]] && continue
+        [[ -z "$key" ]] && continue
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs)
+        if [[ -n "$key" && -n "$value" ]]; then
+            ENV_VARS+=("--env" "$key=$value")
+        fi
+    done < "$ENV_FILE"
+fi
+
 # Function to get current macOS version
 get_macos_version() {
   sw_vers -productVersion | awk -F. '{print $1 "." $2}'
@@ -105,8 +191,8 @@ if ! container image pull instavm/coderunner; then
     exit 1
 fi
 
-echo "→ Ensuring coderunner assets directories…"
-ASSETS_SRC="$HOME/.coderunner/assets"
+echo "→ Ensuring coderunner directories..."
+ASSETS_SRC="$CODERUNNER_HOME/assets"
 mkdir -p "$ASSETS_SRC/skills/user"
 mkdir -p "$ASSETS_SRC/outputs"
 
@@ -115,19 +201,57 @@ echo "Stopping any existing coderunner container..."
 container stop coderunner 2>/dev/null || true
 sleep 2
 
-# Run the command to start the sandbox container
-echo "Running: container run --name coderunner --detach --rm --cpus 8 --memory 4g instavm/coderunner"
+# --- Build volume mounts ---
+declare -a VOLUME_MOUNTS
+VOLUME_MOUNTS+=("--volume" "$ASSETS_SRC/skills/user:/app/uploads/skills/user")
+VOLUME_MOUNTS+=("--volume" "$ASSETS_SRC/outputs:/app/uploads/outputs")
+
+# SSH Agent forwarding
+if [[ "$WITH_SSH_AGENT" == true && -n "$SSH_AUTH_SOCK" ]]; then
+    echo "Enabling SSH agent forwarding..."
+    VOLUME_MOUNTS+=("--volume" "$SSH_AUTH_SOCK:/ssh-agent")
+    ENV_VARS+=("--env" "SSH_AUTH_SOCK=/ssh-agent")
+fi
+
+# Credential directory mounts (read-only)
+if [[ "$WITH_CREDENTIALS" == true ]]; then
+    echo "Mounting credential directories..."
+    # AI CLIs
+    [[ -d "$HOME/.claude" ]] && VOLUME_MOUNTS+=("--volume" "$HOME/.claude:/root/.claude:ro")
+    [[ -d "$HOME/.cursor" ]] && VOLUME_MOUNTS+=("--volume" "$HOME/.cursor:/root/.cursor:ro")
+    [[ -d "$HOME/.codex" ]] && VOLUME_MOUNTS+=("--volume" "$HOME/.codex:/root/.codex:ro")
+    # Cloud CLIs
+    [[ -d "$HOME/.config/gh" ]] && VOLUME_MOUNTS+=("--volume" "$HOME/.config/gh:/root/.config/gh:ro")
+    [[ -d "$HOME/.config/gcloud" ]] && VOLUME_MOUNTS+=("--volume" "$HOME/.config/gcloud:/root/.config/gcloud:ro")
+    [[ -d "$HOME/.aws" ]] && VOLUME_MOUNTS+=("--volume" "$HOME/.aws:/root/.aws:ro")
+    [[ -d "$HOME/.azure" ]] && VOLUME_MOUNTS+=("--volume" "$HOME/.azure:/root/.azure:ro")
+fi
+
+# Run the container
+echo "Starting coderunner container..."
 if container run \
-  --volume "$ASSETS_SRC/skills/user:/app/uploads/skills/user" \
-  --volume "$ASSETS_SRC/outputs:/app/uploads/outputs" \
+  "${VOLUME_MOUNTS[@]}" \
+  "${ENV_VARS[@]}" \
   --name coderunner \
   --detach \
   --rm \
   --cpus 8 \
   --memory 4g \
   instavm/coderunner; then
-    echo "✅ Setup complete. MCP server is available at http://coderunner.local:8222/mcp"
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "CodeRunner is running"
+    echo ""
+    echo "  Server:  http://coderunner.local:8222"
+    echo "  MCP:     http://coderunner.local:8222/mcp"
+    echo "  Health:  http://coderunner.local:8222/health"
+    echo ""
+    echo "Commands:"
+    echo "  coderunner status    Check server status"
+    echo "  coderunner stop      Stop the server"
+    echo "  coderunner run       Run AI agents (claude, codex, cursor)"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 else
-    echo "❌ Failed to start coderunner container. Please check the logs with: container logs coderunner"
+    echo "Failed to start container. Check logs: container logs coderunner"
     exit 1
 fi

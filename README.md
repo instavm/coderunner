@@ -6,33 +6,52 @@
 
 # CodeRunner
 
-Sandboxed Python execution for Mac. Local files, local processing.
+Sandboxed code execution for Mac using [Apple containers](https://github.com/apple/container).
 
-CodeRunner runs Python code in an isolated container on your Mac using [Apple's native container technology](https://github.com/apple/container). Process your local files without uploading them anywhere.
+- Python execution in persistent Jupyter kernels
+- AI coding agents: Claude Code, OpenAI Codex, Cursor, Gemini CLI
+- Cloud CLIs: AWS, GCP, Azure, GitHub
+- Browser automation via Playwright
+- Data science stack: pandas, numpy, scipy, matplotlib
 
-- Execute Python in a persistent Jupyter kernel
-- Pre-installed data science stack (pandas, numpy, matplotlib, etc.)
-- Files stay on your machine
-- Optional browser automation via Playwright
-
-**Requirements:** macOS, Apple Silicon (M1+), Python 3.10+
+**Requirements:** macOS 15+, Apple Silicon
 
 ## Install
 
-### Homebrew (coming soon)
 ```bash
 brew install instavm/cli/coderunner
 ```
 
-### Manual
+Server starts automatically at `http://coderunner.local:8222`
+
+### Manual Install
+
 ```bash
 git clone https://github.com/instavm/coderunner.git
 cd coderunner
-chmod +x install.sh
-sudo ./install.sh
+./install.sh
 ```
 
-Server runs at: `http://coderunner.local:8222`
+### Commands
+
+```bash
+coderunner status              # Check if running
+coderunner stop                # Stop server
+coderunner start               # Start server
+coderunner run claude          # Run Claude Code
+coderunner run codex           # Run OpenAI Codex
+coderunner run cursor          # Run Cursor
+coderunner exec bash           # Shell into container
+coderunner logs                # View logs
+```
+
+### Start Options
+
+```bash
+coderunner start --with-ssh-agent      # Forward SSH agent for git
+coderunner start --with-credentials    # Mount ~/.claude, ~/.aws, ~/.config/gh
+coderunner start --env-file ~/.env     # Load environment from file
+```
 
 ## Usage
 
@@ -211,9 +230,42 @@ CodeRunner includes a skills system for common tasks.
 
 See [SKILLS-README.md](SKILLS-README.md) for details.
 
-## Pre-installed Libraries
+## Configuration
 
-The sandbox includes: pandas, numpy, scipy, matplotlib, seaborn, pillow, pypdf, python-docx, openpyxl, beautifulsoup4, requests, httpx, and more.
+Create `~/.coderunner.config` with your API keys:
+
+```
+ANTHROPIC_API_KEY=sk-ant-xxx
+OPENAI_API_KEY=sk-xxx
+GITHUB_TOKEN=ghp_xxx
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=xxx
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/credentials.json
+```
+
+Keys are loaded automatically on `coderunner start`. CLI params override config file values.
+
+### Credential Locations
+
+| Tool | Config Directory | Environment Variable |
+|------|-----------------|---------------------|
+| Claude Code | `~/.claude/` | `ANTHROPIC_API_KEY` |
+| OpenAI Codex | `~/.codex/` | `OPENAI_API_KEY` |
+| Cursor | `~/.cursor/` | `CURSOR_API_KEY` |
+| GitHub CLI | `~/.config/gh/` | `GITHUB_TOKEN` |
+| AWS CLI | `~/.aws/` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
+| GCP CLI | `~/.config/gcloud/` | `GOOGLE_APPLICATION_CREDENTIALS` |
+| Azure CLI | `~/.azure/` | `AZURE_CREDENTIALS` |
+
+Use `--with-credentials` to mount these directories into the container (read-only).
+
+## Pre-installed Tools
+
+**Python:** pandas, numpy, scipy, matplotlib, seaborn, scikit-learn, pillow, pypdf, python-docx, openpyxl, beautifulsoup4, requests, httpx, playwright
+
+**AI Agents:** Claude Code, OpenAI Codex, Cursor, Gemini CLI
+
+**Cloud CLIs:** aws, gcloud, az, gh
 
 ## Security
 
