@@ -5,6 +5,8 @@ import binascii
 import json
 import logging
 import os
+import signal
+import sys
 import zipfile
 import pathlib
 import time
@@ -333,6 +335,30 @@ class KernelPool:
 # Global kernel pool instance
 kernel_pool = KernelPool()
 
+
+# --- GRACEFUL SHUTDOWN ---
+
+
+async def graceful_shutdown():
+    """Clean up kernels on shutdown."""
+    logger.info("Initiating graceful shutdown...")
+    try:
+        # Stop health check task if running
+        if kernel_pool._health_check_task:
+            kernel_pool._health_check_task.cancel()
+            try:
+                await kernel_pool._health_check_task
+            except asyncio.CancelledError:
+                pass
+
+        # Remove all kernels
+        for kernel_id in list(kernel_pool.kernels.keys()):
+            logger.info(f"Shutting down kernel: {kernel_id}")
+            await kernel_pool._remove_kernel(kernel_id)
+
+        logger.info("Graceful shutdown complete")
+    except Exception as e:
+        logger.error(f"Error during graceful shutdown: {e}")
 
 
 # --- HELPER FUNCTION ---
@@ -765,6 +791,12 @@ class MockContext:
 # Use the streamable_http_app as it's the modern standard
 app = mcp.streamable_http_app()
 
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """Handle application shutdown."""
+    await graceful_shutdown()
+
 # Add custom REST API endpoints compatible with instavm SDK client
 async def api_execute(request: Request):
     """
@@ -1019,10 +1051,124 @@ async def api_stop_session(request: Request):
     })
 
 
+# --- HEALTH CHECK ENDPOINT ---
+
+async def api_health(request: Request):
+    """
+    Health check endpoint.
+
+    Response (JSON):
+        {"status": "healthy", "version": "0.1.0"}
+    """
+    return JSONResponse({
+        "status": "healthy",
+        "version": "0.1.0"
+    })
+
+
+# --- SESSION ENDPOINTS WITH PATH PARAMETERS ---
+
+async def api_get_session_by_id(request: Request):
+    """
+    Get session status by ID.
+
+    Response (JSON):
+        {"session_id": "...", "status": "active"}
+    """
+    session_id = request.path_params.get("session_id", "session")
+    if session_id in _session_store:
+        return JSONResponse({
+            "session_id": session_id,
+            "status": _session_store[session_id].get("status", "active")
+        })
+    return JSONResponse({
+        "session_id": session_id,
+        "status": "active"  # For local use, sessions are always "active"
+    })
+
+
+async def api_stop_session_by_id(request: Request):
+    """
+    Stop a session by ID.
+    """
+    session_id = request.path_params.get("session_id", "session")
+    if session_id in _session_store:
+        del _session_store[session_id]
+    return JSONResponse({"status": "stopped"})
+
+
+# --- DEPRECATED ENDPOINT WRAPPERS ---
+# These wrap old endpoints and log deprecation warnings
+
+async def deprecated_execute(request: Request):
+    """Deprecated: Use /v1/execute instead."""
+    logger.warning("DEPRECATED: /execute is deprecated, use /v1/execute instead")
+    response = await api_execute(request)
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = '</v1/execute>; rel="successor-version"'
+    return response
+
+
+async def deprecated_session_post(request: Request):
+    """Deprecated: Use /v1/sessions instead."""
+    logger.warning("DEPRECATED: /v1/sessions/session POST is deprecated, use /v1/sessions instead")
+    response = await api_start_session(request)
+    response.headers["Deprecation"] = "true"
+    return response
+
+
+async def deprecated_session_get(request: Request):
+    """Deprecated: Use /v1/sessions/{id} instead."""
+    logger.warning("DEPRECATED: /v1/sessions/session GET is deprecated, use /v1/sessions/{id} instead")
+    response = await api_get_session(request)
+    response.headers["Deprecation"] = "true"
+    return response
+
+
+async def deprecated_session_delete(request: Request):
+    """Deprecated: Use /v1/sessions/{id} instead."""
+    logger.warning("DEPRECATED: /v1/sessions/session DELETE is deprecated, use /v1/sessions/{id} instead")
+    response = await api_stop_session(request)
+    response.headers["Deprecation"] = "true"
+    return response
+
+
+async def deprecated_browser_navigate(request: Request):
+    """Deprecated: Use /v1/browser/navigate instead."""
+    logger.warning("DEPRECATED: /v1/browser/interactions/navigate is deprecated, use /v1/browser/navigate instead")
+    response = await api_browser_navigate(request)
+    response.headers["Deprecation"] = "true"
+    return response
+
+
+async def deprecated_browser_content(request: Request):
+    """Deprecated: Use /v1/browser/content instead."""
+    logger.warning("DEPRECATED: /v1/browser/interactions/content is deprecated, use /v1/browser/content instead")
+    response = await api_browser_extract_content(request)
+    response.headers["Deprecation"] = "true"
+    return response
+
+
 # Add routes to the Starlette app
-app.add_route("/execute", api_execute, methods=["POST"])
-app.add_route("/v1/sessions/session", api_start_session, methods=["POST"])
-app.add_route("/v1/sessions/session", api_get_session, methods=["GET"])
-app.add_route("/v1/sessions/session", api_stop_session, methods=["DELETE"])
-app.add_route("/v1/browser/interactions/navigate", api_browser_navigate, methods=["POST"])
-app.add_route("/v1/browser/interactions/content", api_browser_extract_content, methods=["POST"])
+# IMPORTANT: Route order matters in Starlette - specific routes must come before parameterized ones
+
+# Health check
+app.add_route("/health", api_health, methods=["GET"])
+
+# Execute endpoints
+app.add_route("/v1/execute", api_execute, methods=["POST"])
+app.add_route("/execute", deprecated_execute, methods=["POST"])  # Deprecated
+
+# Session endpoints - deprecated literal path MUST come before parameterized path
+app.add_route("/v1/sessions", api_start_session, methods=["POST"])
+app.add_route("/v1/sessions/session", deprecated_session_post, methods=["POST"])  # Deprecated
+app.add_route("/v1/sessions/session", deprecated_session_get, methods=["GET"])  # Deprecated
+app.add_route("/v1/sessions/session", deprecated_session_delete, methods=["DELETE"])  # Deprecated
+app.add_route("/v1/sessions/{session_id}", api_get_session_by_id, methods=["GET"])
+app.add_route("/v1/sessions/{session_id}", api_stop_session_by_id, methods=["DELETE"])
+
+# Browser endpoints
+app.add_route("/v1/browser/navigate", api_browser_navigate, methods=["POST"])
+app.add_route("/v1/browser/content", api_browser_extract_content, methods=["POST"])
+app.add_route("/v1/browser/interactions/navigate", deprecated_browser_navigate, methods=["POST"])  # Deprecated
+app.add_route("/v1/browser/interactions/content", deprecated_browser_content, methods=["POST"])  # Deprecated

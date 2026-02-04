@@ -7,6 +7,11 @@ on:
     branches: [ main ]
   release:
     types: [ published ]
+  schedule:
+    # Every 48 hours at midnight UTC
+    - cron: '0 0 */2 * *'
+  workflow_dispatch:
+    # Manual trigger
 
 env:
   REGISTRY: docker.io
@@ -61,7 +66,18 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
-    
+
+    - name: Scan image for vulnerabilities
+      if: github.event_name != 'pull_request'
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:docker-latest
+        format: 'table'
+        exit-code: '0'
+        ignore-unfixed: true
+        vuln-type: 'os,library'
+        severity: 'CRITICAL,HIGH'
+
     - name: Generate build summary
       run: |
         echo "## Docker Build Summary" >> $GITHUB_STEP_SUMMARY

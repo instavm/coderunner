@@ -1,149 +1,172 @@
-
 <div align="center">
 
-[![Start](https://img.shields.io/github/stars/instavm/coderunner?color=yellow&style=flat&label=%E2%AD%90%20stars)](https://github.com/instavm/coderunner/stargazers)
+[![Stars](https://img.shields.io/github/stars/instavm/coderunner?color=yellow&style=flat&label=%E2%AD%90%20stars)](https://github.com/instavm/coderunner/stargazers)
 [![License](http://img.shields.io/:license-Apache%202.0-green.svg?style=flat)](https://github.com/instavm/coderunner/blob/master/LICENSE)
 </div>
 
-# CodeRunner: Run AI Generated Code Locally
+# CodeRunner
 
-CodeRunner is an MCP (Model Context Protocol) server that executes AI-generated code in a sandboxed environment on your Mac using Apple's native [containers](https://github.com/apple/container).
+Sandboxed code execution for Mac using [Apple containers](https://github.com/apple/container).
 
-**Key use case:** Process your local files (videos, images, documents, data) with remote LLMs like Claude or ChatGPT without uploading your files to the cloud. The LLM generates code that runs locally on your machine to analyze, transform, or process your files.
+- Python execution in persistent Jupyter kernels
+- AI coding agents: Claude Code, OpenAI Codex, Cursor, Gemini CLI
+- Cloud CLIs: AWS, GCP, Azure, GitHub
+- Browser automation via Playwright
+- Data science stack: pandas, numpy, scipy, matplotlib
 
-## What CodeRunner Enables
+**Requirements:** macOS 15+, Apple Silicon
 
-| Without CodeRunner | With CodeRunner |
-| :--- | :--- |
-| LLM writes code, you run it manually | LLM writes and executes code, returns results |
-| Upload files to cloud for AI processing | Files stay on your machine, processed locally |
-| Install tools and dependencies yourself | Tools available in sandbox, auto-installs others |
-| Copy/paste scripts to run elsewhere | Code runs immediately, shows output/files |
-| LLM analyzes text descriptions of files | LLM directly processes your actual files |
-| Manage Python environments and packages | Pre-configured environment ready to use |
+## Install
 
-## Quick Start
+```bash
+brew install instavm/cli/coderunner
+```
 
-**Prerequisites:** Mac with macOS and Apple Silicon (M1/M2/M3/M4), Python 3.10+
+Server starts automatically at `http://coderunner.local:8222`
+
+### Manual Install
 
 ```bash
 git clone https://github.com/instavm/coderunner.git
 cd coderunner
-chmod +x install.sh
 ./install.sh
 ```
 
-MCP server will be available at: http://coderunner.local:8222/mcp
-
-**Install required packages** (use virtualenv and note the python path):
-```bash
-pip install -r examples/requirements.txt
-```
-
-## Integration Options
-
-### Option 1: Claude Desktop Integration
-
-
-<details>
-<summary>Configure Claude Desktop to use CodeRunner as an MCP server:</summary>
-
-![demo1](images/demo.png)
-
-![demo2](images/demo2.png)
-
-![demo4](images/demo4.png)
-
-1. **Copy the example configuration:**
-   ```bash
-   cd examples
-   cp claude_desktop/claude_desktop_config.example.json claude_desktop/claude_desktop_config.json
-   ```
-
-2. **Edit the configuration file** and replace the placeholder paths:
-   - Replace `/path/to/your/python` with your actual Python path (e.g., `/usr/bin/python3` or `/opt/homebrew/bin/python3`)
-   - Replace `/path/to/coderunner` with the actual path to your cloned repository
-
-   Example after editing:
-   ```json
-   {
-     "mcpServers": {
-       "coderunner": {
-         "command": "/opt/homebrew/bin/python3",
-         "args": ["/Users/yourname/coderunner/examples/claude_desktop/mcpproxy.py"]
-       }
-     }
-   }
-   ```
-
-3. **Update Claude Desktop configuration:**
-   - Open Claude Desktop
-   - Go to Settings → Developer
-   - Add the MCP server configuration
-   - Restart Claude Desktop
-
-4. **Start using CodeRunner in Claude:**
-   You can now ask Claude to execute code, and it will run safely in the sandbox!
-</details>
-
-### Option 2: Claude Code CLI
-
-<details>
-<summary>Use CodeRunner with Claude Code CLI for terminal-based AI assistance:</summary>
-
-**Quick Start:**
+### Commands
 
 ```bash
-# 1. Install and start CodeRunner (one-time setup)
-git clone https://github.com/instavm/coderunner.git
-cd coderunner
-sudo ./install.sh
-
-# 2. Install the Claude Code plugin
-claude plugin marketplace add https://github.com/instavm/coderunner-plugin
-claude plugin install instavm-coderunner
-
-# 3. Reconnect to MCP servers
-/mcp
+coderunner status              # Check if running
+coderunner stop                # Stop server
+coderunner start               # Start server
+coderunner run claude          # Run Claude Code
+coderunner run codex           # Run OpenAI Codex
+coderunner run cursor          # Run Cursor
+coderunner exec bash           # Shell into container
+coderunner logs                # View logs
 ```
 
-**Installation Steps:**
+### Start Options
 
-1. Navigate to Plugin Marketplace:
+```bash
+coderunner start --with-ssh-agent      # Forward SSH agent for git
+coderunner start --with-credentials    # Mount ~/.claude, ~/.aws, ~/.config/gh
+coderunner start --env-file ~/.env     # Load environment from file
+```
 
-   ![Navigate to Plugin Marketplace](images/gotoplugin.png)
+## Usage
 
-2. Add the InstaVM repository:
+### Python Library
 
-   ![Add InstaVM Repository](images/addrepo.png)
+Install the client (server must be running locally):
+```bash
+pip install git+https://github.com/instavm/coderunner.git
+```
 
-3. Execute Python code with Claude Code:
+```python
+from coderunner import CodeRunner
 
-   ![Execute Python Code](images/runcode.png)
+# Connect to local server
+cr = CodeRunner()  # defaults to http://coderunner.local:8222
 
-That's it! Claude Code now has access to all CodeRunner tools:
-- **execute_python_code** - Run Python code in persistent Jupyter kernel
-- **navigate_and_get_all_visible_text** - Web scraping with Playwright
-- **list_skills** - List available skills (docx, xlsx, pptx, pdf, image processing, etc.)
-- **get_skill_info** - Get documentation for specific skills
-- **get_skill_file** - Read skill files and examples
+# Execute Python code
+result = cr.execute("""
+import pandas as pd
+df = pd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
+print(df.describe())
+""")
+print(result.stdout)
 
-**Learn more:** See the [plugin repository](https://github.com/instavm/coderunner-plugin) for detailed documentation.
+# One-liner for quick scripts
+from coderunner import execute
+print(execute("2 + 2"))  # 4
+```
+
+### REST API
+
+```bash
+# Execute Python code
+curl -X POST http://coderunner.local:8222/v1/execute \
+  -H "Content-Type: application/json" \
+  -d '{"code": "import pandas as pd; print(pd.__version__)"}'
+```
+
+Response:
+```json
+{"stdout": "2.0.3\n", "stderr": "", "execution_time": 0.12}
+```
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/execute` | POST | Execute Python code |
+| `/v1/sessions` | POST | Create session |
+| `/v1/sessions/{id}` | GET/DELETE | Session management |
+| `/v1/browser/navigate` | POST | Browser navigation |
+| `/v1/browser/content` | POST | Extract page content |
+| `/health` | GET | Health check |
+
+<details>
+<summary>Deprecated endpoints (still work, will be removed in v1.0)</summary>
+
+| Old | New |
+|-----|-----|
+| `/execute` | `/v1/execute` |
+| `/v1/sessions/session` | `/v1/sessions` |
+| `/v1/browser/interactions/navigate` | `/v1/browser/navigate` |
+| `/v1/browser/interactions/content` | `/v1/browser/content` |
 
 </details>
 
-### Option 3: OpenCode Configuration
+## MCP Server
+
+For AI tools that support the Model Context Protocol, connect to:
+```
+http://coderunner.local:8222/mcp
+```
+
+### Available Tools
+- `execute_python_code(command)` - Run Python code
+- `navigate_and_get_all_visible_text(url)` - Web scraping
+- `list_skills()` - List available skills
+- `get_skill_info(skill_name)` - Get skill documentation
+- `get_skill_file(skill_name, filename)` - Read skill files
+
+### Integration Examples
 
 <details>
-<summary>Configure OpenCode to use CodeRunner as an MCP server:</summary>
+<summary>Claude Desktop</summary>
 
-![OpenCode Example](images/opencode-example.png)
-
-Create or edit `~/.config/opencode/opencode.json`:
-
+Edit your Claude Desktop config:
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
+  "mcpServers": {
+    "coderunner": {
+      "command": "/path/to/python3",
+      "args": ["/path/to/coderunner/examples/claude_desktop/mcpproxy.py"]
+    }
+  }
+}
+```
+
+See `examples/claude_desktop/claude_desktop_config.example.json` for a complete example.
+</details>
+
+<details>
+<summary>Claude Code CLI</summary>
+
+```bash
+claude plugin marketplace add https://github.com/instavm/coderunner-plugin
+claude plugin install instavm-coderunner
+```
+</details>
+
+<details>
+<summary>OpenCode</summary>
+
+Edit `~/.config/opencode/opencode.json`:
+```json
+{
   "mcp": {
     "coderunner": {
       "type": "remote",
@@ -153,44 +176,14 @@ Create or edit `~/.config/opencode/opencode.json`:
   }
 }
 ```
-
-After saving the configuration:
-1. Restart OpenCode
-2. CodeRunner tools will be available automatically
-3. Start executing Python code with full access to the sandboxed environment
-
 </details>
 
-### Option 4: Python OpenAI Agents
 <details>
-<summary>Use CodeRunner with OpenAI's Python agents library:</summary>
+<summary>Gemini CLI</summary>
 
-![demo3](images/demo3.png)
-
-1. **Set your OpenAI API key:**
-   ```bash
-   export OPENAI_API_KEY="your-openai-api-key-here"
-   ```
-
-2. **Run the client:**
-   ```bash
-   python examples/openai_agents/openai_client.py
-   ```
-
-3. **Start coding:**
-   Enter prompts like "write python code to generate 100 prime numbers" and watch it execute safely in the sandbox!
-</details>
-
-### Option 5: Gemini-CLI
-[Gemini CLI](https://github.com/google-gemini/gemini-cli) is recently launched by Google.
-
-<details>
-<summary>~/.gemini/settings.json</summary>
-
+Edit `~/.gemini/settings.json`:
 ```json
 {
-  "theme": "Default",
-  "selectedAuthType": "oauth-personal",
   "mcpServers": {
     "coderunner": {
       "httpUrl": "http://coderunner.local:8222/mcp"
@@ -198,147 +191,93 @@ After saving the configuration:
   }
 }
 ```
-
-
 </details>
 
-![gemini1](images/gemini1.png)
-
-![gemini2](images/gemini2.png)
-
-
-### Option 6: Kiro by Amazon
-[Kiro](https://kiro.dev/blog/introducing-kiro/) is recently launched by Amazon.
-
 <details>
-<summary>~/.kiro/settings/mcp.json</summary>
+<summary>Amazon Kiro</summary>
 
+Edit `~/.kiro/settings/mcp.json`:
 ```json
 {
   "mcpServers": {
     "coderunner": {
-      "command": "/path/to/venv/bin/python",
-      "args": [
-        "/path/to/coderunner/examples/claude_desktop/mcpproxy.py"
-      ],
-      "disabled": false,
-      "autoApprove": [
-        "execute_python_code"
-      ]
+      "command": "/path/to/python",
+      "args": ["/path/to/coderunner/examples/claude_desktop/mcpproxy.py"]
     }
   }
 }
 ```
-
-
-![kiro](images/kiro.png)
-
 </details>
-
-
-### Option 7: Coderunner-UI (Offline AI Workspace)
-[Coderunner-UI](https://github.com/instavm/coderunner-ui) is our own offline AI workspace tool designed for full privacy and local processing.
 
 <details>
-<summary>coderunner-ui</summary>
+<summary>OpenAI Agents</summary>
 
-![coderunner-ui](images/coderunnerui.jpg)
-
+```bash
+export OPENAI_API_KEY="your-key"
+python examples/openai_agents/openai_client.py
+```
 </details>
+
+## Skills
+
+CodeRunner includes a skills system for common tasks.
+
+**Built-in skills:**
+- `pdf-text-replace` - Replace text in PDF forms
+- `image-crop-rotate` - Image manipulation
+
+**Add custom skills:** Place them in `~/.coderunner/assets/skills/user/`
+
+See [SKILLS-README.md](SKILLS-README.md) for details.
+
+## Configuration
+
+Create `~/.coderunner.config` with your API keys:
+
+```
+ANTHROPIC_API_KEY=sk-ant-xxx
+OPENAI_API_KEY=sk-xxx
+GITHUB_TOKEN=ghp_xxx
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=xxx
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/credentials.json
+```
+
+Keys are loaded automatically on `coderunner start`. CLI params override config file values.
+
+### Credential Locations
+
+| Tool | Config Directory | Environment Variable |
+|------|-----------------|---------------------|
+| Claude Code | `~/.claude/` | `ANTHROPIC_API_KEY` |
+| OpenAI Codex | `~/.codex/` | `OPENAI_API_KEY` |
+| Cursor | `~/.cursor/` | `CURSOR_API_KEY` |
+| GitHub CLI | `~/.config/gh/` | `GITHUB_TOKEN` |
+| AWS CLI | `~/.aws/` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
+| GCP CLI | `~/.config/gcloud/` | `GOOGLE_APPLICATION_CREDENTIALS` |
+| Azure CLI | `~/.azure/` | `AZURE_CREDENTIALS` |
+
+Use `--with-credentials` to mount these directories into the container (read-only).
+
+## Pre-installed Tools
+
+**Python:** pandas, numpy, scipy, matplotlib, seaborn, scikit-learn, pillow, pypdf, python-docx, openpyxl, beautifulsoup4, requests, httpx, playwright
+
+**AI Agents:** Claude Code, OpenAI Codex, Cursor, Gemini CLI
+
+**Cloud CLIs:** aws, gcloud, az, gh
 
 ## Security
 
-Code runs in an isolated container with VM-level isolation. Your host system and files outside the sandbox remain protected.
+Code runs in VM-level isolation using Apple containers.
 
-From [@apple/container](https://github.com/apple/container/blob/main/docs/technical-overview.md):
->Each container has the isolation properties of a full VM, using a minimal set of core utilities and dynamic libraries to reduce resource utilization and attack surface.
-
-## Skills System
-
-CodeRunner includes a built-in skills system that provides pre-packaged tools for common tasks. Skills are organized into two categories:
-
-### Built-in Public Skills
-
-The following skills are included in every CodeRunner installation:
-
-- **pdf-text-replace** - Replace text in fillable PDF forms
-- **image-crop-rotate** - Crop and rotate images
-
-### Using Skills
-
-Skills are accessed through MCP tools:
-
-```python
-# List all available skills
-result = await list_skills()
-
-# Get documentation for a specific skill
-info = await get_skill_info("pdf-text-replace")
-
-# Execute a skill's script
-code = """
-import subprocess
-subprocess.run([
-    'python',
-    '/app/uploads/skills/public/pdf-text-replace/scripts/replace_text_in_pdf.py',
-    '/app/uploads/input.pdf',
-    'OLD TEXT',
-    'NEW TEXT',
-    '/app/uploads/output.pdf'
-])
-"""
-result = await execute_python_code(code)
-```
-
-### Adding Custom Skills
-
-Users can add their own skills to the `~/.coderunner/assets/skills/user/` directory:
-
-1. Create a directory for your skill (e.g., `my-custom-skill/`)
-2. Add a `SKILL.md` file with documentation
-3. Add your scripts in a `scripts/` subdirectory
-4. Skills will be automatically discovered by the `list_skills()` tool
-
-**Skill Structure:**
-```
-~/.coderunner/assets/skills/user/my-custom-skill/
-├── SKILL.md              # Documentation with usage examples
-└── scripts/              # Your Python/bash scripts
-    └── process.py
-```
-
-### Example: Using the PDF Text Replace Skill
-
-```bash
-# Inside the container, execute:
-python /app/uploads/skills/public/pdf-text-replace/scripts/replace_text_in_pdf.py \
-    /app/uploads/tax_form.pdf \
-    "John Doe" \
-    "Jane Smith" \
-    /app/uploads/tax_form_updated.pdf
-```
-
-## Architecture
-
-CodeRunner consists of:
-- **Sandbox Container:** Isolated execution environment with Jupyter kernel
-- **MCP Server:** Handles communication between AI models and the sandbox
-- **Skills System:** Pre-packaged tools for common tasks (PDF manipulation, image processing, etc.)
-
-## Examples
-
-The `examples/` directory contains:
-- `openai-agents` - Example OpenAI agents integration
-- `claude-desktop` - Example Claude Desktop integration
-
-## Building Container Image Tutorial
-
-https://github.com/apple/container/blob/main/docs/tutorial.md
+From [apple/container docs](https://github.com/apple/container/blob/main/docs/technical-overview.md):
+> Each container has the isolation properties of a full VM, using a minimal set of core utilities and dynamic libraries to reduce resource utilization and attack surface.
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
+Apache 2.0
