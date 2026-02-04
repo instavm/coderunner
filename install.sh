@@ -55,36 +55,24 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# --- Load config file if exists ---
-declare -a ENV_VARS
-if [[ -f "$CONFIG_FILE" ]]; then
-    echo "Loading config from $CONFIG_FILE"
+# --- Helper function to parse env files ---
+parse_env_file() {
+    local file_path="$1"
     while IFS='=' read -r key value; do
-        # Skip comments and empty lines
         [[ "$key" =~ ^#.*$ ]] && continue
         [[ -z "$key" ]] && continue
-        # Trim whitespace
         key=$(echo "$key" | xargs)
         value=$(echo "$value" | xargs)
         if [[ -n "$key" && -n "$value" ]]; then
             ENV_VARS+=("--env" "$key=$value")
         fi
-    done < "$CONFIG_FILE"
-fi
+    done < "$file_path"
+}
 
-# --- Load env file if specified ---
-if [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]]; then
-    echo "Loading environment from $ENV_FILE"
-    while IFS='=' read -r key value; do
-        [[ "$key" =~ ^#.*$ ]] && continue
-        [[ -z "$key" ]] && continue
-        key=$(echo "$key" | xargs)
-        value=$(echo "$value" | xargs)
-        if [[ -n "$key" && -n "$value" ]]; then
-            ENV_VARS+=("--env" "$key=$value")
-        fi
-    done < "$ENV_FILE"
-fi
+# --- Load environment variables ---
+declare -a ENV_VARS
+[[ -f "$CONFIG_FILE" ]] && echo "Loading config from $CONFIG_FILE" && parse_env_file "$CONFIG_FILE"
+[[ -n "$ENV_FILE" && -f "$ENV_FILE" ]] && echo "Loading environment from $ENV_FILE" && parse_env_file "$ENV_FILE"
 
 # Function to get current macOS version
 get_macos_version() {

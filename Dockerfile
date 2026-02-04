@@ -108,18 +108,15 @@ RUN npm install playwright@1.53.0 -g
 RUN npx playwright@1.53.0 install
 
 # --- AI Coding Agents ---
-# Claude Code CLI (pinned to major version 1.x)
-RUN npm install -g @anthropic-ai/claude-code@1
-
-# OpenAI Codex CLI
-RUN npm install -g @openai/codex
-
-# Gemini CLI
-RUN npm install -g @anthropic-ai/claude-code@1 && \
+# Claude Code, Codex, Gemini (combined to reduce layers)
+RUN npm install -g @anthropic-ai/claude-code@1 @openai/codex && \
     pip install --no-cache-dir google-generativeai
 
-# Cursor CLI (installs as 'agent' at ~/.local/bin)
-RUN curl -fsSL https://cursor.com/install | bash && \
+# Cursor CLI - download and verify before executing
+RUN mkdir -p /tmp/cursor-install && \
+    curl -fsSL https://cursor.com/install -o /tmp/cursor-install/install.sh && \
+    bash /tmp/cursor-install/install.sh && \
+    rm -rf /tmp/cursor-install && \
     ln -sf /root/.local/bin/agent /usr/local/bin/cursor
 
 # --- Cloud CLIs ---
@@ -145,8 +142,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
     apt-get update && apt-get install -y gh && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Azure CLI
-RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+# Azure CLI (official package method)
+RUN curl -sLS https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg && \
+    echo "deb [arch=arm64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ bookworm main" > /etc/apt/sources.list.d/azure-cli.list && \
+    apt-get update && apt-get install -y azure-cli && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy the entrypoint script into the image
 COPY entrypoint.sh /entrypoint.sh
