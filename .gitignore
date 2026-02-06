@@ -48,6 +48,7 @@ Thumbs.db
 
 # Personal config files (use example files instead)
 claude_mcp_proxy/claude_desktop_config.json
+ssh/
 
 # Runtime files
 *.pid
