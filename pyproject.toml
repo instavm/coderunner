@@ -33,6 +33,9 @@ Homepage = "https://github.com/instavm/coderunner"
 Repository = "https://github.com/instavm/coderunner"
 Issues = "https://github.com/instavm/coderunner/issues"
 
+[project.scripts]
+coderunner = "coderunner.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",

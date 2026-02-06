@@ -36,6 +36,20 @@ Server runs at: `http://coderunner.local:8222`
 
 ## Usage
 
+### Claude Code CLI (Apple container)
+
+Build the minimal Claude image and run it via the `coderunner` CLI:
+
+```bash
+container build --tag coderunner-claude --file Dockerfile.claude .
+coderunner claude --branch <your-branch>
+```
+
+Notes:
+- The command passes extra args through to `claude` (so `--branch` goes to Claude Code).
+- Set `ANTHROPIC_API_KEY` in your environment for non-interactive usage.
+- Override the image with `CODERUNNER_IMAGE` or `--image` if you tag it differently.
+
 ### Python Library
 
 Install the client (server must be running locally):
