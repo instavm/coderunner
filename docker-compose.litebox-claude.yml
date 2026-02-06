@@ -1,0 +1,14 @@
+services:
+  litebox-claude:
+    build:
+      context: .
+      dockerfile: Dockerfile.claude
+    image: litebox-claude
+    container_name: litebox-claude
+    environment:
+      - ANTHROPIC_API_KEY
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    stdin_open: true
+    tty: true

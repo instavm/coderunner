@@ -50,6 +50,18 @@ Notes:
 - Set `ANTHROPIC_API_KEY` in your environment for non-interactive usage.
 - Override the image with `CODERUNNER_IMAGE` or `--image` if you tag it differently.
 
+### LiteBox Claude (Docker)
+
+Run Claude inside a LiteBox-style Docker container:
+
+```bash
+docker compose -f docker-compose.litebox-claude.yml run --rm litebox-claude
+```
+
+Notes:
+- The container mounts the current repo into `/workspace`.
+- Set `ANTHROPIC_API_KEY` in your environment for non-interactive usage.
+
 ### Python Library
 
 Install the client (server must be running locally):
