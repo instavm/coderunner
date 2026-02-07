@@ -26,7 +26,7 @@ ARG LITEBOX_REF=main
 RUN git clone --depth 1 --branch ${LITEBOX_REF} https://github.com/microsoft/litebox.git /opt/litebox
 
 WORKDIR /opt/litebox
-RUN cargo build -p litebox_runner_linux_userland --release
+RUN RUST_MIN_STACK=16777216 CARGO_BUILD_JOBS=1 cargo build -p litebox_runner_linux_userland --release
 
 # Record the Claude entrypoint path (relative to the package root)
 RUN node -p "require('/usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json').bin.claude" > /opt/litebox/claude_entrypoint_rel.txt
