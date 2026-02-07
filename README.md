@@ -59,10 +59,11 @@ docker compose -f docker-compose.litebox-claude.yml run --rm litebox-claude
 ```
 
 Notes:
-- This builds LiteBox from source and runs `litebox_runner_linux_userland` under Docker.
+- Requires a prebuilt LiteBox runner binary at `third_party/litebox-bin/litebox_runner_linux_userland` (build on x86_64 Linux).
+- Example build on x86_64: `git clone https://github.com/microsoft/litebox.git && cd litebox && cargo build -p litebox_runner_linux_userland --release` then copy `target/release/litebox_runner_linux_userland` into that path.
 - The container mounts the current repo into `/workspace` and injects it into LiteBox by default.
 - Docker seccomp is set to `unconfined` for LiteBox syscall interception.
-- Uses `linux/amd64` by default (LiteBox currently requires x86_64), so Docker will run under emulation on Apple Silicon.
+- Uses `linux/amd64` by default (LiteBox currently requires x86_64). The runner itself should be built on native x86_64 to avoid QEMU rustc crashes.
 - Set `ANTHROPIC_API_KEY` in your environment for non-interactive usage.
 
 ### Python Library

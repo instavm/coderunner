@@ -62,7 +62,7 @@ ARGS=(
   --env "NODE_PATH=/usr/local/lib/node_modules"
   --env "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
   --env "SSL_CERT_DIR=/etc/ssl/certs"
-  --env "LD_LIBRARY_PATH=/lib:/lib64:/usr/lib:/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu"
+  --env "LD_LIBRARY_PATH=/lib:/lib64:/usr/lib:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu"
   --initial-files "$ROOTFS_TAR"
 )
 

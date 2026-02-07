@@ -4,8 +4,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.litebox-claude
-      args:
-        LITEBOX_REF: main
     image: litebox-claude
     container_name: litebox-claude
     environment:
