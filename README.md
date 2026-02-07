@@ -62,6 +62,7 @@ Notes:
 - This builds LiteBox from source and runs `litebox_runner_linux_userland` under Docker.
 - The container mounts the current repo into `/workspace` and injects it into LiteBox by default.
 - Docker seccomp is set to `unconfined` for LiteBox syscall interception.
+- Uses `linux/amd64` by default (LiteBox currently requires x86_64), so Docker will run under emulation on Apple Silicon.
 - Set `ANTHROPIC_API_KEY` in your environment for non-interactive usage.
 
 ### Python Library
