@@ -1,4 +1,5 @@
-FROM rust:stable-bookworm AS builder
+ARG RUST_IMAGE=rust:1.77-bookworm
+FROM ${RUST_IMAGE} AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
