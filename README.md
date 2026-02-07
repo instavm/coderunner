@@ -65,6 +65,7 @@ Notes:
 - Docker seccomp is set to `unconfined` for LiteBox syscall interception.
 - Default interception backend is `rewriter` (more compatible with Docker Desktop); set `LITEBOX_INTERCEPTION_BACKEND=seccomp` to use seccomp on a Linux host.
 - Uses `linux/amd64` by default (LiteBox currently requires x86_64). The runner itself should be built on native x86_64 to avoid QEMU rustc crashes.
+- On macOS with Docker Desktop `linux/amd64` emulation, the LiteBox runner currently segfaults; use a native x86_64 Linux host/VM.
 - Set `ANTHROPIC_API_KEY` in your environment for non-interactive usage.
 
 ### Python Library
