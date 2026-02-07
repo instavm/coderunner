@@ -13,18 +13,48 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && apt-get update && apt-get install -y --no-install-recommends nodejs \
   && rm -rf /var/lib/apt/lists/*
 
+ENV NPM_CONFIG_PREFIX=/usr/local
+
 RUN npm install -g @anthropic-ai/claude-code \
   && npm cache clean --force
 
 RUN mkdir -p /opt/litebox
 
-# Record the Claude entrypoint path (relative to the package root)
-RUN CLAUDE_PKG_DIR="$(npm root -g)/@anthropic-ai/claude-code" \
-  && node -p "require('${CLAUDE_PKG_DIR}/package.json').bin.claude" > /opt/litebox/claude_entrypoint_rel.txt
+# Record the Claude package directory + entrypoint path
+RUN set -e; \
+  NPM_ROOT="$(npm root -g)"; \
+  if [ -d "${NPM_ROOT}/claude-code" ]; then \
+    export CLAUDE_PKG_DIR="${NPM_ROOT}/claude-code"; \
+  elif [ -d "${NPM_ROOT}/@anthropic-ai/claude-code" ]; then \
+    export CLAUDE_PKG_DIR="${NPM_ROOT}/@anthropic-ai/claude-code"; \
+  else \
+    echo "Claude Code package not found under ${NPM_ROOT}" >&2; \
+    exit 1; \
+  fi; \
+  rm -rf /opt/litebox/claude-code; \
+  cp -a "${CLAUDE_PKG_DIR}" /opt/litebox/claude-code; \
+  export CLAUDE_ROOTFS_PKG_DIR="/usr/local/lib/node_modules/claude-code"; \
+  node - <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+const srcDir = process.env.CLAUDE_PKG_DIR;
+const rootfsDir = process.env.CLAUDE_ROOTFS_PKG_DIR;
+if (!srcDir || !rootfsDir) {
+  throw new Error('Missing CLAUDE_PKG_DIR or CLAUDE_ROOTFS_PKG_DIR');
+}
+const pkg = require(path.join(srcDir, 'package.json'));
+const binRel = pkg?.bin?.claude;
+if (!binRel) {
+  throw new Error('Claude Code bin entry not found');
+}
+fs.writeFileSync('/opt/litebox/claude_pkg_dir.txt', '/opt/litebox/claude-code');
+fs.writeFileSync('/opt/litebox/claude_entrypoint_path.txt', path.join(rootfsDir, binRel));
+NODE
 
 COPY scripts/litebox/build_rootfs.sh /tmp/build_rootfs.sh
 RUN chmod +x /tmp/build_rootfs.sh \
-  && CLAUDE_PKG_DIR="$(npm root -g)/@anthropic-ai/claude-code" /tmp/build_rootfs.sh /opt/litebox/rootfs.tar
+  && CLAUDE_PKG_DIR="$(cat /opt/litebox/claude_pkg_dir.txt)" /tmp/build_rootfs.sh /opt/litebox/rootfs.tar
 
 FROM debian:bookworm-slim
 
@@ -36,10 +66,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Node binary is used as the program executed inside LiteBox (not executed on host)
 COPY --from=builder /usr/bin/node /usr/bin/node
+RUN mkdir -p /usr/local/lib/node_modules
 
 COPY third_party/litebox-bin/litebox_runner_linux_userland /usr/local/bin/litebox_runner_linux_userland
+COPY --from=builder /opt/litebox/claude-code /usr/local/lib/node_modules/claude-code
 COPY --from=builder /opt/litebox/rootfs.tar /opt/litebox/rootfs.tar
-COPY --from=builder /opt/litebox/claude_entrypoint_rel.txt /opt/litebox/claude_entrypoint_rel.txt
+COPY --from=builder /opt/litebox/claude_entrypoint_path.txt /opt/litebox/claude_entrypoint_path.txt
 
 COPY scripts/litebox/entrypoint.sh /entrypoint.sh
 RUN chmod +x /usr/local/bin/litebox_runner_linux_userland /entrypoint.sh

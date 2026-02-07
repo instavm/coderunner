@@ -63,6 +63,7 @@ Notes:
 - Example build on x86_64: `git clone https://github.com/microsoft/litebox.git && cd litebox && cargo build -p litebox_runner_linux_userland --release` then copy `target/release/litebox_runner_linux_userland` into that path.
 - The container mounts the current repo into `/workspace` and injects it into LiteBox by default.
 - Docker seccomp is set to `unconfined` for LiteBox syscall interception.
+- Default interception backend is `rewriter` (more compatible with Docker Desktop); set `LITEBOX_INTERCEPTION_BACKEND=seccomp` to use seccomp on a Linux host.
 - Uses `linux/amd64` by default (LiteBox currently requires x86_64). The runner itself should be built on native x86_64 to avoid QEMU rustc crashes.
 - Set `ANTHROPIC_API_KEY` in your environment for non-interactive usage.
 

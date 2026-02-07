@@ -4,10 +4,12 @@ set -euo pipefail
 RUNNER=${LITEBOX_RUNNER:-/usr/local/bin/litebox_runner_linux_userland}
 ROOTFS_TAR=${LITEBOX_ROOTFS_TAR:-/opt/litebox/rootfs.tar}
 NODE_BIN=${LITEBOX_NODE_BIN:-/usr/bin/node}
-CLAUDE_REL_PATH_FILE=${LITEBOX_CLAUDE_REL_PATH_FILE:-/opt/litebox/claude_entrypoint_rel.txt}
+CLAUDE_ENTRYPOINT_FILE=${LITEBOX_CLAUDE_ENTRYPOINT_FILE:-/opt/litebox/claude_entrypoint_path.txt}
 WORKSPACE_DIR=${LITEBOX_WORKSPACE_DIR:-/workspace}
 INCLUDE_WORKSPACE=${LITEBOX_INCLUDE_WORKSPACE:-1}
 EXCLUDE_GIT=${LITEBOX_WORKSPACE_EXCLUDE_GIT:-1}
+INTERCEPTION_BACKEND=${LITEBOX_INTERCEPTION_BACKEND:-rewriter}
+REWRITE_SYSCALLS=${LITEBOX_REWRITE_SYSCALLS:-}
 
 if [ ! -x "$RUNNER" ]; then
   echo "LiteBox runner not found at $RUNNER" >&2
@@ -21,13 +23,12 @@ if [ ! -x "$NODE_BIN" ]; then
   echo "Node binary not found at $NODE_BIN" >&2
   exit 1
 fi
-if [ ! -f "$CLAUDE_REL_PATH_FILE" ]; then
-  echo "Claude entrypoint rel path file not found at $CLAUDE_REL_PATH_FILE" >&2
+if [ ! -f "$CLAUDE_ENTRYPOINT_FILE" ]; then
+  echo "Claude entrypoint path file not found at $CLAUDE_ENTRYPOINT_FILE" >&2
   exit 1
 fi
 
-CLAUDE_REL_PATH=$(cat "$CLAUDE_REL_PATH_FILE")
-CLAUDE_ENTRYPOINT="/usr/local/lib/node_modules/@anthropic-ai/claude-code/${CLAUDE_REL_PATH}"
+CLAUDE_ENTRYPOINT=$(cat "$CLAUDE_ENTRYPOINT_FILE")
 
 if [ "$INCLUDE_WORKSPACE" = "1" ] && [ -d "$WORKSPACE_DIR" ]; then
   tmp_dir=$(mktemp -d)
@@ -55,9 +56,17 @@ if [ "$INCLUDE_WORKSPACE" = "1" ] && [ -d "$WORKSPACE_DIR" ]; then
   ROOTFS_TAR="$COMBINED_TAR"
 fi
 
+if [ -z "$REWRITE_SYSCALLS" ]; then
+  if [ "$INTERCEPTION_BACKEND" = "rewriter" ]; then
+    REWRITE_SYSCALLS=1
+  else
+    REWRITE_SYSCALLS=0
+  fi
+fi
+
 ARGS=(
   --unstable
-  --interception-backend seccomp
+  --interception-backend "$INTERCEPTION_BACKEND"
   --env "HOME=/"
   --env "NODE_PATH=/usr/local/lib/node_modules"
   --env "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
@@ -65,6 +74,10 @@ ARGS=(
   --env "LD_LIBRARY_PATH=/lib:/lib64:/usr/lib:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu"
   --initial-files "$ROOTFS_TAR"
 )
+
+if [ "$REWRITE_SYSCALLS" = "1" ]; then
+  ARGS+=(--rewrite-syscalls)
+fi
 
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   ARGS+=(--env "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
