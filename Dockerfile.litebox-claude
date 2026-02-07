@@ -19,11 +19,12 @@ RUN npm install -g @anthropic-ai/claude-code \
 RUN mkdir -p /opt/litebox
 
 # Record the Claude entrypoint path (relative to the package root)
-RUN node -p "require('/usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json').bin.claude" > /opt/litebox/claude_entrypoint_rel.txt
+RUN CLAUDE_PKG_DIR="$(npm root -g)/@anthropic-ai/claude-code" \
+  && node -p "require('${CLAUDE_PKG_DIR}/package.json').bin.claude" > /opt/litebox/claude_entrypoint_rel.txt
 
 COPY scripts/litebox/build_rootfs.sh /tmp/build_rootfs.sh
 RUN chmod +x /tmp/build_rootfs.sh \
-  && /tmp/build_rootfs.sh /opt/litebox/rootfs.tar
+  && CLAUDE_PKG_DIR="$(npm root -g)/@anthropic-ai/claude-code" /tmp/build_rootfs.sh /opt/litebox/rootfs.tar
 
 FROM debian:bookworm-slim
 
