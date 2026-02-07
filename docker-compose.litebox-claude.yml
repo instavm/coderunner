@@ -2,11 +2,17 @@ services:
   litebox-claude:
     build:
       context: .
-      dockerfile: Dockerfile.claude
+      dockerfile: Dockerfile.litebox-claude
+      args:
+        LITEBOX_REF: main
     image: litebox-claude
     container_name: litebox-claude
     environment:
       - ANTHROPIC_API_KEY
+      - LITEBOX_INCLUDE_WORKSPACE=1
+      - LITEBOX_WORKSPACE_EXCLUDE_GIT=1
+    security_opt:
+      - seccomp=unconfined
     volumes:
       - .:/workspace
     working_dir: /workspace

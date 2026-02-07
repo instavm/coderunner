@@ -1,0 +1,55 @@
+FROM rust:stable-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    ca-certificates \
+    build-essential \
+    pkg-config \
+    clang \
+    lld \
+    python3 \
+    tar \
+    xz-utils \
+  && rm -rf /var/lib/apt/lists/*
+
+# Node.js (for Claude CLI packaging)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+  && apt-get update && apt-get install -y --no-install-recommends nodejs \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @anthropic-ai/claude-code \
+  && npm cache clean --force
+
+ARG LITEBOX_REF=main
+RUN git clone --depth 1 --branch ${LITEBOX_REF} https://github.com/microsoft/litebox.git /opt/litebox
+
+WORKDIR /opt/litebox
+RUN cargo build -p litebox_runner_linux_userland --release
+
+# Record the Claude entrypoint path (relative to the package root)
+RUN node -p "require('/usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json').bin.claude" > /opt/litebox/claude_entrypoint_rel.txt
+
+COPY scripts/litebox/build_rootfs.sh /tmp/build_rootfs.sh
+RUN chmod +x /tmp/build_rootfs.sh \
+  && /tmp/build_rootfs.sh /opt/litebox/rootfs.tar
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    tar \
+  && rm -rf /var/lib/apt/lists/*
+
+# Node binary is used as the program executed inside LiteBox (not executed on host)
+COPY --from=builder /usr/bin/node /usr/bin/node
+
+COPY --from=builder /opt/litebox/target/release/litebox_runner_linux_userland /usr/local/bin/litebox_runner_linux_userland
+COPY --from=builder /opt/litebox/rootfs.tar /opt/litebox/rootfs.tar
+COPY --from=builder /opt/litebox/claude_entrypoint_rel.txt /opt/litebox/claude_entrypoint_rel.txt
+
+COPY scripts/litebox/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

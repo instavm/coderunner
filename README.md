@@ -50,16 +50,18 @@ Notes:
 - Set `ANTHROPIC_API_KEY` in your environment for non-interactive usage.
 - Override the image with `CODERUNNER_IMAGE` or `--image` if you tag it differently.
 
-### LiteBox Claude (Docker)
+### LiteBox Claude (Linux)
 
-Run Claude inside a LiteBox-style Docker container:
+Run Claude using Microsoft LiteBox (Linux userland runner) inside a container:
 
 ```bash
 docker compose -f docker-compose.litebox-claude.yml run --rm litebox-claude
 ```
 
 Notes:
-- The container mounts the current repo into `/workspace`.
+- This builds LiteBox from source and runs `litebox_runner_linux_userland` under Docker.
+- The container mounts the current repo into `/workspace` and injects it into LiteBox by default.
+- Docker seccomp is set to `unconfined` for LiteBox syscall interception.
 - Set `ANTHROPIC_API_KEY` in your environment for non-interactive usage.
 
 ### Python Library
