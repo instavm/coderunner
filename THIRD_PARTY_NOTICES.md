@@ -4,6 +4,86 @@ THE FOLLOWING SETS FORTH ATTRIBUTION NOTICES FOR THIRD PARTY SOFTWARE THAT MAY B
 
 ---
 
+## **MIT License**
+
+The following components are licensed under the MIT License reproduced below:
+
+**beautifulsoup4 4.14.3**, Copyright (c) Leonard Richardson
+
+**duckdb 1.5.1**, Copyright (c) DuckDB Foundation
+
+**fastapi 0.135.3**, Copyright (c) Sebastián Ramírez
+
+**mcp 1.27.0**, Copyright (c) Anthropic, PBC.
+
+**openpyxl 3.1.5**, Copyright (c) openpyxl contributors
+
+**pdf2image 1.17.0**, Copyright (c) Edouard Belval
+
+**pdfkit 1.0.0**, Copyright (c) Golovanov Stanislav
+
+**pdfplumber 0.11.9**, Copyright (c) Jeremy Singer-Vine
+
+**python-docx 1.2.0**, Copyright (c) Steve Canny
+
+**python-pptx 1.0.2**, Copyright (c) Steve Canny
+
+**pytz 2026.1.post1**, Copyright (c) Stuart Bishop
+
+**tabula-py 2.10.0**, Copyright (c) Aki Ariga
+
+**License Text:**
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+---
+
+## **MPL-2.0 AND MIT License**
+
+The following component is dual-licensed under the Mozilla Public License 2.0 and MIT License:
+
+**tqdm 4.67.3**, Copyright (c) tqdm contributors
+
+---
+
+## **BSD 3-Clause License**
+
+The following components are licensed under the BSD 3-Clause License reproduced below:
+
+**httpx 0.28.1**, Copyright (c) Tom Christie
+
+**joblib 1.5.3**, Copyright (c) Gael Varoquaux
+
+**mpmath 1.4.1**, Copyright (c) Fredrik Johansson
+
+**numpy 2.4.4**, Copyright (c) NumPy Developers
+
+**pypdf 6.9.2**, Copyright (c) pypdf contributors
+
+**scikit-learn 1.8.0**, Copyright (c) scikit-learn developers
+
+**uvicorn 0.44.0**, Copyright (c) Tom Christie
+
+**websockets 16.0**, Copyright (c) Aymeric Augustin
+
+**License Text:**
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+---
+
 ## **BSD 2-Clause License**
 
 The following components are licensed under BSD 2-Clause License reproduced below:
@@ -11,6 +91,8 @@ The following components are licensed under BSD 2-Clause License reproduced belo
 **imageio 2.37.0**, Copyright (c) 2014-2022, imageio developers
 
 **imageio-ffmpeg 0.6.0**, Copyright (c) 2019-2025, imageio
+
+**xlsxwriter 3.2.9**, Copyright (c) John McNamara
 
 **License Text:**
 
@@ -21,6 +103,50 @@ Redistribution and use in source and binary forms, with or without modification,
 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+---
+
+## **BSD License**
+
+The following components are licensed under a BSD-style license:
+
+**bash_kernel 0.10.0**, Copyright (c) Thomas Kluyver
+
+**jupyter-server 2.17.0**, Copyright (c) Jupyter Development Team
+
+**pandas 3.0.2**, Copyright (c) The Pandas Development Team
+
+**python-dateutil 2.9.0.post0**, Copyright (c) Gustavo Niemeyer
+
+**reportlab 4.4.10**, Copyright (c) 2000-2025, ReportLab Inc.
+
+**scipy 1.17.1**, Copyright (c) SciPy Developers
+
+**seaborn 0.13.2**, Copyright (c) Michael Waskom
+
+**statsmodels 0.14.6**, Copyright (c) statsmodels Developers
+
+**sympy 1.14.0**, Copyright (c) SymPy development team
+
+**xlrd 2.0.2**, Copyright (c) Chris Withers
+
+---
+
+## **Python Software Foundation License**
+
+The following components are licensed under the Python Software Foundation License:
+
+**matplotlib 3.10.8**, Copyright (c) John D. Hunter, Michael Droettboom
+
+---
+
+## **GNU Lesser General Public License v3 (LGPLv3)**
+
+The following components are licensed under the GNU Lesser General Public License v3:
+
+**img2pdf 0.6.3**, Copyright (c) Johannes Schauer Marin Rodrigues
+
+Note: This component is used as a library only. Under the terms of the LGPLv3, users may replace or modify this library. Source code is available at https://pypi.org/project/img2pdf/
 
 ---
 
