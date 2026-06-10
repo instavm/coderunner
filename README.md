@@ -7,9 +7,9 @@
 
 # CodeRunner: A local sandbox for your AI agents
 
-CodeRunner helps you sandbox your AI agents and its actions inside a sandbox. 
+CodeRunner runs your AI agents and their actions inside an isolated sandbox. 
 
-**Key use case:** You can run multiple Claude Code or AI agents in our sandbox without any fear of data loss and exfilteration.
+**Key use case:** You can run multiple Claude Code or AI agents in our sandbox with reduced risk of data loss and exfiltration.
 
 
 
@@ -351,8 +351,9 @@ CodeRunner consists of:
 ## Examples
 
 The `examples/` directory contains:
-- `openai-agents` - Example OpenAI agents integration
-- `claude-desktop` - Example Claude Desktop integration
+- `openai_agents` - Example OpenAI agents integration
+- `claude_desktop` - Example Claude Desktop integration
+- `gemini_cli` - Example Gemini CLI integration
 
 ## Building Container Image Tutorial
 
