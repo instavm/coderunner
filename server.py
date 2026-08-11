@@ -32,6 +32,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Initialize the MCP server with a descriptive name for the toolset
+# Extra hostnames (comma-separated) that may be used to reach this server,
+# e.g. a LAN IP or a custom DNS name.
+EXTRA_ALLOWED_HOSTNAMES = [
+    h.strip() for h in os.environ.get("CODERUNNER_EXTRA_HOSTS", "").split(",") if h.strip()
+]
+
 # Configure DNS rebinding protection to allow coderunner.local
 mcp = FastMCP(
     "CodeRunner",
@@ -42,11 +48,13 @@ mcp = FastMCP(
             "127.0.0.1:*",
             "coderunner.local:*",
             "0.0.0.0:*",
+            *[f"{h}:*" for h in EXTRA_ALLOWED_HOSTNAMES],
         ],
         allowed_origins=[
             "http://localhost:*",
             "http://127.0.0.1:*",
             "http://coderunner.local:*",
+            *[f"http://{h}:*" for h in EXTRA_ALLOWED_HOSTNAMES],
         ],
     )
 )
@@ -584,6 +592,17 @@ async def _parse_skill_frontmatter(skill_md_path):
     except Exception:
         return {}
 
+
+def _extract_skill_archive(archive_path: pathlib.Path) -> None:
+    destination = USER_SKILLS_DIR.resolve()
+    with zipfile.ZipFile(archive_path, "r") as archive:
+        for member in archive.infolist():
+            target = (destination / member.filename).resolve()
+            if not target.is_relative_to(destination):
+                raise ValueError(f"Unsafe path in skill archive: {member.filename}")
+        archive.extractall(destination)
+
+
 @mcp.tool()
 async def list_skills() -> str:
     """
@@ -600,8 +619,7 @@ async def list_skills() -> str:
         if USER_SKILLS_DIR.exists():
             for item in USER_SKILLS_DIR.iterdir():
                 if item.is_file() and item.suffix == '.zip':
-                    with zipfile.ZipFile(item, 'r') as zip_ref:
-                        zip_ref.extractall(USER_SKILLS_DIR)
+                    _extract_skill_archive(item)
                     os.remove(item)
 
         skills = {
@@ -667,20 +685,21 @@ async def _read_skill_file(skill_name: str, filename: str) -> tuple[str, str, st
         If failed, content and skill_type are None
     """
     try:
-        # Check public skills first
-        public_skill_file = PUBLIC_SKILLS_DIR / skill_name / filename
-        user_skill_file = USER_SKILLS_DIR / skill_name / filename
-
         skill_file_path = None
         skill_type = None
 
-        if public_skill_file.exists():
-            skill_file_path = public_skill_file
-            skill_type = "public"
-        elif user_skill_file.exists():
-            skill_file_path = user_skill_file
-            skill_type = "user"
-        else:
+        # Resolve the requested path and make sure it stays inside the
+        # skill directory, so that names like "../../etc" cannot escape it.
+        for base_dir, category in ((PUBLIC_SKILLS_DIR, "public"), (USER_SKILLS_DIR, "user")):
+            candidate = (base_dir / skill_name / filename).resolve()
+            if not candidate.is_relative_to(base_dir.resolve()):
+                return None, None, f"Error: Invalid skill or file name."
+            if candidate.is_file():
+                skill_file_path = candidate
+                skill_type = category
+                break
+
+        if skill_file_path is None:
             return None, None, f"Error: File '{filename}' not found in skill '{skill_name}'. Use list_skills() to see available skills."
 
         # Read the file content
@@ -764,6 +783,41 @@ class MockContext:
 
 # Use the streamable_http_app as it's the modern standard
 app = mcp.streamable_http_app()
+
+# Host/Origin validation for the plain REST routes below. FastMCP applies
+# its transport security settings to /mcp only, so without this a web page
+# could issue a drive-by POST to /execute from the user's browser.
+ALLOWED_HOSTNAMES = {"localhost", "127.0.0.1", "coderunner.local", "0.0.0.0", *EXTRA_ALLOWED_HOSTNAMES}
+
+
+class HostOriginValidator:
+    def __init__(self, asgi_app):
+        self.asgi_app = asgi_app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and not self._is_allowed(scope):
+            response = JSONResponse({"error": "Invalid Host or Origin header"}, status_code=403)
+            await response(scope, receive, send)
+            return
+        await self.asgi_app(scope, receive, send)
+
+    @staticmethod
+    def _is_allowed(scope) -> bool:
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
+        host = headers.get("host", "").rsplit(":", 1)[0]
+        if host not in ALLOWED_HOSTNAMES:
+            return False
+        origin = headers.get("origin")
+        if origin:
+            origin_host = origin.split("://", 1)[-1].rsplit(":", 1)[0]
+            if origin_host not in ALLOWED_HOSTNAMES:
+                return False
+        return True
+
+
+async def api_health(request: Request):
+    """Liveness endpoint used by the installer and container healthchecks."""
+    return JSONResponse({"status": "ok"})
 
 # Add custom REST API endpoints compatible with instavm SDK client
 async def api_execute(request: Request):
@@ -1020,9 +1074,13 @@ async def api_stop_session(request: Request):
 
 
 # Add routes to the Starlette app
+app.add_route("/health", api_health, methods=["GET"])
 app.add_route("/execute", api_execute, methods=["POST"])
 app.add_route("/v1/sessions/session", api_start_session, methods=["POST"])
 app.add_route("/v1/sessions/session", api_get_session, methods=["GET"])
 app.add_route("/v1/sessions/session", api_stop_session, methods=["DELETE"])
 app.add_route("/v1/browser/interactions/navigate", api_browser_navigate, methods=["POST"])
 app.add_route("/v1/browser/interactions/content", api_browser_extract_content, methods=["POST"])
+
+# Wrap the app last so validation covers every route
+app = HostOriginValidator(app)
