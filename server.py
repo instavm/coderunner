@@ -5,11 +5,12 @@ import binascii
 import json
 import logging
 import os
+import re
 import zipfile
 import pathlib
 import time
 import uuid
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, TypedDict
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime, timedelta
@@ -112,7 +113,6 @@ class KernelState(Enum):
     HEALTHY = "healthy"
     BUSY = "busy"
     UNRESPONSIVE = "unresponsive"
-    FAILED = "failed"
 
 @dataclass
 class KernelInfo:
@@ -121,7 +121,6 @@ class KernelInfo:
     last_used: datetime = field(default_factory=datetime.now)
     last_health_check: datetime = field(default_factory=datetime.now)
     current_operation: Optional[str] = None
-    failure_count: int = 0
 
     def is_available(self) -> bool:
         return self.state == KernelState.HEALTHY
@@ -143,6 +142,8 @@ class KernelPool:
             return
 
         async with self.lock:
+            if self._initialized:
+                return
             logger.info("Initializing kernel pool...")
 
             # Try to use existing kernel first
@@ -194,7 +195,7 @@ class KernelPool:
             logger.warning("No available kernels in pool")
             return None
 
-    async def release_kernel(self, kernel_id: str, failed: bool = False):
+    async def release_kernel(self, kernel_id: str):
         """Release a kernel back to the pool"""
         async with self.lock:
             if kernel_id in self.busy_kernels:
@@ -202,22 +203,18 @@ class KernelPool:
 
             if kernel_id in self.kernels:
                 kernel_info = self.kernels[kernel_id]
-                if failed:
-                    kernel_info.failure_count += 1
-                    kernel_info.state = KernelState.FAILED
-                    logger.warning(f"Kernel {kernel_id} marked as failed (failures: {kernel_info.failure_count})")
+                kernel_info.state = KernelState.HEALTHY
+                kernel_info.current_operation = None
+                logger.info(f"Released kernel {kernel_id} back to pool")
 
-                    # Remove failed kernel if it has too many failures
-                    if kernel_info.failure_count >= MAX_RETRY_ATTEMPTS:
-                        await self._remove_kernel(kernel_id)
-                        # Create replacement kernel
-                        new_kernel_id = await self._create_new_kernel()
-                        if new_kernel_id:
-                            self.kernels[new_kernel_id] = KernelInfo(kernel_id=new_kernel_id)
-                else:
-                    kernel_info.state = KernelState.HEALTHY
-                    kernel_info.current_operation = None
-                    logger.info(f"Released kernel {kernel_id} back to pool")
+    async def discard_kernel(self, kernel_id: str):
+        """Shutdown a reserved kernel and replenish the warm pool."""
+        async with self.lock:
+            await self._remove_kernel(kernel_id)
+            if len(self.kernels) < MIN_KERNELS:
+                new_kernel_id = await self._create_new_kernel()
+                if new_kernel_id:
+                    self.kernels[new_kernel_id] = KernelInfo(kernel_id=new_kernel_id)
 
     async def _get_existing_kernel(self) -> Optional[str]:
         """Try to get kernel ID from existing file"""
@@ -245,8 +242,14 @@ class KernelPool:
                 if response.status_code == 201:
                     kernel_data = response.json()
                     kernel_id = kernel_data["id"]
-                    logger.info(f"Created new kernel: {kernel_id}")
-                    return kernel_id
+                    if await self._check_kernel_health(kernel_id):
+                        logger.info(f"Created new kernel: {kernel_id}")
+                        return kernel_id
+                    await client.delete(
+                        f"{JUPYTER_HTTP_URL}/api/kernels/{kernel_id}",
+                        timeout=10.0,
+                    )
+                    logger.error(f"New kernel did not become ready: {kernel_id}")
                 else:
                     logger.error(f"Failed to create kernel: {response.status_code}")
         except Exception as e:
@@ -334,6 +337,98 @@ class KernelPool:
 kernel_pool = KernelPool()
 
 
+class PythonSessionInfo(TypedDict):
+    session_id: str
+    status: str
+    created_at: str
+
+
+@dataclass
+class PythonSession:
+    session_id: str
+    kernel_id: str
+    created_at: datetime = field(default_factory=datetime.now)
+    execution_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    closed: bool = False
+
+    def info(self, status: str = "active") -> PythonSessionInfo:
+        return {
+            "session_id": self.session_id,
+            "status": status,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+class PythonSessionManager:
+    def __init__(self):
+        self.sessions: Dict[str, PythonSession] = {}
+        self.lock = asyncio.Lock()
+
+    async def start(self, requested_id: Optional[str] = None) -> PythonSessionInfo:
+        await kernel_pool.initialize()
+        if requested_id is not None and not isinstance(requested_id, str):
+            raise ValueError("Session ID must be a string.")
+        session_id = requested_id or f"session_{uuid.uuid4().hex[:12]}"
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", session_id):
+            raise ValueError("Session IDs must be 1-64 letters, numbers, dots, dashes, or underscores.")
+
+        async with self.lock:
+            if session_id in self.sessions:
+                raise ValueError(f"Session '{session_id}' already exists.")
+            kernel_id = await kernel_pool.get_available_kernel()
+            if not kernel_id:
+                raise NoKernelAvailableError(f"Maximum of {MAX_KERNELS} active sessions reached.")
+            session = PythonSession(session_id=session_id, kernel_id=kernel_id)
+            self.sessions[session_id] = session
+            logger.info(f"Started Python session {session_id} on kernel {kernel_id}")
+            return session.info()
+
+    async def execute(self, session_id: str, command: str, ctx: Context) -> str:
+        async with self.lock:
+            session = self.sessions.get(session_id)
+        if not session:
+            return f"Error: Session '{session_id}' not found."
+
+        async with session.execution_lock:
+            if session.closed:
+                return f"Error: Session '{session_id}' is closed."
+            try:
+                return await _execute_on_kernel(session.kernel_id, command, ctx)
+            except KernelExecutionError as exc:
+                return f"Error: {exc}"
+            except Exception as exc:
+                async with self.lock:
+                    self.sessions.pop(session_id, None)
+                    session.closed = True
+                await kernel_pool.discard_kernel(session.kernel_id)
+                return f"Error: Session '{session_id}' failed and was closed: {exc}"
+
+    async def stop(self, session_id: str) -> PythonSessionInfo:
+        async with self.lock:
+            session = self.sessions.pop(session_id, None)
+            if session:
+                session.closed = True
+        if not session:
+            raise ValueError(f"Session '{session_id}' not found.")
+
+        async with session.execution_lock:
+            await kernel_pool.discard_kernel(session.kernel_id)
+        logger.info(f"Stopped Python session {session_id}")
+        return session.info(status="stopped")
+
+    async def get(self, session_id: str) -> Optional[PythonSessionInfo]:
+        async with self.lock:
+            session = self.sessions.get(session_id)
+            return session.info() if session else None
+
+    async def list(self) -> list[PythonSessionInfo]:
+        async with self.lock:
+            return [self.sessions[key].info() for key in sorted(self.sessions)]
+
+
+python_sessions = PythonSessionManager()
+
+
 
 # --- HELPER FUNCTION ---
 def create_jupyter_request(code: str) -> tuple[str, str]:
@@ -383,11 +478,13 @@ async def execute_with_retry(command: str, ctx: Context, max_attempts: int = MAX
             try:
                 result = await _execute_on_kernel(kernel_id, command, ctx)
                 # Release kernel back to pool on success
-                await kernel_pool.release_kernel(kernel_id, failed=False)
+                await kernel_pool.release_kernel(kernel_id)
                 return result
+            except KernelExecutionError as e:
+                await kernel_pool.release_kernel(kernel_id)
+                return f"Error: {e}"
             except Exception as e:
-                # Release kernel as failed
-                await kernel_pool.release_kernel(kernel_id, failed=True)
+                await kernel_pool.discard_kernel(kernel_id)
                 raise e
 
         except Exception as e:
@@ -499,7 +596,11 @@ async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
 
 # --- MCP TOOLS ---
 @mcp.tool()
-async def execute_python_code(command: str, ctx: Context) -> str:
+async def execute_python_code(
+    command: str,
+    ctx: Context,
+    session_id: Optional[str] = None,
+) -> str:
     """
     Executes a string of Python code in a persistent Jupyter kernel and returns the final output.
     Uses kernel pool management with automatic retry and recovery for long-running operations.
@@ -508,6 +609,7 @@ async def execute_python_code(command: str, ctx: Context) -> str:
     Args:
         command: The Python code to execute as a single string.
         ctx: The MCP Context object, used for reporting progress.
+        session_id: Optional named session created by start_python_session.
     """
     try:
         # Initialize kernel pool if not already done
@@ -515,13 +617,34 @@ async def execute_python_code(command: str, ctx: Context) -> str:
             await ctx.report_progress(progress=10, message="Initializing kernel pool...")
             await kernel_pool.initialize()
 
-        # Execute with retry logic
-        result = await execute_with_retry(command, ctx)
+        if session_id:
+            result = await python_sessions.execute(session_id, command, ctx)
+        else:
+            result = await execute_with_retry(command, ctx)
         return result
 
     except Exception as e:
         logger.error(f"Fatal error in execute_python_code: {e}", exc_info=True)
         return f"Error: Failed to execute code: {str(e)}"
+
+
+@mcp.tool()
+async def start_python_session(session_id: Optional[str] = None) -> PythonSessionInfo:
+    """Start a named Python session with an isolated persistent kernel."""
+    return await python_sessions.start(session_id)
+
+
+@mcp.tool()
+async def list_python_sessions() -> list[PythonSessionInfo]:
+    """List active named Python sessions."""
+    return await python_sessions.list()
+
+
+@mcp.tool()
+async def stop_python_session(session_id: str) -> PythonSessionInfo:
+    """Stop a named Python session and discard its kernel state."""
+    return await python_sessions.stop(session_id)
+
 
 @mcp.tool()
 async def navigate_and_get_all_visible_text(url: str) -> str:
@@ -773,7 +896,7 @@ async def api_execute(request: Request):
     Request body (JSON):
         {
             "command": "print('hello world')",
-            "session_id": "optional-ignored-for-local",
+            "session_id": "optional named Python session",
             "language": "python",  // optional, only python supported
             "timeout": 300  // optional, not used in local execution
         }
@@ -808,7 +931,7 @@ async def api_execute(request: Request):
         ctx = MockContext()
 
         # Execute the code
-        result = await execute_python_code(command, ctx)
+        result = await execute_python_code(command, ctx, session_id=body.get("session_id"))
 
         # Calculate execution time
         execution_time = time.time() - start_time
@@ -957,66 +1080,45 @@ async def api_browser_extract_content(request: Request):
 
 # --- SESSION MANAGEMENT ENDPOINTS FOR SDK COMPATIBILITY ---
 
-# Simple in-memory session store (for local use, sessions are lightweight)
-_session_store = {}
-_session_counter = 0
-
-
 async def api_start_session(request: Request):
-    """
-    Start a new session (compatible with InstaVM SDK).
-
-    For local execution, sessions are lightweight - we just return a session ID.
-    The SDK uses this for tracking, but locally we don't need complex session state.
-
-    Response (JSON):
-        {
-            "session_id": "session_123",
-            "status": "active"
-        }
-    """
-    global _session_counter
-    _session_counter += 1
-    session_id = f"session_{_session_counter}"
-
-    # Store session (minimal state for local use)
-    _session_store[session_id] = {
-        "status": "active",
-        "created_at": __import__('time').time()
-    }
-
-    return JSONResponse({
-        "session_id": session_id,
-        "status": "active"
-    })
+    """Start a named Python session (compatible with InstaVM SDK)."""
+    try:
+        raw_body = await request.body()
+        body = json.loads(raw_body) if raw_body else {}
+        info = await python_sessions.start(body.get("session_id"))
+        return JSONResponse(info, status_code=201)
+    except json.JSONDecodeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    except NoKernelAvailableError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503)
 
 
 async def api_get_session(request: Request):
-    """
-    Get session status (compatible with InstaVM SDK).
-
-    Response (JSON):
-        {
-            "session_id": "session_123",
-            "status": "active"
-        }
-    """
-    # For local use, just return active status
-    return JSONResponse({
-        "session_id": "session",
-        "status": "active"
-    })
+    """Get one session or list all active sessions."""
+    session_id = request.query_params.get("session_id")
+    if not session_id:
+        return JSONResponse({"sessions": await python_sessions.list()})
+    info = await python_sessions.get(session_id)
+    if not info:
+        return JSONResponse({"error": f"Session '{session_id}' not found."}, status_code=404)
+    return JSONResponse(info)
 
 
 async def api_stop_session(request: Request):
-    """
-    Stop a session (compatible with InstaVM SDK).
-
-    For local use, this is a no-op since we don't have real session state.
-    """
-    return JSONResponse({
-        "status": "stopped"
-    })
+    """Stop a named Python session and discard its kernel."""
+    try:
+        raw_body = await request.body()
+        body = json.loads(raw_body) if raw_body else {}
+        session_id = request.query_params.get("session_id") or body.get("session_id")
+        if not session_id:
+            return JSONResponse({"error": "Missing session_id."}, status_code=400)
+        return JSONResponse(await python_sessions.stop(session_id))
+    except json.JSONDecodeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
 
 
 # Add routes to the Starlette app
