@@ -62,6 +62,16 @@ Additional host directories must be mounted under `/workspace`. They are read-on
 
 Extra mounts default to none. Resource and mount settings are fixed when the container is created; delete the container before changing them.
 
+### Disable outbound network access
+
+By default, code running in the sandbox has unrestricted network access. To run it on a host-only network with no internet access:
+
+```bash
+CODERUNNER_NETWORK=none ./install.sh
+```
+
+In this mode, the MCP server is available at `http://127.0.0.1:8222/mcp`. The setting is fixed when the container is created; the installer refuses to resume a container with a different network mode.
+
 
 ## Run Claude Code inside a Sandbox
 
@@ -77,7 +87,8 @@ Extra mounts default to none. Resource and mount settings are fixed when the con
 
 MCP server will be available at: `http://coderunner.local:8222/mcp`
 
-**Install required packages** (use virtualenv and note the python path):
+The installer creates `~/.coderunner/venv` for the Claude Desktop proxy. For the other Python examples, install their dependencies in your own virtualenv:
+
 ```bash
 pip install -r examples/requirements.txt
 ```
@@ -101,7 +112,7 @@ pip install -r examples/requirements.txt
    ```
 
 2. **Edit the configuration file** and replace the placeholder paths:
-   - Replace `/path/to/your/python` with your actual Python path (e.g., `/usr/bin/python3` or `/opt/homebrew/bin/python3`)
+   - Replace `/path/to/your/python` with `$HOME/.coderunner/venv/bin/python` using the full path to your home directory
    - Replace `/path/to/coderunner` with the actual path to your cloned repository
 
    Example after editing:
@@ -109,7 +120,7 @@ pip install -r examples/requirements.txt
    {
      "mcpServers": {
        "coderunner": {
-         "command": "/opt/homebrew/bin/python3",
+         "command": "/Users/yourname/.coderunner/venv/bin/python",
          "args": ["/Users/yourname/coderunner/examples/claude_desktop/mcpproxy.py"]
        }
      }
