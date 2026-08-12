@@ -194,7 +194,8 @@ wait_for_server() {
     done
     echo "❌ The container started but the MCP server did not respond within 120 seconds."
     echo "   Check the container logs with: container logs coderunner"
-    echo "   If coderunner.local does not resolve, verify DNS setup with: container system property list"
+    echo "   If coderunner.local does not resolve, verify domain = \"local\" in ~/.config/container/config.toml"
+    echo "   and check the DNS service with: container system dns list"
     return 1
 }
 
