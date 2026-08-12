@@ -237,7 +237,7 @@ if container run \
   --detach \
   --cpus 8 \
   --memory 4g \
-  "${NETWORK_ARGS[@]}" \
+  ${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"} \
   instavm/coderunner; then
     wait_for_server
     exit $?
