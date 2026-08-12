@@ -58,7 +58,7 @@ if ! [[ "$MEMORY" =~ ^[1-9][0-9]*([KkMmGgTtPp][Bb]?)?$ ]]; then
 fi
 
 NORMALIZED_MOUNTS=()
-for spec in "${MOUNT_SPECS[@]}"; do
+for spec in ${MOUNT_SPECS[@]+"${MOUNT_SPECS[@]}"}; do
     source_path=${spec%%:*}
     remainder=${spec#*:}
     if [ "$remainder" = "$spec" ] || [ -z "$source_path" ] || [ -z "$remainder" ]; then
@@ -95,7 +95,7 @@ for spec in "${MOUNT_SPECS[@]}"; do
         echo "Error: mount target contains an invalid path segment." >&2
         exit 2
     fi
-    for existing in "${NORMALIZED_MOUNTS[@]}"; do
+    for existing in ${NORMALIZED_MOUNTS[@]+"${NORMALIZED_MOUNTS[@]}"}; do
         existing_target=${existing#*:}
         existing_target=${existing_target%:*}
         if [ "$existing_target" = "$target_path" ]; then
@@ -200,7 +200,7 @@ mkdir -p "$ASSETS_SRC/outputs"
 
 CONFIG_FILE="$HOME/.coderunner/container-config"
 desired_config="cpus=$CPUS"$'\n'"memory=$MEMORY"
-for mount in "${NORMALIZED_MOUNTS[@]}"; do
+for mount in ${NORMALIZED_MOUNTS[@]+"${NORMALIZED_MOUNTS[@]}"}; do
     desired_config="${desired_config}"$'\n'"mount=$mount"
 done
 if container inspect coderunner &>/dev/null; then
@@ -239,7 +239,7 @@ echo "Starting coderunner with $CPUS CPUs and $MEMORY memory..."
 if container run \
   --volume "$ASSETS_SRC/skills/user:/app/uploads/skills/user" \
   --volume "$ASSETS_SRC/outputs:/app/uploads/outputs" \
-  "${VOLUME_ARGS[@]}" \
+  ${VOLUME_ARGS[@]+"${VOLUME_ARGS[@]}"} \
   --name coderunner \
   --detach \
   --cpus "$CPUS" \
