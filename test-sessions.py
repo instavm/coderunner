@@ -114,7 +114,8 @@ def main():
     assert expected <= tools_by_name.keys()
     assert all("outputSchema" in tool for tool in tools)
     execute_schema = tools_by_name["execute_python_code"]["inputSchema"]["properties"]
-    assert execute_schema["session_id"]["anyOf"][0]["type"] == "string"
+    session_id_types = {schema["type"] for schema in execute_schema["session_id"]["anyOf"]}
+    assert session_id_types == {"string", "null"}
 
     active = ["alpha", "beta"]
     for session_id in active:

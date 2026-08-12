@@ -107,6 +107,11 @@ class KernelTimeoutError(KernelError):
     """Raised when kernel operation times out"""
     pass
 
+class SessionConflictError(ValueError):
+    """Raised when a requested session ID already exists"""
+    pass
+
+
 # --- KERNEL MANAGEMENT CLASSES ---
 
 class KernelState(Enum):
@@ -210,11 +215,21 @@ class KernelPool:
     async def discard_kernel(self, kernel_id: str):
         """Shutdown a reserved kernel and replenish the warm pool."""
         async with self.lock:
-            await self._remove_kernel(kernel_id)
-            if len(self.kernels) < MIN_KERNELS:
-                new_kernel_id = await self._create_new_kernel()
-                if new_kernel_id:
-                    self.kernels[new_kernel_id] = KernelInfo(kernel_id=new_kernel_id)
+            self.kernels.pop(kernel_id, None)
+            self.busy_kernels.discard(kernel_id)
+            needs_replacement = len(self.kernels) < MIN_KERNELS
+
+        await self._shutdown_kernel(kernel_id)
+        if needs_replacement:
+            new_kernel_id = await self._create_new_kernel()
+            if new_kernel_id:
+                keep_kernel = False
+                async with self.lock:
+                    if len(self.kernels) < MIN_KERNELS:
+                        keep_kernel = True
+                        self.kernels[new_kernel_id] = KernelInfo(kernel_id=new_kernel_id)
+                if not keep_kernel:
+                    await self._shutdown_kernel(new_kernel_id)
 
     async def _get_existing_kernel(self) -> Optional[str]:
         """Try to get kernel ID from existing file"""
@@ -258,6 +273,12 @@ class KernelPool:
 
     async def _remove_kernel(self, kernel_id: str):
         """Remove and shutdown a kernel"""
+        await self._shutdown_kernel(kernel_id)
+        self.kernels.pop(kernel_id, None)
+        self.busy_kernels.discard(kernel_id)
+
+    async def _shutdown_kernel(self, kernel_id: str):
+        """Shutdown a Jupyter kernel without modifying pool state."""
         try:
             async with httpx.AsyncClient() as client:
                 await client.delete(
@@ -267,11 +288,6 @@ class KernelPool:
             logger.info(f"Removed kernel: {kernel_id}")
         except Exception as e:
             logger.warning(f"Error removing kernel {kernel_id}: {e}")
-
-        if kernel_id in self.kernels:
-            del self.kernels[kernel_id]
-        if kernel_id in self.busy_kernels:
-            self.busy_kernels.remove(kernel_id)
 
     async def _check_kernel_health(self, kernel_id: str) -> bool:
         """Check if a kernel is healthy by sending a simple command"""
@@ -370,11 +386,14 @@ class PythonSessionManager:
             raise ValueError("Session ID must be a string.")
         session_id = requested_id or f"session_{uuid.uuid4().hex[:12]}"
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", session_id):
-            raise ValueError("Session IDs must be 1-64 letters, numbers, dots, dashes, or underscores.")
+            raise ValueError(
+                "Session IDs must be 1-64 characters, start with a letter or number, "
+                "and contain only letters, numbers, dots, dashes, or underscores."
+            )
 
         async with self.lock:
             if session_id in self.sessions:
-                raise ValueError(f"Session '{session_id}' already exists.")
+                raise SessionConflictError(f"Session '{session_id}' already exists.")
             kernel_id = await kernel_pool.get_available_kernel()
             if not kernel_id:
                 raise NoKernelAvailableError(f"Maximum of {MAX_KERNELS} active sessions reached.")
@@ -1089,8 +1108,10 @@ async def api_start_session(request: Request):
         return JSONResponse(info, status_code=201)
     except json.JSONDecodeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
-    except ValueError as exc:
+    except SessionConflictError as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     except NoKernelAvailableError as exc:
         return JSONResponse({"error": str(exc)}, status_code=503)
 
