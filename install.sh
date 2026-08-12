@@ -1,5 +1,116 @@
 #!/bin/bash
 
+CPUS="${CODERUNNER_CPUS:-8}"
+MEMORY="${CODERUNNER_MEMORY:-4g}"
+MOUNT_SPECS=()
+VOLUME_ARGS=()
+
+usage() {
+    cat <<'EOF'
+Usage: ./install.sh [options]
+
+Options:
+  --cpus N                  CPU count (default: 8)
+  --memory SIZE             Memory limit, e.g. 4g or 8192m (default: 4g)
+  --mount HOST:TARGET[:ro|rw]
+                            Mount a host directory under /workspace.
+                            Mounts are read-only unless :rw is specified.
+  -h, --help                Show this help
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --cpus)
+            [ "$#" -ge 2 ] || { echo "Error: --cpus requires a value." >&2; exit 2; }
+            CPUS="$2"
+            shift 2
+            ;;
+        --memory)
+            [ "$#" -ge 2 ] || { echo "Error: --memory requires a value." >&2; exit 2; }
+            MEMORY="$2"
+            shift 2
+            ;;
+        --mount)
+            [ "$#" -ge 2 ] || { echo "Error: --mount requires a value." >&2; exit 2; }
+            MOUNT_SPECS+=("$2")
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Error: unknown option '$1'." >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+if ! [[ "$CPUS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: CPU count must be a positive integer." >&2
+    exit 2
+fi
+if ! [[ "$MEMORY" =~ ^[1-9][0-9]*([KkMmGgTtPp][Bb]?)?$ ]]; then
+    echo "Error: memory must be a positive size such as 4g or 8192m." >&2
+    exit 2
+fi
+
+NORMALIZED_MOUNTS=()
+for spec in "${MOUNT_SPECS[@]}"; do
+    source_path=${spec%%:*}
+    remainder=${spec#*:}
+    if [ "$remainder" = "$spec" ] || [ -z "$source_path" ] || [ -z "$remainder" ]; then
+        echo "Error: mount must use HOST:TARGET[:ro|rw]." >&2
+        exit 2
+    fi
+    target_path=${remainder%%:*}
+    if [ "$target_path" = "$remainder" ]; then
+        mode="ro"
+    else
+        mode=${remainder#*:}
+        if [[ "$mode" == *:* ]]; then
+            echo "Error: mount must use HOST:TARGET[:ro|rw]." >&2
+            exit 2
+        fi
+    fi
+    if [ "$mode" != "ro" ] && [ "$mode" != "rw" ]; then
+        echo "Error: mount mode must be 'ro' or 'rw'." >&2
+        exit 2
+    fi
+    if [ ! -d "$source_path" ]; then
+        echo "Error: mount source is not a directory: $source_path" >&2
+        exit 2
+    fi
+    source_path=$(cd "$source_path" && pwd -P)
+    case "$target_path" in
+        /workspace|/workspace/*) ;;
+        *)
+            echo "Error: mount targets must be /workspace or a path below it." >&2
+            exit 2
+            ;;
+    esac
+    if [[ "$target_path" == *"/../"* ]] || [[ "$target_path" == */.. ]] || [[ "$target_path" == *"//"* ]]; then
+        echo "Error: mount target contains an invalid path segment." >&2
+        exit 2
+    fi
+    for existing in "${NORMALIZED_MOUNTS[@]}"; do
+        existing_target=${existing#*:}
+        existing_target=${existing_target%:*}
+        if [ "$existing_target" = "$target_path" ]; then
+            echo "Error: duplicate mount target: $target_path" >&2
+            exit 2
+        fi
+    done
+    NORMALIZED_MOUNTS+=("$source_path:$target_path:$mode")
+    if [ "$mode" = "ro" ]; then
+        VOLUME_ARGS+=(--volume "$source_path:$target_path:ro")
+    else
+        VOLUME_ARGS+=(--volume "$source_path:$target_path")
+    fi
+done
+
 # Function to get current macOS version
 get_macos_version() {
   sw_vers -productVersion | awk -F. '{print $1 "." $2}'
@@ -87,6 +198,25 @@ ASSETS_SRC="$HOME/.coderunner/assets"
 mkdir -p "$ASSETS_SRC/skills/user"
 mkdir -p "$ASSETS_SRC/outputs"
 
+CONFIG_FILE="$HOME/.coderunner/container-config"
+desired_config="cpus=$CPUS"$'\n'"memory=$MEMORY"
+for mount in "${NORMALIZED_MOUNTS[@]}"; do
+    desired_config="${desired_config}"$'\n'"mount=$mount"
+done
+if container inspect coderunner &>/dev/null; then
+    if [ -f "$CONFIG_FILE" ]; then
+        if [ "$(cat "$CONFIG_FILE")" != "$desired_config" ]; then
+            echo "❌ Existing container was created with different resource or mount settings."
+            echo "   Recreate it with: container delete coderunner && ./install.sh [options]"
+            exit 1
+        fi
+    elif [ "$desired_config" != $'cpus=8\nmemory=4g' ]; then
+        echo "❌ Existing container predates configurable resources and mounts."
+        echo "   Recreate it with: container delete coderunner && ./install.sh [options]"
+        exit 1
+    fi
+fi
+
 # Stop any existing coderunner container
 echo "Stopping any existing coderunner container..."
 container stop coderunner 2>/dev/null || true
@@ -105,15 +235,17 @@ if ! container image pull instavm/coderunner; then
 fi
 
 # Run the command to start the sandbox container
-echo "Running: container run --volume \"$ASSETS_SRC/skills/user:/app/uploads/skills/user\" --volume \"$ASSETS_SRC/outputs:/app/uploads/outputs\" --name coderunner --detach --cpus 8 --memory 4g instavm/coderunner"
+echo "Starting coderunner with $CPUS CPUs and $MEMORY memory..."
 if container run \
   --volume "$ASSETS_SRC/skills/user:/app/uploads/skills/user" \
   --volume "$ASSETS_SRC/outputs:/app/uploads/outputs" \
+  "${VOLUME_ARGS[@]}" \
   --name coderunner \
   --detach \
-  --cpus 8 \
-  --memory 4g \
+  --cpus "$CPUS" \
+  --memory "$MEMORY" \
   instavm/coderunner; then
+    printf '%s' "$desired_config" > "$CONFIG_FILE"
     echo "✅ Setup complete. MCP server is available at http://coderunner.local:8222/mcp"
 else
     echo "❌ Failed to start coderunner container. Please check the logs with: container logs coderunner"
