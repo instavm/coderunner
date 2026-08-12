@@ -5,14 +5,17 @@ import binascii
 import json
 import logging
 import os
-import zipfile
 import pathlib
+import shutil
+import stat
 import time
 import uuid
+import zipfile
 from typing import Dict, Optional, Set
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 import aiofiles
 import websockets
@@ -35,7 +38,9 @@ logger = logging.getLogger(__name__)
 # Extra hostnames (comma-separated) that may be used to reach this server,
 # e.g. a LAN IP or a custom DNS name.
 EXTRA_ALLOWED_HOSTNAMES = [
-    h.strip() for h in os.environ.get("CODERUNNER_EXTRA_HOSTS", "").split(",") if h.strip()
+    h.strip().lower()
+    for h in os.environ.get("CODERUNNER_EXTRA_HOSTS", "").split(",")
+    if h.strip()
 ]
 
 # Configure DNS rebinding protection to allow coderunner.local
@@ -600,7 +605,23 @@ def _extract_skill_archive(archive_path: pathlib.Path) -> None:
             target = (destination / member.filename).resolve()
             if not target.is_relative_to(destination):
                 raise ValueError(f"Unsafe path in skill archive: {member.filename}")
-        archive.extractall(destination)
+
+            mode = member.external_attr >> 16
+            file_type = stat.S_IFMT(mode)
+            if file_type not in (0, stat.S_IFREG, stat.S_IFDIR):
+                raise ValueError(f"Unsupported file type in skill archive: {member.filename}")
+
+        for member in archive.infolist():
+            target = destination / member.filename
+            if member.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.is_symlink():
+                raise ValueError(f"Unsafe symlink target in skill archive: {member.filename}")
+            with archive.open(member, "r") as source, target.open("wb") as output:
+                shutil.copyfileobj(source, output)
 
 
 @mcp.tool()
@@ -790,6 +811,21 @@ app = mcp.streamable_http_app()
 ALLOWED_HOSTNAMES = {"localhost", "127.0.0.1", "coderunner.local", "0.0.0.0", *EXTRA_ALLOWED_HOSTNAMES}
 
 
+def _header_hostname(value: str, *, origin: bool = False) -> Optional[str]:
+    try:
+        parsed = urlsplit(value if origin else f"//{value}")
+        if origin and parsed.scheme.lower() not in {"http", "https"}:
+            return None
+        if parsed.username is not None or parsed.password is not None:
+            return None
+        if parsed.path or parsed.query or parsed.fragment:
+            return None
+        parsed.port
+        return parsed.hostname.lower() if parsed.hostname else None
+    except ValueError:
+        return None
+
+
 class HostOriginValidator:
     def __init__(self, asgi_app):
         self.asgi_app = asgi_app
@@ -804,12 +840,12 @@ class HostOriginValidator:
     @staticmethod
     def _is_allowed(scope) -> bool:
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
-        host = headers.get("host", "").rsplit(":", 1)[0]
+        host = _header_hostname(headers.get("host", ""))
         if host not in ALLOWED_HOSTNAMES:
             return False
         origin = headers.get("origin")
         if origin:
-            origin_host = origin.split("://", 1)[-1].rsplit(":", 1)[0]
+            origin_host = _header_hostname(origin, origin=True)
             if origin_host not in ALLOWED_HOSTNAMES:
                 return False
         return True

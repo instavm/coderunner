@@ -83,26 +83,30 @@ fi
 
 # 8. Zip archives cannot write outside the user skills directory
 if [ -d "$SKILLS_DIR" ]; then
-    marker="$(dirname "$SKILLS_DIR")/zip-slip-check"
-    rm -f "$marker"
-    python3 - "$SKILLS_DIR/unsafe.zip" <<'PY'
+    if [ -z "$sid" ]; then
+        check "skill archive traversal is rejected (no MCP session)" "session" "none"
+    else
+        marker="$(dirname "$SKILLS_DIR")/zip-slip-check"
+        rm -f "$marker"
+        python3 - "$SKILLS_DIR/unsafe.zip" <<'PY'
 import sys
 import zipfile
 
 with zipfile.ZipFile(sys.argv[1], "w") as archive:
     archive.writestr("../zip-slip-check", "unsafe")
 PY
-    curl -s -o /dev/null -X POST "$BASE/mcp" \
-        -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
-        -H "mcp-session-id: $sid" \
-        -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_skills","arguments":{}}}'
-    if [ -e "$marker" ]; then
-        check "skill archive traversal is rejected" "rejected" "leaked"
-        rm -f "$marker"
-    else
-        check "skill archive traversal is rejected" "rejected" "rejected"
+        curl -s -o /dev/null -X POST "$BASE/mcp" \
+            -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+            -H "mcp-session-id: $sid" \
+            -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_skills","arguments":{}}}'
+        if [ -e "$marker" ]; then
+            check "skill archive traversal is rejected" "rejected" "leaked"
+            rm -f "$marker"
+        else
+            check "skill archive traversal is rejected" "rejected" "rejected"
+        fi
+        rm -f "$SKILLS_DIR/unsafe.zip"
     fi
-    rm -f "$SKILLS_DIR/unsafe.zip"
 fi
 
 # 9. Jupyter must not be reachable from outside the container
