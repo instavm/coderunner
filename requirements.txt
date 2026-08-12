@@ -31,7 +31,7 @@ openai
 
 requests>=2.33.0
 
-mcp[cli]
+mcp[cli]>=1.26,<2
 
 fastmcp
 
