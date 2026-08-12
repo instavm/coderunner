@@ -56,6 +56,8 @@ if ! [[ "$MEMORY" =~ ^[1-9][0-9]*([KkMmGgTtPp][Bb]?)?$ ]]; then
     echo "Error: memory must be a positive size such as 4g or 8192m." >&2
     exit 2
 fi
+MEMORY=$(printf '%s' "$MEMORY" | tr '[:upper:]' '[:lower:]')
+MEMORY=${MEMORY%b}
 
 NORMALIZED_MOUNTS=()
 for spec in ${MOUNT_SPECS[@]+"${MOUNT_SPECS[@]}"}; do
@@ -107,6 +109,7 @@ for spec in ${MOUNT_SPECS[@]+"${MOUNT_SPECS[@]}"}; do
     if [ "$mode" = "ro" ]; then
         VOLUME_ARGS+=(--volume "$source_path:$target_path:ro")
     else
+        # Apple's --volume syntax represents writable mounts by omitting :ro.
         VOLUME_ARGS+=(--volume "$source_path:$target_path")
     fi
 done
@@ -200,9 +203,10 @@ mkdir -p "$ASSETS_SRC/outputs"
 
 CONFIG_FILE="$HOME/.coderunner/container-config"
 desired_config="cpus=$CPUS"$'\n'"memory=$MEMORY"
-for mount in ${NORMALIZED_MOUNTS[@]+"${NORMALIZED_MOUNTS[@]}"}; do
-    desired_config="${desired_config}"$'\n'"mount=$mount"
-done
+if [ -n "${NORMALIZED_MOUNTS[*]-}" ]; then
+    sorted_mounts=$(printf '%s\n' ${NORMALIZED_MOUNTS[@]+"${NORMALIZED_MOUNTS[@]}"} | LC_ALL=C sort)
+    desired_config="${desired_config}"$'\n'"$(printf '%s\n' "$sorted_mounts" | sed 's/^/mount=/')"
+fi
 if container inspect coderunner &>/dev/null; then
     if [ -f "$CONFIG_FILE" ]; then
         if [ "$(cat "$CONFIG_FILE")" != "$desired_config" ]; then
@@ -226,6 +230,11 @@ echo "Trying to resume any existing coderunner container..."
 if container start coderunner 2>/dev/null; then
     echo "✅ Setup complete. MCP server is available at http://coderunner.local:8222/mcp"
     exit 0
+fi
+if container inspect coderunner &>/dev/null; then
+    echo "❌ Existing coderunner container could not be started."
+    echo "   Check its logs, or recreate it with: container delete coderunner && ./install.sh [options]"
+    exit 1
 fi
 
 echo "Pulling the latest image: instavm/coderunner"
