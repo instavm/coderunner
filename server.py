@@ -29,6 +29,7 @@ from bs4 import BeautifulSoup
 import socket
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from auth import BearerAuthentication
 # --- CONFIGURATION & SETUP ---
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -1242,4 +1243,4 @@ app.add_route("/v1/browser/interactions/navigate", api_browser_navigate, methods
 app.add_route("/v1/browser/interactions/content", api_browser_extract_content, methods=["POST"])
 
 # Wrap the app last so validation covers every route
-app = HostOriginValidator(app)
+app = HostOriginValidator(BearerAuthentication(app))

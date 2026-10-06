@@ -1,7 +1,9 @@
 
-from fastmcp import FastMCP
+import os
 import socket
 import sys
+
+from fastmcp import FastMCP
 
 
 def resolve_with_system_dns(hostname):
@@ -27,6 +29,7 @@ config = {
     "mcpServers": {
         "default": {  # For single server configs, 'default' is commonly used
             "url": f"http://{address}:8222/mcp",
+            "headers": {"Authorization": "Bearer " + os.environ["CODERUNNER_API_TOKEN"]},
             "transport": "http"
         }
     }

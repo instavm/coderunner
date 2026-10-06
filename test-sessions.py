@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -8,13 +9,14 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
-
 BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://coderunner.local:8222"
 
 
 def request(path, method="GET", payload=None, headers=None):
     data = json.dumps(payload).encode() if payload is not None else None
-    request_headers = {"Content-Type": "application/json", **(headers or {})}
+    request_headers = {"Content-Type": "application/json",
+                       "Authorization": "Bearer " + os.environ["CODERUNNER_API_TOKEN"],
+                       **(headers or {})}
     req = urllib.request.Request(
         f"{BASE_URL}{path}",
         data=data,

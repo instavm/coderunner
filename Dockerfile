@@ -70,6 +70,7 @@ RUN python -m bash_kernel.install
 
 # Copy the application code (server.py)
 COPY ./server.py /app/server.py
+COPY ./auth.py /app/auth.py
 
 # Create application/jupyter directories
 RUN mkdir -p /app/uploads /app/jupyter_runtime

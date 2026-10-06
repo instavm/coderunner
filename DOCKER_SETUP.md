@@ -33,16 +33,19 @@ The Docker build workflow runs on:
 
 ### Quick Start with Docker
 
+Export an existing operator-managed `CODERUNNER_API_TOKEN` (at least 32 bytes, no whitespace) before starting the container or clients. This branch is unreleased; build an authenticated image from this checkout and substitute its local tag below. Previously published images may ignore the token. See [authentication boundaries](AUTHENTICATION.md).
+
 ```bash
 # Run CodeRunner with Docker
 docker run -d \
   --name coderunner \
-  -p 8222:8222 \
+  -p 127.0.0.1:8222:8222 \
+  -e CODERUNNER_API_TOKEN \
   -v ./uploads:/app/uploads \
   instavm/coderunner:docker-latest
 
 # Access MCP server
-curl http://localhost:8222/mcp
+curl -H "Authorization: Bearer $CODERUNNER_API_TOKEN" http://127.0.0.1:8222/mcp
 ```
 
 ### Docker Compose (Recommended)
@@ -60,6 +63,7 @@ docker compose down
 
 ### Environment Variables
 
+- `CODERUNNER_API_TOKEN`: Required bearer credential; keep it out of source control.
 - `FASTMCP_HOST`: Server host (default: 0.0.0.0)
 - `FASTMCP_PORT`: Server port (default: 8222)
 
@@ -81,7 +85,8 @@ docker compose down
       "command": "docker",
       "args": [
         "run", "--rm", "-i",
-        "-p", "8222:8222",
+        "-p", "127.0.0.1:8222:8222",
+        "-e", "CODERUNNER_API_TOKEN",
         "-v", "./uploads:/app/uploads",
         "instavm/coderunner:docker-latest"
       ]
@@ -112,7 +117,7 @@ docker buildx build --platform linux/amd64,linux/arm64 -t coderunner-multiarch .
 
 ### Common Issues
 
-1. **Port conflicts**: Change port mapping `-p 8223:8222`
+1. **Port conflicts**: Change port mapping `-p 127.0.0.1:8223:8222`
 2. **Volume permissions**: Ensure `./uploads` directory exists and is writable
 3. **Memory issues**: Add memory limits `--memory 4g`
 
@@ -126,5 +131,5 @@ docker ps
 docker logs coderunner
 
 # Test MCP endpoint
-curl -f http://localhost:8222/mcp || echo "MCP not ready"
+curl -f -H "Authorization: Bearer $CODERUNNER_API_TOKEN" http://127.0.0.1:8222/mcp || echo "MCP not ready"
 ```

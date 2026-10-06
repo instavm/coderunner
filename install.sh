@@ -1,6 +1,14 @@
 #!/bin/bash
 set -u
 
+# Validate before downloads, DNS changes, or stopping existing containers.
+coderunner_token=${CODERUNNER_API_TOKEN:-}
+if [ "${#coderunner_token}" -lt 32 ] || [[ "$coderunner_token" =~ [[:space:]] ]]; then
+    echo "Set CODERUNNER_API_TOKEN to an operator-supplied secret of at least 32 characters."
+    exit 1
+fi
+export CODERUNNER_API_TOKEN
+
 CONTAINER_VERSION="1.2.2"
 CONTAINER_INSTALLER="container-${CONTAINER_VERSION}-installer-signed.pkg"
 download_url="https://github.com/apple/container/releases/download/${CONTAINER_VERSION}/${CONTAINER_INSTALLER}"
@@ -183,10 +191,19 @@ esac
 # Wait until the MCP server inside the container answers over HTTP.
 wait_for_server() {
     echo "Waiting for the MCP server to become ready (this can take a minute)..."
-    local i code
+    local i code auth_code unauth_code
     for i in $(seq 1 60); do
         code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 "http://$MCP_HOST:8222/health" 2>/dev/null)
         if [ "$code" = "200" ]; then
+            unauth_code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 \
+                "http://$MCP_HOST:8222/v1/sessions/session")
+            auth_code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 \
+                -H "Authorization: Bearer $CODERUNNER_API_TOKEN" \
+                "http://$MCP_HOST:8222/v1/sessions/session")
+            if [ "$auth_code" != "200" ] || [ "$unauth_code" != "401" ]; then
+                echo "The server must reject anonymous requests and accept the configured credential. Recreate it with the current image and matching token."
+                return 1
+            fi
             echo "✅ Setup complete. MCP server is available at http://$MCP_HOST:8222/mcp"
             return 0
         fi
@@ -238,6 +255,7 @@ if container run \
   --detach \
   --cpus 8 \
   --memory 4g \
+  --env CODERUNNER_API_TOKEN \
   ${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"} \
   instavm/coderunner; then
     wait_for_server

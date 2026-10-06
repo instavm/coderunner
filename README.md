@@ -9,13 +9,25 @@
 
 CodeRunner helps you sandbox your AI agents and its actions inside a sandbox. 
 
-**Key use case:** You can run multiple Claude Code or AI agents in our sandbox without any fear of data loss and exfilteration.
+**Key use case:** Run AI agent code in a sandbox with explicitly chosen host mounts and network access. Isolation reduces risk; it does not prevent all data loss or exfiltration.
 
 For cloud managed VMs for agents, we have launched - [InstaVM - Instant computers for AI agents](https://instavm.io)
 
 ## Quick Start
 
 **Prerequisites:** Mac with macOS and Apple Silicon (M1/M2/M3/M4), Python 3.10+
+
+This branch requires an operator-supplied `CODERUNNER_API_TOKEN` of at least 32
+bytes, without whitespace. Export it before running the installer and supply the
+same secret to each client as `Authorization: Bearer <token>`. Only `GET /health`
+and `HEAD /health` are public. Missing or weak server configuration fails closed.
+Do not put the credential in a URL or commit it. Desktop apps may need the
+environment variable configured explicitly rather than inheriting your shell.
+
+These changes are local and unreleased: previously published images do not gain
+authentication automatically. The installer checks both anonymous rejection and
+authenticated access, and refuses a legacy image that ignores the credential.
+See [authentication and network boundaries](AUTHENTICATION.md) before testing.
 
 ```bash
 git clone https://github.com/instavm/coderunner.git
@@ -32,7 +44,8 @@ Stop the sandbox when you are done:
 container stop coderunner
 ```
 
-Resume the same sandbox later, preserving uploads, kernels, and installed packages:
+Resume the same sandbox later, preserving its filesystem. Python kernel state is
+volatile and does not survive a VM or server restart:
 
 ```bash
 container start coderunner
