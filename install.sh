@@ -1,6 +1,31 @@
 #!/bin/bash
 set -u
 
+CODERUNNER_HOME="${CODERUNNER_HOME:-$HOME/.coderunner}"
+
+# The sandbox credential: created once and kept in a 0600 file for the clients on this Mac. An exported
+# CODERUNNER_API_TOKEN takes precedence and is saved. Checked before any download, DNS change or restart.
+ensure_token() {
+    local token_file="$CODERUNNER_HOME/api-token" token
+    mkdir -p "$CODERUNNER_HOME"
+    if [ -n "${CODERUNNER_API_TOKEN:-}" ]; then
+        token="$CODERUNNER_API_TOKEN"
+    elif [ -s "$token_file" ]; then
+        token=$(tr -d '[:space:]' < "$token_file")
+    else
+        token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null \
+            || openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
+    fi
+    if [ "${#token}" -lt 32 ] || [[ "$token" =~ [[:space:]] ]]; then
+        echo "❌ CODERUNNER_API_TOKEN must be at least 32 characters without whitespace." >&2
+        exit 1
+    fi
+    (umask 077 && printf '%s\n' "$token" > "$token_file")
+    CODERUNNER_API_TOKEN="$token"
+    export CODERUNNER_API_TOKEN
+}
+ensure_token
+
 CONTAINER_VERSION="1.2.2"
 CONTAINER_INSTALLER="container-${CONTAINER_VERSION}-installer-signed.pkg"
 download_url="https://github.com/apple/container/releases/download/${CONTAINER_VERSION}/${CONTAINER_INSTALLER}"
@@ -297,11 +322,24 @@ esac
 # Wait until the MCP server inside the container answers over HTTP.
 wait_for_server() {
     echo "Waiting for the MCP server to become ready (this can take a minute)..."
-    local i code
-    for i in $(seq 1 60); do
+    local code auth_code unauth_code
+    for _ in $(seq 1 60); do
         code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 "http://$MCP_HOST:8222/health" 2>/dev/null)
         if [ "$code" = "200" ]; then
-            echo "✅ Setup complete. MCP server is available at http://$MCP_HOST:8222/mcp"
+            unauth_code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 \
+                "http://$MCP_HOST:8222/v1/sessions/session")
+            # The header comes from a file descriptor, so the token never appears in a process list.
+            auth_code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 \
+                -H @<(printf 'Authorization: Bearer %s\n' "$CODERUNNER_API_TOKEN") \
+                "http://$MCP_HOST:8222/v1/sessions/session")
+            if [ "$auth_code" != "200" ] || [ "$unauth_code" != "401" ]; then
+                echo "❌ The server must reject anonymous requests and accept the configured credential."
+                echo "   An image built before authentication ignores the token: recreate the sandbox with"
+                echo "   container delete coderunner && ./install.sh"
+                return 1
+            fi
+            echo "✅ Setup complete. MCP server: http://$MCP_HOST:8222/mcp"
+            echo "   Clients send: Authorization: Bearer \$(cat $CODERUNNER_HOME/api-token)"
             return 0
         fi
         sleep 2
@@ -378,6 +416,7 @@ if container run \
   --detach \
   --cpus "$CPUS" \
   --memory "$MEMORY" \
+  --env CODERUNNER_API_TOKEN \
   ${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"} \
   instavm/coderunner; then
     printf '%s' "$desired_config" > "$CONFIG_FILE"
