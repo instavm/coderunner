@@ -1,17 +1,30 @@
 version: '3.8'
 
+# Linux / Docker sandbox. `./install.sh` exports CODERUNNER_API_TOKEN from
+# ~/.coderunner/api-token; set CODERUNNER_DOCKER_RUNTIME=runsc to run the
+# sandbox under gVisor when it is installed.
 services:
   coderunner:
-    image: instavm/coderunner:docker-latest
+    image: ${CODERUNNER_IMAGE:-instavm/coderunner:docker-latest}
     container_name: coderunner
+    runtime: ${CODERUNNER_DOCKER_RUNTIME:-runc}
+    # The default bridge keeps host.docker.internal on the same address the
+    # host gateway listens on.
+    network_mode: bridge
     ports:
       - "127.0.0.1:8222:8222"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./uploads:/app/uploads
     environment:
       - FASTMCP_HOST=0.0.0.0
       - FASTMCP_PORT=8222
       - CODERUNNER_API_TOKEN=${CODERUNNER_API_TOKEN:?Supply an API token of at least 32 bytes}
+      # Local model and secret-injecting fetch, served by the host daemon.
+      - CODERUNNER_GATEWAY_URL=http://host.docker.internal:8223
+      - OPENAI_BASE_URL=http://host.docker.internal:8223/v1
+      - OPENAI_API_KEY=${CODERUNNER_API_TOKEN}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8222/health"]
@@ -19,7 +32,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
-volumes:
-  uploads:
-    driver: local

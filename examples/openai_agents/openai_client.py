@@ -1,10 +1,20 @@
 import asyncio
 import os
+import pathlib
 import socket
 
 from agents import Agent, Runner, gen_trace_id, trace
 from agents.mcp import MCPServer, MCPServerStreamableHttp
 from agents.model_settings import ModelSettings
+
+
+def api_token() -> str:
+    """CODERUNNER_API_TOKEN, else the token the installer saved in ~/.coderunner/api-token."""
+    token = os.environ.get("CODERUNNER_API_TOKEN")
+    if token:
+        return token
+    home = pathlib.Path(os.environ.get("CODERUNNER_HOME", pathlib.Path.home() / ".coderunner"))
+    return (home / "api-token").read_text().strip()
 
 
 async def run(mcp_server: MCPServer):
@@ -40,7 +50,7 @@ async def main():
         name="SSE Python Server",
         params={
             "url": f"http://{address}:8222/mcp",
-            "headers": {"Authorization": "Bearer " + os.environ["CODERUNNER_API_TOKEN"]},
+            "headers": {"Authorization": "Bearer " + api_token()},
             "sse_read_timeout": 60,
             "timeout": 60,
         },

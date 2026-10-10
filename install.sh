@@ -1,15 +1,11 @@
 #!/bin/bash
 set -u
 
-# Validate before downloads, DNS changes, or stopping existing containers.
-coderunner_token=${CODERUNNER_API_TOKEN:-}
-if [ "${#coderunner_token}" -lt 32 ] || [[ "$coderunner_token" =~ [[:space:]] ]]; then
-    echo "Set CODERUNNER_API_TOKEN to an operator-supplied secret of at least 32 characters."
-    exit 1
-fi
-export CODERUNNER_API_TOKEN
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+CODERUNNER_HOME="${CODERUNNER_HOME:-$HOME/.coderunner}"
 
-CONTAINER_VERSION="1.2.2"
+# 1.3.1 and 1.4.1 fix image-load path traversal and symlink escapes.
+CONTAINER_VERSION="1.5.0"
 CONTAINER_INSTALLER="container-${CONTAINER_VERSION}-installer-signed.pkg"
 download_url="https://github.com/apple/container/releases/download/${CONTAINER_VERSION}/${CONTAINER_INSTALLER}"
 
@@ -31,6 +27,12 @@ CPUS="${CODERUNNER_CPUS:-8}"
 MEMORY="${CODERUNNER_MEMORY:-4g}"
 MOUNT_SPECS=()
 VOLUME_ARGS=()
+NETWORK_MODE="${CODERUNNER_NETWORK:-default}"
+IMAGE="${CODERUNNER_IMAGE:-}"
+BUILD_IMAGE=0
+ASSISTANT=1
+MODEL=""
+ASSUME_YES=0
 
 usage() {
     cat <<'EOF'
@@ -42,6 +44,13 @@ Options:
   --mount HOST:TARGET[:ro|rw]
                             Mount a host directory under /workspace.
                             Mounts are read-only unless :rw is specified.
+  --network MODE            default (internet), none (no network) or proxy
+                            (only owner-approved hosts; macOS). Default: default
+  --build                   Build the sandbox image from this checkout
+  --image NAME              Use a specific sandbox image
+  --model ID                Use this model instead of the hardware-based pick
+  --no-assistant            Install only the sandbox, not the host assistant
+  -y, --yes                 Answer yes to installing a model runtime
   -h, --help                Show this help
 EOF
 }
@@ -62,6 +71,33 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || { echo "Error: --mount requires a value." >&2; exit 2; }
             MOUNT_SPECS+=("$2")
             shift 2
+            ;;
+        --network)
+            [ "$#" -ge 2 ] || { echo "Error: --network requires a value." >&2; exit 2; }
+            NETWORK_MODE="$2"
+            shift 2
+            ;;
+        --image)
+            [ "$#" -ge 2 ] || { echo "Error: --image requires a value." >&2; exit 2; }
+            IMAGE="$2"
+            shift 2
+            ;;
+        --model)
+            [ "$#" -ge 2 ] || { echo "Error: --model requires a value." >&2; exit 2; }
+            MODEL="$2"
+            shift 2
+            ;;
+        --build)
+            BUILD_IMAGE=1
+            shift
+            ;;
+        --no-assistant)
+            ASSISTANT=0
+            shift
+            ;;
+        -y|--yes)
+            ASSUME_YES=1
+            shift
             ;;
         -h|--help)
             usage
@@ -113,6 +149,14 @@ for spec in ${MOUNT_SPECS[@]+"${MOUNT_SPECS[@]}"}; do
         exit 2
     fi
     source_path=$(cd "$source_path" && pwd -P)
+    # Never hand the sandbox the host's tokens, secrets or assistant state.
+    mkdir -p "$CODERUNNER_HOME"
+    state_path=$(cd "$CODERUNNER_HOME" && pwd -P)
+    if [ "$source_path" = "$state_path" ] || [[ "$state_path" == "$source_path"/* ]] \
+        || [[ "$source_path" == "$state_path"/* ]] || [ "$source_path" = "/" ]; then
+        echo "Error: mount source must not contain or be inside $CODERUNNER_HOME (tokens and secrets)." >&2
+        exit 2
+    fi
     case "$target_path" in
         /workspace|/workspace/*) ;;
         *)
@@ -141,81 +185,155 @@ for spec in ${MOUNT_SPECS[@]+"${MOUNT_SPECS[@]}"}; do
     fi
 done
 
-# Function to get current macOS version
-get_macos_version() {
-  sw_vers -productVersion | awk -F. '{print $1 "." $2}'
+case "$NETWORK_MODE" in
+    default|none|proxy) ;;
+    *)
+        echo "Error: --network must be 'default', 'none' or 'proxy'." >&2
+        exit 2
+        ;;
+esac
+
+# The sandbox credential is created once and shared with host tools through a
+# 0600 file. An exported CODERUNNER_API_TOKEN takes precedence and is saved.
+ensure_token() {
+    local token_file="$CODERUNNER_HOME/api-token" token
+    mkdir -p "$CODERUNNER_HOME"
+    if [ -n "${CODERUNNER_API_TOKEN:-}" ]; then
+        token="$CODERUNNER_API_TOKEN"
+    elif [ -s "$token_file" ]; then
+        token=$(tr -d '[:space:]' < "$token_file")
+    else
+        token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null \
+            || openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
+    fi
+    if [ "${#token}" -lt 32 ] || [[ "$token" =~ [[:space:]] ]]; then
+        echo "❌ CODERUNNER_API_TOKEN must be at least 32 characters without whitespace." >&2
+        exit 1
+    fi
+    (umask 077 && printf '%s\n' "$token" > "$token_file")
+    CODERUNNER_API_TOKEN="$token"
+    export CODERUNNER_API_TOKEN
+}
+ensure_token
+
+echo "→ Ensuring coderunner assets directories…"
+ASSETS_SRC="$CODERUNNER_HOME/assets"
+mkdir -p "$ASSETS_SRC/skills/user"
+mkdir -p "$ASSETS_SRC/outputs"
+
+MCP_HOST="127.0.0.1"
+
+# Wait until the MCP server inside the container answers over HTTP.
+wait_for_server() {
+    echo "Waiting for the MCP server to become ready (this can take a minute)..."
+    local code auth_code unauth_code
+    for _ in $(seq 1 60); do
+        code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 "http://$MCP_HOST:8222/health" 2>/dev/null)
+        if [ "$code" = "200" ]; then
+            unauth_code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 \
+                "http://$MCP_HOST:8222/v1/sessions/session")
+            auth_code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 \
+                -H @<(printf 'Authorization: Bearer %s\n' "$CODERUNNER_API_TOKEN") \
+                "http://$MCP_HOST:8222/v1/sessions/session")
+            if [ "$auth_code" != "200" ] || [ "$unauth_code" != "401" ]; then
+                echo "❌ The server must reject anonymous requests and accept the configured credential."
+                echo "   Published images built before authentication ignore the token. Recreate the sandbox"
+                echo "   from this checkout: container delete coderunner && ./install.sh --build"
+                return 1
+            fi
+            echo "✅ Sandbox ready. MCP server: http://$MCP_HOST:8222/mcp (token: coderunner token)"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "❌ The container started but the MCP server did not respond within 120 seconds."
+    echo "   Check the container logs with: container logs coderunner (or docker logs coderunner)"
+    echo "   If coderunner.local does not resolve, verify domain = \"local\" in ~/.config/container/config.toml"
+    echo "   and check the DNS service with: container system dns list"
+    return 1
 }
 
-# Check the system type
-if [[ "$OSTYPE" != "darwin"* ]]; then
-  echo "❌ This script is intended for macOS systems only. Exiting."
-  exit 1
-fi
+# Values the sandbox uses to reach the host gateway (local model, secret
+# injection) and, in proxy mode, the egress proxy. Call this only inside the
+# subshell that starts the container: the values are exported there and passed
+# by name so the credential never appears in a process list, and the proxy
+# settings never leak into this installer's own pip/brew/model downloads.
+export_gateway_env() {
+    local gateway="$1"
+    export CODERUNNER_GATEWAY_URL="http://$gateway:8223"
+    export OPENAI_BASE_URL="$CODERUNNER_GATEWAY_URL/v1"
+    export OPENAI_API_KEY="$CODERUNNER_API_TOKEN"
+    GATEWAY_ENV_ARGS=(--env CODERUNNER_GATEWAY_URL --env OPENAI_BASE_URL --env OPENAI_API_KEY)
+    if [ "$NETWORK_MODE" = "proxy" ]; then
+        local proxy="http://coderunner:$CODERUNNER_API_TOKEN@$gateway:8225"
+        export HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy" http_proxy="$proxy" https_proxy="$proxy"
+        export NO_PROXY="localhost,127.0.0.1,$gateway" no_proxy="localhost,127.0.0.1,$gateway"
+        GATEWAY_ENV_ARGS+=(--env HTTP_PROXY --env HTTPS_PROXY --env http_proxy --env https_proxy
+                           --env NO_PROXY --env no_proxy)
+    fi
+}
 
-# Check macOS version
-macos_version=$(get_macos_version)
-macos_major=${macos_version%%.*}
-if [ "$macos_major" -lt 26 ]; then
-  echo "Warning: Your macOS version is $macos_version. Version 26.0 or later is recommended. Some features of 'container' might not work properly."
-else
-  echo "✅ macOS system detected."
-fi
+desired_config() {
+    local config="cpus=$CPUS"$'\n'"memory=$MEMORY"
+    if [ -n "${NORMALIZED_MOUNTS[*]-}" ]; then
+        local sorted_mounts
+        sorted_mounts=$(printf '%s\n' ${NORMALIZED_MOUNTS[@]+"${NORMALIZED_MOUNTS[@]}"} | LC_ALL=C sort)
+        config="${config}"$'\n'"$(printf '%s\n' "$sorted_mounts" | sed 's/^/mount=/')"
+    fi
+    printf '%s' "$config"
+}
 
-# Check if container is installed and display its version
-if command -v container &> /dev/null
-then
-    echo "Apple 'container' tool detected. Current version:"
-    container --version
-    current_version=$(container --version | awk '{print $4}')
-    echo $current_version
-    if [ "$current_version" != "$CONTAINER_VERSION" ]; then
-        echo "Updating Apple 'container' to version $CONTAINER_VERSION..."
+# ---------------------------------------------------------------- macOS ----
+
+install_sandbox_macos() {
+    macos_version=$(sw_vers -productVersion | awk -F. '{print $1 "." $2}')
+    macos_major=${macos_version%%.*}
+    if [ "$macos_major" -lt 26 ]; then
+        echo "Warning: Your macOS version is $macos_version. Version 26.0 or later is recommended. Some features of 'container' might not work properly."
+    else
+        echo "✅ macOS system detected."
+    fi
+
+    if command -v container &> /dev/null; then
+        echo "Apple 'container' tool detected. Current version:"
+        container --version
+        current_version=$(container --version | awk '{print $4}')
+        if [ "$current_version" != "$CONTAINER_VERSION" ]; then
+            echo "Updating Apple 'container' to version $CONTAINER_VERSION..."
+            install_container_tool
+        fi
+    else
+        echo "Apple 'container' tool not detected. Proceeding with installation..."
         install_container_tool
     fi
 
-    echo "Stopping any running Apple 'container' processes..."
+    # Restart the container system to clean up stale connections.
+    echo "Stopping any existing container system..."
     container system stop 2>/dev/null || true
-else
-    echo "Apple 'container' tool not detected. Proceeding with installation..."
-    install_container_tool
-fi
+    sleep 2
+    echo "Starting the Sandbox Container system (this may take a few minutes if downloading kernel)..."
+    if ! container system start; then
+        echo "❌ Failed to start container system."
+        exit 1
+    fi
+    if container system status &>/dev/null; then
+        echo "✅ Container system is ready."
+    else
+        echo "❌ Container system started but status check failed."
+        echo "Try running: container system stop && container system start"
+        exit 1
+    fi
 
-# Stop any existing container system to clean up stale connections
-echo "Stopping any existing container system..."
-container system stop 2>/dev/null || true
+    echo "Setting up local network domain..."
+    echo "Running: sudo container system dns create local"
+    sudo container system dns create local 2>/dev/null || echo "DNS domain 'local' already exists (this is fine)"
 
-# Wait a moment for cleanup
-sleep 2
-
-# Start the container system (this is blocking and will wait for kernel download if needed)
-echo "Starting the Sandbox Container system (this may take a few minutes if downloading kernel)..."
-if ! container system start; then
-    echo "❌ Failed to start container system."
-    exit 1
-fi
-
-# Quick verification that system is ready
-echo "Verifying container system is ready..."
-if container system status &>/dev/null; then
-    echo "✅ Container system is ready."
-else
-    echo "❌ Container system started but status check failed."
-    echo "Try running: container system stop && container system start"
-    exit 1
-fi
-
-echo "Setting up local network domain..."
-
-# Run the commands for setting up the local network
-echo "Running: sudo container system dns create local"
-sudo container system dns create local 2>/dev/null || echo "DNS domain 'local' already exists (this is fine)"
-
-# Since container 1.0, the default DNS domain is set in the service config
-# file instead of `container system property set dns.domain`.
-CONTAINER_CONFIG="$HOME/.config/container/config.toml"
-mkdir -p "$(dirname "$CONTAINER_CONFIG")"
-touch "$CONTAINER_CONFIG"
-dns_changed=$(python3 - "$CONTAINER_CONFIG" <<'PY'
+    # Since container 1.0, the default DNS domain is set in the service config
+    # file instead of `container system property set dns.domain`.
+    CONTAINER_CONFIG="$HOME/.config/container/config.toml"
+    mkdir -p "$(dirname "$CONTAINER_CONFIG")"
+    touch "$CONTAINER_CONFIG"
+    dns_changed=$(python3 - "$CONTAINER_CONFIG" <<'PY'
 import pathlib
 import re
 import sys
@@ -242,166 +360,289 @@ path.write_text(text)
 print(1)
 PY
 )
-if [ "$dns_changed" = "1" ]; then
-    echo "Configured DNS domain 'local' in $CONTAINER_CONFIG; restarting container system..."
-    container system stop 2>/dev/null || true
-    if ! container system start; then
-        echo "❌ Failed to restart container system after DNS configuration."
-        exit 1
-    fi
-fi
-
-# Set up a dedicated virtualenv for the Claude Desktop stdio proxy so that
-# it does not depend on the state of the system Python installation.
-setup_proxy_venv() {
-    local venv_dir="$HOME/.coderunner/venv"
-    if ! command -v python3 &> /dev/null; then
-        echo "python3 not found; skipping proxy setup. Install Python 3.10+ to use the Claude Desktop proxy."
-        return 0
-    fi
-    if [ ! -x "$venv_dir/bin/python" ]; then
-        echo "Creating Python virtualenv for the MCP proxy at $venv_dir ..."
-        if ! python3 -m venv "$venv_dir"; then
-            echo "Warning: could not create virtualenv; skipping proxy setup."
-            return 0
+    if [ "$dns_changed" = "1" ]; then
+        echo "Configured DNS domain 'local' in $CONTAINER_CONFIG; restarting container system..."
+        container system stop 2>/dev/null || true
+        if ! container system start; then
+            echo "❌ Failed to restart container system after DNS configuration."
+            exit 1
         fi
     fi
-    if "$venv_dir/bin/pip" install --quiet --upgrade "fastmcp==3.4.7"; then
-        echo "MCP proxy dependencies installed."
-        echo "For Claude Desktop, use this python in claude_desktop_config.json:"
-        echo "  $venv_dir/bin/python"
-    else
-        echo "Warning: failed to install proxy dependencies into $venv_dir."
-    fi
-}
-setup_proxy_venv
 
-echo "→ Ensuring coderunner assets directories…"
-ASSETS_SRC="$HOME/.coderunner/assets"
-mkdir -p "$ASSETS_SRC/skills/user"
-mkdir -p "$ASSETS_SRC/outputs"
-
-NETWORK_MODE="${CODERUNNER_NETWORK:-default}"
-NETWORK_ARGS=()
-MCP_HOST="coderunner.local"
-case "$NETWORK_MODE" in
-    default)
-        EXPECTED_NETWORK="default"
-        ;;
-    none)
-        EXPECTED_NETWORK="coderunner-offline"
-        if ! container network inspect "$EXPECTED_NETWORK" &>/dev/null; then
-            container network create --internal "$EXPECTED_NETWORK"
-        fi
-        NETWORK_ARGS=(--network "$EXPECTED_NETWORK" --publish 127.0.0.1:8222:8222)
-        MCP_HOST="127.0.0.1"
-        ;;
-    *)
-        echo "❌ CODERUNNER_NETWORK must be 'default' or 'none'."
-        exit 1
-        ;;
-esac
-
-# Wait until the MCP server inside the container answers over HTTP.
-wait_for_server() {
-    echo "Waiting for the MCP server to become ready (this can take a minute)..."
-    local i code auth_code unauth_code
-    for i in $(seq 1 60); do
-        code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 "http://$MCP_HOST:8222/health" 2>/dev/null)
-        if [ "$code" = "200" ]; then
-            unauth_code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 \
-                "http://$MCP_HOST:8222/v1/sessions/session")
-            auth_code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 \
-                -H "Authorization: Bearer $CODERUNNER_API_TOKEN" \
-                "http://$MCP_HOST:8222/v1/sessions/session")
-            if [ "$auth_code" != "200" ] || [ "$unauth_code" != "401" ]; then
-                echo "The server must reject anonymous requests and accept the configured credential. Recreate it with the current image and matching token."
-                return 1
+    NETWORK_ARGS=()
+    MCP_HOST="coderunner.local"
+    case "$NETWORK_MODE" in
+        default)
+            EXPECTED_NETWORK="default"
+            ;;
+        none|proxy)
+            # Host-only network. In proxy mode the only way out is the host's egress proxy.
+            EXPECTED_NETWORK=$([ "$NETWORK_MODE" = "none" ] && echo "coderunner-offline" || echo "coderunner-egress")
+            if ! container network inspect "$EXPECTED_NETWORK" &>/dev/null; then
+                container network create --internal "$EXPECTED_NETWORK"
             fi
-            echo "✅ Setup complete. MCP server is available at http://$MCP_HOST:8222/mcp"
-            return 0
-        fi
-        sleep 2
-    done
-    echo "❌ The container started but the MCP server did not respond within 120 seconds."
-    echo "   Check the container logs with: container logs coderunner"
-    echo "   If coderunner.local does not resolve, verify domain = \"local\" in ~/.config/container/config.toml"
-    echo "   and check the DNS service with: container system dns list"
-    return 1
-}
+            NETWORK_ARGS=(--network "$EXPECTED_NETWORK" --publish 127.0.0.1:8222:8222)
+            MCP_HOST="127.0.0.1"
+            ;;
+    esac
+    gateway=$(container network inspect "$EXPECTED_NETWORK" 2>/dev/null | python3 -c '
+import ipaddress, json, sys
 
-CONFIG_FILE="$HOME/.coderunner/container-config"
-desired_config="cpus=$CPUS"$'\n'"memory=$MEMORY"
-if [ -n "${NORMALIZED_MOUNTS[*]-}" ]; then
-    sorted_mounts=$(printf '%s\n' ${NORMALIZED_MOUNTS[@]+"${NORMALIZED_MOUNTS[@]}"} | LC_ALL=C sort)
-    desired_config="${desired_config}"$'\n'"$(printf '%s\n' "$sorted_mounts" | sed 's/^/mount=/')"
-fi
-if container inspect coderunner &>/dev/null; then
-    if [ -f "$CONFIG_FILE" ]; then
-        if [ "$(cat "$CONFIG_FILE")" != "$desired_config" ]; then
-            echo "❌ Existing container was created with different resource or mount settings."
+def find(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if "gateway" in key.lower() and isinstance(value, str):
+                try:
+                    return str(ipaddress.ip_address(value.split("/")[0]))
+                except ValueError:
+                    pass
+        for value in node.values():
+            found = find(value)
+            if found:
+                return found
+    elif isinstance(node, list):
+        for value in node:
+            found = find(value)
+            if found:
+                return found
+    return None
+
+try:
+    print(find(json.load(sys.stdin)) or "")
+except Exception:
+    print("")
+')
+    gateway=${gateway:-192.168.64.1}
+
+    CONFIG_FILE="$CODERUNNER_HOME/container-config"
+    config_now=$(desired_config)
+    if container inspect coderunner &>/dev/null; then
+        if [ -f "$CONFIG_FILE" ]; then
+            if [ "$(cat "$CONFIG_FILE")" != "$config_now" ]; then
+                echo "❌ Existing container was created with different resource or mount settings."
+                echo "   Recreate it with: container delete coderunner && ./install.sh [options]"
+                exit 1
+            fi
+        elif [ "$config_now" != $'cpus=8\nmemory=4g' ]; then
+            echo "❌ Existing container predates configurable resources and mounts."
             echo "   Recreate it with: container delete coderunner && ./install.sh [options]"
             exit 1
         fi
-    elif [ "$desired_config" != $'cpus=8\nmemory=4g' ]; then
-        echo "❌ Existing container predates configurable resources and mounts."
-        echo "   Recreate it with: container delete coderunner && ./install.sh [options]"
-        exit 1
     fi
-fi
 
-# Stop any existing coderunner container
-echo "Stopping any existing coderunner container..."
-container stop coderunner 2>/dev/null || true
-sleep 2
+    echo "Stopping any existing coderunner container..."
+    container stop coderunner 2>/dev/null || true
+    sleep 2
 
-echo "Trying to resume any existing coderunner container..."
-if container inspect coderunner &>/dev/null; then
-    existing_network=$(container inspect coderunner | python3 -c '
+    echo "Trying to resume any existing coderunner container..."
+    if container inspect coderunner &>/dev/null; then
+        existing_network=$(container inspect coderunner | python3 -c '
 import json, sys
 networks = json.load(sys.stdin)[0]["configuration"]["networks"]
 print(networks[0]["network"] if networks else "default")
 ')
-    if [ "$existing_network" != "$EXPECTED_NETWORK" ]; then
-        container stop coderunner 2>/dev/null || true
-        echo "❌ Existing container uses network '$existing_network', but '$EXPECTED_NETWORK' was requested."
-        echo "   Recreate it with: container delete coderunner && CODERUNNER_NETWORK=$NETWORK_MODE ./install.sh"
+        if [ "$existing_network" != "$EXPECTED_NETWORK" ]; then
+            container stop coderunner 2>/dev/null || true
+            echo "❌ Existing container uses network '$existing_network', but '$EXPECTED_NETWORK' was requested."
+            echo "   Recreate it with: container delete coderunner && ./install.sh --network $NETWORK_MODE"
+            exit 1
+        fi
+        if container start coderunner; then
+            wait_for_server || exit 1
+            return 0
+        fi
+        echo "❌ Existing coderunner container could not be started."
+        echo "   Check its logs, or recreate it with: container delete coderunner && ./install.sh [options]"
         exit 1
     fi
-    if container start coderunner; then
-        wait_for_server
-        exit $?
+
+    if [ "$BUILD_IMAGE" = "1" ]; then
+        IMAGE="${IMAGE:-coderunner-local:latest}"
+        echo "Building the sandbox image $IMAGE from $SCRIPT_DIR (this takes a while)..."
+        if ! container build -t "$IMAGE" "$SCRIPT_DIR"; then
+            echo "❌ Image build failed."
+            exit 1
+        fi
+    else
+        IMAGE="${IMAGE:-instavm/coderunner}"
+        echo "Pulling the image: $IMAGE"
+        if ! container image pull "$IMAGE"; then
+            echo "❌ Failed to pull image. Please check your internet connection and try again."
+            exit 1
+        fi
     fi
-fi
-if container inspect coderunner &>/dev/null; then
-    echo "❌ Existing coderunner container could not be started."
-    echo "   Check its logs, or recreate it with: container delete coderunner && ./install.sh [options]"
-    exit 1
-fi
 
-echo "Pulling the latest image: instavm/coderunner"
-if ! container image pull instavm/coderunner; then
-    echo "❌ Failed to pull image. Please check your internet connection and try again."
-    exit 1
-fi
+    echo "Starting coderunner with $CPUS CPUs and $MEMORY memory..."
+    if (export_gateway_env "$gateway" && container run \
+      --volume "$ASSETS_SRC/skills/user:/app/uploads/skills/user" \
+      --volume "$ASSETS_SRC/outputs:/app/uploads/outputs" \
+      ${VOLUME_ARGS[@]+"${VOLUME_ARGS[@]}"} \
+      --name coderunner \
+      --detach \
+      --cpus "$CPUS" \
+      --memory "$MEMORY" \
+      --env CODERUNNER_API_TOKEN \
+      "${GATEWAY_ENV_ARGS[@]}" \
+      ${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"} \
+      "$IMAGE"); then
+        printf '%s' "$config_now" > "$CONFIG_FILE"
+        wait_for_server || exit 1
+    else
+        echo "❌ Failed to start coderunner container. Please check the logs with: container logs coderunner"
+        exit 1
+    fi
+}
 
-# Run the command to start the sandbox container
-echo "Starting coderunner with $CPUS CPUs and $MEMORY memory..."
-if container run \
-  --volume "$ASSETS_SRC/skills/user:/app/uploads/skills/user" \
-  --volume "$ASSETS_SRC/outputs:/app/uploads/outputs" \
-  ${VOLUME_ARGS[@]+"${VOLUME_ARGS[@]}"} \
-  --name coderunner \
-  --detach \
-  --cpus "$CPUS" \
-  --memory "$MEMORY" \
-  --env CODERUNNER_API_TOKEN \
-  ${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"} \
-  instavm/coderunner; then
-    printf '%s' "$desired_config" > "$CONFIG_FILE"
-    wait_for_server
-    exit $?
-else
-    echo "❌ Failed to start coderunner container. Please check the logs with: container logs coderunner"
-    exit 1
-fi
+# ---------------------------------------------------------------- Linux ----
+
+install_sandbox_linux() {
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+        echo "✅ WSL2 detected; using Docker inside WSL."
+    fi
+    if ! command -v docker &> /dev/null; then
+        echo "❌ Docker is required: https://docs.docker.com/engine/install/ (or Docker Desktop with WSL integration)."
+        exit 1
+    fi
+    if ! docker info &> /dev/null; then
+        echo "❌ Cannot reach the Docker daemon. Start it, or add your user to the docker group."
+        exit 1
+    fi
+    if [ "$NETWORK_MODE" != "default" ]; then
+        echo "❌ --network $NETWORK_MODE currently needs Apple container on macOS. Use the default mode on Linux."
+        exit 2
+    fi
+    if docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi "docker desktop" \
+        && [ "${CODERUNNER_ALLOW_DOCKER_DESKTOP:-0}" != "1" ]; then
+        echo "❌ Docker Desktop lets containers reach every service listening on this computer's loopback"
+        echo "   (model runtimes, signal-cli, development servers) through host.docker.internal."
+        echo "   Use Docker Engine, or accept the risk with CODERUNNER_ALLOW_DOCKER_DESKTOP=1 ./install.sh"
+        exit 1
+    fi
+    local nproc_count
+    nproc_count=$(nproc 2>/dev/null || echo "$CPUS")
+    if [ "$CPUS" -gt "$nproc_count" ]; then
+        CPUS="$nproc_count"
+    fi
+    RUNTIME_ARGS=()
+    runtime="${CODERUNNER_DOCKER_RUNTIME:-}"
+    if [ -z "$runtime" ] && docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"runsc"'; then
+        runtime="runsc"
+    fi
+    if [ -n "$runtime" ]; then
+        echo "Using the $runtime container runtime."
+        RUNTIME_ARGS=(--runtime "$runtime")
+    fi
+    MCP_HOST="127.0.0.1"
+
+    if docker inspect coderunner &> /dev/null; then
+        echo "Resuming the existing coderunner container..."
+        if docker start coderunner > /dev/null; then
+            wait_for_server || exit 1
+            return 0
+        fi
+        echo "❌ Existing coderunner container could not be started: docker logs coderunner"
+        exit 1
+    fi
+
+    if [ "$BUILD_IMAGE" = "1" ]; then
+        IMAGE="${IMAGE:-coderunner-local:latest}"
+        echo "Building the sandbox image $IMAGE from $SCRIPT_DIR (this takes a while)..."
+        docker build -t "$IMAGE" "$SCRIPT_DIR" || { echo "❌ Image build failed."; exit 1; }
+    else
+        IMAGE="${IMAGE:-instavm/coderunner:docker-latest}"
+        docker pull "$IMAGE" || { echo "❌ Failed to pull $IMAGE."; exit 1; }
+    fi
+    DOCKER_VOLUMES=()
+    for spec in ${NORMALIZED_MOUNTS[@]+"${NORMALIZED_MOUNTS[@]}"}; do
+        DOCKER_VOLUMES+=(--volume "$spec")
+    done
+    if (export_gateway_env "host.docker.internal" && docker run --detach --name coderunner --restart unless-stopped \
+      --publish 127.0.0.1:8222:8222 \
+      --add-host host.docker.internal:host-gateway \
+      --cpus "$CPUS" --memory "$MEMORY" \
+      --volume "$ASSETS_SRC/skills/user:/app/uploads/skills/user" \
+      --volume "$ASSETS_SRC/outputs:/app/uploads/outputs" \
+      ${DOCKER_VOLUMES[@]+"${DOCKER_VOLUMES[@]}"} \
+      --env CODERUNNER_API_TOKEN \
+      "${GATEWAY_ENV_ARGS[@]}" \
+      ${RUNTIME_ARGS[@]+"${RUNTIME_ARGS[@]}"} \
+      "$IMAGE" > /dev/null); then
+        wait_for_server || exit 1
+    else
+        echo "❌ Failed to start the coderunner container: docker logs coderunner"
+        exit 1
+    fi
+}
+
+# --------------------------------------------------------- host runtime ----
+
+# A dedicated virtualenv holds the host assistant (`coderunner` CLI and
+# daemon) and the Claude Desktop stdio proxy, independent of system Python.
+setup_host_runtime() {
+    local venv_dir="$CODERUNNER_HOME/venv" bin
+    if ! command -v python3 &> /dev/null || ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
+        echo "Python 3.10+ is needed for the host assistant; the sandbox is ready on its own."
+        return 0
+    fi
+    if [ ! -x "$venv_dir/bin/python" ]; then
+        echo "Creating Python virtualenv at $venv_dir ..."
+        python3 -m venv "$venv_dir" || { echo "Warning: could not create virtualenv."; return 0; }
+    fi
+    if ! "$venv_dir/bin/pip" install --quiet --upgrade "fastmcp==3.4.7" -e "${SCRIPT_DIR}[mcp]"; then
+        echo "Warning: failed to install the host assistant into $venv_dir."
+        return 0
+    fi
+    bin="$HOME/.local/bin"
+    mkdir -p "$bin"
+    ln -sf "$venv_dir/bin/coderunner" "$bin/coderunner"
+    case ":$PATH:" in
+        *":$bin:"*) ;;
+        *) echo "Add $bin to your PATH to use the 'coderunner' command (or run $venv_dir/bin/coderunner)." ;;
+    esac
+    [ "$ASSISTANT" = "1" ] || return 0
+
+    if ! command -v ollama &> /dev/null && ! command -v llama-server &> /dev/null; then
+        local answer="n"
+        if [[ "$OSTYPE" == "darwin"* ]] && command -v brew &> /dev/null; then
+            if [ "$ASSUME_YES" = "1" ]; then
+                answer="y"
+            elif [ -t 0 ]; then
+                read -r -p "Install Ollama with Homebrew to run local models? [Y/n] " answer
+                answer=${answer:-y}
+            fi
+            if [[ "$answer" =~ ^[Yy] ]]; then
+                brew install ollama || echo "Warning: Ollama installation failed."
+            fi
+        else
+            echo "No local model runtime found. Install Ollama (https://ollama.com/download) or llama.cpp,"
+            echo "then run: coderunner setup"
+        fi
+    fi
+
+    setup_args=(setup --network "$NETWORK_MODE")
+    [ -n "$MODEL" ] && setup_args+=(--model "$MODEL")
+    if ! "$venv_dir/bin/coderunner" "${setup_args[@]}"; then
+        echo "⚠️  Model setup did not finish. Fix the issue above and run: coderunner setup"
+    fi
+    if "$venv_dir/bin/coderunner" service install; then
+        echo "✅ Assistant daemon installed as a login service."
+    else
+        echo "⚠️  Could not install the login service; start the assistant with: coderunner up"
+    fi
+    echo
+    echo "Next steps:"
+    echo "  coderunner chat                     talk to your assistant (approvals are asked in the terminal)"
+    echo "  coderunner status                   check the sandbox, model and daemon"
+    echo "  coderunner remote enable            reach it privately from your phone over Tailscale"
+    echo "  See ASSISTANT.md for channels, connectors and the safety model."
+}
+
+case "$OSTYPE" in
+    darwin*) install_sandbox_macos ;;
+    linux*) install_sandbox_linux ;;
+    *)
+        echo "❌ Unsupported system: $OSTYPE. Use macOS, Linux or Windows with WSL2."
+        exit 1
+        ;;
+esac
+setup_host_runtime

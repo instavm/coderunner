@@ -2,6 +2,7 @@
 
 import json
 import os
+import pathlib
 import sys
 import time
 import urllib.error
@@ -9,13 +10,22 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
+
+def api_token() -> str:
+    """CODERUNNER_API_TOKEN, else the token the installer saved in ~/.coderunner/api-token."""
+    token = os.environ.get("CODERUNNER_API_TOKEN")
+    if token:
+        return token
+    home = pathlib.Path(os.environ.get("CODERUNNER_HOME", pathlib.Path.home() / ".coderunner"))
+    return (home / "api-token").read_text().strip()
+
 BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://coderunner.local:8222"
 
 
 def request(path, method="GET", payload=None, headers=None):
     data = json.dumps(payload).encode() if payload is not None else None
     request_headers = {"Content-Type": "application/json",
-                       "Authorization": "Bearer " + os.environ["CODERUNNER_API_TOKEN"],
+                       "Authorization": "Bearer " + api_token(),
                        **(headers or {})}
     req = urllib.request.Request(
         f"{BASE_URL}{path}",

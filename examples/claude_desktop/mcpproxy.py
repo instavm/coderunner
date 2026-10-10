@@ -1,9 +1,19 @@
 
 import os
+import pathlib
 import socket
 import sys
 
 from fastmcp import FastMCP
+
+
+def api_token() -> str:
+    """CODERUNNER_API_TOKEN, else the token the installer saved in ~/.coderunner/api-token."""
+    token = os.environ.get("CODERUNNER_API_TOKEN")
+    if token:
+        return token
+    home = pathlib.Path(os.environ.get("CODERUNNER_HOME", pathlib.Path.home() / ".coderunner"))
+    return (home / "api-token").read_text().strip()
 
 
 def resolve_with_system_dns(hostname):
@@ -29,7 +39,7 @@ config = {
     "mcpServers": {
         "default": {  # For single server configs, 'default' is commonly used
             "url": f"http://{address}:8222/mcp",
-            "headers": {"Authorization": "Bearer " + os.environ["CODERUNNER_API_TOKEN"]},
+            "headers": {"Authorization": "Bearer " + api_token()},
             "transport": "http"
         }
     }

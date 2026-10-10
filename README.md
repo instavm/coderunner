@@ -5,9 +5,14 @@
 [![License](http://img.shields.io/:license-Apache%202.0-green.svg?style=flat)](https://github.com/instavm/coderunner/blob/master/LICENSE)
 </div>
 
-# CodeRunner: A local sandbox for your AI agents
+# CodeRunner: a private assistant and sandbox on your own machine
 
-CodeRunner helps you sandbox your AI agents and its actions inside a sandbox. 
+CodeRunner is the simple way to run a capable assistant entirely on hardware you
+own: the best local language and vision model your machine can run, an isolated
+sandbox VM for the code it writes, your own browser behind approvals, opt-in
+connectors (Calendar, Reminders, Notes, Mail drafts, Contacts) and messaging
+channels (Telegram, iMessage, Signal) so you can reach it from your phone. It also
+works as a plain sandbox for Claude Code and other agents over MCP.
 
 **Key use case:** Run AI agent code in a sandbox with explicitly chosen host mounts and network access. Isolation reduces risk; it does not prevent all data loss or exfiltration.
 
@@ -15,26 +20,29 @@ For cloud managed VMs for agents, we have launched - [InstaVM - Instant computer
 
 ## Quick Start
 
-**Prerequisites:** Mac with macOS and Apple Silicon (M1/M2/M3/M4), Python 3.10+
-
-This branch requires an operator-supplied `CODERUNNER_API_TOKEN` of at least 32
-bytes, without whitespace. Export it before running the installer and supply the
-same secret to each client as `Authorization: Bearer <token>`. Only `GET /health`
-and `HEAD /health` are public. Missing or weak server configuration fails closed.
-Do not put the credential in a URL or commit it. Desktop apps may need the
-environment variable configured explicitly rather than inheriting your shell.
-
-These changes are local and unreleased: previously published images do not gain
-authentication automatically. The installer checks both anonymous rejection and
-authenticated access, and refuses a legacy image that ignores the credential.
-See [authentication and network boundaries](AUTHENTICATION.md) before testing.
+**Prerequisites:** macOS 26 on Apple Silicon, or Linux / Windows WSL2 with Docker; Python 3.10+
 
 ```bash
 git clone https://github.com/instavm/coderunner.git
 cd coderunner
-chmod +x install.sh
-./install.sh
+./install.sh            # add --build to build the sandbox image from this checkout
+coderunner chat
 ```
+
+The installer creates the sandbox VM, installs the `coderunner` command, picks
+and verifies the best local model for your hardware (see `coderunner models
+plan`) and starts the assistant at login. Read [ASSISTANT.md](ASSISTANT.md) for
+the architecture, safety model, channels, connectors and remote access.
+
+### Credentials
+
+The installer generates the sandbox API token in `~/.coderunner/api-token`
+(or saves the `CODERUNNER_API_TOKEN` you exported). Clients send it as
+`Authorization: Bearer <token>`; print it with `coderunner token`. Only
+`GET /health` is public, and a missing or weak token fails closed. Images
+published before authentication ignore the token, so the installer refuses them;
+use `./install.sh --build` until an authenticated image is published. See
+[authentication and network boundaries](AUTHENTICATION.md).
 
 ### Stop and resume
 
@@ -75,15 +83,16 @@ Additional host directories must be mounted under `/workspace`. They are read-on
 
 Extra mounts default to none. Resource and mount settings are fixed when the container is created; delete the container before changing them.
 
-### Disable outbound network access
+### Network modes
 
-By default, code running in the sandbox has unrestricted network access. To run it on a host-only network with no internet access:
+By default, code running in the sandbox has unrestricted network access. Two stricter modes run it on a host-only network:
 
 ```bash
-CODERUNNER_NETWORK=none ./install.sh
+./install.sh --network proxy   # only hosts you allow or approve, through the host's egress proxy
+./install.sh --network none    # no network at all
 ```
 
-In this mode, the MCP server is available at `http://127.0.0.1:8222/mcp`. The setting is fixed when the container is created; the installer refuses to resume a container with a different network mode.
+In `proxy` mode package registries (PyPI, npm, GitHub, Hugging Face) are allowed by default and every other host becomes an approval request; LAN, loopback and tailnet addresses are refused. In both modes the MCP server is available at `http://127.0.0.1:8222/mcp`. The setting is fixed when the container is created; the installer refuses to resume a container with a different network mode. These modes currently need Apple `container` on macOS. `CODERUNNER_NETWORK` still works as an alternative to `--network`.
 
 
 ## Run Claude Code inside a Sandbox
@@ -98,9 +107,11 @@ In this mode, the MCP server is available at `http://127.0.0.1:8222/mcp`. The se
 
 ## Other Integration Options
 
-MCP server will be available at: `http://coderunner.local:8222/mcp`
+MCP server will be available at: `http://coderunner.local:8222/mcp` (or `http://127.0.0.1:8222/mcp` in `none`/`proxy` mode and on Linux). Every client must send `Authorization: Bearer <token>`; get the token with `coderunner token`.
 
-The installer creates `~/.coderunner/venv` for the Claude Desktop proxy. For the other Python examples, install their dependencies in your own virtualenv:
+To give an agent the assistant's guarded tools instead (your local browser, memory, schedules and enabled connectors, all behind the same approvals), add the stdio bridge: `claude mcp add coderunner-assistant -- coderunner mcp`.
+
+The installer creates `~/.coderunner/venv` for the host assistant and the Claude Desktop proxy, which reads the token from `~/.coderunner/api-token`. For the other Python examples, install their dependencies in your own virtualenv:
 
 ```bash
 pip install -r examples/requirements.txt
@@ -161,9 +172,13 @@ pip install -r examples/requirements.txt
 # 1. Install and start CodeRunner (one-time setup)
 git clone https://github.com/instavm/coderunner.git
 cd coderunner
-sudo ./install.sh
+./install.sh            # run as yourself; it asks for sudo only when needed
 
-# 2. Install the Claude Code plugin
+# 2a. Add the sandbox directly, with its token
+claude mcp add --transport http coderunner http://coderunner.local:8222/mcp \
+  --header "Authorization: Bearer $(coderunner token)"
+
+# 2b. Or install the Claude Code plugin (it must send the same Authorization header)
 claude plugin marketplace add https://github.com/instavm/coderunner-plugin
 claude plugin install instavm-coderunner
 
@@ -217,6 +232,7 @@ Create or edit `~/.config/opencode/opencode.json`:
     "coderunner": {
       "type": "remote",
       "url": "http://coderunner.local:8222/mcp",
+      "headers": { "Authorization": "Bearer <output of coderunner token>" },
       "enabled": true
     }
   }
@@ -236,7 +252,7 @@ After saving the configuration:
 
 ![demo3](images/demo3.png)
 
-1. **Set your OpenAI API key:**
+1. **Set your OpenAI API key** (the client reads the CodeRunner token from `~/.coderunner/api-token`):
    ```bash
    export OPENAI_API_KEY="your-openai-api-key-here"
    ```
@@ -262,7 +278,8 @@ After saving the configuration:
   "selectedAuthType": "oauth-personal",
   "mcpServers": {
     "coderunner": {
-      "httpUrl": "http://coderunner.local:8222/mcp"
+      "httpUrl": "http://coderunner.local:8222/mcp",
+      "headers": { "Authorization": "Bearer <output of coderunner token>" }
     }
   }
 }
