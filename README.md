@@ -11,7 +11,7 @@ CodeRunner helps you sandbox your AI agents and its actions inside a sandbox.
 
 **Key use case:** You can run multiple Claude Code or AI agents in our sandbox without any fear of data loss and exfilteration.
 
-
+For cloud managed VMs for agents, we have launched - [InstaVM - Instant computers for AI agents](https://instavm.io)
 
 ## Quick Start
 
@@ -174,10 +174,15 @@ claude plugin install instavm-coderunner
 
 That's it! Claude Code now has access to all CodeRunner tools:
 - **execute_python_code** - Run Python code in persistent Jupyter kernel
+- **start_python_session** - Reserve an isolated kernel for a named session
+- **list_python_sessions** - List active named sessions
+- **stop_python_session** - Stop a session and discard its kernel state
 - **navigate_and_get_all_visible_text** - Web scraping with Playwright
 - **list_skills** - List available skills (docx, xlsx, pptx, pdf, image processing, etc.)
 - **get_skill_info** - Get documentation for specific skills
 - **get_skill_file** - Read skill files and examples
+
+Pass the returned `session_id` to `execute_python_code` to keep state isolated between agents. Up to five named sessions can run concurrently.
 
 **Learn more:** See the [plugin repository](https://github.com/instavm/coderunner-plugin) for detailed documentation.
 
