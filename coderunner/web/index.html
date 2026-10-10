@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeRunner</title>
+<style>
+  :root { color-scheme: light dark; --b: #8884; --accent: #2f6fde; --danger: #c43c3c; }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.45 system-ui, sans-serif; margin: 0; max-width: 760px; margin-inline: auto; padding: 12px; }
+  header { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+  nav button { background: none; border: 0; padding: 6px 10px; border-bottom: 2px solid transparent; cursor: pointer; font: inherit; color: inherit; }
+  nav button.on { border-color: var(--accent); }
+  section { display: none; } section.on { display: block; }
+  .card { border: 1px solid var(--b); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+  .msg { white-space: pre-wrap; margin: 8px 0; padding: 8px 10px; border-radius: 10px; }
+  .user { background: #2f6fde22; margin-left: 15%; } .assistant { background: #8882; margin-right: 15%; }
+  form { display: flex; gap: 8px; } input, textarea, select { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--b); flex: 1; background: transparent; color: inherit; }
+  button.act { font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--b); background: var(--accent); color: white; cursor: pointer; }
+  button.deny { background: var(--danger); } button.plain { background: transparent; color: inherit; }
+  .muted { opacity: .65; font-size: 13px; } .risk-high { border-color: var(--danger); }
+  .badge { background: var(--danger); color: white; border-radius: 9px; padding: 0 6px; font-size: 12px; }
+  code { word-break: break-all; }
+</style>
+</head>
+<body>
+<header><strong>CodeRunner</strong><nav>
+  <button data-tab="chat" class="on">Chat</button>
+  <button data-tab="approvals">Approvals <span id="count"></span></button>
+  <button data-tab="activity">Activity</button>
+</nav></header>
+
+<section id="pair"><div class="card">
+  <p>Pair this device. On the computer running CodeRunner, run <code>coderunner remote pair</code> and enter the code.</p>
+  <form id="pairForm"><input id="code" autocomplete="one-time-code" placeholder="Pairing code" maxlength="8">
+  <input id="device" placeholder="Device name (optional)"><button class="act">Pair</button></form>
+  <p id="pairError" class="muted"></p>
+</div></section>
+
+<section id="chat" class="on">
+  <div id="messages"></div>
+  <form id="chatForm"><textarea id="input" rows="2" placeholder="Ask your assistant…"></textarea><button class="act">Send</button></form>
+  <p id="thinking" class="muted"></p>
+</section>
+<section id="approvals"><div id="approvalList"></div></section>
+<section id="activity"><div id="activityList"></div></section>
+
+<script>
+const H = {"Content-Type": "application/json", "X-CodeRunner": "1"};
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let paired = true;
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {credentials: "same-origin", headers: H, ...opts});
+  if (r.status === 401) { showPair(); throw new Error("unauthenticated"); }
+  return r.json();
+}
+function show(tab) {
+  document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === tab));
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  if (tab === "activity") loadActivity();
+}
+function showPair() { paired = false; document.querySelector("nav").style.display = "none"; show("pair"); }
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => show(b.dataset.tab));
+
+$("pairForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const r = await fetch("/pair", {method: "POST", headers: H, credentials: "same-origin",
+    body: JSON.stringify({code: $("code").value, name: $("device").value})});
+  if (r.ok) location.href = "/"; else $("pairError").textContent = (await r.json()).error;
+};
+
+function addMessage(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + role; div.textContent = text;
+  $("messages").appendChild(div); div.scrollIntoView();
+}
+async function loadHistory() {
+  const rows = await api("/api/chat/web");
+  $("messages").innerHTML = "";
+  rows.forEach(r => addMessage(r.role, typeof r.content === "string" ? r.content : JSON.stringify(r.content)));
+}
+$("chatForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $("input").value.trim(); if (!text) return;
+  $("input").value = ""; addMessage("user", text); $("thinking").textContent = "Working… approvals will appear in the Approvals tab.";
+  try { const r = await api("/api/chat", {method: "POST", body: JSON.stringify({message: text, conversation: "web"})});
+        addMessage("assistant", r.reply || r.error); }
+  finally { $("thinking").textContent = ""; }
+};
+
+async function decide(id, allow, scope) {
+  await api("/api/approvals/" + id, {method: "POST", body: JSON.stringify({allow, scope})});
+  loadApprovals();
+}
+async function loadApprovals() {
+  if (!paired) return;
+  const items = await api("/api/approvals");
+  $("count").innerHTML = items.length ? `<span class="badge">${items.length}</span>` : "";
+  $("approvalList").innerHTML = items.length ? "" : '<p class="muted">Nothing waiting for you.</p>';
+  for (const a of items) {
+    const div = document.createElement("div");
+    div.className = "card" + (a.risk === "high" ? " risk-high" : "");
+    const scopes = a.risk === "high" ? [["once", "Allow once"]] :
+      [["once", "Allow once"], ["session", "Until restart"], ["day", "For a day"], ["always", "Always"]];
+    div.innerHTML = `<div><strong>${esc(a.summary)}</strong></div>
+      <div class="muted">${esc(a.kind)} · ${esc(a.target)} · from ${esc(a.origin)}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>`;
+    const row = div.lastElementChild;
+    for (const [scope, label] of scopes) {
+      const b = document.createElement("button"); b.className = "act"; b.textContent = label;
+      b.onclick = () => decide(a.id, true, scope); row.appendChild(b);
+    }
+    const d = document.createElement("button"); d.className = "act deny"; d.textContent = "Deny";
+    d.onclick = () => decide(a.id, false, "once"); row.appendChild(d);
+    $("approvalList").appendChild(div);
+  }
+}
+async function loadActivity() {
+  const rows = await api("/api/audit?limit=80");
+  $("activityList").innerHTML = rows.reverse().map(r =>
+    `<div class="card"><div>${esc(r.event)} <span class="muted">${new Date(r.ts * 1000).toLocaleString()}</span></div>
+     <div class="muted"><code>${esc(JSON.stringify(Object.fromEntries(Object.entries(r).filter(([k]) => !["ts","event"].includes(k)))).slice(0, 400))}</code></div></div>`).join("");
+}
+if (location.pathname === "/pair") showPair();
+else { loadHistory().catch(() => {}); loadApprovals().catch(() => {}); }
+setInterval(() => loadApprovals().catch(() => {}), 2500);
+</script>
+</body>
+</html>

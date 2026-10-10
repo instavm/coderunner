@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coderunner"
+version = "0.2.0"
+description = "Private local assistant runtime: local models, a sandbox VM, a guarded browser and opt-in connectors"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27",
+    "starlette>=0.37",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+mcp = ["fastmcp>=2.10"]
+
+[project.scripts]
+coderunner = "coderunner.cli:main"
+
+[tool.setuptools]
+packages = [
+    "coderunner",
+    "coderunner.agent",
+    "coderunner.browser",
+    "coderunner.channels",
+    "coderunner.connectors",
+    "coderunner.models",
+]
+
+[tool.setuptools.package-data]
+"coderunner" = ["web/*.html"]
+"coderunner.models" = ["catalog.json"]
