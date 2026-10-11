@@ -53,9 +53,26 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
   the new rules, but the task was not completed within 30 steps; Bonsai on 18 GB swapped with
   the browser and embeddings loaded (4 steps in 18 minutes).
 
+### Later runs on the same Mac
+
+* Bonsai builds measured: 1-bit 27B 14.6 tok/s generation and 81 tok/s prompt reading; Bonsai 2
+  27B PQ2_0 9.0 and 70; PTQ1_0 6.9 and 62. All passed the smoke test with vision. As step judge,
+  Bonsai 2 missed no committing step with 6 false prompts; the 1-bit model missed one (an injected
+  "Send") with 12 false prompts.
+* Lite sandbox in a 1 GB VM: code, files across runs, sessions and token checks work; about 170 MB
+  in use.
+* booking.com flight search with Bonsai 2 (21 steps, 32 minutes) and the 1-bit 27B (30 steps,
+  18.5 minutes, reached the Bengaluru to New Delhi route page): no unwanted prompts and correct
+  judge decisions, but neither returned the three cheapest flights. Prompt reading at 60-80 tok/s
+  is the bottleneck on this chip.
+* Live model discovery found 31 recent models from trusted publishers; on 18 GB it proposed
+  MiMo-V2.6-Distill-Qwen-9B, Granite 4.2 8B and Mage-VL besides the catalog's picks.
+
 ## Not yet validated
 
-* A full browser task completed end to end by Bonsai 2 27B on a 24 GB or larger machine.
+* A full booking.com flight search completed end to end by a local model.
+* Discovered models on large machines (192-512 GB Macs, multi-GPU, DGX Spark clusters) and the
+  on-device ranking among several downloaded candidates.
 * Microsoft Fara1.5-9B (screenshot-based browser specialist) as a second browser driver.
 * Starting the sandbox VM on demand on 16-18 GB machines, to leave room for a bigger model.
 

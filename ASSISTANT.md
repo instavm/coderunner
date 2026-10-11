@@ -45,9 +45,22 @@ coderunner chat       # talk to it; approvals are asked right in the terminal
 ## Models: picked for your hardware
 
 `coderunner setup` (run by the installer) detects the machine (Apple Silicon
-unified memory and GPU working-set limit, NVIDIA/AMD VRAM, CPU-only RAM,
-WSL2), subtracts what the sandbox VM needs, and picks the strongest
-tool-calling model that fits, preferring one that can also see images. It then
+unified memory and GPU working-set limit; NVIDIA VRAM pooled across cards,
+DGX Spark / GB10 and Jetson unified memory, and the GPU generation; AMD;
+CPU-only RAM; WSL2), subtracts what the sandbox VM needs, and picks the
+strongest tool-calling model that fits, preferring one that can also see
+images. The same process runs on every machine, from an 8 GB MacBook Air to a
+512 GB Mac Studio or a multi-GPU server:
+
+1. Candidates come from the curated catalog (checked models with measured
+   speed factors) and from recent releases discovered on Hugging Face from
+   trusted publishers (`coderunner models discover`).
+2. Each model's own config gives its context-cache cost; its real GGUF and
+   MLX builds give the file sizes; the best-quality build that fits this
+   machine's budget at a usable context is chosen (Q8 where there is room,
+   4-bit or lower where there is not).
+3. Candidates are ranked by fit, speed and quality, and the top ones are
+   downloaded and tested on the machine itself until one passes. It then
 pulls it through Ollama, or straight from Hugging Face as GGUF for llama.cpp
 when you prefer, starts the runtime and runs a smoke test (exact tool
 arguments, tool choice, plain answers, and image understanding) before it
