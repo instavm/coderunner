@@ -177,7 +177,11 @@ def _chat_once(config: Config, message: str, conversation: str) -> str:
             for approval in _admin(config, "GET", "/api/approvals", timeout=5):
                 if approval["id"] not in seen:
                     seen.add(approval["id"])
-                    _approval_prompt(config, approval)
+                    if sys.stdin.isatty():
+                        _approval_prompt(config, approval)
+                    else:
+                        print(f"Approval needed: {approval['summary']} "
+                              f"(coderunner approvals approve {approval['id']})", file=sys.stderr)
         except Exception:
             pass
         thread.join(1)

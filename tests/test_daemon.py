@@ -174,6 +174,26 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(delivered, [("brief", "Your day is clear.")])
             self.assertFalse(daemon.svc.scheduler.get(created["id"])["enabled"])
 
+    async def test_missing_sandbox_network_is_audited_once(self):
+        from coderunner.daemon import _bind_error
+        with FakeOpenAI() as fake:
+            daemon = self.make_daemon(fake)
+            # TEST-NET-1 is never assigned to a local interface, like a VM bridge that is not up yet.
+            self.assertIn("192.0.2.1", _bind_error("192.0.2.1", free_port()))
+            self.assertIsNone(_bind_error("127.0.0.1", free_port()))
+            sleeps = []
+
+            async def fake_sleep(seconds):
+                sleeps.append(seconds)
+                if len(sleeps) == 3:
+                    raise asyncio.CancelledError
+
+            with mock.patch("coderunner.daemon.asyncio.sleep", fake_sleep):
+                with self.assertRaises(asyncio.CancelledError):
+                    await daemon._serve_with_retry(None, lambda: "192.0.2.1", free_port(), "sandbox")
+            failures = [r for r in daemon.svc.audit.tail(50) if r["event"] == "gateway.bind_failed"]
+            self.assertEqual(len(failures), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

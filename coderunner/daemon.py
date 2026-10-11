@@ -7,6 +7,7 @@ import contextlib
 import logging
 import platform
 import signal
+import socket
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -61,6 +62,17 @@ class _Server(uvicorn.Server):
 
     def capture_signals(self):
         return contextlib.nullcontext()
+
+
+def _bind_error(host: str, port: int) -> str | None:
+    """Probe the address first: uvicorn logs an error and exits when it cannot bind."""
+    try:
+        with socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+    except OSError as exc:
+        return f"{host}:{port}: {exc.strerror or exc}"
+    return None
 
 
 async def notify_desktop(title: str, text: str) -> None:
@@ -211,29 +223,41 @@ class Daemon:
         return self.driver.gateway_address() if bind == "auto" else bind
 
     async def _serve_with_retry(self, app, host_fn: Callable[[], str], port: int, label: str) -> None:
-        """The VM bridge address only exists while the sandbox network is up, so keep trying."""
+        """The VM bridge address only exists while the sandbox network is up, so keep trying.
+
+        Only the first failure in a row is audited, so a stopped sandbox does not flood the log.
+        """
+        failing = False
         while True:
             host = host_fn()
-            server = _Server(uvicorn.Config(app, host=host, port=port, log_level="warning", lifespan="on"))
-            self._servers.append(server)
-            try:
-                await server.serve()
-            except (OSError, SystemExit) as exc:
-                self.svc.audit.write("gateway.bind_failed", surface=label, host=host, port=port, error=str(exc))
-            if server.should_exit:
-                return
-            self._servers.remove(server)
+            error = _bind_error(host, port)
+            if error is None:
+                server = _Server(uvicorn.Config(app, host=host, port=port, log_level="warning", lifespan="on"))
+                self._servers.append(server)
+                try:
+                    await server.serve()
+                except (OSError, SystemExit):
+                    error = f"{host}:{port}: could not listen"
+                if server.should_exit:
+                    return
+                self._servers.remove(server)
+            if error and not failing:
+                self.svc.audit.write("gateway.bind_failed", surface=label, host=host, port=port, error=error)
+            failing = error is not None
             await asyncio.sleep(10)
 
     async def _proxy_with_retry(self, servers: list) -> None:
         """Like the HTTP surfaces, the egress proxy waits for the VM bridge address to exist."""
         proxy = EgressProxy(self.svc.egress, self.svc.audit, paths.api_token)
+        failing = False
         while True:
             try:
                 servers.append(await proxy.start(self._sandbox_bind(), int(self.config.get("gateway.proxy_port"))))
                 return
             except OSError as exc:
-                self.svc.audit.write("gateway.bind_failed", surface="proxy", error=str(exc))
+                if not failing:
+                    self.svc.audit.write("gateway.bind_failed", surface="proxy", error=str(exc))
+                failing = True
                 await asyncio.sleep(10)
 
     async def run(self) -> None:
