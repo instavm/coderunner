@@ -57,10 +57,16 @@ INTERACTIVE = frozenset({
 INLINE = frozenset({"strong", "emphasis", "mark", "subscript", "superscript", "time", "code", "abbr",
                     "insertion", "deletion"})
 CHECKABLE = frozenset({"checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"})
+# Controls that commit something. Nouns that merely name a section ("Your orders", "Manage your
+# booking", "Check-out date") are left out; the optional decision model catches what words miss.
 SENSITIVE = re.compile(
-    r"\b(?:buy(?:ing)?|pay(?:s|ing|ment|ments)?|purchas(?:e|es|ing)|orders?|check\s*-?\s*out"
-    r"|subscri(?:be|bing|ption)|donat(?:e|es|ing|ion)|transfer(?:s|ring)?|send(?:ing)?"
-    r"|delet(?:e|es|ing)|remov(?:e|es|ing)|confirm(?:s|ing|ation)?|book(?:ing)?|reserv(?:e|es|ing|ation)"
+    r"\b(?:buy(?:ing)?|pay(?:s|ing|ment|ments)?|purchas(?:e|es|ing)|check\s*-?\s*out(?!\s*-?\s*(?:date|time|day))"
+    r"|(?:place|submit|confirm)\s+(?:your\s+|my\s+|the\s+)?order|order\s+now|place\s+(?:a\s+)?bid"
+    r"|(?:un)?subscri(?:be|bing|ption)|donat(?:e|es|ing|ion)|transfer(?:s|ring)?|send(?:ing)?"
+    r"|delet(?:e|es|ing)|remov(?:e|es|ing)|trash|merge|submit|invit(?:e|es|ing)"
+    r"|confirm(?:s|ing|ation)?|book|complete\s+(?:booking|purchase|payment)|reserv(?:e|es|ing|ation)"
+    r"|finish\s+cancellation|cancel\s+(?:my\s+|your\s+)?(?:membership|subscription|plan|order|booking|account)"
+    r"|(?:sign|log)\s*-?\s*out\s+(?:of\s+)?(?:all|every)"
     r"|post(?:ing)?|publish(?:ing)?|shar(?:e|es|ing)"
     # Words that could answer one of the owner's approval prompts in a chat client.
     r"|approv(?:e|es|ed|ing|al|als)|allow(?:s|ed|ing)?|authori[sz](?:e|es|ed|ing|ation)"
@@ -917,7 +923,7 @@ class BrowserBroker:
 
     async def _open(self, url: str, tainted: bool) -> dict:
         url, host = await self._vet(url)
-        await self._allow("browser.navigate", host, f"Open {url} in a new tab", tainted, url=url)
+        await self._allow("browser.navigate", host, f"Open {url} in a new tab", tainted, url=url, chosen=True)
         cdp = await self._ensure()
         target = (await cdp.send("Target.createTarget", {"url": "about:blank"}))["targetId"]
         self._opened.add(target)
@@ -926,7 +932,8 @@ class BrowserBroker:
 
     async def _navigate(self, url: str, tab: str | None, tainted: bool) -> dict:
         url, host = await self._vet(url)
-        await self._allow("browser.navigate", host, f"Open {url}", tainted, url=url)
+        # chosen: the model wrote this URL, so it could carry data out (see Policy._leak_destination).
+        await self._allow("browser.navigate", host, f"Open {url}", tainted, url=url, chosen=True)
         return await self._goto(await self._target(tab), url, host, tainted)
 
     async def _back(self, tab: str | None, tainted: bool) -> dict:

@@ -20,7 +20,7 @@ SCHEMA = [
         expires REAL, created REAL, source TEXT)""",
     """CREATE TABLE IF NOT EXISTS memories (
         id INTEGER PRIMARY KEY, text TEXT NOT NULL, tags TEXT DEFAULT '',
-        created REAL, embedding TEXT)""",
+        created REAL, embedding TEXT, source TEXT DEFAULT '')""",
     """CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
         text, tags, content='memories', content_rowid='id')""",
     """CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
@@ -37,6 +37,10 @@ SCHEMA = [
     """CREATE TABLE IF NOT EXISTS devices (
         id TEXT PRIMARY KEY, name TEXT, created REAL, last_seen REAL)""",
     "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)",
+]
+# Columns added after a table was first created; they fail harmlessly once present.
+MIGRATIONS = [
+    "ALTER TABLE memories ADD COLUMN source TEXT DEFAULT ''",
 ]
 
 
@@ -58,6 +62,11 @@ class Store:
         with self._lock:
             for statement in SCHEMA:
                 self._conn.execute(statement)
+            for statement in MIGRATIONS:
+                try:
+                    self._conn.execute(statement)
+                except sqlite3.OperationalError:  # duplicate column
+                    pass
 
     def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self._lock:

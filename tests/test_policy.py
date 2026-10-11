@@ -2,10 +2,11 @@ import asyncio
 import tempfile
 import pathlib
 import unittest
+from types import SimpleNamespace
 
 from coderunner.audit import AuditLog
 from coderunner.config import Config
-from coderunner.policy import Action, Decision, Policy
+from coderunner.policy import Action, Decision, Policy, current_run
 from coderunner.store import Store
 
 
@@ -19,15 +20,21 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
     def test_defaults(self):
         policy = make_policy()
         self.assertIs(policy.evaluate(Action("sandbox.exec", "main", "run")), Decision.ALLOW)
-        self.assertIs(policy.evaluate(Action("browser.navigate", "example.com", "open")), Decision.ASK)
+        # Ordinary browsing runs without prompts; committing steps and passwords do not.
+        self.assertIs(policy.evaluate(Action("browser.navigate", "example.com", "open")), Decision.ALLOW)
+        self.assertIs(policy.evaluate(Action("browser.interact", "example.com", "click")), Decision.ALLOW)
+        self.assertIs(policy.evaluate(Action("browser.sensitive", "example.com", "pay")), Decision.ASK)
         self.assertIs(policy.evaluate(Action("browser.password", "example.com", "type")), Decision.DENY)
+        self.assertIs(policy.evaluate(Action("channel.send", "telegram:1", "hi")), Decision.ASK)
         self.assertIs(policy.evaluate(Action("unknown.kind", "x", "?")), Decision.ASK)
 
     def test_connectors_need_enabling(self):
         policy = make_policy({"connectors": {"enabled": ["calendar"]}})
         self.assertIs(policy.evaluate(Action("connector.read", "calendar", "read")), Decision.ALLOW)
         self.assertIs(policy.evaluate(Action("connector.read", "mail", "read")), Decision.DENY)
-        self.assertIs(policy.evaluate(Action("connector.write", "calendar", "write")), Decision.ASK)
+        # Writes only create events, reminders, notes and drafts; after untrusted content they ask.
+        self.assertIs(policy.evaluate(Action("connector.write", "calendar", "write")), Decision.ALLOW)
+        self.assertIs(policy.evaluate(Action("connector.write", "calendar", "write", tainted=True)), Decision.ASK)
         self.assertIs(policy.evaluate(Action("connector.write", "mail", "write")), Decision.DENY)
 
     def test_secret_hosts(self):
@@ -45,8 +52,15 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(policy.evaluate(Action("browser.navigate", "www.example.com", "")), Decision.ALLOW)
         self.assertIs(policy.evaluate(Action("browser.navigate", "example.com", "")), Decision.ALLOW)
         self.assertIs(policy.evaluate(Action("browser.navigate", "bad.example.com", "")), Decision.DENY)
-        self.assertIs(policy.evaluate(Action("browser.navigate", "notexample.com", "")), Decision.ASK)
+        self.assertIs(policy.evaluate(Action("browser.navigate", "notexample.com", "")), Decision.ALLOW)
         self.assertIs(policy.evaluate(Action("browser.navigate", "printer.local", "")), Decision.DENY)
+
+    def test_ask_rules_make_the_owner_stricter(self):
+        policy = make_policy({"policy": {"rules": [
+            {"kind": "browser.navigate", "target": "*", "decision": "ask"},
+            {"kind": "browser.navigate", "target": "docs.example.com", "decision": "allow"}]}})
+        self.assertIs(policy.evaluate(Action("browser.navigate", "news.example.org", "")), Decision.ASK)
+        self.assertIs(policy.evaluate(Action("browser.navigate", "docs.example.com", "")), Decision.ALLOW)
 
     def test_egress_allow_list_ignored_when_tainted(self):
         policy = make_policy()
@@ -55,31 +69,77 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
 
     def test_taint_rules(self):
         policy = make_policy({"sandbox": {"network": "default"}})
-        self.assertIs(policy.evaluate(Action("memory.write", "memory", "")), Decision.ALLOW)
-        self.assertIs(policy.evaluate(Action("memory.write", "memory", "", tainted=True)), Decision.ASK)
+        # Saved as unverified instead of asking; deleting still asks.
+        self.assertIs(policy.evaluate(Action("memory.write", "memory", "", tainted=True)), Decision.ALLOW)
+        self.assertIs(policy.evaluate(Action("memory.forget", "memory", "")), Decision.ALLOW)
         self.assertIs(policy.evaluate(Action("memory.forget", "memory", "", tainted=True)), Decision.ASK)
-        self.assertIs(policy.evaluate(Action("sandbox.exec", "main", "")), Decision.ALLOW)
-        # Open-network sandbox code after untrusted input is an exfiltration path.
-        self.assertIs(policy.evaluate(Action("sandbox.exec", "main", "", tainted=True)), Decision.ASK)
-        guarded = make_policy({"sandbox": {"network": "proxy"}})
-        self.assertIs(guarded.evaluate(Action("sandbox.exec", "main", "", tainted=True)), Decision.ALLOW)
+        self.assertIs(policy.evaluate(Action("schedule.create", "daily 08:00", "")), Decision.ALLOW)
+        self.assertIs(policy.evaluate(Action("schedule.create", "daily 08:00", "", tainted=True)), Decision.ASK)
+        self.assertIs(policy.evaluate(Action("browser.interact", "shop.com", "", tainted=True)), Decision.ALLOW)
         # Deny rules still win over taint.
-        blocked = make_policy({"policy": {"rules": [{"kind": "memory.write", "target": "*", "decision": "deny"}]}})
-        self.assertIs(blocked.evaluate(Action("memory.write", "memory", "", tainted=True)), Decision.DENY)
+        blocked = make_policy({"policy": {"rules": [{"kind": "memory.forget", "target": "*", "decision": "deny"}]}})
+        self.assertIs(blocked.evaluate(Action("memory.forget", "memory", "", tainted=True)), Decision.DENY)
 
-    def test_tainted_navigation(self):
-        policy = make_policy({"browser": {"allow": ["docs.example.com"]}})
-        nav = lambda host, url, tainted: Action("browser.navigate", host, "", {"url": url}, tainted=tainted)  # noqa: E731
-        self.assertIs(policy.evaluate(nav("docs.example.com", "https://docs.example.com/a", False)), Decision.ALLOW)
-        self.assertIs(policy.evaluate(nav("docs.example.com", "https://docs.example.com/a", True)), Decision.ALLOW)
-        # A query string can carry data out after untrusted content was read.
-        self.assertIs(policy.evaluate(nav("docs.example.com", "https://docs.example.com/f?entry=x", True)),
-                      Decision.ASK)
-        self.assertIs(policy.evaluate(nav("other.com", "https://other.com/", True)), Decision.ASK)
+    async def test_leaks_need_one_approval_per_destination(self):
+        policy = make_policy({"sandbox": {"network": "default"}})
+        run = SimpleNamespace(content_tainted=True, private_sources={"calendar"}, shared=set())
+        token = current_run.set(run)
+        try:
+            # Clicking through a site carries no data the model chose: no prompt.
+            self.assertTrue(await policy.check(Action("browser.interact", "shop.com", "Click Next"), wait=1))
+            typing = Action("browser.interact", "shop.com", 'Type "Delhi" into Where to?', {"text": "Delhi"})
+            task = asyncio.create_task(policy.check(typing, wait=5))
+            await asyncio.sleep(0.05)
+            [approval] = policy.pending()
+            self.assertEqual((approval.kind, approval.target), ("data.share", "shop.com"))
+            self.assertIn("calendar", approval.summary)
+            self.assertIn('Type "Delhi"', approval.summary)
+            policy.decide(approval.id, True)
+            self.assertTrue(await task)
+            # Once per destination and run.
+            self.assertTrue(await policy.check(typing, wait=0.05))
+            nav = Action("browser.navigate", "evil.example", "Open https://evil.example/?d=x",
+                         {"url": "https://evil.example/?d=x", "chosen": True})
+            self.assertFalse(await policy.check(nav, wait=0.05))
+            # A link the page itself offered is not a model-chosen URL.
+            self.assertTrue(await policy.check(Action("browser.navigate", "evil.example", "Go back", {"url": "x"}),
+                                               wait=0.05))
+            code = Action("sandbox.exec", "main", "Run in the sandbox: ...")
+            self.assertFalse(await policy.check(code, wait=0.05))
+        finally:
+            current_run.reset(token)
+
+    async def test_no_leak_check_without_both_private_data_and_untrusted_content(self):
+        policy = make_policy({"sandbox": {"network": "default"}})
+        typing = Action("browser.interact", "shop.com", "Type", {"text": "x"})
+        for tainted, sources in ((True, set()), (False, {"memory"})):
+            token = current_run.set(SimpleNamespace(content_tainted=tainted, private_sources=sources, shared=set()))
+            try:
+                self.assertTrue(await policy.check(typing, wait=0.05))
+                self.assertTrue(await policy.check(Action("sandbox.exec", "main", "x"), wait=0.05))
+            finally:
+                current_run.reset(token)
+
+    async def test_one_prompt_when_the_step_itself_needs_approval(self):
+        policy = make_policy()
+        run = SimpleNamespace(content_tainted=True, private_sources={"mail"}, shared=set())
+        token = current_run.set(run)
+        try:
+            pay = Action("browser.sensitive", "shop.com", "Type card number", {"field": "cc-number"})
+            task = asyncio.create_task(policy.check(pay, wait=5))
+            await asyncio.sleep(0.05)
+            [approval] = policy.pending()
+            self.assertEqual(approval.kind, "browser.sensitive")
+            self.assertIn("data from your mail", approval.summary)
+            policy.decide(approval.id, True)
+            self.assertTrue(await task)
+            self.assertIn("shop.com", run.shared)
+        finally:
+            current_run.reset(token)
 
     async def test_approval_flow_and_grants(self):
         policy = make_policy()
-        action = Action("browser.interact", "shop.com", "Click Add to cart")
+        action = Action("egress.connect", "files.example.com:443", "Connect to files.example.com")
         task = asyncio.create_task(policy.check(action, wait=5))
         await asyncio.sleep(0.05)
         pending = policy.pending()
@@ -88,8 +148,9 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await task)
         # The day grant now covers the same action without asking.
         self.assertIs(policy.evaluate(action), Decision.ALLOW)
-        # ...but not once the run has read untrusted content.
-        self.assertIs(policy.evaluate(Action("browser.interact", "shop.com", "x", tainted=True)), Decision.ASK)
+        # ...but not once untrusted content may have written the request.
+        self.assertIs(policy.evaluate(Action("egress.connect", "files.example.com:443", "x", tainted=True)),
+                      Decision.ASK)
 
     async def test_high_risk_never_gets_standing_grant(self):
         policy = make_policy()
@@ -103,16 +164,16 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_deny_and_timeout(self):
         policy = make_policy()
-        task = asyncio.create_task(policy.check(Action("schedule.create", "daily 08:00", "x"), wait=5))
+        task = asyncio.create_task(policy.check(Action("egress.connect", "a.example:443", "x"), wait=5))
         await asyncio.sleep(0.05)
         policy.decide(policy.pending()[0].id, False)
         self.assertFalse(await task)
-        self.assertFalse(await policy.check(Action("schedule.create", "daily 09:00", "y"), wait=0.05))
+        self.assertFalse(await policy.check(Action("egress.connect", "b.example:443", "y"), wait=0.05))
         self.assertEqual(policy.pending(), [])
 
     async def test_decide_twice_rejected(self):
         policy = make_policy()
-        task = asyncio.create_task(policy.check(Action("browser.navigate", "a.com", "x"), wait=5))
+        task = asyncio.create_task(policy.check(Action("egress.connect", "a.com:443", "x"), wait=5))
         await asyncio.sleep(0.05)
         approval_id = policy.pending()[0].id
         policy.decide(approval_id, True)
@@ -129,7 +190,7 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
         seen = []
         policy.add_listener(broken)
         policy.add_listener(lambda a: seen.append(a.id))
-        task = asyncio.create_task(policy.check(Action("browser.navigate", "b.com", "x"), wait=5))
+        task = asyncio.create_task(policy.check(Action("egress.connect", "b.com:443", "x"), wait=5))
         await asyncio.sleep(0.05)
         self.assertEqual(len(seen), 1)
         policy.decide(seen[0], False)

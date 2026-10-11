@@ -1,22 +1,33 @@
 """Allow / deny / ask decisions and out-of-band approvals.
 
-Every consequential action goes through Policy.check(). Decisions come from,
-in order: explicit deny rules, built-in hard denies, owner rules and grants,
-then per-kind defaults. When the answer is "ask", an approval request is
-created and the caller waits until the owner decides through the CLI, web UI
-or a paired messaging channel. The model can never answer its own approval:
+Every action goes through Policy.check(). Decisions come from, in order:
+explicit deny rules, built-in hard denies, owner rules and grants, then
+per-kind defaults. When the answer is "ask", an approval request is created
+and the caller waits until the owner decides through the CLI, web UI or a
+paired messaging channel. The model can never answer its own approval:
 decisions only arrive through the admin API.
+
+The owner is asked only about actions that commit something (paying, booking,
+sending, posting, deleting, changing settings) or that could leak their data.
+Ordinary steps such as opening pages, clicking through a site and typing a
+search run without prompts.
 
 Taint: once an agent run has read untrusted content (web pages, mail,
 messages from others, sandbox output), actions in TAINT_SENSITIVE ignore
-standing grants and need a fresh approval, and navigation is limited to the
-owner's allow list without query strings. This limits what injected
-instructions can do with the owner's earlier "always allow" choices.
+standing grants and need a fresh approval.
+
+Leaks: injected instructions can only leak the owner's data when one run both
+holds private data (memories, mail, calendar...) and has read third-party
+content. In such a run, the first time data could leave towards a destination
+(typing into a site, opening a URL the model chose, running code with open
+network access), the owner approves sharing with that destination once for
+the run.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import fnmatch
 import json
 import secrets
@@ -24,7 +35,6 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable
-from urllib.parse import urlsplit
 
 from .audit import AuditLog
 from .config import Config
@@ -44,26 +54,33 @@ DEFAULTS: dict[str, Decision] = {
     "sandbox.exec": Decision.ALLOW,
     "llm.chat": Decision.ALLOW,
     "memory.read": Decision.ALLOW,
-    "memory.write": Decision.ALLOW,
+    "memory.write": Decision.ALLOW,       # after untrusted content, saved as unverified instead of asking
     "memory.forget": Decision.ALLOW,
-    "browser.read": Decision.ALLOW,       # snapshot/screenshot of a page already allowed
-    "browser.navigate": Decision.ASK,
-    "browser.interact": Decision.ASK,
-    "browser.sensitive": Decision.ASK,
+    "browser.read": Decision.ALLOW,
+    "browser.navigate": Decision.ALLOW,   # local network, file: and blocked hosts are refused separately
+    "browser.interact": Decision.ALLOW,   # ordinary clicks and typing; committing ones are browser.sensitive
+    "browser.sensitive": Decision.ASK,    # pay, book, send, post, delete, change settings, grant access
     "browser.password": Decision.DENY,    # the owner types passwords, never the model
     "egress.connect": Decision.ASK,
     "secret.use": Decision.DENY,          # allowed only for hosts configured per secret
     "connector.read": Decision.DENY,      # allowed only for enabled connectors
-    "connector.write": Decision.ASK,
+    "connector.write": Decision.ALLOW,    # creates events, reminders, notes and drafts; nothing is sent
     "channel.reply": Decision.ALLOW,      # reply in the conversation the owner started
     "channel.send": Decision.ASK,         # message anyone else
-    "schedule.create": Decision.ASK,
+    "schedule.create": Decision.ALLOW,
+    "data.share": Decision.ASK,           # see the module docstring
 }
 
 # High-risk kinds never accept standing grants, only one-time approval.
 HIGH_RISK = {"browser.sensitive", "channel.send"}
-TAINT_SENSITIVE = {"browser.sensitive", "browser.interact", "channel.send", "connector.write",
-                   "egress.connect", "schedule.create", "memory.write", "memory.forget"}
+# After untrusted content these ask, so injected text cannot plant lasting changes or
+# reuse the owner's earlier grants.
+TAINT_SENSITIVE = {"browser.sensitive", "channel.send", "connector.write", "egress.connect",
+                   "schedule.create", "memory.forget"}
+
+# The agent run an action belongs to (an agent.loop.RunContext), so the leak check can see
+# what that run has read without every caller passing it along.
+current_run: contextvars.ContextVar[Any] = contextvars.ContextVar("coderunner_run", default=None)
 
 
 @dataclass(frozen=True)
@@ -128,12 +145,6 @@ class Policy:
         builtin = self._builtin(action)
         if builtin is Decision.DENY:
             return builtin
-        if action.tainted and action.kind == "browser.navigate":
-            # A URL is a way to carry data out. After untrusted content, only the owner's own
-            # allow list is honoured, and only for URLs without a query string.
-            url = str(action.detail.get("url", ""))
-            listed = any(_matches(p, action.target) for p in self.config.get("browser.allow", []) or [])
-            return Decision.ALLOW if listed and url and not urlsplit(url).query else Decision.ASK
         if action.tainted and action.kind in TAINT_SENSITIVE:
             return Decision.ASK
         if builtin is not None:
@@ -145,12 +156,13 @@ class Policy:
                     return Decision.ALLOW
             if self._granted(action):
                 return Decision.ALLOW
+        # "ask" rules make an owner stricter than the defaults, e.g. approve every new site.
+        if any(rule.get("kind") == action.kind and rule.get("decision") == "ask"
+               and _matches(rule.get("target", "*"), action.target) for rule in rules):
+            return Decision.ASK
         return DEFAULTS.get(action.kind, Decision.ASK)
 
     def _builtin(self, action: Action) -> Decision | None:
-        if action.kind == "sandbox.exec" and action.tainted and self.config.get("sandbox.network") == "default":
-            # After reading untrusted content, code that can reach any host is an exfiltration path.
-            return Decision.ASK
         if action.kind == "connector.read":
             enabled = self.config.get("connectors.enabled", []) or []
             return Decision.ALLOW if action.target in enabled else Decision.DENY
@@ -189,13 +201,48 @@ class Policy:
 
     async def check(self, action: Action, origin: str = "agent", wait: float | None = None) -> bool:
         decision = self.evaluate(action)
+        timeout = wait if wait is not None else float(self.config.get("agent.approval_timeout", 300))
+        run, destination = current_run.get(), self._leak_destination(action)
+        if decision is not Decision.DENY and destination is not None and destination not in run.shared:
+            sources = sorted(run.private_sources)
+            note = (f"This task has read untrusted content and holds data from your {', '.join(sources)}; "
+                    f"allow it to use that data on {destination} for the rest of the task.")
+            if decision is Decision.ASK:
+                # One prompt covers both: approving the step also approves sharing with its destination.
+                action = Action(action.kind, action.target, f"{action.summary}\n\n{note}",
+                                {**action.detail, "shares": sources}, action.tainted)
+            else:
+                share = Action("data.share", destination, f"{note}\nFirst step: {action.summary}",
+                               {"sources": sources, "step": action.kind}, tainted=True)
+                if not await self._decide(share, self.evaluate(share), origin, timeout):
+                    return False
+                run.shared.add(destination)
+        allowed = await self._decide(action, decision, origin, timeout)
+        if allowed and destination is not None:
+            run.shared.add(destination)
+        return allowed
+
+    async def _decide(self, action: Action, decision: Decision, origin: str, timeout: float) -> bool:
         if decision is not Decision.ASK:
             self.audit.write("policy", kind=action.kind, target=action.target, decision=decision.value,
                              origin=origin, tainted=action.tainted)
             return decision is Decision.ALLOW
         approval = await self.request(action, origin)
-        timeout = wait if wait is not None else float(self.config.get("agent.approval_timeout", 300))
         return await self.wait(approval.id, timeout)
+
+    def _leak_destination(self, action: Action) -> str | None:
+        """Where this action could carry the owner's data, if the current run could be steered to leak it."""
+        run = current_run.get()
+        if run is None or not run.content_tainted or not run.private_sources:
+            return None
+        if action.kind == "browser.navigate" and action.detail.get("chosen"):
+            return action.target  # the model wrote this URL; its path and query can carry data
+        if action.kind in ("browser.interact", "browser.sensitive") and (
+                "text" in action.detail or "field" in action.detail):
+            return action.target  # typing
+        if action.kind == "sandbox.exec" and self.config.get("sandbox.network") == "default":
+            return "the internet (sandbox code)"
+        return None
 
     # ---- approvals -------------------------------------------------------
 

@@ -23,7 +23,7 @@ MAX_CHARS = 4000
 MAX_TERMS = 32
 RRF_K = 60
 _WORD = re.compile(r"\w+")
-_COLUMNS = "id, text, tags, created"
+_COLUMNS = "id, text, tags, created, source"
 _dot = getattr(math, "sumprod", None) or (lambda a, b: sum(map(operator.mul, a, b)))
 
 
@@ -56,7 +56,8 @@ class Memory:
         self._embed_down = False
         self._vectors: dict[int, list[float]] = {}  # id -> unit vector, mirrors the embedding column
 
-    async def save(self, text: str, tags: str | list[str] = "") -> dict:
+    async def save(self, text: str, tags: str | list[str] = "", source: str = "") -> dict:
+        """source is empty for the owner's own facts, "untrusted" when saved after reading third-party content."""
         text = (text or "").strip()
         if isinstance(tags, (list, tuple)):
             tags = ", ".join(str(t).strip() for t in tags if str(t).strip())
@@ -66,19 +67,24 @@ class Memory:
         if len(text) > MAX_CHARS:
             raise ValueError(f"memory text is {len(text)} characters; the limit is {MAX_CHARS}")
         if existing := self._find(text):
+            if existing.get("source") and not source:
+                # The owner's own run confirms a note that was saved as unverified.
+                self.store.execute("UPDATE memories SET source = '' WHERE id = ?", (existing["id"],))
+                existing["source"] = ""
             return {**existing, "duplicate": True}
         vectors = await self._embed([text])
         if existing := self._find(text):  # saved by someone else while we awaited the embedder
             return {**existing, "duplicate": True}
         vector = vectors[0] if vectors else None
         cursor = self.store.execute(
-            "INSERT INTO memories(text, tags, created, embedding) VALUES (?, ?, ?, ?)",
-            (text, tags, time.time(), json.dumps(vector) if vector else None),
+            "INSERT INTO memories(text, tags, created, embedding, source) VALUES (?, ?, ?, ?, ?)",
+            (text, tags, time.time(), json.dumps(vector) if vector else None, source),
         )
         memory_id = cursor.lastrowid
         if vector:
             self._vectors[memory_id] = vector
-        self.audit.write("memory.save", id=memory_id, chars=len(text), tags=tags, embedded=bool(vector))
+        self.audit.write("memory.save", id=memory_id, chars=len(text), tags=tags, embedded=bool(vector),
+                         source=source)
         return {**self._get(memory_id), "duplicate": False}
 
     async def search(self, query: str, limit: int = 5) -> list[dict]:

@@ -150,13 +150,13 @@ class AdminGatewayTests(unittest.IsolatedAsyncioTestCase):
     async def test_decide_approval_over_api(self):
         from coderunner.policy import Action
         admin = {"Authorization": "Bearer " + ADMIN}
-        task = asyncio.create_task(self.svc.policy.check(Action("browser.navigate", "a.com", "Open a.com"), wait=5))
+        task = asyncio.create_task(self.svc.policy.check(Action("channel.send", "telegram:42", "Send hi"), wait=5))
         await asyncio.sleep(0.05)
         async with self.client() as client:
             pending = (await client.get("/api/approvals", headers=admin)).json()
-            self.assertEqual(pending[0]["summary"], "Open a.com")
+            self.assertEqual(pending[0]["summary"], "Send hi")
             decided = await client.post(f"/api/approvals/{pending[0]['id']}", headers=admin,
-                                        json={"allow": True, "scope": "day"})
+                                        json={"allow": True, "scope": "once"})
             self.assertEqual(decided.json()["status"], "approved")
             self.assertEqual(decided.json()["decided_by"], "admin-token")
         self.assertTrue(await task)

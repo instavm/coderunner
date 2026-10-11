@@ -67,16 +67,21 @@ declares success. If a model fails the test, the next candidate is tried.
 
 ## Safety model
 
+You are asked only about steps that commit something or could leak your data.
+Ordinary work (opening sites, clicking through them, filling in a search,
+picking dates and filters, running code, saving notes) runs without prompts.
+
 | Risk | Control |
 | --- | --- |
-| Prompt injection from web pages, mail, notes, other people, sandbox output | Untrusted output is wrapped as `<untrusted>`, screened, and **taints** the run. In a tainted run, sensitive actions (browser clicks and typing, writes to connectors, messages, schedules, memory changes, sandbox egress) ignore standing grants and need a fresh approval; navigation is limited to your `browser.allow` list without query strings. After third-party content, sandbox code needs approval in the open network mode, and in `proxy` mode the sandbox's egress allow list is suspended for 30 minutes. Schedules created by a tainted run keep running tainted; MCP clients keep their taint for 30 minutes. |
+| Committing actions: paying, booking, placing orders or bids, sending or posting, inviting, deleting, cancelling, changing account settings, granting access | Always a one-time approval showing exactly what will happen; "always allow" is not offered. In the browser these are recognised by the control's wording and, when a decision model is installed, by a second check of the action in its page context (the model can only add prompts, never remove them). |
+| Leaking your data | Injected instructions can only leak your data when one task has both read your private data (memories, mail, calendar, notes, contacts) and read third-party content. In such a task, the first time data could leave towards a destination (typing into a site, opening a URL the model wrote, running code with open network access) you approve sharing with that destination once for the task. Links the page itself offers are not model-written URLs. |
+| Prompt injection from web pages, mail, notes, other people, sandbox output | Untrusted output is wrapped as `<untrusted>`, screened, and **taints** the run. A tainted run cannot reuse your standing grants for committing or lasting actions: messages, connector writes, schedules, deleting memories and sandbox egress ask again. Memories it saves are kept as *unverified* and are recalled later as untrusted data. Schedules created by a tainted run keep running tainted; MCP clients keep what they read for 30 minutes. |
 | The model approves its own actions | Approvals are decided only through the owner API (CLI, web UI, paired channel). The model never sees an approval endpoint. |
-| Purchases, messages to others, deletions | High-risk kinds are always one-time approvals showing the full content; "always allow" is not offered. |
 | Passwords and one-time codes | The model may not type into password or OTP fields. It hands off to you in the visible browser window. |
-| Using your browser | A dedicated profile in your installed Chrome/Brave/Edge, visible so you can watch and take over, controlled over `--remote-debugging-pipe` (no TCP port exists for anything else to reach). No JavaScript evaluation, cookie or storage access is exposed; downloads and file pickers are blocked; new sites, clicks and typing need approval or a grant; `file:`, `chrome:` and LAN addresses are refused. |
+| Using your browser | A dedicated profile in your installed Chrome/Brave/Edge, visible so you can watch and take over, controlled over `--remote-debugging-pipe` (no TCP port exists for anything else to reach). No JavaScript evaluation, cookie or storage access is exposed; downloads and file pickers are blocked; `file:`, `chrome:` and LAN addresses are refused; web chat clients count every click and keystroke as committing. Prefer stricter? Add `{"kind": "browser.navigate", "target": "*", "decision": "ask"}` to `policy.rules` to approve every new site. |
 | Sandbox exfiltration | Network mode `proxy`: the VM is on a host-only network whose only way out is the egress proxy. Destinations are allow-listed or approved per host; LAN, loopback, link-local and tailnet (CGNAT) addresses are refused; connections go to the address that was checked; denials are remembered for five minutes and at most five network approvals can wait at once. Mode `none` has no egress at all (the secret-injecting fetch is disabled too). |
 | API keys | Stored on the host. Sandbox code writes `{{secret:name}}` in a header; the gateway substitutes it only over https, only for hosts you named (and the header you named, if any), and strips it from responses. |
-| Connectors | Off until enabled one by one. Reads are allowed once enabled; writes ask. Mail can only create drafts. One-time codes and reset links are redacted from mail. Scripts get data as arguments, never as code. |
+| Connectors | Off until enabled one by one. Writes only create calendar events (no invitations), reminders, notes and mail drafts; they run without a prompt unless the task has read untrusted content. Mail can only create drafts. One-time codes and reset links are redacted from mail. Scripts get data as arguments, never as code. |
 | Remote access | Tailscale Serve on your tailnet only (never Funnel). A paired-device cookie is always required; Tailscale identity headers only narrow who may use it, because local processes can forge them. |
 | Accountability | Every tool call, decision, approval and egress connection is in `~/.coderunner/assistant/audit.jsonl` (`coderunner audit`). Secrets are redacted. |
 
@@ -125,9 +130,9 @@ replies use macOS `say`, `piper` or `kokoro` with `ffmpeg`.
 `coderunner connectors enable <calendar|reminders|notes|mail|contacts>`, then
 `coderunner connectors test <name>` from Terminal to grant the Automation
 permission. Reads: calendar events, reminders, note search and read, recent
-mail and message bodies, contact lookup. Writes (always approved): calendar
-events, reminders, notes, and mail drafts saved to Drafts. There is no send
-tool. Calendar queries miss recurring series that started before the range.
+mail and message bodies, contact lookup. Writes: calendar events (without
+invitations), reminders, notes, and mail drafts saved to Drafts; they ask first
+only after the task has read untrusted content. There is no send tool. Calendar queries miss recurring series that started before the range.
 
 ## Remote access
 

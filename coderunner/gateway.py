@@ -28,6 +28,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 
 from .egress import EgressDenied, fetch
+from .policy import current_run
 
 WEB_DIR = pathlib.Path(__file__).parent / "web"
 DEVICE_COOKIE = "cr_device"
@@ -199,6 +200,8 @@ MCP_TAINT_SECONDS = 1800
 def admin_app(svc, daemon) -> Starlette:
     failures: dict[str, int] = {}
     mcp_taint: dict[str, tuple[float, float]] = {}
+    # Per MCP client: (expiry, private data sources read, destinations the owner allowed sharing with).
+    mcp_private: dict[str, tuple[float, set[str], set[str]]] = {}
 
     def principal(request: Request) -> str:
         return request.scope.get("state", {}).get("principal", "unknown")
@@ -259,20 +262,30 @@ def admin_app(svc, daemon) -> Starlette:
     async def call_tool(request: Request):
         """Lets local MCP clients use the assistant's guarded tools.
 
-        Each call is separate, so taint is remembered per client for a while: after a
-        client reads untrusted content, its sensitive actions need fresh approval.
+        Each call is separate, so what a client has read is remembered for a while: after it
+        reads untrusted content, its sensitive actions need fresh approval, and after it also
+        reads private data, sharing that data somewhere new needs approval.
         """
         from .agent import RunContext
         body = await request.json()
         client = str(body.get("client", "local"))[:64]
         ctx = RunContext(conversation=f"mcp:{client}", origin=f"mcp:{principal(request)}")
         tainted_until, content_until = mcp_taint.get(client, (0.0, 0.0))
+        private_until, sources, shared = mcp_private.get(client, (0.0, set(), set()))
         now = time.time()
         ctx.tainted, ctx.content_tainted = tainted_until > now, content_until > now
-        result = await svc.registry.invoke(request.path_params["name"], body.get("arguments", {}), ctx)
+        if private_until > now:
+            ctx.private_sources, ctx.shared = set(sources), set(shared)
+        token = current_run.set(ctx)
+        try:
+            result = await svc.registry.invoke(request.path_params["name"], body.get("arguments", {}), ctx)
+        finally:
+            current_run.reset(token)
         if ctx.tainted:
             mcp_taint[client] = (now + MCP_TAINT_SECONDS,
                                  now + MCP_TAINT_SECONDS if ctx.content_tainted else content_until)
+        if ctx.private_sources:
+            mcp_private[client] = (now + MCP_TAINT_SECONDS, ctx.private_sources, ctx.shared)
         images = [{"mime": mime, "data_b64": data} for mime, data in ctx.images]
         return JSONResponse({"result": result, "images": images})
 

