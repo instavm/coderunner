@@ -37,6 +37,9 @@ DEFAULTS: dict[str, Any] = {
         "vision": False,             # set by `coderunner setup` after the image check passes
         "embedding": "",             # optional embedding model id for memory
         "guard": "",                 # optional small model used to score untrusted text
+        "decision": "",              # optional decision model: second opinion on committing browser steps
+        "decision_api": "",          # systemone (Ollama decision models) | chat; empty: chosen automatically
+        "decision_threshold": 0.7,   # P(commits or unclear) at which a step needs approval
         "context": 32768,
         "allow_licenses": ["apache-2.0", "mit", "bsd-3-clause", "bsd-2-clause"],
         "accepted_licenses": [],     # licenses the owner explicitly accepted

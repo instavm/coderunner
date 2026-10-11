@@ -35,7 +35,7 @@ import time
 import urllib.parse
 from typing import Any, Awaitable, Callable
 
-from .. import paths
+from .. import decision, paths
 from ..policy import Action, Decision, _matches
 from . import launcher as default_launcher
 from .cdp import CDPError, CDPPipe
@@ -386,11 +386,12 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
 # ---- broker ---------------------------------------------------------------
 
 class BrowserBroker:
-    def __init__(self, config, policy, audit, launcher=None):
+    def __init__(self, config, policy, audit, launcher=None, decider=None):
         self.config = config
         self.policy = policy
         self.audit = audit
         self.launcher = launcher or default_launcher
+        self.decider = decider      # optional decision.ActionCheck: a second opinion on committing steps
         self.origin = "agent"
         self._process: Any = None
         self._cdp: CDPPipe | None = None
@@ -708,6 +709,13 @@ class BrowserBroker:
         if not await self.policy.check(Action(kind, host, summary, detail, tainted), origin=self.origin):
             raise BrowserError(f"Not permitted: {summary} ({kind} was denied by policy or not approved by the owner)")
 
+    async def _commits(self, host: str, url: str, action: str, role: str, name: str, **extra: str) -> bool:
+        """The decision model's view, for steps the keyword rules consider ordinary."""
+        if self.decider is None:
+            return False
+        path = urllib.parse.urlsplit(url).path or "/"
+        return await self.decider.commits(decision.describe(host, path, action, role, name, **extra))
+
     def _messaging(self, host: str) -> bool:
         patterns = list(MESSAGING_HOSTS) + list(self.config.get("browser.sensitive_hosts", []) or [])
         return any(_matches(pattern, host) for pattern in patterns)
@@ -1015,7 +1023,11 @@ class BrowserBroker:
         sid = await self._session(target)
         async with self._acting(target, sid, tainted):
             plan = await self._click_plan(sid, target, element)
-        await self._allow(plan["kind"], host, f"Click {plan['label']} on {host}", tainted,
+        kind = plan["kind"]
+        if kind == "browser.interact" and await self._commits(
+                host, url, "click", plan["role"], plan["name"] or plan["text"], nearby=plan["text"]):
+            kind = "browser.sensitive"
+        await self._allow(kind, host, f"Click {plan['label']} on {host}", tainted,
                           url=url, ref=ref, label=plan["label"])
         async with self._acting(target, sid, tainted):
             # The approval covers exactly what was shown: the same element under the pointer, the same
@@ -1056,8 +1068,11 @@ class BrowserBroker:
             label += f' (covered by {cover.get("tag")} {json.dumps(cover.get("text", ""), ensure_ascii=False)})'
         risky = sensitive(name, text) or own.get("truncated") or (cover is not None and (
             sensitive(cover.get("text", "")) or cover.get("truncated") or cover.get("tag") in FRAME_TAGS))
-        return {"hit": hit.get("backendNodeId"), "frame": hit.get("frameId"), "label": label,
-                "kind": "browser.sensitive" if risky else "browser.interact"}
+        # When the click lands on the element itself, which of its own child nodes is under the
+        # pointer does not matter (menus restyle them on hover); a different covering element does.
+        return {"hit": "element" if cover is None else hit.get("backendNodeId"), "frame": hit.get("frameId"),
+                "label": label, "kind": "browser.sensitive" if risky else "browser.interact",
+                "text": text, "name": name, "role": element["role"]}
 
     async def _center(self, sid: str, backend: int) -> tuple[float, float]:
         try:
@@ -1146,7 +1161,9 @@ class BrowserBroker:
             else:
                 detail["text"] = text
             risky = field == "payment" or own.get("truncated") or (
-                submit and sensitive(own.get("submit", ""), own.get("text", "")))
+                submit and sensitive(own.get("submit", ""), own.get("text", ""))) or await self._commits(
+                host, url, "type and press Enter" if submit else "type", element["role"], element["name"],
+                typed=text, nearby=f"submits: {own.get('submit')}" if submit and own.get("submit") else "")
             await self._allow("browser.sensitive" if risky else "browser.interact", host, summary, tainted, **detail)
         async with self._acting(target, sid, tainted):
             try:
@@ -1203,7 +1220,9 @@ class BrowserBroker:
             if key == "Enter":
                 # Enter activates the focused control or submits its form.
                 risky = focused.get("tag") in FRAME_TAGS or focused.get("truncated") or \
-                    sensitive(focused.get("text", ""), focused.get("submit", ""))
+                    sensitive(focused.get("text", ""), focused.get("submit", "")) or await self._commits(
+                        host, url, "press Enter in", focused.get("tag", ""), focused.get("text", ""),
+                        nearby=f"submits: {focused['submit']}" if focused.get("submit") else "")
                 if focused.get("submit"):
                     summary += f" which may submit {json.dumps(focused['submit'], ensure_ascii=False)}"
         await self._allow("browser.sensitive" if risky else "browser.interact", host, summary, tainted,

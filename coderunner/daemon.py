@@ -123,7 +123,8 @@ class Daemon:
         svc.sandbox = SandboxClient(url, paths.api_token())
 
         from .browser import BrowserBroker
-        svc.browser = BrowserBroker(self.config, svc.policy, audit)
+        from .decision import ActionCheck
+        svc.browser = BrowserBroker(self.config, svc.policy, audit, decider=ActionCheck.from_config(self.config, audit))
 
         from .memory import Memory
         embedder = None

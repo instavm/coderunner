@@ -616,6 +616,27 @@ class DefaultPermissionTests(BrokerTestCase):
         self.assertFalse((await self.broker.click(4))["ok"])         # "Buy now"
         self.assertEqual(self.kinds(), ["browser.sensitive"])
 
+    async def test_decision_model_can_add_prompts_but_not_remove_them(self):
+        browser, _ = await self.load_shop()
+        seen = []
+
+        class Decider:
+            async def commits(self, state):
+                seen.append(state)
+                return "Read more" in state or "sourdough" in state
+
+        self.broker.decider = Decider()
+        self.assertFalse((await self.broker.click(1))["ok"])           # "Read more", judged committing
+        self.assertEqual(self.kinds(), ["browser.sensitive"])
+        self.assertIn("Site: shop.example", seen[0])
+        self.assertFalse((await self.broker.type(2, "sourdough"))["ok"])
+        self.assertIn('Text to type: "sourdough"', seen[-1])
+        self.assertTrue((await self.broker.type(2, "rye"))["ok"])
+        # Steps the keyword rules already treat as committing are not sent to the model.
+        count = len(seen)
+        self.assertFalse((await self.broker.click(4))["ok"])           # "Buy now"
+        self.assertEqual(len(seen), count)
+
     async def test_private_data_needs_approval_before_it_reaches_a_site(self):
         browser, _ = await self.load_shop()
         run = SimpleNamespace(content_tainted=True, private_sources={"calendar"}, shared=set())
