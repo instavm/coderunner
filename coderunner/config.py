@@ -36,7 +36,7 @@ DEFAULTS: dict[str, Any] = {
         "chat": "",                  # model id served for the assistant
         "vision": False,             # set by `coderunner setup` after the image check passes
         "embedding": "",             # optional embedding model id for memory
-        "guard": "",                 # optional small model used to score untrusted text
+        "guard": "",                 # decision model screening untrusted text; empty: models.decision
         "decision": "",              # decision model judging committing browser steps; empty: the chat model
         "decision_api": "",          # systemone (Ollama decision models) | chat; empty: chosen automatically
         "decision_threshold": 0.7,   # P(commits or unclear) at which a step needs approval

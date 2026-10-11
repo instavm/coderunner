@@ -62,10 +62,12 @@ declares success. If a model fails the test, the next candidate is tried.
   `coderunner models setup --model <id>` overrides; `coderunner models test`
   re-runs the smoke test.
 * Optional fast "System 1" models share the runtime: an embedding model for
-  memory search, a decision model that judges whether a browser step commits
-  something (`models.decision`, served through Ollama's decision API), and a
-  small classifier that scores untrusted text for prompt injection. Without a
-  decision model, the assistant model judges browser steps itself.
+  memory search, and a decision model (`models.decision`, served through
+  Ollama's decision API) that judges whether a browser step commits something
+  and screens untrusted text for instructions aimed at the assistant. Without
+  a decision model, the assistant model judges browser steps itself and
+  untrusted text is not screened (it is still wrapped and taints the task).
+  There are no keyword lists: these judgements come from models.
 
 ## Safety model
 
@@ -77,7 +79,7 @@ picking dates and filters, running code, saving notes) runs without prompts.
 | --- | --- |
 | Committing actions: paying, booking, placing orders or bids, sending or posting, inviting, deleting, cancelling, changing account settings, granting access | Always a one-time approval showing exactly what will happen; "always allow" is not offered. In the browser a model judges every click, typed entry and Enter in its page context: a small decision model when one is installed (`models.decision`, e.g. tev1 or clef-flash via Ollama's decision API), otherwise the assistant's own model. If the judge cannot answer, you are asked. Payment and password fields, web chat clients and labels too long to show are always treated as committing, whatever the judge says. |
 | Leaking your data | Injected instructions can only leak your data when one task has both read your private data (memories, mail, calendar, notes, contacts) and read third-party content. In such a task, the first time data could leave towards a destination (typing into a site, opening a URL the model wrote, running code with open network access) you approve sharing with that destination once for the task. Links the page itself offers are not model-written URLs. |
-| Prompt injection from web pages, mail, notes, other people, sandbox output | Untrusted output is wrapped as `<untrusted>`, screened, and **taints** the run. A tainted run cannot reuse your standing grants for committing or lasting actions: messages, connector writes, schedules, deleting memories and sandbox egress ask again. Memories it saves are kept as *unverified* and are recalled later as untrusted data. Schedules created by a tainted run keep running tainted; MCP clients keep what they read for 30 minutes. |
+| Prompt injection from web pages, mail, notes, other people, sandbox output | Untrusted output is wrapped as `<untrusted>`, screened by the decision model when one is installed, and **taints** the run. A tainted run cannot reuse your standing grants for committing or lasting actions: messages, connector writes, schedules, deleting memories and sandbox egress ask again. Memories it saves are kept as *unverified* and are recalled later as untrusted data. Schedules created by a tainted run keep running tainted; MCP clients keep what they read for 30 minutes. |
 | The model approves its own actions | Approvals are decided only through the owner API (CLI, web UI, paired channel). The model never sees an approval endpoint. |
 | Passwords and one-time codes | The model may not type into password or OTP fields. It hands off to you in the visible browser window. |
 | Using your browser | A dedicated profile in your installed Chrome/Brave/Edge, visible so you can watch and take over, controlled over `--remote-debugging-pipe` (no TCP port exists for anything else to reach). No JavaScript evaluation, cookie or storage access is exposed; downloads and file pickers are blocked; `file:`, `chrome:` and LAN addresses are refused; web chat clients count every click and keystroke as committing. Prefer stricter? Add `{"kind": "browser.navigate", "target": "*", "decision": "ask"}` to `policy.rules` to approve every new site. |

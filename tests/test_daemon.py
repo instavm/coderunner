@@ -31,7 +31,7 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
         config = Config({
             "owner": {"name": "Sam", "desktop_notifications": False},
             "models": {"runtime": "openai", "base_url": fake.base_url, "chat": "fake-model",
-                       "embedding": "fake-embed"},
+                       "embedding": "fake-embed", "decision": "fake-judge", "decision_api": "chat"},
             "sandbox": {"driver": "docker", "url": "http://127.0.0.1:9"},
             "gateway": {"sandbox_bind": "127.0.0.1", "sandbox_port": self.sandbox_port,
                         "admin_port": self.admin_port},
@@ -121,7 +121,8 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
         with FakeOpenAI() as fake:
             daemon = self.make_daemon(fake)
             daemon.config.set("browser.allow", ["127.0.0.1"])
-            fake.judge = lambda state: "Buy now" in state       # the assistant model judges each step
+            # The decision model judges each step and screens the page for injected instructions.
+            fake.judge = lambda state: "Buy now" in state
             fake.script = [tool_call("browser_open", {"url": url}, "call_1"),
                            tool_call("browser_snapshot", {}, "call_2"), click_buy,
                            {"role": "assistant", "content": "Bought it."}]

@@ -114,8 +114,11 @@ class Daemon:
         svc.llm_api_key = endpoint.api_key
         svc.vision = endpoint.vision
         svc.embedding_model = endpoint.embedding_model or ""
-        guard_model = self.config.get("models.guard")
-        svc.guard = Guard(LLM(endpoint.base_url, guard_model, endpoint.api_key) if guard_model else None)
+        from .decision import ActionCheck, DecisionModel
+        runtime = {"base_url": endpoint.base_url, "api_key": endpoint.api_key}
+        # Injection scoring needs a fast dedicated model; the assistant's own model would slow every step.
+        svc.guard = Guard(DecisionModel.from_config(self.config, model=self.config.get("models.guard") or "",
+                                                    dedicated_only=True, **runtime), audit=audit)
 
         driver = driver_for(self.config)
         self.driver = driver
@@ -123,8 +126,8 @@ class Daemon:
         svc.sandbox = SandboxClient(url, paths.api_token())
 
         from .browser import BrowserBroker
-        from .decision import ActionCheck
-        svc.browser = BrowserBroker(self.config, svc.policy, audit, decider=ActionCheck.from_config(self.config, audit))
+        svc.browser = BrowserBroker(self.config, svc.policy, audit,
+                                    decider=ActionCheck.from_config(self.config, audit, **runtime))
 
         from .memory import Memory
         embedder = None
