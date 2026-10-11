@@ -38,7 +38,8 @@ def estimate(entry: dict, hw: Hardware, ctx: int = 32768, runtime: str | None = 
     need = (weights + mmproj) * GB + kv + OVERHEAD_GIB
     fit = "good" if need <= GOOD * hw.budget_gb else "tight" if need <= hw.budget_gb else "no"
     active_gb = weights * entry.get("active_params_b", entry["params_b"]) / entry["params_b"]
-    tok_s = 0.55 * hw.bandwidth_gbs / active_gb if active_gb else 0.0
+    # Bandwidth-bound estimate, scaled by a factor measured for builds whose kernels fall short of it.
+    tok_s = 0.55 * hw.bandwidth_gbs / active_gb * art.get("tok_s_factor", 1.0) if active_gb else 0.0
     return {"need_gb": round(need, 2), "fit": fit, "tok_s": round(tok_s, 1), "ctx": ctx}
 
 

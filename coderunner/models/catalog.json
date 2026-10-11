@@ -120,7 +120,8 @@
           "mmproj": "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
           "mmproj_sha256": "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903",
           "mmproj_gb": 0.63,
-          "kv_bytes": 1
+          "kv_bytes": 1,
+          "tok_s_factor": 0.79
         }
       },
       "notes": "Qwen3.8-27B with ternary weights (about 2 bits each); needs Prism ML's llama.cpp build (runtime prism). Maker reports 98% of full-precision quality.",
@@ -157,10 +158,49 @@
           "mmproj": "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
           "mmproj_sha256": "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903",
           "mmproj_gb": 0.63,
-          "kv_bytes": 1
+          "kv_bytes": 1,
+          "tok_s_factor": 0.5
         }
       },
       "notes": "Bonsai 2 27B in the denser PTQ1_0 packing (1.75 bits per weight): 1.3 GB smaller than bonsai-2-27b, with slower prompt processing. Needs Prism ML's llama.cpp build (runtime prism).",
+      "verified": "2026-10-11"
+    },
+    {
+      "id": "bonsai-27b-1bit",
+      "family": "qwen3.6",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 4.5,
+      "params_b": 27.36,
+      "active_params_b": 27.36,
+      "arch": {
+        "full_attn_layers": 16,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "prism-ml/Bonsai-27B-gguf",
+        "link": "https://huggingface.co/prism-ml/Bonsai-27B-gguf",
+        "commercial": true
+      },
+      "artifacts": {
+        "prism": {
+          "repo": "prism-ml/Bonsai-27B-gguf",
+          "file": "Bonsai-27B-Q1_0.gguf",
+          "sha256": "17ef842e47450caeb8eaa3ebfbbab5d2f2278b62b79be107985fb69a2f819aa0",
+          "size_gb": 3.8,
+          "mmproj": "Bonsai-27B-mmproj-Q8_0.gguf",
+          "mmproj_sha256": "eb561d41a7bbeb0fcf04883c8af11078ef6cae0a66862a0b68443cfca495269d",
+          "mmproj_gb": 0.63,
+          "kv_bytes": 1,
+          "tok_s_factor": 0.67
+        }
+      },
+      "notes": "Qwen3.6-27B with 1-bit weights (1.125 bits each, 3.8 GB). Fastest 27B build here (14.6 tok/s, 81 tok/s prompt reading on an M3 Pro); maker reports about 90% of full-precision quality. Needs Prism ML's llama.cpp build (runtime prism).",
       "verified": "2026-10-11"
     },
     {

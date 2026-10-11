@@ -66,10 +66,16 @@ declares success. If a model fails the test, the next candidate is tried.
   build, which setup downloads pinned to a release and checks against its
   published checksum. Typical picks on Apple Silicon:
 
-  | Unified memory | Assistant model |
+  | Machine | Assistant model |
   | --- | --- |
-  | 16 to 24 GB | Bonsai 2 27B |
+  | 16 GB Mac, 8 GB NVIDIA | Bonsai 27B 1-bit (3.8 GB, the fastest 27B build) |
+  | 18-24 GB Mac, 12 GB NVIDIA | Bonsai 2 27B (Qwen3.8-27B, ternary) |
   | 32 GB and more | Qwen3.8-27B (4-bit) |
+
+  Speeds measured on an M3 Pro: Bonsai 27B 1-bit generates 14.6 tok/s and
+  reads prompts at 81 tok/s; Bonsai 2 27B 9 and 70. Reading the prompt is the
+  slow part on this class of chip, so the agent keeps its instructions and
+  conversation stable for the runtime's prompt cache.
 
 * The sandbox runs the lite profile with the assistant: code runs as plain
   processes in a work folder per session (files persist, variables do not),

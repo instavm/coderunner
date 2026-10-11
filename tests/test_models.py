@@ -177,9 +177,12 @@ class FitTests(TempHome):
                         self.assertEqual(picks[0]["id"], expected[ram])
                     self.assertTrue(picks[0]["vision"])
                     self.assertEqual(picks[0]["fit"], "good")
-        # Even with a 4 GB sandbox VM, the compact ternary 27B fits 18 GB well at full context.
+        # With a 4 GB sandbox VM on 18 GB, the compact ternary build fits but was measured at under
+        # 8 tok/s, so the faster 1-bit 27B comes first.
         top18 = fit.recommend(apple(18), cfg)[0]
-        self.assertEqual((top18["id"], top18["ctx"], top18["vision"]), ("bonsai-2-27b-compact", 32768, True))
+        self.assertEqual((top18["id"], top18["ctx"], top18["vision"]), ("bonsai-27b-1bit", 32768, True))
+        compact = fit.candidate(catalog.get("bonsai-2-27b-compact"), apple(18), cfg, "chat", "prism")
+        self.assertLess(compact["tok_s"], fit.MIN_TOK_S)        # measured factor applied
         self.assertEqual(fit.recommend(apple(18), cfg, runtime="ollama")[0]["id"], "qwen3.5-9b")
         self.assertEqual(fit.recommend(apple(32, "Apple M2 Pro"), cfg, runtime="llama.cpp")[0]["id"], "gemma-4-26b-a4b")
 
@@ -731,8 +734,8 @@ class PrismTests(TempHome):
         ollama, prism = FakeRuntime(), FakePrism()
         with mock.patch.object(manager, "choose_runtime", return_value=ollama), \
                 mock.patch.object(manager, "_prism", return_value=prism):
-            # On 18 GB with a 4 GB sandbox, the compact packing is the one that fits well.
-            self.assertEqual(manager.plan(self.config(), hw=apple(18))["model"]["id"], "bonsai-2-27b-compact")
+            # On 18 GB with a 4 GB sandbox, the fast 1-bit 27B is the one that fits well.
+            self.assertEqual(manager.plan(self.config(), hw=apple(18))["model"]["id"], "bonsai-27b-1bit")
             result = manager.plan(self.config(), hw=apple(24))
             # On 24 GB a 27B-class ternary model fits well where Ollama's best was a 9B.
             self.assertEqual((result["model"]["id"], result["model"]["runtime"]), ("bonsai-2-27b", "prism"))
