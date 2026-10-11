@@ -61,6 +61,21 @@ declares success. If a model fails the test, the next candidate is tried.
 * `coderunner models plan` shows what would be chosen and why;
   `coderunner models setup --model <id>` overrides; `coderunner models test`
   re-runs the smoke test.
+* Models are ranked across runtimes. Ternary Bonsai 2 27B (Qwen3.8-27B in
+  about 2 bits per weight, 7.9 GB with vision) runs on Prism ML's llama.cpp
+  build, which setup downloads pinned to a release and checks against its
+  published checksum. Typical picks on Apple Silicon:
+
+  | Unified memory | Assistant model |
+  | --- | --- |
+  | 16 GB | Qwen3.5-4B |
+  | 18 GB | Qwen3.5-9B (Bonsai only fits tightly; with the browser and embeddings loaded it swapped) |
+  | 24 GB | Bonsai 2 27B |
+  | 32 GB and more | Qwen3.8-27B (4-bit) |
+
+* Embeddings for memory and files: EmbeddingGemma 2 (text, images and audio
+  in one space) through Ollama, also when the assistant model runs elsewhere
+  (`models.embedding_url`).
 * Optional fast "System 1" models share the runtime: an embedding model for
   memory search, and a decision model (`models.decision`, served through
   Ollama's decision API) that judges whether a browser step commits something

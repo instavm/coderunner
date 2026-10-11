@@ -691,7 +691,8 @@ class PrismTests(TempHome):
         rt = runtimes.PrismRuntime(self.config(), hw=apple(18))
         cmd = rt.command({"model": "/m.gguf", "mmproj": "/p.gguf", "ctx": 32768, "alias": "bonsai-2-27b"})
         joined = " ".join(cmd)
-        for flag in ("--mmproj /p.gguf", "--jinja", "-ctk q8_0", "-ctv q8_0", "--load-mode mlock", "-c 32768"):
+        for flag in ("--mmproj /p.gguf", "--jinja", "-ctk q8_0", "-ctv q8_0", "--load-mode mlock", "-c 32768",
+                     "-np 2", "--kv-unified"):
             self.assertIn(flag, joined)
         self.assertIn(json.dumps({"reasoning_effort": "medium"}), cmd)
 

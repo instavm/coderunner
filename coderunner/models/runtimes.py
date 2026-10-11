@@ -424,8 +424,12 @@ class PrismRuntime(LlamaCppRuntime):
         # run out of output budget). The context cache is kept at 8 bits, as the memory estimate assumes.
         # The weights are locked in memory: memory-mapped, macOS evicts them under pressure and re-reads
         # them from disk, which slowed a 250-token prompt to 0.27 tokens/s on an 18 GB Mac.
-        return super().command(active) + ["--chat-template-kwargs", json.dumps({"reasoning_effort": "medium"}),
-                                          "-ctk", "q8_0", "-ctv", "q8_0", "-ngl", "99", "--load-mode", "mlock"]
+        # Two slots over one shared cache: the step judge gets its own slot instead of evicting the agent's
+        # cached conversation, which would otherwise be re-read (about 70 tokens/s here) after every check.
+        cmd = super().command(active)
+        cmd[cmd.index("-np") + 1] = "2"
+        return cmd + ["--kv-unified", "--chat-template-kwargs", json.dumps({"reasoning_effort": "medium"}),
+                      "-ctk", "q8_0", "-ctv", "q8_0", "-ngl", "99", "--load-mode", "mlock"]
 
     def start(self, timeout: float = 600) -> None:
         if self.running():

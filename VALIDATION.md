@@ -35,7 +35,29 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
   with context length, stop). No model was pulled: the test machine had less
   than 20 GB free.
 
+### Measured on an 18 GB M3 Pro (October 2026)
+
+* Sandbox: `./install.sh --build` with Apple `container` 1.5.0; `test-e2e.sh` 12/12; the sandbox
+  can call the local model through the gateway with its token, and cannot reach the owner API,
+  the admin port, Ollama or the egress proxy port.
+* Qwen3.5-9B via Ollama: smoke test 4/4 at 12.6 tok/s; memory recall across conversations; a
+  page read through the real browser; code run in the sandbox.
+* Bonsai 2 27B via Prism's llama.cpp build: smoke test 4/4 at 9 tok/s.
+* Step judge on 66 labelled browser steps (27 committing, 39 not, 5 with injected text):
+  keywords missed 6 commits; Qwen3.5-9B missed 1 (an injected label) with 3 false prompts;
+  tev1-4B with keywords missed none with 10 false prompts; Bonsai missed none with 6.
+* Files: EmbeddingGemma 2 ranked the right image, voice note, video (frames and sound), Word
+  document and text file first for plain-language queries; the assistant answered "what is the
+  total on my invoice" from an image with no prompts.
+* booking.com flight search (BLR to DEL), Qwen3.5-9B: approval prompts fell from 11 to 0-2 with
+  the new rules, but the task was not completed within 30 steps; Bonsai on 18 GB swapped with
+  the browser and embeddings loaded (4 steps in 18 minutes).
+
 ## Not yet validated
+
+* A full browser task completed end to end by Bonsai 2 27B on a 24 GB or larger machine.
+* Microsoft Fara1.5-9B (screenshot-based browser specialist) as a second browser driver.
+* Starting the sandbox VM on demand on 16-18 GB machines, to leave room for a bigger model.
 
 * No sandbox image was built or launched from this branch, and the Apple
   `container` 1.5.0 upgrade path was not run end to end. Build with
