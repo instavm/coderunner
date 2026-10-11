@@ -56,6 +56,7 @@ DEFAULTS: dict[str, Decision] = {
     "memory.read": Decision.ALLOW,
     "memory.write": Decision.ALLOW,       # after untrusted content, saved as unverified instead of asking
     "memory.forget": Decision.ALLOW,
+    "files.read": Decision.ALLOW,         # only inside folders the owner shared (files.FileIndex.resolve)
     "browser.read": Decision.ALLOW,
     "browser.navigate": Decision.ALLOW,   # local network, file: and blocked hosts are refused separately
     "browser.interact": Decision.ALLOW,   # ordinary clicks and typing; committing ones are browser.sensitive

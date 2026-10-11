@@ -37,6 +37,18 @@ SCHEMA = [
     """CREATE TABLE IF NOT EXISTS devices (
         id TEXT PRIMARY KEY, name TEXT, created REAL, last_seen REAL)""",
     "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)",
+    """CREATE TABLE IF NOT EXISTS files (
+        path TEXT PRIMARY KEY, kind TEXT, size INTEGER, mtime REAL, indexed REAL, chunks INTEGER,
+        error TEXT DEFAULT '')""",
+    """CREATE TABLE IF NOT EXISTS file_chunks (
+        id INTEGER PRIMARY KEY, path TEXT, part TEXT, text TEXT, embedding TEXT)""",
+    "CREATE INDEX IF NOT EXISTS file_chunks_path ON file_chunks(path)",
+    """CREATE VIRTUAL TABLE IF NOT EXISTS file_chunks_fts USING fts5(
+        text, content='file_chunks', content_rowid='id')""",
+    """CREATE TRIGGER IF NOT EXISTS file_chunks_ai AFTER INSERT ON file_chunks BEGIN
+        INSERT INTO file_chunks_fts(rowid, text) VALUES (new.id, new.text); END""",
+    """CREATE TRIGGER IF NOT EXISTS file_chunks_ad AFTER DELETE ON file_chunks BEGIN
+        INSERT INTO file_chunks_fts(file_chunks_fts, rowid, text) VALUES ('delete', old.id, old.text); END""",
 ]
 # Columns added after a table was first created; they fail harmlessly once present.
 MIGRATIONS = [

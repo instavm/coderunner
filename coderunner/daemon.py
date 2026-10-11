@@ -51,6 +51,7 @@ class Services:
     memory: Any = None
     scheduler: Any = None
     voice: Any = None
+    files: Any = None
     connectors: list = field(default_factory=list)
     channels: dict = field(default_factory=dict)
     registry: Any = None
@@ -135,6 +136,13 @@ class Daemon:
             async def embedder(texts: list[str]) -> list[list[float]]:
                 return await svc.llm.embed(texts, model=svc.embedding_model)
         svc.memory = Memory(store, audit, embedder)
+
+        from .files import Embedder, FileIndex
+        # Multimodal embeddings (text, images, audio) come from Ollama's native embed API.
+        file_model = self.config.get("files.embedding") or svc.embedding_model
+        ollama = self.config.get("models.runtime") in ("ollama", "auto")
+        svc.files = FileIndex(self.config, store, audit,
+                              Embedder(endpoint.base_url, file_model) if file_model and ollama else None)
 
         from .scheduler import Scheduler
         svc.scheduler = Scheduler(store, audit, self._run_schedule, self._deliver_schedule,
@@ -287,6 +295,7 @@ class Daemon:
         if cfg.get("sandbox.network") == "proxy":
             self._tasks.append(asyncio.create_task(self._proxy_with_retry(proxy_servers)))
         self._tasks.append(asyncio.create_task(svc.scheduler.run_forever()))
+        self._tasks.append(asyncio.create_task(svc.files.run_forever()))
         for channel in svc.channels.values():
             try:
                 await channel.start()

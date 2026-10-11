@@ -289,6 +289,25 @@ def admin_app(svc, daemon) -> Starlette:
         images = [{"mime": mime, "data_b64": data} for mime, data in ctx.images]
         return JSONResponse({"result": result, "images": images})
 
+    async def files(request: Request):
+        index = svc.files
+        if index is None:
+            return JSONResponse({"error": "file index unavailable"}, status_code=503)
+        if request.method == "GET":
+            query = request.query_params.get("q")
+            if query:
+                return JSONResponse(await index.search(query, request.query_params.get("kind") or None))
+            return JSONResponse(index.status())
+        body = await request.json()
+        try:
+            if body.get("add"):
+                return JSONResponse({"added": index.add_root(str(body["add"])), **index.status()})
+            if body.get("remove"):
+                return JSONResponse({"forgotten": index.remove_root(str(body["remove"])), **index.status()})
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(await index.index_once(int(body.get("budget", 200))))
+
     async def schedules(request: Request):
         if svc.scheduler is None:
             return JSONResponse([])
@@ -376,6 +395,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/tools", tools, methods=["GET"]),
         Route("/api/tools/{name}", call_tool, methods=["POST"]),
         Route("/api/schedules", schedules, methods=["GET", "POST"]),
+        Route("/api/files", files, methods=["GET", "POST"]),
         Route("/api/schedules/{id:int}", delete_schedule, methods=["DELETE"]),
         Route("/api/pair", pair_start, methods=["POST"]),
         Route("/api/devices", devices, methods=["GET"]),

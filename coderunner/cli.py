@@ -389,6 +389,21 @@ def cmd_schedule(args, config: Config) -> int:
     return 0
 
 
+def cmd_files(args, config: Config) -> int:
+    if args.action == "add":
+        _print(_admin(config, "POST", "/api/files", {"add": os.path.abspath(os.path.expanduser(args.target))}))
+    elif args.action == "remove":
+        _print(_admin(config, "POST", "/api/files", {"remove": os.path.abspath(os.path.expanduser(args.target))}))
+    elif args.action == "index":
+        _print(_admin(config, "POST", "/api/files", {"budget": 100000}, timeout=86400))
+    elif args.action == "search":
+        from urllib.parse import quote
+        _print(_admin(config, "GET", f"/api/files?q={quote(args.target or '')}"))
+    else:
+        _print(_admin(config, "GET", "/api/files"))
+    return 0
+
+
 def cmd_token(args, config: Config) -> int:
     print(paths.admin_token() if args.admin else paths.api_token())
     return 0
@@ -482,6 +497,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--name"), p.add_argument("--spec"), p.add_argument("--prompt")
     p.add_argument("--id", type=int)
     p.set_defaults(func=cmd_schedule)
+
+    p = sub.add_parser("files", help="Folders the assistant may search and read (text, code, images, audio, video)")
+    p.add_argument("action", choices=["status", "add", "remove", "index", "search"], nargs="?", default="status")
+    p.add_argument("target", nargs="?", help="folder to add or remove, or a search query")
+    p.set_defaults(func=cmd_files)
 
     p = sub.add_parser("token", help="Print the sandbox API token (or --admin)")
     p.add_argument("--admin", action="store_true")

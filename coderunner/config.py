@@ -44,6 +44,13 @@ DEFAULTS: dict[str, Any] = {
         "allow_licenses": ["apache-2.0", "mit", "bsd-3-clause", "bsd-2-clause"],
         "accepted_licenses": [],     # licenses the owner explicitly accepted
     },
+    "files": {
+        "roots": [],                 # folders the owner shares with the assistant (coderunner files add)
+        "embedding": "",             # multimodal embedding model; empty: models.embedding
+        "media": True,               # also index images, audio and video when the model supports them
+        "max_file_mb": 200,
+        "scan_interval": 600,        # seconds between checks for new or changed files
+    },
     "agent": {"max_steps": 20, "tool_output_chars": 12000, "approval_timeout": 300,
               "recall_min_similarity": 0.5},   # embedding similarity for memories to enter a task's prompt
     "policy": {

@@ -118,6 +118,7 @@ class Svc:
         self.browser = None
         self.memory = None
         self.scheduler = None
+        self.files = None
         self.connectors = []
         self.channels = {}
         self.registry = None

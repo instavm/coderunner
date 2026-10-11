@@ -272,6 +272,70 @@ def schedule_tools(svc) -> list[Tool]:
     ]
 
 
+# ---- the owner's files ---------------------------------------------------
+
+def file_tools(svc) -> list[Tool]:
+    """Search and use files in the folders the owner shared: text, code, documents, images, audio, video."""
+    import base64
+    from ..files import kind_of
+    files = svc.files
+
+    async def open_file(args, ctx, verb: str):
+        path = files.resolve(args["path"])          # only shared folders; never secrets or app data
+        if not await svc.policy.check(Action("files.read", str(path), f"{verb} {path}", tainted=ctx.tainted),
+                                      origin=ctx.origin):
+            raise PermissionError(f"reading {path} is not allowed")
+        ctx.holds("files")
+        return path
+
+    async def search(args, ctx):
+        found = await files.search(args["query"], args.get("kind") or None, int(args.get("limit", 8)))
+        if found:
+            ctx.holds("files")
+        return found or "No matching files in the shared folders."
+
+    async def read(args, ctx):
+        path = await open_file(args, ctx, "Read")
+        lines = (await files.media.text(path)).splitlines()
+        start = max(1, int(args.get("start_line", 1)))
+        count = max(1, min(int(args.get("lines", 400)), 2000))
+        end = min(start - 1 + count, len(lines))
+        return f"{path} (lines {start}-{end} of {len(lines)}):\n" + "\n".join(lines[start - 1:end])
+
+    async def view(args, ctx):
+        path = await open_file(args, ctx, "Look at")
+        kind = kind_of(path)
+        if kind not in ("image", "video"):
+            return f"Error: {path.name} is not an image or video; use file_read or file_listen."
+        if not svc.vision:
+            return "The current model cannot see images."
+        at = float(args.get("at") or 0) if kind == "video" else None
+        data = await files.media.image(path, at=at)
+        ctx.images.append(("image/jpeg", base64.b64encode(data).decode()))
+        return f"{path.name}" + (f" at {at:.0f}s" if at is not None else "") + " is attached to the next message."
+
+    async def listen(args, ctx):
+        path = await open_file(args, ctx, "Listen to")
+        if kind_of(path) not in ("audio", "video"):
+            return f"Error: {path.name} has no sound; use file_read or file_view."
+        if getattr(svc, "voice", None) is None:
+            return "No speech-to-text engine is installed (whisper.cpp, parakeet-mlx or mlx_whisper)."
+        return f"Transcript of {path.name}:\n" + await svc.voice.transcribe(path)
+
+    kinds = {"type": "string", "enum": ["text", "doc", "image", "audio", "video"]}
+    return [
+        Tool("files_search", "Search the owner's shared folders by meaning or words: text, code, documents, images, "
+             "audio and video. Returns paths; then use file_read, file_view or file_listen.",
+             _params({"query": STR, "kind": kinds, "limit": INT}, ["query"]), search, untrusted=True),
+        Tool("file_read", "Read a text, code or document file (PDF, Word, RTF) from the shared folders.",
+             _params({"path": STR, "start_line": INT, "lines": INT}, ["path"]), read, untrusted=True),
+        Tool("file_view", "Look at an image, or a video frame at `at` seconds, from the shared folders.",
+             _params({"path": STR, "at": {"type": "number"}}, ["path"]), view, untrusted=True),
+        Tool("file_listen", "Transcribe the speech in an audio or video file from the shared folders.",
+             _params({"path": STR}, ["path"]), listen, untrusted=True),
+    ]
+
+
 # ---- connectors and channels --------------------------------------------
 
 def connector_tools(svc) -> list[Tool]:
@@ -319,6 +383,8 @@ def build_registry(svc) -> ToolRegistry:
         tools += memory_tools(svc)
     if svc.scheduler is not None:
         tools += schedule_tools(svc)
+    if getattr(svc, "files", None) is not None:
+        tools += file_tools(svc)
     tools += connector_tools(svc)
     tools += channel_tools(svc)
     return ToolRegistry(svc, tools)

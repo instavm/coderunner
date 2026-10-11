@@ -138,6 +138,29 @@ mail and message bodies, contact lookup. Writes: calendar events (without
 invitations), reminders, notes, and mail drafts saved to Drafts; they ask first
 only after the task has read untrusted content. There is no send tool. Calendar queries miss recurring series that started before the range.
 
+## Your files
+
+`coderunner files add ~/Documents` shares a folder with the assistant. The
+daemon indexes it in the background and keeps it current:
+
+* Text, code and documents are indexed by meaning and by exact words. PDFs use
+  poppler's `pdftotext`; Word, RTF and Pages use macOS `textutil`.
+* Images, audio and video are indexed by meaning with a multimodal embedding
+  model (`files.embedding`, e.g. EmbeddingGemma 2 in Ollama). Video is indexed
+  as sampled frames plus its sound.
+
+The assistant finds files with `files_search`, then uses them with `file_read`,
+`file_view` (images and video frames, for vision models) and `file_listen`
+(speech, with a speech-to-text engine installed). Rules:
+
+* Only shared folders are read. Hidden folders, `~/Library`, key, certificate
+  and credential files, `.env` files and CodeRunner's own state are never
+  indexed or read, and symlinks out of a shared folder are not followed.
+* File contents are your private data and can contain third-party text, so a
+  task that reads files counts as holding private data and as having read
+  untrusted content (see the leak rule above).
+* `coderunner files status | index | search "query" | remove <folder>`.
+
 ## Remote access
 
 `coderunner remote enable --owner you@example.com` runs `tailscale serve` for
@@ -155,6 +178,7 @@ coderunner approvals [approve|deny <id> --scope once|session|day|always]
 coderunner grants [revoke <id>]
 coderunner secrets set github --host api.github.com
 coderunner connectors enable calendar && coderunner connectors test calendar
+coderunner files add ~/Documents     # let it find and use your files
 coderunner channels enable telegram && coderunner channels pair telegram
 coderunner remote enable --owner you@example.com && coderunner remote pair
 coderunner schedule add --name brief --spec "weekdays 08:00" --prompt "Summarise my day"
