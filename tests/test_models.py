@@ -671,3 +671,78 @@ class LiveHubTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---- Prism's llama.cpp build for ternary Bonsai models -------------------------------
+
+class FakePrism(FakeRuntime):
+    name = "prism"
+    base_url = "http://127.0.0.1:8/v1"
+
+
+class PrismTests(TempHome):
+    def test_pinned_builds_per_platform(self):
+        self.assertEqual(runtimes.PrismRuntime.build_for(apple(18))[0], "macos-arm64")
+        self.assertEqual(runtimes.PrismRuntime.build_for(nvidia(24))[0], "linux-cuda-12.4-x64")
+        self.assertIsNone(runtimes.PrismRuntime.build_for(hardware.Hardware(os="darwin", arch="x86_64")))
+        self.assertIsNone(runtimes.PrismRuntime.build_for(hardware.Hardware(os="windows", arch="x86_64")))
+
+    def test_server_flags(self):
+        rt = runtimes.PrismRuntime(self.config(), hw=apple(18))
+        cmd = rt.command({"model": "/m.gguf", "mmproj": "/p.gguf", "ctx": 32768, "alias": "bonsai-2-27b"})
+        joined = " ".join(cmd)
+        for flag in ("--mmproj /p.gguf", "--jinja", "-ctk q8_0", "-ctv q8_0", "--load-mode mlock", "-c 32768"):
+            self.assertIn(flag, joined)
+        self.assertIn(json.dumps({"reasoning_effort": "medium"}), cmd)
+
+    def test_install_refuses_a_build_that_does_not_match_its_checksum(self):
+        rt = runtimes.PrismRuntime(self.config(), hw=apple(18))
+
+        class Response:
+            def raise_for_status(self):
+                pass
+
+            def iter_bytes(self, size):
+                yield b"not the published build"
+
+        class Stream:
+            def __enter__(self):
+                return Response()
+
+            def __exit__(self, *exc):
+                return False
+
+        with mock.patch.object(runtimes.httpx, "stream", return_value=Stream()):
+            with self.assertRaisesRegex(RuntimeError, "checksum"):
+                rt.install()
+        self.assertIsNone(rt.binary())
+        self.assertEqual(list(rt.bin_dir.glob("*.tar.gz")), [])
+
+    def test_memory_estimate_counts_the_8_bit_cache(self):
+        entry = catalog.get("bonsai-2-27b")
+        est = fit.estimate(entry, apple(18), 32768, "prism")
+        f16 = fit.kv_gib(entry, 32768)
+        self.assertAlmostEqual(est["need_gb"], round((7.21 + 0.63) * fit.GB + f16 / 2 + fit.OVERHEAD_GIB, 2), places=2)
+
+    def test_plan_and_setup_rank_across_runtimes(self):
+        ollama, prism = FakeRuntime(), FakePrism()
+        with mock.patch.object(manager, "choose_runtime", return_value=ollama), \
+                mock.patch.object(manager, "_prism", return_value=prism):
+            # On 18 GB Bonsai is only a tight fit, so the 9B that fits well is preferred.
+            self.assertEqual(manager.plan(self.config(), hw=apple(18))["model"]["id"], "qwen3.5-9b")
+            result = manager.plan(self.config(), hw=apple(24))
+            # On 24 GB a 27B-class ternary model fits well where Ollama's best was a 9B.
+            self.assertEqual((result["model"]["id"], result["model"]["runtime"]), ("bonsai-2-27b", "prism"))
+            self.assertEqual(result["runtime"]["name"], "prism")
+            self.assertIn("qwen3.5-9b", [c["id"] for c in result["alternatives"]])
+            cfg = self.config()
+            setup = manager.setup(cfg, hw=apple(24), progress=lambda m: None, embedding=False,
+                                  smoke=fake_smoke({"coderunner-qwen3.5-9b": True}))
+            self.assertTrue(setup["ok"], setup)
+            self.assertEqual((setup["entry"], setup["runtime"]), ("bonsai-2-27b", "prism"))
+            self.assertEqual(prism.pulled, ["bonsai-2-27b"])
+            self.assertEqual(ollama.pulled, [])
+            self.assertEqual(cfg.get("models.runtime"), "prism")
+        # A runtime the owner chose is not second-guessed.
+        result = manager.plan(self.config(), hw=apple(18), runtime=FakeRuntime())
+        self.assertEqual(result["model"]["id"], "qwen3.5-9b")

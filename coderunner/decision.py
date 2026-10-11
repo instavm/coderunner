@@ -94,16 +94,15 @@ class DecisionModel:
         labels = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWX", criteria))
         task = {"state": state, "question": question,
                 "options": [{"label": label, "key": key, "description": criteria[key]} for label, key in labels.items()]}
+        # A plain letter, not JSON: forcing a quote as the first token skewed a model's choice in testing.
         response = await self._client.post(f"{self.base_url}/chat/completions", json={
             "model": self.model, "temperature": 0, "max_tokens": 8,
             # No reasoning: Ollama reads reasoning_effort, llama.cpp reads chat_template_kwargs.
             "reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False},
-            "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": json.dumps(task)}],
-            "response_format": {"type": "json_schema", "json_schema": {"name": "answer", "schema": {
-                "type": "string", "enum": list(labels)}}}})
+            "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": json.dumps(task)}]})
         response.raise_for_status()
-        text = (response.json()["choices"][0]["message"].get("content") or "").strip().strip('"')
-        if text[:1] not in labels:
+        text = (response.json()["choices"][0]["message"].get("content") or "").strip().strip('"\'*.` ')
+        if text[:1] not in labels or (len(text) > 1 and text[1].isalnum()):
             raise ValueError(f"model answered {text[:20]!r}")
         return 1.0 if labels[text[:1]] in positive else 0.0
 
