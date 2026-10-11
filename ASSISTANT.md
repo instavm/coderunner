@@ -62,8 +62,10 @@ declares success. If a model fails the test, the next candidate is tried.
   `coderunner models setup --model <id>` overrides; `coderunner models test`
   re-runs the smoke test.
 * Optional fast "System 1" models share the runtime: an embedding model for
-  memory search and a small classifier that scores untrusted text for prompt
-  injection. They add signal; they are not the security boundary.
+  memory search, a decision model that judges whether a browser step commits
+  something (`models.decision`, served through Ollama's decision API), and a
+  small classifier that scores untrusted text for prompt injection. Without a
+  decision model, the assistant model judges browser steps itself.
 
 ## Safety model
 
@@ -73,7 +75,7 @@ picking dates and filters, running code, saving notes) runs without prompts.
 
 | Risk | Control |
 | --- | --- |
-| Committing actions: paying, booking, placing orders or bids, sending or posting, inviting, deleting, cancelling, changing account settings, granting access | Always a one-time approval showing exactly what will happen; "always allow" is not offered. In the browser these are recognised by the control's wording and, when a decision model is installed, by a second check of the action in its page context (the model can only add prompts, never remove them). |
+| Committing actions: paying, booking, placing orders or bids, sending or posting, inviting, deleting, cancelling, changing account settings, granting access | Always a one-time approval showing exactly what will happen; "always allow" is not offered. In the browser a model judges every click, typed entry and Enter in its page context: a small decision model when one is installed (`models.decision`, e.g. tev1 or clef-flash via Ollama's decision API), otherwise the assistant's own model. If the judge cannot answer, you are asked. Payment and password fields, web chat clients and labels too long to show are always treated as committing, whatever the judge says. |
 | Leaking your data | Injected instructions can only leak your data when one task has both read your private data (memories, mail, calendar, notes, contacts) and read third-party content. In such a task, the first time data could leave towards a destination (typing into a site, opening a URL the model wrote, running code with open network access) you approve sharing with that destination once for the task. Links the page itself offers are not model-written URLs. |
 | Prompt injection from web pages, mail, notes, other people, sandbox output | Untrusted output is wrapped as `<untrusted>`, screened, and **taints** the run. A tainted run cannot reuse your standing grants for committing or lasting actions: messages, connector writes, schedules, deleting memories and sandbox egress ask again. Memories it saves are kept as *unverified* and are recalled later as untrusted data. Schedules created by a tainted run keep running tainted; MCP clients keep what they read for 30 minutes. |
 | The model approves its own actions | Approvals are decided only through the owner API (CLI, web UI, paired channel). The model never sees an approval endpoint. |

@@ -8,8 +8,11 @@ raw CDP, script evaluation, cookies or storage. Every action passes Policy:
   browser.navigate   opening a URL or going back
   browser.read       snapshot, screenshot, tab list, scrolling
   browser.interact   clicks, typing and key presses
-  browser.sensitive  the same when the target looks like buying, paying,
-                     sending, deleting, publishing... (one-time approval only)
+  browser.sensitive  the same when the step commits something: the decision
+                     model (or the assistant model) judges each click, typed
+                     entry and Enter in its page context; payment fields, web
+                     chat clients and labels too long to show are always
+                     sensitive (one-time approval only)
   browser.password   typing into password / one-time-code fields (denied by
                      default: the owner does that through handoff)
 
@@ -57,26 +60,14 @@ INTERACTIVE = frozenset({
 INLINE = frozenset({"strong", "emphasis", "mark", "subscript", "superscript", "time", "code", "abbr",
                     "insertion", "deletion"})
 CHECKABLE = frozenset({"checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"})
-# Controls that commit something. Nouns that merely name a section ("Your orders", "Manage your
-# booking", "Check-out date") are left out; the optional decision model catches what words miss.
-SENSITIVE = re.compile(
-    r"\b(?:buy(?:ing)?|pay(?:s|ing|ment|ments)?|purchas(?:e|es|ing)|check\s*-?\s*out(?!\s*-?\s*(?:date|time|day))"
-    r"|(?:place|submit|confirm)\s+(?:your\s+|my\s+|the\s+)?order|order\s+now|place\s+(?:a\s+)?bid"
-    r"|(?:un)?subscri(?:be|bing|ption)|donat(?:e|es|ing|ion)|transfer(?:s|ring)?|send(?:ing)?"
-    r"|delet(?:e|es|ing)|remov(?:e|es|ing)|trash|merge|submit|invit(?:e|es|ing)"
-    r"|confirm(?:s|ing|ation)?|book|complete\s+(?:booking|purchase|payment)|reserv(?:e|es|ing|ation)"
-    r"|finish\s+cancellation|cancel\s+(?:my\s+|your\s+)?(?:membership|subscription|plan|order|booking|account)"
-    r"|(?:sign|log)\s*-?\s*out\s+(?:of\s+)?(?:all|every)"
-    r"|post(?:ing)?|publish(?:ing)?|shar(?:e|es|ing)"
-    # Words that could answer one of the owner's approval prompts in a chat client.
-    r"|approv(?:e|es|ed|ing|al|als)|allow(?:s|ed|ing)?|authori[sz](?:e|es|ed|ing|ation)"
-    r"|grant(?:s|ed|ing)?|den(?:y|ies|ied|ying)|permit(?:s|ted|ting)?)\b", re.I)
 # Web chat clients: anything typed or clicked there could message people or answer
 # an approval request on a paired channel, so every interaction is sensitive.
 MESSAGING_HOSTS = ("web.telegram.org", "*.web.telegram.org", "web.whatsapp.com", "messages.google.com",
                    "signal.org", "*.signal.org", "discord.com", "*.discord.com", "discordapp.com",
                    "*.discordapp.com", "slack.com", "*.slack.com")
 TEXT_LIMIT = 10000          # longer page text is cut, and the action is then treated as sensitive
+CLICK_ATTEMPTS = 3          # clicks nobody approved are re-checked when the page moves under them
+CLICK_SETTLE = 0.4          # seconds to let overlays and hover effects settle before re-checking
 SECRET_AUTOCOMPLETE = frozenset({"current-password", "new-password", "one-time-code"})
 FRAME_TAGS = frozenset({"iframe", "frame", "object", "embed"})
 KEYS = {  # name -> (windows virtual key code, text)
@@ -260,10 +251,6 @@ def card_field(node: dict) -> str:
 
 def _fingerprint(plan: dict) -> tuple:
     return plan["hit"], plan["frame"], plan["label"], plan["kind"]
-
-
-def sensitive(*texts: str) -> bool:
-    return any(text and SENSITIVE.search(text) for text in texts)
 
 
 # ---- accessibility snapshot -----------------------------------------------
@@ -710,9 +697,9 @@ class BrowserBroker:
             raise BrowserError(f"Not permitted: {summary} ({kind} was denied by policy or not approved by the owner)")
 
     async def _commits(self, host: str, url: str, action: str, role: str, name: str, **extra: str) -> bool:
-        """The decision model's view, for steps the keyword rules consider ordinary."""
+        """Whether the judge (decision or assistant model) thinks this step commits something."""
         if self.decider is None:
-            return False
+            return True                  # no judge: every click, typed entry and Enter needs approval
         path = urllib.parse.urlsplit(url).path or "/"
         return await self.decider.commits(decision.describe(host, path, action, role, name, **extra))
 
@@ -1021,31 +1008,38 @@ class BrowserBroker:
         url, host = await self._web_page(target)
         element = self._ref(target, ref)
         sid = await self._session(target)
-        async with self._acting(target, sid, tainted):
-            plan = await self._click_plan(sid, target, element)
-        kind = plan["kind"]
-        if kind == "browser.interact" and await self._commits(
-                host, url, "click", plan["role"], plan["name"] or plan["text"], nearby=plan["text"]):
-            kind = "browser.sensitive"
-        await self._allow(kind, host, f"Click {plan['label']} on {host}", tainted,
-                          url=url, ref=ref, label=plan["label"])
-        async with self._acting(target, sid, tainted):
-            # The approval covers exactly what was shown: the same element under the pointer, the same
-            # label and frame. Anything different means the page changed, so nothing is clicked.
-            now = await self._click_plan(sid, target, element)
-            if _fingerprint(now) != _fingerprint(plan):
-                raise BrowserError("The page changed while waiting for approval; nothing was clicked. "
-                                   "Take a new snapshot")
-            x, y = now["x"], now["y"]
-            await self._send(sid, "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
-            if _fingerprint(await self._probe(sid, target, element, x, y)) != _fingerprint(plan):
-                raise BrowserError("The page changed under the pointer; nothing was clicked. Take a new snapshot")
-            watch = self._watch_navigation(sid, target)
-            for event in ("mousePressed", "mouseReleased"):
-                await self._send(sid, "Input.dispatchMouseEvent", {
-                    "type": event, "x": x, "y": y, "button": "left", "buttons": 1, "clickCount": 1})
-            navigated = await self._settle(sid, watch)
-            return await self._result(target, navigated=navigated)
+        for attempt in range(CLICK_ATTEMPTS):
+            async with self._acting(target, sid, tainted):
+                plan = await self._click_plan(sid, target, element)
+            kind = plan["kind"]
+            if kind == "browser.interact" and await self._commits(
+                    host, url, "click", plan["role"], plan["name"] or plan["text"], nearby=plan["label"]):
+                kind = "browser.sensitive"
+            summary = f"Click {plan['label']} on {host}"
+            # Whether the owner is shown this exact plan; if so it must not change at all before the click.
+            approved = self.policy.evaluate(Action(kind, host, summary, {"url": url}, tainted)) is not Decision.ALLOW
+            await self._allow(kind, host, summary, tainted, url=url, ref=ref, label=plan["label"])
+            async with self._acting(target, sid, tainted):
+                # The click goes to exactly what was checked: the same element under the pointer, the same
+                # label and frame. Anything different means the page changed, so nothing is clicked.
+                now = await self._click_plan(sid, target, element)
+                moved = _fingerprint(now) != _fingerprint(plan)
+                if not moved:
+                    x, y = now["x"], now["y"]
+                    await self._send(sid, "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+                    moved = _fingerprint(await self._probe(sid, target, element, x, y)) != _fingerprint(plan)
+                if not moved:
+                    watch = self._watch_navigation(sid, target)
+                    for event in ("mousePressed", "mouseReleased"):
+                        await self._send(sid, "Input.dispatchMouseEvent", {
+                            "type": event, "x": x, "y": y, "button": "left", "buttons": 1, "clickCount": 1})
+                    navigated = await self._settle(sid, watch)
+                    return await self._result(target, navigated=navigated)
+            if approved or attempt == CLICK_ATTEMPTS - 1:
+                break
+            # Overlays fading in or out and hover effects settle quickly; check the click again from scratch.
+            await asyncio.sleep(CLICK_SETTLE)
+        raise BrowserError("The page changed under the pointer; nothing was clicked. Take a new snapshot")
 
     async def _click_plan(self, sid: str, target: str, element: dict) -> dict:
         with contextlib.suppress(CDPError):
@@ -1066,8 +1060,9 @@ class BrowserBroker:
         cover = await self._covering(sid, target, backend, hit)
         if cover is not None:
             label += f' (covered by {cover.get("tag")} {json.dumps(cover.get("text", ""), ensure_ascii=False)})'
-        risky = sensitive(name, text) or own.get("truncated") or (cover is not None and (
-            sensitive(cover.get("text", "")) or cover.get("truncated") or cover.get("tag") in FRAME_TAGS))
+        # Structural signals only; whether the click commits something is judged in _click.
+        risky = own.get("truncated") or (cover is not None and (
+            cover.get("truncated") or cover.get("tag") in FRAME_TAGS))
         # When the click lands on the element itself, which of its own child nodes is under the
         # pointer does not matter (menus restyle them on hover); a different covering element does.
         return {"hit": "element" if cover is None else hit.get("backendNodeId"), "frame": hit.get("frameId"),
@@ -1160,10 +1155,9 @@ class BrowserBroker:
                 detail["field"] = card_field(node)
             else:
                 detail["text"] = text
-            risky = field == "payment" or own.get("truncated") or (
-                submit and sensitive(own.get("submit", ""), own.get("text", ""))) or await self._commits(
+            risky = field == "payment" or own.get("truncated") or await self._commits(
                 host, url, "type and press Enter" if submit else "type", element["role"], element["name"],
-                typed=text, nearby=f"submits: {own.get('submit')}" if submit and own.get("submit") else "")
+                typed=text, nearby=f"field text: {own.get('text', '')}; submit button: {own.get('submit', '')}")
             await self._allow("browser.sensitive" if risky else "browser.interact", host, summary, tainted, **detail)
         async with self._acting(target, sid, tainted):
             try:
@@ -1219,10 +1213,9 @@ class BrowserBroker:
             summary += f' (focus: {focused.get("tag")} {json.dumps(focused.get("text", ""), ensure_ascii=False)})'
             if key == "Enter":
                 # Enter activates the focused control or submits its form.
-                risky = focused.get("tag") in FRAME_TAGS or focused.get("truncated") or \
-                    sensitive(focused.get("text", ""), focused.get("submit", "")) or await self._commits(
-                        host, url, "press Enter in", focused.get("tag", ""), focused.get("text", ""),
-                        nearby=f"submits: {focused['submit']}" if focused.get("submit") else "")
+                risky = focused.get("tag") in FRAME_TAGS or focused.get("truncated") or await self._commits(
+                    host, url, "press Enter in", focused.get("tag", ""), focused.get("text", ""),
+                    nearby=f"submit button: {focused['submit']}" if focused.get("submit") else "")
                 if focused.get("submit"):
                     summary += f" which may submit {json.dumps(focused['submit'], ensure_ascii=False)}"
         await self._allow("browser.sensitive" if risky else "browser.interact", host, summary, tainted,

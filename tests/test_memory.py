@@ -185,6 +185,14 @@ class HybridSearchTests(MemoryTestCase):
         ids = [r["id"] for r in await self.memory.search("travel")]
         self.assertIn(trip["id"], ids)
 
+    async def test_recall_returns_only_clearly_relevant_memories(self):
+        # search() ranks a shared word ("Friday"); recall() wants the meaning to match.
+        self.assertIn(self.flight["id"], [r["id"] for r in await self.memory.search("dentist on Friday")])
+        self.assertEqual(await self.memory.recall("dentist on Friday"), [])
+        self.assertEqual([r["id"] for r in await self.memory.recall("what is my puppy called")], [self.dog["id"]])
+        # Without embeddings nothing is recalled automatically; the assistant can call memory_search.
+        self.assertEqual(await Memory(self.store, self.audit).recall("Lisbon Friday"), [])
+
     async def test_corrupt_or_mismatched_vectors_are_skipped(self):
         self.store.execute("UPDATE memories SET embedding = 'not json' WHERE id = ?", (self.flight["id"],))
         self.store.execute("UPDATE memories SET embedding = '[1.0, 0.0]' WHERE id = ?", (self.ramen["id"],))

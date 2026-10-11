@@ -30,7 +30,8 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
         self.admin_port, self.sandbox_port = free_port(), free_port()
         config = Config({
             "owner": {"name": "Sam", "desktop_notifications": False},
-            "models": {"runtime": "openai", "base_url": fake.base_url, "chat": "fake-model"},
+            "models": {"runtime": "openai", "base_url": fake.base_url, "chat": "fake-model",
+                       "embedding": "fake-embed"},
             "sandbox": {"driver": "docker", "url": "http://127.0.0.1:9"},
             "gateway": {"sandbox_bind": "127.0.0.1", "sandbox_port": self.sandbox_port,
                         "admin_port": self.admin_port},
@@ -120,6 +121,7 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
         with FakeOpenAI() as fake:
             daemon = self.make_daemon(fake)
             daemon.config.set("browser.allow", ["127.0.0.1"])
+            fake.judge = lambda state: "Buy now" in state       # the assistant model judges each step
             fake.script = [tool_call("browser_open", {"url": url}, "call_1"),
                            tool_call("browser_snapshot", {}, "call_2"), click_buy,
                            {"role": "assistant", "content": "Bought it."}]
@@ -149,6 +151,7 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
                                   json={"allow": True, "scope": "always"})
                 reply = await chat
                 self.assertEqual(reply.json()["reply"], "Bought it.")
+                self.assertTrue(any('click button "Buy now"' in state for state in fake.judged))
             snapshot_text = [m["content"] for m in fake.requests[2]["messages"] if m["role"] == "tool"][-1]
             self.assertIn("<untrusted", snapshot_text)
             self.assertIn("CodeRunner notice", snapshot_text)

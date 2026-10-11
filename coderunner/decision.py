@@ -1,14 +1,16 @@
-"""A second opinion on whether a browser step commits something.
+"""The judge for whether a browser step commits something.
 
-Keyword rules in the browser broker decide the minimum set of steps that need
-the owner's approval. When a decision model is configured (models.decision),
-steps the keywords consider ordinary are also described to it in their page
-context; if it judges the step likely to commit something (pay, book, send,
-delete, change settings, grant access...), the step needs approval too.
+Every click, typed entry and Enter is described to a model in its page
+context. If it judges the step likely to commit something (pay, book, send,
+delete, change settings, grant access...), the owner approves it first;
+otherwise it just runs. The judge is the decision model when one is
+configured (models.decision), otherwise the assistant's own model.
 
-The check can only add prompts, never remove them: page text is attacker
-controlled, so a fooled model costs a prompt, not a purchase. If the model is
-slow or unreachable the keyword rules alone apply, and that is audited.
+A separate decision model is preferred: it is told to treat the page as data
+and is harder to talk round than the model that is doing the task. When the
+judge cannot answer, the step needs approval (fail closed), and that is
+audited. Structural rules in the broker (payment and password fields, web
+chat clients, labels too long to show) apply whatever the judge says.
 
 Two ways to ask:
   systemone  Ollama's decision endpoint (/v1/systemone) for decision models
@@ -63,7 +65,7 @@ class ActionCheck:
 
     @classmethod
     def from_config(cls, config, audit=None) -> "ActionCheck | None":
-        model = config.get("models.decision") or ""
+        model = config.get("models.decision") or config.get("models.chat") or ""
         if not model:
             return None
         api = config.get("models.decision_api") or ("chat" if model == config.get("models.chat") else "systemone")
@@ -72,13 +74,13 @@ class ActionCheck:
                    api_key=config.get("models.api_key") or "")
 
     async def commits(self, state: str) -> bool:
-        """True when the model thinks the step commits something (or cannot tell)."""
+        """True when the model thinks the step commits something, cannot tell, or cannot be reached."""
         start = time.monotonic()
         try:
             probability = await (self._systemone(state) if self.api == "systemone" else self._chat(state))
-        except Exception as exc:  # keyword rules still apply
-            self._audit(error=str(exc)[:200], seconds=round(time.monotonic() - start, 2))
-            return False
+        except Exception as exc:  # fail closed: the owner is asked
+            self._audit(error=str(exc)[:200], commits=True, seconds=round(time.monotonic() - start, 2))
+            return True
         verdict = probability >= self.threshold
         self._audit(p_commit=round(probability, 3), commits=verdict, seconds=round(time.monotonic() - start, 2))
         return verdict
@@ -96,7 +98,9 @@ class ActionCheck:
         task = {"state": state, "question": QUESTION,
                 "options": [{"label": letter, "key": key, "description": CRITERIA[key]} for letter, key in labels.items()]}
         response = await self._client.post(f"{self.base_url}/chat/completions", json={
-            "model": self.model, "temperature": 0, "max_tokens": 8, "reasoning_effort": "none",
+            "model": self.model, "temperature": 0, "max_tokens": 8,
+            # No reasoning: Ollama reads reasoning_effort, llama.cpp reads chat_template_kwargs.
+            "reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False},
             "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": json.dumps(task)}],
             "response_format": {"type": "json_schema", "json_schema": {"name": "answer", "schema": {
                 "type": "string", "enum": list(labels)}}}})

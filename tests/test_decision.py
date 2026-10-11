@@ -35,9 +35,9 @@ class ActionCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([e["commits"] for e in events], [True, False])
         await check.aclose()
 
-    async def test_failures_fall_back_to_keyword_rules(self):
+    async def test_failures_ask_the_owner(self):
         check = self.check(lambda r: httpx.Response(500, text="model not loaded"))
-        self.assertFalse(await check.commits("Site: x"))
+        self.assertTrue(await check.commits("Site: x"))
         self.assertIn("error", [e for e in self.audit.tail() if e["event"] == "decision.check"][-1])
         await check.aclose()
 
@@ -52,8 +52,10 @@ class ActionCheckTests(unittest.IsolatedAsyncioTestCase):
 
     def test_from_config(self):
         self.assertIsNone(ActionCheck.from_config(Config({}, path=None)))
-        same = Config({"models": {"base_url": "http://x/v1", "chat": "qwen", "decision": "qwen"}}, path=None)
-        self.assertEqual(ActionCheck.from_config(same).api, "chat")
+        # Without a decision model, the assistant's own model judges.
+        chat_only = Config({"models": {"base_url": "http://x/v1", "chat": "qwen"}}, path=None)
+        self.assertEqual((ActionCheck.from_config(chat_only).model, ActionCheck.from_config(chat_only).api),
+                         ("qwen", "chat"))
         own = Config({"models": {"base_url": "http://x/v1", "chat": "qwen", "decision": "tev1:4b",
                                  "decision_threshold": 0.9}}, path=None)
         check = ActionCheck.from_config(own)

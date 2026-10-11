@@ -117,6 +117,28 @@ class Memory:
         rows = {r["id"]: r for r in self.store.query(f"SELECT {_COLUMNS} FROM memories WHERE id IN ({marks})", top)}
         return [{**rows[i], "score": round(scores[i], 6)} for i in top if i in rows]
 
+    async def recall(self, text: str, limit: int = 5, min_similarity: float = 0.5) -> list[dict]:
+        """Memories clearly relevant to text, for the assistant's prompt.
+
+        search() ranks anything that matches at all. recall() returns only memories close in
+        meaning to the text, so personal facts do not enter tasks that never needed them.
+        """
+        text = (text or "").strip()
+        if not text:
+            return []
+        if self.embedder and self._refresh_vectors():
+            vectors = await self._embed([text])
+            if vectors:
+                return self._rows(self._nearest(vectors[0], limit, min_score=min_similarity))
+        return []        # without embeddings the assistant decides when to call memory_search
+
+    def _rows(self, ids: list[int]) -> list[dict]:
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        rows = {r["id"]: r for r in self.store.query(f"SELECT {_COLUMNS} FROM memories WHERE id IN ({marks})", ids)}
+        return [rows[i] for i in ids if i in rows]
+
     def forget(self, id: int | None = None, query: str | None = None) -> int:
         """Delete one memory by id, or every memory containing all words of query."""
         if (id is None) == (query is None):
@@ -182,13 +204,13 @@ class Memory:
                     self._vectors[row["id"]] = vector or []  # [] marks unreadable, so we don't re-parse it
         return any(self._vectors.values())
 
-    def _nearest(self, vector: list[float], limit: int) -> list[int]:
+    def _nearest(self, vector: list[float], limit: int, min_score: float = 0.0) -> list[int]:
         scored = (
             (_dot(vector, stored), memory_id)
             for memory_id, stored in self._vectors.items()
             if len(stored) == len(vector)  # skip vectors from a different embedding model
         )
-        return [memory_id for score, memory_id in heapq.nlargest(limit, scored) if score > 0]
+        return [memory_id for score, memory_id in heapq.nlargest(limit, scored) if score > max(min_score, 0)]
 
     def _find(self, text: str) -> dict | None:
         return self.store.one(f"SELECT {_COLUMNS} FROM memories WHERE text = ? ORDER BY id LIMIT 1", (text,))

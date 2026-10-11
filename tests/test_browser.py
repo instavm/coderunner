@@ -11,11 +11,12 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from coderunner.audit import AuditLog
 from coderunner.browser import BrowserBroker, BrowserError
 from coderunner.browser import launcher
-from coderunner.browser.broker import CONTAINS_JS, DESCRIBE_JS, parse_url, render_ax, sensitive
+from coderunner.browser.broker import CONTAINS_JS, DESCRIBE_JS, parse_url, render_ax
 from coderunner.browser.cdp import CDPError, CDPPipe
 from coderunner.config import Config
 from coderunner.policy import Policy, current_run
@@ -253,6 +254,20 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(refs[4]["name"], "Buy now")
 
 
+class StubJudge:
+    """Stands in for the decision model: in these test pages, these words mark committing steps."""
+
+    WORDS = ("buy", "pay", "order", "confirm", "send")
+
+    def __init__(self):
+        self.states = []
+        self.fail = False
+
+    async def commits(self, state):
+        self.states.append(state)
+        return self.fail or any(word in state.lower() for word in self.WORDS)
+
+
 class BrokerTestCase(unittest.IsolatedAsyncioTestCase):
     browser_config: dict = {}
     rules: list = []
@@ -269,7 +284,8 @@ class BrokerTestCase(unittest.IsolatedAsyncioTestCase):
         self.while_asking = None   # runs while an approval is pending, to let tests change the page
         self.policy.add_listener(self._answer)
         self.launcher = FakeLauncher()
-        self.broker = BrowserBroker(self.config, self.policy, self.audit, launcher=self.launcher)
+        self.judge = StubJudge()
+        self.broker = BrowserBroker(self.config, self.policy, self.audit, launcher=self.launcher, decider=self.judge)
         self.dns = {}
 
         async def resolve(host):
@@ -616,26 +632,46 @@ class DefaultPermissionTests(BrokerTestCase):
         self.assertFalse((await self.broker.click(4))["ok"])         # "Buy now"
         self.assertEqual(self.kinds(), ["browser.sensitive"])
 
-    async def test_decision_model_can_add_prompts_but_not_remove_them(self):
+    async def test_ordinary_clicks_wait_for_overlays_to_settle(self):
         browser, _ = await self.load_shop()
-        seen = []
+        browser.labels[777] = {"tag": "div", "text": "Sign in, save money", "submit": ""}
+        moves = []
 
-        class Decider:
-            async def commits(self, state):
-                seen.append(state)
-                return "Read more" in state or "sourdough" in state
+        def overlay_fades():                     # covers the link on the first hover, then fades out
+            moves.append(1)
+            browser.hit = 777 if len(moves) == 1 else None
+        browser.on_move = overlay_fades
+        with mock.patch("coderunner.browser.broker.CLICK_SETTLE", 0):
+            self.assertTrue((await self.broker.click(1))["ok"])
+        self.assertEqual(self.asked, [])
+        self.assertEqual(len([p for p in browser.sent("Input.dispatchMouseEvent") if p["type"] == "mousePressed"]), 1)
+        # A page that never settles is not clicked.
+        browser.on_move = lambda: setattr(browser, "hit", 777 if browser.hit is None else None)
+        with mock.patch("coderunner.browser.broker.CLICK_SETTLE", 0):
+            self.assertFalse((await self.broker.click(1))["ok"])
 
-        self.broker.decider = Decider()
-        self.assertFalse((await self.broker.click(1))["ok"])           # "Read more", judged committing
-        self.assertEqual(self.kinds(), ["browser.sensitive"])
-        self.assertIn("Site: shop.example", seen[0])
-        self.assertFalse((await self.broker.type(2, "sourdough"))["ok"])
-        self.assertIn('Text to type: "sourdough"', seen[-1])
+    async def test_the_judge_decides_which_steps_commit(self):
+        browser, _ = await self.load_shop()
+        self.assertTrue((await self.broker.click(1))["ok"])             # "Read more"
+        self.assertIn("Site: shop.example", self.judge.states[-1])
+        self.assertIn('click link "Read more"', self.judge.states[-1])
         self.assertTrue((await self.broker.type(2, "rye"))["ok"])
-        # Steps the keyword rules already treat as committing are not sent to the model.
-        count = len(seen)
-        self.assertFalse((await self.broker.click(4))["ok"])           # "Buy now"
-        self.assertEqual(len(seen), count)
+        self.assertIn('Text to type: "rye"', self.judge.states[-1])
+        self.assertEqual(self.asked, [])
+        self.assertFalse((await self.broker.click(4))["ok"])            # "Buy now"
+        self.assertEqual(self.kinds(), ["browser.sensitive"])
+        # Keys other than Enter cannot submit anything and are not judged.
+        judged = len(self.judge.states)
+        self.assertTrue((await self.broker.press("Tab"))["ok"])
+        self.assertEqual(len(self.judge.states), judged)
+
+    async def test_without_an_answer_from_the_judge_the_owner_is_asked(self):
+        await self.load_shop()
+        self.judge.fail = True
+        self.assertFalse((await self.broker.click(1))["ok"])
+        self.broker.decider = None
+        self.assertFalse((await self.broker.type(2, "rye"))["ok"])
+        self.assertEqual(self.kinds(), ["browser.sensitive", "browser.sensitive"])
 
     async def test_private_data_needs_approval_before_it_reaches_a_site(self):
         browser, _ = await self.load_shop()
@@ -734,13 +770,6 @@ class MessagingClientTests(BrokerTestCase):
     browser_config = {"allow": ["web.whatsapp.com", "app.slack.com"]}
     rules = [{"kind": "browser.interact", "target": "*", "decision": "allow"}]
 
-    def test_approval_words_are_sensitive(self):
-        for text in ("Allow", "Approve", "approve 1a2b3c4d", "Authorize app", "Grant access", "Deny", "Permit",
-                     "approval", "Authorisation"):
-            self.assertTrue(sensitive(text), text)
-        for text in ("Bookmark", "Posts", "Allowance", "Read more"):
-            self.assertFalse(sensitive(text), text)
-
     async def test_any_interaction_in_a_chat_client_is_sensitive(self):
         for host in ("web.whatsapp.com", "app.slack.com"):
             with self.subTest(host=host):
@@ -818,7 +847,7 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
             self.asked.append(approval.kind)
             self.policy.decide(approval.id, allow=self.answers.get(approval.kind, False))
         self.policy.add_listener(answer)
-        self.broker = BrowserBroker(self.config, self.policy, self.audit)
+        self.broker = BrowserBroker(self.config, self.policy, self.audit, decider=StubJudge())
 
     async def asyncTearDown(self):
         await self.broker.stop()

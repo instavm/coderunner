@@ -75,7 +75,9 @@ class Agent:
         memories = ""
         if self.svc.memory is not None and text:
             try:
-                found = await self.svc.memory.search(text, 5)
+                # Only clearly relevant memories: every recalled one counts as private data in this run.
+                found = await self.svc.memory.recall(
+                    text, 5, min_similarity=float(self.svc.config.get("agent.recall_min_similarity", 0.5) or 0.5))
             except Exception:
                 found = []
             if found:

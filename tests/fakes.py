@@ -31,15 +31,27 @@ def free_port() -> int:
 
 
 class FakeOpenAI:
-    """Replies come from `script`: each item is a message dict or a callable(request_json) -> message dict."""
+    """Replies come from `script`: each item is a message dict or a callable(request_json) -> message dict.
+
+    Requests from the step judge (coderunner.decision) are answered by `judge(state) -> bool` instead,
+    so they do not consume the script; by default every step is judged ordinary.
+    """
 
     def __init__(self):
         self.script: list = []
         self.requests: list[dict] = []
+        self.judged: list[str] = []
+        self.judge = lambda state: False
         self.port = free_port()
 
         async def chat(request: Request):
             body = await request.json()
+            messages = body.get("messages") or [{}]
+            if str(messages[0].get("content", "")).startswith("Evaluate the supplied decision task"):
+                state = json.loads(messages[-1]["content"])["state"]
+                self.judged.append(state)
+                answer = "B" if self.judge(state) else "A"
+                return JSONResponse({"choices": [{"message": {"role": "assistant", "content": answer}}]})
             self.requests.append(body)
             item = self.script.pop(0) if self.script else {"role": "assistant", "content": "done"}
             message = item(body) if callable(item) else item
