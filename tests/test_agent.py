@@ -151,6 +151,24 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("step limit", reply)
             await svc.llm.aclose()
 
+    async def test_empty_answer_after_tool_is_asked_for_once(self):
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.sandbox = FakeSandbox()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            fake.script = [tool_call("run_python", {"code": "print(2 + 2)"}),
+                           {"role": "assistant", "content": ""},
+                           {"role": "assistant", "content": "It is 4."}]
+            agent = Agent(svc, svc.llm, svc.registry)
+            self.assertEqual(await agent.run(RunContext(conversation="t6"), "2 + 2?"), "It is 4.")
+            self.assertEqual(fake.requests[-1]["messages"][-1]["role"], "user")
+            # Only one extra request: a model that still says nothing gets the fallback.
+            fake.script = [{"role": "assistant", "content": ""}] * 3
+            self.assertEqual(await agent.run(RunContext(conversation="t7"), "hi"), "(no response)")
+            self.assertEqual(len(fake.requests), 5)
+            await svc.llm.aclose()
+
     async def test_non_owner_runs_are_tainted(self):
         with FakeOpenAI() as fake:
             svc = Svc()

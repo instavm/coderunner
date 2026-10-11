@@ -49,7 +49,7 @@ Options:
   --build                   Build the sandbox image from this checkout
   --image NAME              Use a specific sandbox image
   --model ID                Use this model instead of the hardware-based pick
-  --no-assistant            Install only the sandbox, not the host assistant
+  --no-assistant            Install the sandbox and the coderunner CLI only (no model setup or login service)
   -y, --yes                 Answer yes to installing a model runtime
   -h, --help                Show this help
 EOF
@@ -459,6 +459,9 @@ print(networks[0]["network"] if networks else "default")
     if [ "$BUILD_IMAGE" = "1" ]; then
         IMAGE="${IMAGE:-coderunner-local:latest}"
         echo "Building the sandbox image $IMAGE from $SCRIPT_DIR (this takes a while)..."
+        # After an install or upgrade the builder image is downloaded on first use; inside
+        # `container build` that download can outlast the API timeout, so start the builder first.
+        container builder start >/dev/null 2>&1 || true
         if ! container build -t "$IMAGE" "$SCRIPT_DIR"; then
             echo "❌ Image build failed."
             exit 1

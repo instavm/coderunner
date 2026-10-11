@@ -92,6 +92,7 @@ class Agent:
         self.svc.audit.write("agent.start", conversation=ctx.conversation, origin=ctx.origin)
         max_steps = int(self.svc.config.get("agent.max_steps", 20))
         final = ""
+        nudged = False
         for _ in range(max_steps):
             self._drop_old_images(messages)
             try:
@@ -100,6 +101,11 @@ class Agent:
                 final = f"I couldn't reach the local model: {exc}"
                 break
             if not reply["tool_calls"]:
+                if not reply["content"] and not nudged:
+                    # Small reasoning models sometimes stop after thinking, without writing an answer.
+                    nudged = True
+                    messages.append({"role": "user", "content": "Write your reply to me now, based on what you have so far."})
+                    continue
                 final = reply["content"] or "(no response)"
                 break
             messages.append({"role": "assistant", "content": reply["content"], "tool_calls": reply["tool_calls"]})
