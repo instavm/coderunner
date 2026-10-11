@@ -92,11 +92,31 @@ class HardwareTests(unittest.TestCase):
         self.assertEqual(hardware.apple_budget(4, 3, 4), 0.0)
 
     def test_nvidia(self):
-        out = "NVIDIA GeForce RTX 3060, 12288, 11000\nNVIDIA GeForce RTX 4090, 24564, 23900\n"
+        hw = nvidia(24)
+        self.assertEqual((hw.gpu, hw.chip, hw.bandwidth_gbs, hw.gpus, hw.unified),
+                         ("nvidia", "NVIDIA GeForce RTX 4090", 1008, 1, False))
+        self.assertAlmostEqual(hw.vram_gb, 24)
+        self.assertAlmostEqual(hw.budget_gb, 23.5 - 1)            # free VRAM - 1 GiB per card
+
+    def test_several_nvidia_cards_are_pooled(self):
+        # llama.cpp and Ollama split a model across cards; the slowest card sets the pace.
+        out = "NVIDIA GeForce RTX 3060, 12288, 11000, 8.6\nNVIDIA GeForce RTX 4090, 24564, 23900, 8.9\n"
         hw = linux(64, {"nvidia-smi": out})
-        self.assertEqual((hw.gpu, hw.chip, hw.bandwidth_gbs), ("nvidia", "NVIDIA GeForce RTX 4090", 1008))
-        self.assertAlmostEqual(hw.vram_gb, 24564 / 1024)
-        self.assertAlmostEqual(hw.budget_gb, 23900 / 1024 - 1)    # free VRAM - 1 GiB
+        self.assertEqual((hw.gpus, hw.bandwidth_gbs, hw.compute_cap), (2, 360, 8.6))
+        self.assertAlmostEqual(hw.vram_gb, (12288 + 24564) / 1024)
+        self.assertAlmostEqual(hw.budget_gb, (11000 + 23900) / 1024 - 2)
+        four = linux(512, {"nvidia-smi": "NVIDIA H200, 143771, 143000, 9.0\n" * 4})
+        self.assertEqual((four.gpus, four.bandwidth_gbs), (4, 4800))
+        self.assertGreater(four.budget_gb, 550)
+
+    def test_unified_memory_nvidia_systems(self):
+        # DGX Spark reports no dedicated VRAM: the model shares the 128 GB pool with the OS and sandbox.
+        spark = linux(128, {"nvidia-smi": "NVIDIA GB10, [N/A], [N/A], 12.1\n"})
+        self.assertEqual((spark.gpu, spark.unified, spark.bandwidth_gbs, spark.compute_cap), ("nvidia", True, 273, 12.1))
+        self.assertAlmostEqual(spark.budget_gb, hardware.unified_budget(128, 4))
+        self.assertGreater(spark.budget_gb, 100)
+        thor = linux(128, {"nvidia-smi": "NVIDIA Thor, [N/A], [N/A], 11.0\n"})
+        self.assertTrue(thor.unified)
         self.assertEqual(hardware.nvidia_bandwidth("NVIDIA GeForce RTX 4070 Ti SUPER"), 504)
 
     def test_amd(self):
