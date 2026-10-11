@@ -35,6 +35,11 @@ GGUF_PUBLISHERS = ("unsloth", "bartowski", "ggml-org", "lmstudio-community")
 CHAT_PIPELINES = {"text-generation", "image-text-to-text", "any-to-any"}
 NOT_CHAT = re.compile(r"(?i)(?:^|[-_])(base|embed\w*|rerank\w*|guard|reward|tts|asr|ocr|speech|vae|diffusion|"
                       r"image-\d|draft|eagle|mtp|dspark|probe|singprobe|fp8|bf16|awq|gptq|int4|int8|nvfp4)(?:$|[-_])")
+# Specialist models (OCR, screen-driving agents, robotics...) are not general assistants: setup's smoke
+# test would reject them, but only after a multi-gigabyte download, so they are left out up front.
+SPECIALIST = re.compile(r"(?i)(ocr|parsing|gui[-_ ]?(agent|owl)|computer.?use|ui.?agent|ui-mate|fara\d|robot|"
+                        r"embodied|[-_]driv(e|ing)|medical|translat|retriev|decision|router|linter|guard|math|prover|"
+                        r"aescode)")
 # GGUF files that ride along with a model but are not it: speculative-decoding heads, encoders...
 AUXILIARY = re.compile(r"(?i)(mmproj|mtp|draft|eagle|dflash|vision|encoder|audio|tokenizer|projector)")
 # Bits per weight of common GGUF quantizations; higher keeps more of the model's quality.
@@ -45,6 +50,7 @@ QUANT_BITS = {"BF16": 16, "F16": 16, "Q8_0": 8.5, "Q6_K": 6.6, "Q5_K_M": 5.7, "U
 QUANT = re.compile(r"(?i)(?:^|[-_./])((?:UD-)?(?:IQ\d_(?:XXS|XS|NL|S|M)|Q\d_K(?:_(?:XL|S|M|L))?|Q\d_\d|BF16|F16|MXFP4))"
                    r"(?=[-_.](?:\d{5}-of|gguf)|\.gguf|/)")
 MIN_BITS = 2.0            # below this quality collapses
+MIN_PARAMS_B = 4.0        # smaller models got tool arguments wrong in testing (fit.MIN_CHAT_PARAMS_B)
 GOOD_BITS = 4.0           # prefer at least this when it fits
 CACHE_TTL = 24 * 3600
 RECENT_DAYS = 120
@@ -160,7 +166,9 @@ class Discovery:
             except ValueError:
                 continue
             name = row["id"].split("/", 1)[1]
-            if stamp < cutoff or row.get("pipeline_tag") not in CHAT_PIPELINES or NOT_CHAT.search(name):
+            tags = " ".join(str(tag) for tag in row.get("tags") or [] if not str(tag).startswith(("license:", "base_model:")))
+            if stamp < cutoff or row.get("pipeline_tag") not in CHAT_PIPELINES or NOT_CHAT.search(name) \
+                    or SPECIALIST.search(name) or SPECIALIST.search(tags):
                 continue
             out.append(row)
         return out
@@ -203,8 +211,8 @@ class Discovery:
         except HubError:
             return None
         total = ((info.get("safetensors") or {}).get("total") or 0) / 1e9
-        if not total or not isinstance(config, dict):
-            return None
+        if total < MIN_PARAMS_B or not isinstance(config, dict):
+            return None                       # too small to drive the assistant reliably
         license_info = self.hub.resolve_license(repo)
         found = self.gguf_repo(repo)
         quants, mmproj = builds(found[1], total) if found else ({}, None)
