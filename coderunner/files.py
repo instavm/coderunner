@@ -57,6 +57,8 @@ MAX_CHUNKS = 200           # per file
 AUDIO_SEGMENT = 60         # seconds of sound per embedding
 MAX_SEGMENTS = 10
 VIDEO_FRAMES = 6
+NATIVE_IMAGES = {".png", ".jpg", ".jpeg", ".webp"}   # sent to the embedding model unchanged
+NATIVE_IMAGE_BYTES = 20 * 1024 * 1024
 # How each embedding model family wants queries and documents phrased, and the similarity above which a
 # memory is clearly relevant to a task (measured on labelled examples; scales differ between models).
 PROFILES = {
@@ -344,15 +346,20 @@ class FileIndex:
         if kind == "image":
             if "vision" not in caps:
                 return [("image", title, title)]
-            data = base64.b64encode(await self.media.image(path)).decode()
-            return [("image", title, {"image": data})]
+            # The model's own image processing is used as is; only formats it cannot decode (HEIC, TIFF,
+            # BMP, GIF) or very large files are converted to JPEG first.
+            if path.suffix.lower() in NATIVE_IMAGES and path.stat().st_size <= NATIVE_IMAGE_BYTES:
+                raw = path.read_bytes()
+            else:
+                raw = await self.media.image(path, size=2048)
+            return [("image", title, {"image": base64.b64encode(raw).decode()})]
         if kind in ("audio", "video"):
             chunks = []
             length = await self.media.duration(path) if self.media.ffmpeg else 0.0
             if kind == "video" and "vision" in caps and self.media.ffmpeg:
                 times = [length * (i + 0.5) / VIDEO_FRAMES for i in range(VIDEO_FRAMES)] if length else [0.0]
                 for at in times:
-                    data = base64.b64encode(await self.media.image(path, at=at, size=768)).decode()
+                    data = base64.b64encode(await self.media.image(path, at=at, size=2048)).decode()
                     chunks.append((f"frame at {at:.0f}s", title, {"image": data}))
             if "audio" in caps and self.media.ffmpeg:
                 segments = max(1, min(MAX_SEGMENTS, math.ceil(length / AUDIO_SEGMENT))) if length else 1
