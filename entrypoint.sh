@@ -1,6 +1,13 @@
 #!/bin/bash
 set -u
 
+# Lite profile: no Jupyter server and no browser. server.py runs code as plain processes, so the
+# sandbox fits in about 1 GB. The assistant browses with the owner's browser on the host.
+if [ "${CODERUNNER_PROFILE:-full}" = "lite" ]; then
+    mkdir -p /app/uploads/work
+    exec uvicorn server:app --host 0.0.0.0 --port 8222 --workers 1 --no-access-log
+fi
+
 # Start Jupyter server. It has no authentication, so it must only listen on
 # loopback: it is used exclusively by server.py inside this container.
 # XSRF checks stay disabled because the API is called without cookies.

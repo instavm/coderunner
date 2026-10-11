@@ -20,7 +20,7 @@ DEFAULTS: dict[str, Any] = {
         "name": "coderunner",
         "url": "",                   # MCP/REST base, e.g. http://coderunner.local:8222
         "network": "default",        # default | none | proxy
-        "memory_gb": 4,              # VM memory, subtracted from the model budget
+        "memory_gb": 1,              # VM memory, subtracted from the model budget (lite profile: 1 GB)
     },
     "gateway": {
         "sandbox_bind": "auto",      # host address the sandbox can reach, or "auto"

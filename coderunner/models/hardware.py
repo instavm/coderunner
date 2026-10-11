@@ -134,7 +134,7 @@ def _amd(run) -> tuple[str, float, float] | None:
     return best
 
 
-def detect(sandbox_memory_gb: float = 4, *, run: Callable[[list[str]], str | None] | None = None,
+def detect(sandbox_memory_gb: float = 1, *, run: Callable[[list[str]], str | None] | None = None,
            read: Callable[[str], str] | None = None, system: str | None = None,
            machine: str | None = None) -> Hardware:
     run, read = run or _run, read or _read

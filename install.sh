@@ -24,7 +24,8 @@ install_container_tool() {
 }
 
 CPUS="${CODERUNNER_CPUS:-8}"
-MEMORY="${CODERUNNER_MEMORY:-4g}"
+MEMORY="${CODERUNNER_MEMORY:-}"
+PROFILE="${CODERUNNER_PROFILE:-auto}"
 MOUNT_SPECS=()
 VOLUME_ARGS=()
 NETWORK_MODE="${CODERUNNER_NETWORK:-default}"
@@ -40,7 +41,11 @@ Usage: ./install.sh [options]
 
 Options:
   --cpus N                  CPU count (default: 8)
-  --memory SIZE             Memory limit, e.g. 4g or 8192m (default: 4g)
+  --memory SIZE             Memory limit, e.g. 1g or 8192m (default: 1g lite, 4g full)
+  --profile lite|full       lite: code runs as plain processes, no Jupyter or browser in the
+                            sandbox (the assistant uses your own browser), about 1 GB.
+                            full: Jupyter kernels and a headless browser for MCP clients.
+                            Default: lite with the assistant, full with --no-assistant
   --mount HOST:TARGET[:ro|rw]
                             Mount a host directory under /workspace.
                             Mounts are read-only unless :rw is specified.
@@ -87,6 +92,10 @@ while [ "$#" -gt 0 ]; do
             MODEL="$2"
             shift 2
             ;;
+        --profile)
+            PROFILE="$2"
+            shift 2
+            ;;
         --build)
             BUILD_IMAGE=1
             shift
@@ -114,6 +123,16 @@ done
 if ! [[ "$CPUS" =~ ^[1-9][0-9]*$ ]]; then
     echo "Error: CPU count must be a positive integer." >&2
     exit 2
+fi
+if [ "$PROFILE" = "auto" ]; then
+    if [ "$ASSISTANT" = "1" ]; then PROFILE=lite; else PROFILE=full; fi
+fi
+if [ "$PROFILE" != "lite" ] && [ "$PROFILE" != "full" ]; then
+    echo "Error: --profile must be lite or full." >&2
+    exit 2
+fi
+if [ -z "$MEMORY" ]; then
+    if [ "$PROFILE" = "lite" ]; then MEMORY=1g; else MEMORY=4g; fi
 fi
 if ! [[ "$MEMORY" =~ ^[1-9][0-9]*([KkMmGgTtPp][Bb]?)?$ ]]; then
     echo "Error: memory must be a positive size such as 4g or 8192m." >&2
@@ -274,7 +293,7 @@ export_gateway_env() {
 }
 
 desired_config() {
-    local config="cpus=$CPUS"$'\n'"memory=$MEMORY"
+    local config="cpus=$CPUS"$'\n'"memory=$MEMORY"$'\n'"profile=$PROFILE"
     if [ -n "${NORMALIZED_MOUNTS[*]-}" ]; then
         local sorted_mounts
         sorted_mounts=$(printf '%s\n' ${NORMALIZED_MOUNTS[@]+"${NORMALIZED_MOUNTS[@]}"} | LC_ALL=C sort)
@@ -475,7 +494,7 @@ print(networks[0]["network"] if networks else "default")
         fi
     fi
 
-    echo "Starting coderunner with $CPUS CPUs and $MEMORY memory..."
+    echo "Starting coderunner ($PROFILE profile) with $CPUS CPUs and $MEMORY memory..."
     if (export_gateway_env "$gateway" && container run \
       --volume "$ASSETS_SRC/skills/user:/app/uploads/skills/user" \
       --volume "$ASSETS_SRC/outputs:/app/uploads/outputs" \
@@ -485,6 +504,7 @@ print(networks[0]["network"] if networks else "default")
       --cpus "$CPUS" \
       --memory "$MEMORY" \
       --env CODERUNNER_API_TOKEN \
+      --env CODERUNNER_PROFILE="$PROFILE" \
       "${GATEWAY_ENV_ARGS[@]}" \
       ${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"} \
       "$IMAGE"); then
@@ -562,7 +582,7 @@ install_sandbox_linux() {
     if (export_gateway_env "host.docker.internal" && docker run --detach --name coderunner --restart unless-stopped \
       --publish 127.0.0.1:8222:8222 \
       --add-host host.docker.internal:host-gateway \
-      --cpus "$CPUS" --memory "$MEMORY" \
+      --cpus "$CPUS" --memory "$MEMORY" --env CODERUNNER_PROFILE="$PROFILE" \
       --volume "$ASSETS_SRC/skills/user:/app/uploads/skills/user" \
       --volume "$ASSETS_SRC/outputs:/app/uploads/outputs" \
       ${DOCKER_VOLUMES[@]+"${DOCKER_VOLUMES[@]}"} \

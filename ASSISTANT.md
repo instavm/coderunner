@@ -28,7 +28,7 @@ coderunner chat       # talk to it; approvals are asked right in the terminal
  └──────────────────────────────────────┬────────────────────────────────────┘
                                          │ sandbox token only
  ┌──────────── sandbox VM (untrusted code) ┴─────────────────────────────────┐
- │ CodeRunner server :8222 · Jupyter kernels · headless Playwright · MCP     │
+ │ CodeRunner server :8222 · runs code as plain processes (lite, ~1 GB)     │
  └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -68,10 +68,15 @@ declares success. If a model fails the test, the next candidate is tried.
 
   | Unified memory | Assistant model |
   | --- | --- |
-  | 16 GB | Qwen3.5-4B |
-  | 18 GB | Qwen3.5-9B (Bonsai only fits tightly; with the browser and embeddings loaded it swapped) |
-  | 24 GB | Bonsai 2 27B |
+  | 16 to 24 GB | Bonsai 2 27B |
   | 32 GB and more | Qwen3.8-27B (4-bit) |
+
+* The sandbox runs the lite profile with the assistant: code runs as plain
+  processes in a work folder per session (files persist, variables do not),
+  with no Jupyter server and no browser inside the VM, which is capped at 1 GB
+  and used about 170 MB in testing. The assistant browses with your own
+  browser on the host. `./install.sh --profile full` keeps Jupyter kernels and
+  the headless browser for MCP clients that use them.
 
 * Embeddings for memory and files: EmbeddingGemma 2 (text, images and audio
   in one space) through Ollama, also when the assistant model runs elsewhere

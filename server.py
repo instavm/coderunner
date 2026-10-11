@@ -1,6 +1,8 @@
 # --- IMPORTS ---
 import asyncio
 import base64
+import contextlib
+import signal
 import binascii
 import json
 import logging
@@ -75,6 +77,17 @@ MAX_RETRY_ATTEMPTS = 3
 RETRY_BACKOFF_BASE = 2  # exponential backoff base
 
 # Jupyter connection settings
+# Profile "lite": no Jupyter server, no kernels and no Playwright browser. Code runs as plain processes in a
+# work folder per session (files persist between calls, variables do not), so the VM fits in about 1 GB.
+# The assistant browses with the owner's own browser on the host, not from the sandbox.
+PROFILE = os.environ.get("CODERUNNER_PROFILE", "full").strip().lower()
+LITE = PROFILE == "lite"
+EXEC_TIMEOUT = int(os.environ.get("CODERUNNER_EXEC_TIMEOUT", "600"))
+WORK_DIR = pathlib.Path(os.environ.get("CODERUNNER_WORK_DIR", "/app/uploads/work"))
+OUTPUT_LIMIT = 2_000_000
+LITE_NO_BROWSER = ("Error: this sandbox runs the lite profile without a browser; the assistant uses the owner's "
+                   "browser on the host instead.")
+
 JUPYTER_WS_URL = "ws://127.0.0.1:8888"
 JUPYTER_HTTP_URL = "http://127.0.0.1:8888"
 
@@ -389,13 +402,44 @@ class PythonSession:
         }
 
 
+async def run_process(command: str, session_id: Optional[str]) -> str:
+    """Run Python as its own process in the session's work folder (lite profile).
+
+    Output and errors use the same shapes as kernel execution. A run that exceeds EXEC_TIMEOUT is killed
+    with every process it started.
+    """
+    folder = WORK_DIR / (session_id or "main")
+    folder.mkdir(parents=True, exist_ok=True)
+    script = folder / ".coderunner-snippet.py"
+    script.write_text(command)
+    proc = await asyncio.create_subprocess_exec(
+        "python3", "-u", str(script), cwd=str(folder), stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), EXEC_TIMEOUT)
+    except asyncio.TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        await proc.wait()
+        return f"Error: Execution timed out after {EXEC_TIMEOUT} seconds"
+    finally:
+        script.unlink(missing_ok=True)
+    text = out.decode(errors="replace")[:OUTPUT_LIMIT]
+    error = err.decode(errors="replace")[-OUTPUT_LIMIT:]
+    if proc.returncode != 0:
+        return f"Error: Execution Error:\n{text}{error}".rstrip()
+    combined = text + error
+    return combined if combined else "[Execution successful with no output]"
+
+
 class PythonSessionManager:
     def __init__(self):
         self.sessions: Dict[str, PythonSession] = {}
         self.lock = asyncio.Lock()
 
     async def start(self, requested_id: Optional[str] = None) -> PythonSessionInfo:
-        await kernel_pool.initialize()
+        if not LITE:
+            await kernel_pool.initialize()
         if requested_id is not None and not isinstance(requested_id, str):
             raise ValueError("Session ID must be a string.")
         session_id = requested_id or f"session_{uuid.uuid4().hex[:12]}"
@@ -408,8 +452,8 @@ class PythonSessionManager:
         async with self.lock:
             if session_id in self.sessions:
                 raise SessionConflictError(f"Session '{session_id}' already exists.")
-            kernel_id = await kernel_pool.get_available_kernel()
-            if not kernel_id:
+            kernel_id = "" if LITE else await kernel_pool.get_available_kernel()
+            if not LITE and not kernel_id:
                 raise NoKernelAvailableError(f"Maximum of {MAX_KERNELS} active sessions reached.")
             session = PythonSession(session_id=session_id, kernel_id=kernel_id)
             self.sessions[session_id] = session
@@ -425,6 +469,8 @@ class PythonSessionManager:
         async with session.execution_lock:
             if session.closed:
                 return f"Error: Session '{session_id}' is closed."
+            if LITE:
+                return await run_process(command, session_id)
             try:
                 return await _execute_on_kernel(session.kernel_id, command, ctx)
             except KernelExecutionError as exc:
@@ -445,7 +491,10 @@ class PythonSessionManager:
             raise ValueError(f"Session '{session_id}' not found.")
 
         async with session.execution_lock:
-            await kernel_pool.discard_kernel(session.kernel_id)
+            if LITE:
+                shutil.rmtree(WORK_DIR / session_id, ignore_errors=True)
+            else:
+                await kernel_pool.discard_kernel(session.kernel_id)
         logger.info(f"Stopped Python session {session_id}")
         return session.info(status="stopped")
 
@@ -645,8 +694,10 @@ async def execute_python_code(
         session_id: Optional named session created by start_python_session.
     """
     try:
+        if LITE and not session_id:
+            return await run_process(command, None)
         # Initialize kernel pool if not already done
-        if not kernel_pool._initialized:
+        if not LITE and not kernel_pool._initialized:
             await ctx.report_progress(progress=10, message="Initializing kernel pool...")
             await kernel_pool.initialize()
 
@@ -687,6 +738,8 @@ async def navigate_and_get_all_visible_text(url: str) -> str:
     Args:
         url: The URL of the webpage from which to retrieve text.
     """
+    if LITE:
+        return LITE_NO_BROWSER
     # This function doesn't have intermediate steps, so it only needs 'return'.
     try:
         # Note: 'async with async_playwright() as p:' can be slow.
@@ -1098,6 +1151,8 @@ async def api_browser_navigate(request: Request):
             "error": "error message"
         }
     """
+    if LITE:
+        return JSONResponse({"error": LITE_NO_BROWSER}, status_code=501)
     try:
         # Parse request body
         body = await request.json()
@@ -1153,6 +1208,8 @@ async def api_browser_extract_content(request: Request):
             "status": "success"
         }
     """
+    if LITE:
+        return JSONResponse({"error": LITE_NO_BROWSER}, status_code=501)
     try:
         # Parse request body
         body = await request.json()

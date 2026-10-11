@@ -49,7 +49,7 @@ class Endpoint:
 
 
 def _hardware(config, hw: hardware.Hardware | None) -> hardware.Hardware:
-    return hw or hardware.detect(float(config.get("sandbox.memory_gb") or 4))
+    return hw or hardware.detect(float(config.get("sandbox.memory_gb") or 1))
 
 
 def _runtime(config, hw, runtime: str | Runtime | None) -> Runtime | None:

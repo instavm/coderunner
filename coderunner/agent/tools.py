@@ -116,8 +116,9 @@ def sandbox_tools(svc) -> list[Tool]:
         return await run_python({"code": code, "session": "shell"}, ctx)
 
     return [
-        Tool("run_python", "Run Python in the isolated sandbox VM. State persists per session. Use this for any "
-             "calculation, data processing, file work or package installs. Print what you need to see.",
+        Tool("run_python", "Run a complete Python script in the isolated sandbox VM. Files in the session's folder "
+             "persist between runs; variables may not, so save results to files. Use this for any calculation, data "
+             "processing, file work or package installs. Print what you need to see.",
              _params({"code": STR, "session": STR}, ["code"]), run_python, sandbox_output=True),
         Tool("run_shell", "Run a shell command inside the isolated sandbox VM (not on the owner's computer).",
              _params({"command": STR}, ["command"]), run_shell, sandbox_output=True),
