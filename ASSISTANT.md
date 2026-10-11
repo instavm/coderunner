@@ -60,10 +60,15 @@ images. The same process runs on every machine, from an 8 GB MacBook Air to a
    that fits this machine's budget at 4 bits or more with at least 16K of
    context, up to 6-bit when it still runs at 15 tok/s or more (beyond that,
    precision costs more speed than it is worth in long agent loops).
-3. Candidates are ranked by fit, context, speed and quality. A discovered
-   model sits just behind the curated model it matches and ahead of it only
-   when it is clearly bigger, so measured models win ties. The top ones are
-   downloaded and tested on the machine itself until one passes. It then
+3. Candidates that fit well are ranked by published benchmark scores, not
+   size. Hugging Face's structured evaluation results (GPQA, MMLU-Pro,
+   Terminal-Bench, Toolathlon, SWE-bench, MMMU-Pro, AIME) give each model one
+   ability score, fitted across whichever benchmarks it reports, less what
+   its quantized build loses. Speed counts next, up to about 32 tok/s.
+   Models with no published scores come last. The scores ship with the
+   catalog and are refreshed with discovery each day; `models discover` and
+   `models plan` show them. The top candidates are downloaded and tested on
+   the machine itself until one passes. It then
 pulls it through Ollama, or straight from Hugging Face as GGUF for llama.cpp
 when you prefer, starts the runtime and runs a smoke test (exact tool
 arguments, tool choice, plain answers, and image understanding) before it
@@ -77,29 +82,25 @@ declares success. If a model fails the test, the next candidate is tried.
 * `coderunner models plan` shows what would be chosen and why;
   `coderunner models setup --model <id>` overrides; `coderunner models test`
   re-runs the smoke test.
-* Models are ranked across runtimes. Ternary Bonsai 2 27B (Qwen3.8-27B in
-  about 2 bits per weight, 7.9 GB with vision) runs on Prism ML's llama.cpp
-  build, which setup downloads pinned to a release and checks against its
-  published checksum. Typical picks on Apple Silicon:
-
-  | Machine | Assistant model |
-  | --- | --- |
-  | 16 GB Mac, 8 GB NVIDIA | Bonsai 27B 1-bit (3.8 GB, the fastest 27B build) |
-  | 18-24 GB Mac, 12 GB NVIDIA | Bonsai 2 27B (Qwen3.8-27B, ternary) |
-  | 32 GB and more | Qwen3.8-27B (4-bit) |
-
-  Speeds measured on an M3 Pro: Bonsai 27B 1-bit generates 14.6 tok/s and
-  reads prompts at 81 tok/s; Bonsai 2 27B 9 and 70. Reading the prompt is the
-  slow part on this class of chip, so the agent keeps its instructions and
-  conversation stable for the runtime's prompt cache.
+* Models are ranked across runtimes. Prism ML's Bonsai builds of 27B models
+  (1-bit, 3.8 GB; ternary Bonsai 2, 6-7 GB) run on Prism's llama.cpp build,
+  which setup downloads pinned to a release and checks against its published
+  checksum. They fit 16-24 GB Macs, but quantization costs them: Prism's own
+  scores for the 1-bit 27B are 60.5 on MMMU-Pro and 87.1 on AIME 2026,
+  against 75.8 and 94.1 for Qwen3.6-27B, which puts it below Qwen3.5-9B. They
+  stay available as alternatives (`coderunner models setup --model
+  bonsai-27b-1bit`). Speeds measured on an M3 Pro: the 1-bit 27B generates
+  14.6 tok/s and reads prompts at 81 tok/s; Bonsai 2 27B 9 and 70. Reading
+  the prompt is the slow part on this class of chip, so the agent keeps its
+  instructions and conversation stable for the runtime's prompt cache.
 
 * Runtimes per model: Ollama serves families whose tool calls it parses;
   others (GLM-5.x, DeepSeek V4, MiMo, Ling...) run on llama.cpp's own server
   next to it. When llama.cpp is missing, the plan says which better model it
   would allow and how to install it.
-* NVIDIA cards with plenty of system RAM run mixture-of-experts models with
-  the experts in RAM (llama.cpp `--cpu-moe`): a 12 GB card with 64 GB of RAM
-  runs a 35B-A3B model instead of a 9B one.
+* NVIDIA cards with plenty of system RAM can run mixture-of-experts models
+  with the experts in RAM (llama.cpp `--cpu-moe`): a 12 GB card with 64 GB of
+  RAM runs Qwen3.6-35B-A3B instead of Qwen3.5-9B.
 * Combinations known to be broken are skipped with the reason, e.g. DeepSeek
   V4 on GB10 (copied strings, tool arguments included, come out corrupted)
   and DeepSeek V4.1, which llama.cpp does not support yet.
@@ -107,25 +108,29 @@ declares success. If a model fails the test, the next candidate is tried.
   fit next to the sandbox and macOS.
 * On Macs with 48 GB or more, the plan notes when raising the GPU memory
   limit (`sudo sysctl iogpu.wired_limit_mb=...`, until restart) would allow
-  a better model, e.g. Qwen3.5-122B-A10B on a 96 GB Mac.
+  a clearly better model.
 * Several machines (e.g. two or four DGX Sparks) can pool memory through
   llama.cpp's RPC mode: list the others under `models.cluster` as
   `{"host", "port", "memory_gb"}`, each running `rpc-server`. This is
   experimental and untested on real hardware. The RPC link has no
   authentication or encryption, so use it only on a direct cable or a
   private network you control.
-* With discovery today (October 2026) the planner picks, by its estimates:
+* With discovery and published scores today (October 2026) the planner
+  picks, by its estimates:
 
   | Machine | Assistant model |
   | --- | --- |
   | 8 GB Mac | Qwen3.5-4B compact, text only, 8K context |
-  | 16 GB Mac | Qwen3.5-9B |
-  | 64 GB Mac, 24-32 GB NVIDIA | Qwen3.8-27B |
-  | 128 GB Mac, DGX Spark | Qwen3.5-122B-A10B |
-  | 256-512 GB Mac Studio | GLM-5.3-Flash (llama.cpp) |
-  | 12 GB NVIDIA, 64 GB RAM | Ling-3.0-flash, experts in RAM (llama.cpp) |
+  | 16-24 GB Mac | Qwen3.5-9B |
+  | 64-128 GB Mac (M4 Max), 24-32 GB NVIDIA | Qwen3.8-27B |
+  | 64 GB M1 Max | Qwen3.6-35B-A3B (about 9x faster than the 27B there) |
+  | DGX Spark | Qwen3.6-35B-A3B (a dense 27B is slow on its memory) |
+  | 256-512 GB Mac Studio | MiMo-V2.6-Flash (llama.cpp) |
+  | 12 GB NVIDIA, 64 GB RAM | Qwen3.6-35B-A3B, experts in RAM (llama.cpp) |
 
-  Prism ML's builds (table above) come first where their runtime is used.
+  A larger model with weaker published scores is not picked: Granite 4.2 30B
+  scores below Qwen3.5-9B on MMLU-Pro (77.6 against 82.5) and far below
+  Qwen3.8-27B on Terminal-Bench 2.1 (29 against 73).
 
 * The sandbox runs the lite profile with the assistant: code runs as plain
   processes in a work folder per session (files persist, variables do not),

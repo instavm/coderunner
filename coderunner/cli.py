@@ -248,19 +248,22 @@ def cmd_models(args, config: Config) -> int:
         _print(result)
         return 0 if result.get("ok") else 1
     elif args.action == "discover":
-        from .models import discover, hardware
+        from .models import discover, evidence, hardware
         hw = hardware.detect(float(config.get("sandbox.memory_gb") or 1))
         models = discover.cached(progress=print, refresh=True)
         rows = []
         for model in models:
-            for runtime in ("ollama", "mlx") if hw.gpu == "apple" else ("ollama",):
+            for runtime in ("ollama", "llama.cpp", "mlx") if hw.gpu == "apple" else ("ollama", "llama.cpp"):
                 entry = discover.best_build(model, hw, config, runtime)
                 if entry:
                     art = next(iter(entry["artifacts"].values()))
                     rows.append({"model": model["repo"], "released": model["released"], "params_b": model["params_b"],
                                  "runtime": runtime, "build": art.get("quant") or art.get("repo"),
-                                 "size_gb": art["size_gb"], "license": model["license"]["spdx"]})
+                                 "size_gb": art["size_gb"], "license": model["license"]["spdx"],
+                                 # From published benchmark scores; None when the model has none yet.
+                                 "ability": evidence.ability(entry, art.get("bits"))})
                     break
+        rows.sort(key=lambda r: -(r["ability"] if r["ability"] is not None else -9))
         _print({"found": len(models), "fit_this_machine": rows})
     elif args.action == "test":
         import asyncio

@@ -1,0 +1,153 @@
+{
+ "source": "Hugging Face evaluation results (.eval_results) for official benchmark datasets",
+ "fetched": "2026-10-11",
+ "scores": {
+  "Qwen/Qwen3.5-122B-A10B": {
+   "Idavidrein/gpqa:diamond": 85.72,
+   "TIGER-Lab/MMLU-Pro:mmlu_pro": 86.7,
+   "harborframework/terminal-bench-2.0:terminalbench_2": 49.4,
+   "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 72
+  },
+  "Qwen/Qwen3.5-4B": {
+   "Idavidrein/gpqa:diamond": 76.2,
+   "TIGER-Lab/MMLU-Pro:mmlu_pro": 79.1,
+   "MMMU/MMMU_Pro:mmmu_pro_vision": 66.3
+  },
+  "Qwen/Qwen3.5-9B": {
+   "Idavidrein/gpqa:diamond": 81.7,
+   "TIGER-Lab/MMLU-Pro:mmlu_pro": 82.5,
+   "MMMU/MMMU_Pro:mmmu_pro_vision": 70.1,
+   "MathArena/aime_2026:MathArena/aime_2026": 92.5
+  },
+  "Qwen/Qwen3.6-27B": {
+   "Idavidrein/gpqa:diamond": 87.8,
+   "TIGER-Lab/MMLU-Pro:mmlu_pro": 86.2,
+   "harborframework/terminal-bench-2.0:terminalbench_2": 59.3,
+   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 53.5,
+   "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 77.2,
+   "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 71.3,
+   "MMMU/MMMU_Pro:mmmu_pro_vision": 75.8,
+   "MathArena/aime_2026:MathArena/aime_2026": 94.1
+  },
+  "Qwen/Qwen3.6-35B-A3B": {
+   "Idavidrein/gpqa:diamond": 86,
+   "TIGER-Lab/MMLU-Pro:mmlu_pro": 85.2,
+   "harborframework/terminal-bench-2.0:terminalbench_2": 51.5,
+   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 49.5,
+   "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 73.4,
+   "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 67.2,
+   "MMMU/MMMU_Pro:mmmu_pro_vision": 75.3,
+   "MathArena/aime_2026:MathArena/aime_2026": 92.7
+  },
+  "Qwen/Qwen3.8-2.4T-A95B": {
+   "Idavidrein/gpqa:diamond": 92.6,
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 86.6,
+   "hkust-nlp/Toolathlon:toolathlon_verified": 72.5,
+   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 67.7
+  },
+  "Qwen/Qwen3.8-27B": {
+   "Idavidrein/gpqa:diamond": 89.2,
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 73,
+   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 61.7
+  },
+  "Qwen/Qwen3.8-Flash-Next": {
+   "Idavidrein/gpqa:diamond": 91.7,
+   "hkust-nlp/Toolathlon:toolathlon_verified": 73.5,
+   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 62.5,
+   "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 81
+  },
+  "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B": {
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 37.1,
+   "hkust-nlp/Toolathlon:toolathlon_verified": 35.2,
+   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 44.6,
+   "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 61.1
+  },
+  "XiaomiMiMo/MiMo-V2.6-Flash-RL": {
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 87.6,
+   "hkust-nlp/Toolathlon:toolathlon_verified": 73.6
+  },
+  "XiaomiMiMo/MiMo-V2.6-Pro-RL": {
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 89.9,
+   "hkust-nlp/Toolathlon:toolathlon_verified": 76.9
+  },
+  "deepseek-ai/DeepSeek-V4-Flash-0731": {
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 82.7,
+   "hkust-nlp/Toolathlon:toolathlon_verified": 70.3
+  },
+  "deepseek-ai/DeepSeek-V4-Pro-0813": {
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 87.9,
+   "hkust-nlp/Toolathlon:toolathlon_verified": 74.1
+  },
+  "google/gemma-4-26B-A4B-it": {
+   "Idavidrein/gpqa:diamond": 82.3,
+   "TIGER-Lab/MMLU-Pro:mmlu_pro": 82.6,
+   "MMMU/MMMU_Pro:mmmu_pro_vision": 73.8
+  },
+  "google/gemma-4-31B-it": {
+   "Idavidrein/gpqa:diamond": 84.3,
+   "TIGER-Lab/MMLU-Pro:mmlu_pro": 85.2,
+   "MMMU/MMMU_Pro:mmmu_pro_vision": 76.9
+  },
+  "google/gemma-4-E4B-it": {
+   "Idavidrein/gpqa:diamond": 58.6,
+   "TIGER-Lab/MMLU-Pro:mmlu_pro": 69.4,
+   "MMMU/MMMU_Pro:mmmu_pro_vision": 52.6,
+   "MathArena/aime_2026:MathArena/aime_2026": 42.5
+  },
+  "ibm-granite/granite-4.2-30b": {
+   "TIGER-Lab/MMLU-Pro:mmlu_pro": 77.6,
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 29.24,
+   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 33.29,
+   "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 57,
+   "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 41.89
+  },
+  "ibm-granite/granite-4.2-8b": {
+   "TIGER-Lab/MMLU-Pro:mmlu_pro": 74.04,
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 20.56,
+   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 19.11,
+   "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 47.67,
+   "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 30.78
+  },
+  "openai/gpt-oss-120b": {
+   "Idavidrein/gpqa:diamond": 74.8,
+   "TIGER-Lab/MMLU-Pro:mmlu_pro": 80.8,
+   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 16.2,
+   "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 54.3
+  },
+  "openai/gpt-oss-20b": {
+   "Idavidrein/gpqa:diamond": 64.6,
+   "TIGER-Lab/MMLU-Pro:mmlu_pro": 73.6,
+   "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 50.43
+  },
+  "prism-ml/Bonsai-27B-gguf": {
+   "MMMU/MMMU_Pro:mmmu_pro_vision": 60.48,
+   "MathArena/aime_2026:MathArena/aime_2026": 87.08
+  },
+  "tencent/Hy3": {
+   "Idavidrein/gpqa:diamond": 90.4,
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 71.7,
+   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 57.9,
+   "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 78,
+   "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 75.8
+  },
+  "tencent/Hy4-preview": {
+   "Idavidrein/gpqa:diamond": 92.3,
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 85.4,
+   "hkust-nlp/Toolathlon:toolathlon_verified": 74.1,
+   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 65.7,
+   "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 82.9
+  },
+  "zai-org/GLM-5.2": {
+   "Idavidrein/gpqa:diamond": 91.2,
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 81.85,
+   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 62.1
+  },
+  "zai-org/GLM-5.3": {
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 88.2,
+   "hkust-nlp/Toolathlon:toolathlon_verified": 73
+  },
+  "zai-org/GLM-5.3-Flash": {
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 84.3
+  }
+ }
+}

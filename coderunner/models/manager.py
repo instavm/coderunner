@@ -19,6 +19,7 @@ from .hub import Hub
 from .runtimes import LlamaCppRuntime, OllamaRuntime, PrismRuntime, Runtime, choose_runtime, install_hint
 
 MAX_FALLBACKS = 2
+WORTH_A_NOTE = 0.2          # utility gain (fit.utility) worth suggesting a change to the machine
 LOCAL = ("ollama", "llama.cpp", "prism")
 
 
@@ -157,9 +158,10 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
         limit = hw.ram_gb - 8
         raised = dataclasses.replace(hw, gpu_limit_gb=limit,
                                      budget_gb=hardware.apple_budget(hw.ram_gb, limit, hw.sandbox_memory_gb))
-        better = min((c for c in _ranked(raised, config, rt, prism, extra, llama)
-                      if c["ok"] and c["tok_s"] >= fit.MIN_TOK_S and c["rank"] < chosen["rank"]),
-                     key=lambda c: c["rank"], default=None)
+        bigger = _discovered(config, raised, rt, llama=llama) if runtime is None else []    # builds that now fit
+        better = max((c for c in _ranked(raised, config, rt, prism, bigger, llama)
+                      if c["ok"] and c["tok_s"] >= fit.MIN_TOK_S and c["ctx"] >= fit.MIN_AGENT_CTX
+                      and fit.utility(c) > fit.utility(chosen) + WORTH_A_NOTE), key=fit.utility, default=None)
         if better:
             notes.append(f"Raising the GPU memory limit allows {better['id']} ({better['need_gb']:.0f} GB): "
                          f"sudo sysctl iogpu.wired_limit_mb={int(limit * 1024)} (until restart)")
@@ -168,8 +170,9 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
         # Mixture-of-experts models with their experts in system RAM, which only llama.cpp does.
         unserved += [{**c, "missing_runtime": True}
                      for c in fit.recommend(hw, config, "chat", "llama.cpp") if c.get("offload")]
-    missing = min((c for c in unserved if c["tok_s"] >= fit.MIN_TOK_S
-                   and (chosen is None or c["rank"] < chosen["rank"])), key=fit._order, default=None)
+    missing = max((c for c in unserved if c["tok_s"] >= fit.MIN_TOK_S and c["fit"] != "no"
+                   and (chosen is None or fit.utility(c) > fit.utility(chosen) + WORTH_A_NOTE)),
+                  key=fit.utility, default=None)
     if missing:
         notes.append(f"{missing['id']} would rank higher but needs {missing['runtime']}: "
                      f"{install_hint(hw, missing['runtime'])}")

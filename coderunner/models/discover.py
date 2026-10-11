@@ -64,7 +64,6 @@ MIN_PARAMS_B = 4.0        # smaller models got tool arguments wrong in testing (
 GOOD_BITS = 4.0           # prefer at least this when it fits
 MAX_USEFUL_BITS = 6.6     # Q6_K: higher precision is barely better and much slower
 FAST_TOK_S = 15.0         # prefer a build at least this fast over a more precise, slower one
-CLEARLY_BETTER = 1.0      # prior margin (about twice the parameters) to rank ahead of a curated model
 CACHE_TTL = 24 * 3600
 RECENT_DAYS = 120
 
@@ -262,6 +261,11 @@ class Discovery:
                 if entry:
                     models.append(entry)
                     self.progress(f"found {entry['repo']} ({entry['params_b']}B, {len(entry['quants'])} GGUF builds)")
+        # Published benchmark scores rank them (and the catalog's models) against each other.
+        from . import catalog, evidence
+        curated = [(e.get("evidence") or {}).get("repo") or (e.get("license") or {}).get("base_repo")
+                   for e in catalog.models() if "chat" in e.get("roles", [])]
+        evidence.save(evidence.fetch(self.hub, [m["repo"] for m in models] + [r for r in curated if r]))
         return models
 
 
@@ -313,8 +317,7 @@ def best_build(model: dict, hw, config, runtime: str | None) -> dict | None:
 
 
 def quality(entry: dict) -> float:
-    """A rough prior for ranking models we have not measured: size, active size and precision. (Every
-    discovered model is recent, so recency would only tilt the comparison against the curated ones.)"""
+    """A size prior, only to order discovered models that have no published benchmark scores."""
     total = max(entry.get("params_b", 1), 0.5)
     active = max(entry.get("active_params_b", total), 0.5)
     art = next(iter(entry.get("artifacts", {}).values()), {})
@@ -324,18 +327,11 @@ def quality(entry: dict) -> float:
 
 
 def place(discovered: list[dict], catalog_entries: list[dict]) -> list[dict]:
-    """Give discovered entries a rank on the catalog's scale. A model goes just behind the best curated
-    model it matches, so measured, curated models win ties, and ahead of it only when its prior is clearly
-    higher (e.g. a 300B mixture of experts against a 120B one)."""
-    scored = sorted(((quality(e), e["rank"]) for e in catalog_entries if "chat" in e.get("roles", [])), reverse=True)
+    """Give discovered entries a rank on the catalog's scale. Chat models are ordered by benchmark ability
+    (fit.utility), so the rank only breaks ties: behind the curated models, larger models first."""
+    last = max((e["rank"] for e in catalog_entries if "chat" in e.get("roles", [])), default=10)
     for entry in discovered:
-        mine = quality(entry)
-        below = [(rank, score) for score, rank in scored if score <= mine]
-        if not below:
-            entry["rank"] = max((r for _, r in scored), default=10) + 1
-            continue
-        rank, score = min(below)
-        entry["rank"] = rank - 0.5 if mine - score >= CLEARLY_BETTER else rank + 0.5
+        entry["rank"] = round(last + 2 - quality(entry) / 100, 3)
     return discovered
 
 

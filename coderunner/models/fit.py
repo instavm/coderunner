@@ -8,7 +8,9 @@ nothing fits at 16K, because browser pages alone fill most of it.
 
 from __future__ import annotations
 
-from . import catalog, licenses
+import math
+
+from . import catalog, evidence, licenses
 from .hardware import GiB, Hardware, cpu_budget
 
 GB = 1e9 / GiB                  # decimal GB (artifact sizes) -> GiB (budgets)
@@ -18,6 +20,12 @@ CONTEXTS = (32768, 16384, 8192)
 MIN_CHAT_PARAMS_B = 4.0         # smaller models produced wrong tool arguments in testing
 MIN_TOK_S = 8.0                 # estimated; slower fits rank below faster ones (agent loops are long)
 MIN_AGENT_CTX = 16384           # smaller contexts rank below larger ones
+# Chat models are ranked by ability from published benchmarks (evidence.py), then by speed: each doubling
+# above MIN_TOK_S is worth SPEED_WEIGHT of ability, up to FAST_ENOUGH, past which it matters little.
+SPEED_WEIGHT = 0.2
+FAST_ENOUGH = 32.0
+VISION_BONUS = 0.1
+UNKNOWN_ABILITY = -3.0          # no published scores: after every model that has some
 EMBED_CTX = 8192
 
 
@@ -111,21 +119,38 @@ def candidate(entry: dict, hw: Hardware, config, role: str = "chat", runtime: st
     if role == "chat" and entry["params_b"] < MIN_CHAT_PARAMS_B:
         ok = False
         reasons.insert(0, f"below {MIN_CHAT_PARAMS_B:.0f}B parameters")
+    ability = None
+    if role == "chat":
+        art = catalog.artifact(entry, runtime) or {}
+        bits = art.get("bits") or (8 * art["size_gb"] / entry["params_b"] if art.get("size_gb") else None)
+        ability = evidence.ability(entry, bits)
+        reasons.append("no published benchmark scores" if ability is None else f"benchmark ability {ability:+.2f}")
     return {"id": entry["id"], "family": entry["family"], "rank": entry["rank"], "params_b": entry["params_b"],
             "runtime": runtime, "vision": vision, **est, "license": decision, "license_reason": why,
-            "license_link": link, "ok": ok, "reasons": reasons}
+            "license_link": link, "ok": ok, "ability": ability, "reasons": reasons}
+
+
+def utility(c: dict) -> float:
+    """Benchmark ability, plus what speed and vision are worth to an assistant."""
+    ability = UNKNOWN_ABILITY if c.get("ability") is None else c["ability"]
+    speed = SPEED_WEIGHT * math.log2(max(min(c["tok_s"], FAST_ENOUGH), 1.0) / MIN_TOK_S)
+    return ability + speed + (VISION_BONUS if c.get("vision") else 0.0)
 
 
 def _order(c: dict) -> tuple:
     return (c["fit"] != "good", c["ctx"] < MIN_AGENT_CTX, c["tok_s"] < MIN_TOK_S, c["license"] != "allow",
-            c["rank"], not c["vision"])
+            -utility(c), c["rank"])
+
+
+def _order_by_rank(c: dict) -> tuple:
+    return (c["fit"] != "good", c["license"] != "allow", c["rank"], not c["vision"])
 
 
 def recommend(hw: Hardware, config, role: str = "chat", runtime: str | None = None,
               include_rejected: bool = False) -> list[dict]:
     """Ranked candidates for a role. Viable ones come first; rejected ones only on request."""
     found = [candidate(e, hw, config, role, runtime) for e in catalog.by_role(role)]
-    ranked = sorted((c for c in found if c["ok"]), key=_order)
+    ranked = sorted((c for c in found if c["ok"]), key=_order if role == "chat" else _order_by_rank)
     if include_rejected:
         ranked += sorted((c for c in found if not c["ok"]), key=lambda c: c["rank"])
     return ranked

@@ -22,7 +22,7 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
 | Browser (`test_browser.py`) | URL and host rules, policy kinds per action, password and card fields, accessibility snapshots and change detection, plus an end-to-end run against the installed Chrome (headless) including a redirect to a private address being blocked and no leftover processes |
 | Daemon (`test_daemon.py`) | Real HTTP servers: owner chat, memory recall across conversations, sandbox model proxy, credential separation, scheduled delivery, and the agent driving the real browser where a "Buy now" click waits for an owner approval over the API |
 | Models (`test_models.py`) | Hardware parsing (Apple, NVIDIA, AMD, CPU, WSL2), budgets, KV-cache sizing, picks per memory tier from 8 GB Macs to 512 GB, expert offload on NVIDIA, runtime routing to llama.cpp, cluster flags, GPU-limit notes, licence resolution through base models, resumable verified downloads, smoke-test pass/fail including the wrong-argument case below |
-| Discovery (`test_discover.py`) | Hugging Face listings, configs and file trees from a fake hub: filters, sharded builds, KV and MoE sizes, build choice per machine, placement among curated models, known breakages, stale caches |
+| Discovery (`test_discover.py`) | Hugging Face listings, configs and file trees from a fake hub: filters, sharded builds, KV and MoE sizes, build choice per machine, known breakages, stale caches; published scores read from eval results, ranking by them (a model scored like Granite 4.2 30B ranks below Qwen3.5-9B), quantization losses, GPU-limit notes |
 | Memory, scheduler, connectors, channels, voice, service, remote | Unit tests with fakes; see each test file |
 
 ## Manual checks on this branch
@@ -67,7 +67,9 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
   judge decisions, but neither returned the three cheapest flights. Prompt reading at 60-80 tok/s
   is the bottleneck on this chip.
 * Live model discovery found 31 recent models from trusted publishers; on 18 GB it proposed
-  MiMo-V2.6-Distill-Qwen-9B, Granite 4.2 8B and Mage-VL besides the catalog's picks.
+  MiMo-V2.6-Distill-Qwen-9B, Granite 4.2 8B and Mage-VL besides the catalog's picks. With the
+  specialist filter, 22 remain; published scores were read for 25 repos, and every discovered model
+  that fits 18 GB scores below Qwen3.5-9B, which stays the pick.
 
 ## Not yet validated
 

@@ -7,7 +7,7 @@ from unittest import mock
 
 from coderunner import paths
 from coderunner.config import Config
-from coderunner.models import catalog, discover, manager
+from coderunner.models import catalog, discover, evidence, manager
 from test_models import FakeLlama, FakeRuntime, apple, linux, nvidia
 
 GiB = 1e9
@@ -42,6 +42,15 @@ DENSE = {"model_type": "qwen3_5", "num_hidden_layers": 64, "layer_types": ["line
 MOE = {"model_type": "deepseek_v4", "text_config": {"num_hidden_layers": 43, "num_attention_heads": 64, "kv_lora_rank": 512,
                        "qk_rope_head_dim": 64, "n_routed_experts": 256, "num_experts_per_tok": 8,
                        "n_shared_experts": 1, "max_position_embeddings": 1048576}}
+
+
+# Published scores as the Hub's evalResults give them, for the fake lab's models.
+STRONG = {"Idavidrein/gpqa:diamond": 95.0, "harborframework/terminal-bench-2.1:terminalbench_2_1": 92.0,
+          "hkust-nlp/Toolathlon:toolathlon_verified": 80.0}
+LIKE_QWEN38_27B = {"Idavidrein/gpqa:diamond": 89.0, "harborframework/terminal-bench-2.1:terminalbench_2_1": 73.0,
+                   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 61.0}
+LIKE_GRANITE_30B = {"TIGER-Lab/MMLU-Pro:mmlu_pro": 77.6, "harborframework/terminal-bench-2.1:terminalbench_2_1": 29.2,
+                    "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 33.3, "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 57.0}
 
 
 def hub():
@@ -115,14 +124,45 @@ class DiscoveryTests(unittest.TestCase):
         mac = discover.best_build(agent, apple(64, "Apple M4 Max", sandbox=1), self.config, "llama.cpp")
         self.assertEqual(mac["artifacts"]["gguf"]["quant"], "UD-Q4_K_XL")
 
-    def test_clearly_bigger_models_rank_ahead_of_curated_ones(self):
-        studio = apple(512, "Apple M3 Ultra", sandbox=1)
-        big = discover.best_build(self.models["lab/Big-300B-A30B"], studio, self.config, "llama.cpp")
-        agent = discover.best_build(self.models["lab/Agent-27B"], studio, self.config, "llama.cpp")
-        best_curated = min(e["rank"] for e in catalog.models() if "chat" in e["roles"])
-        placed = {e["id"]: e["rank"] for e in discover.place([big, agent], catalog.models())}
-        self.assertLess(placed["hf-lab-big-300b-a30b"], best_curated)
-        self.assertGreater(placed["hf-lab-agent-27b"], catalog.get("qwen3.8-27b")["rank"])    # curated wins ties
+    def ranked(self, hw):
+        rt = FakeRuntime()
+        with mock.patch.object(discover, "cached", return_value=list(self.models.values())):
+            extra = manager._discovered(Config({}, path=pathlib.Path(self.tmp.name) / "r.json"), hw, rt)
+        return [c["id"] for c in manager._ranked(hw, self.config, rt, None, extra) if c["ok"]]
+
+    def test_published_scores_decide_where_discovered_models_rank(self):
+        hw = nvidia(48)
+        # No published scores: after every model that has some, however big.
+        order = self.ranked(hw)
+        self.assertGreater(order.index("hf-lab-agent-27b"), order.index("qwen3.5-4b"))
+        # Scores like Granite 4.2 30B's: below Qwen3.5-9B despite three times the parameters.
+        evidence.save({"lab/Agent-27B": LIKE_GRANITE_30B})
+        order = self.ranked(hw)
+        self.assertGreater(order.index("hf-lab-agent-27b"), order.index("qwen3.5-9b"))
+        # Scores above every catalog model: first.
+        evidence.save({"lab/Agent-27B": STRONG})
+        self.assertEqual(self.ranked(hw)[0], "hf-lab-agent-27b")
+
+    def test_scores_are_read_from_hub_eval_results(self):
+        records = [{"data": {"dataset": {"id": "Idavidrein/gpqa", "task_id": "diamond"}, "value": 84.0}},
+                   {"data": {"dataset": {"id": "Idavidrein/gpqa", "task_id": "diamond"}, "value": 86.0}},
+                   {"data": {"dataset": {"id": "cais/hle", "task_id": "hle"}, "value": 55.3}},     # settings vary
+                   {"data": {"dataset": {"id": "TIGER-Lab/MMLU-Pro", "task_id": "mmlu_pro"}, "value": "n/a"}}]
+        self.assertEqual(evidence.scores_from(records), {"Idavidrein/gpqa:diamond": 85.0})
+        hub = FakeHub({"/api/models/lab/Agent-27B?expand": {"evalResults": records}})
+        self.assertEqual(evidence.fetch(hub, ["lab/Agent-27B", "lab/Missing"]),
+                         {"lab/Agent-27B": {"Idavidrein/gpqa:diamond": 85.0}})
+
+    def test_quantized_builds_lose_ability(self):
+        known = evidence.abilities()
+        entry = {"license": {"base_repo": "Qwen/Qwen3.8-27B"}}
+        self.assertEqual(evidence.ability(entry, 4.8), known["Qwen/Qwen3.8-27B"])
+        self.assertAlmostEqual(evidence.ability(entry, 2.1), known["Qwen/Qwen3.8-27B"] - 0.3)
+        # Scores published for the quantized build itself are used as they are.
+        onebit = catalog.get("bonsai-27b-1bit")
+        self.assertEqual(evidence.ability(onebit, 1.1), known["prism-ml/Bonsai-27B-gguf"])
+        self.assertLess(known["prism-ml/Bonsai-27B-gguf"], known["Qwen/Qwen3.6-27B"] - 0.5)     # what 1 bit costs
+        self.assertIsNone(evidence.ability({"repo": "lab/Unknown"}, 4.8))
 
     def test_cached_models_are_filtered_again(self):
         path = paths.assistant_dir() / "models" / "discovered.json"
@@ -145,6 +185,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn("27763", discover.broken({**big, "repo": "lab/Qwen3.8-Flash-Next"}, thor))
 
     def test_discovered_models_route_to_llama_cpp(self):
+        evidence.save({"lab/Big-300B-A30B": STRONG, "lab/Agent-27B": LIKE_QWEN38_27B})
         cfg = Config({"models": {"discover": True}}, path=pathlib.Path(self.tmp.name) / "c3.json")
         studio = apple(512, "Apple M3 Ultra", sandbox=1)
         with mock.patch.object(discover, "cached", return_value=list(self.models.values())), \
@@ -165,10 +206,24 @@ class DiscoveryTests(unittest.TestCase):
             self.assertFalse(done["ok"])
             self.assertIn("brew install llama.cpp", done["error"])
 
+    def test_big_macs_hear_when_a_higher_gpu_limit_fits_a_better_model(self):
+        evidence.save({"lab/Big-300B-A30B": STRONG})
+        cfg = Config({"models": {"discover": True}}, path=pathlib.Path(self.tmp.name) / "c4.json")
+        with mock.patch.object(discover, "cached", return_value=list(self.models.values())), \
+                mock.patch.object(manager, "choose_runtime", return_value=FakeRuntime()), \
+                mock.patch.object(manager, "_prism", return_value=None), \
+                mock.patch.object(manager, "_llama", return_value=FakeLlama()):
+            result = manager.plan(cfg, hw=apple(128, "Apple M4 Max", sandbox=1))
+        self.assertNotEqual(result["model"]["id"], "hf-lab-big-300b-a30b")       # 97 GB does not fit 96
+        notes = " ".join(result["notes"])
+        self.assertIn("Raising the GPU memory limit allows hf-lab-big-300b-a30b", notes)
+        self.assertIn("sudo sysctl iogpu.wired_limit_mb=122880", notes)
+
     def test_discovered_models_rank_among_catalog_models_and_reach_setup(self):
         placed = discover.place([discover.best_build(self.models["lab/Agent-27B"], nvidia(24), self.config,
                                                      "llama.cpp")], catalog.models())
         self.assertTrue(placed[0]["id"].startswith("hf-lab-agent-27b"))
+        evidence.save({"lab/Agent-27B": LIKE_QWEN38_27B})
         cfg = Config({"models": {"discover": True}}, path=pathlib.Path(self.tmp.name) / "c2.json")
         with mock.patch.object(discover, "cached", return_value=list(self.models.values())), \
                 mock.patch.object(manager, "choose_runtime", return_value=FakeRuntime()), \

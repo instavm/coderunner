@@ -14,7 +14,7 @@ from unittest import mock
 import httpx
 
 from coderunner.config import Config
-from coderunner.models import catalog, fit, hardware, licenses, manager, runtimes, smoketest
+from coderunner.models import catalog, evidence, fit, hardware, licenses, manager, runtimes, smoketest
 from coderunner.models.hub import Hub, HubError
 
 GiB = 1024 ** 3
@@ -183,7 +183,9 @@ class FitTests(TempHome):
 
     def test_apple_recommendations(self):
         cfg = self.config()
-        expected = {16: "qwen3.5-4b", 18: "qwen3.5-9b", 24: "qwen3.5-9b", 64: "qwen3.8-27b", 128: "qwen3.5-122b-a10b"}
+        # Ranked by published benchmarks, then speed: on a 64 GB M1 Max the 35B-A3B runs ~9x faster than
+        # Qwen3.8-27B at slightly lower scores; on a 128 GB M4 Max the 27B is fast enough and scores higher.
+        expected = {16: "qwen3.5-4b", 18: "qwen3.5-9b", 24: "qwen3.5-9b", 64: "qwen3.6-35b-a3b", 128: "qwen3.8-27b"}
         chips = {8: "Apple M1", 16: "Apple M2", 18: "Apple M3 Pro", 24: "Apple M4 Pro", 32: "Apple M2 Pro",
                  64: "Apple M1 Max", 128: "Apple M4 Max"}
         for ram, chip in chips.items():
@@ -198,10 +200,13 @@ class FitTests(TempHome):
                         self.assertEqual(picks[0]["id"], expected[ram])
                     self.assertTrue(picks[0]["vision"])
                     self.assertEqual(picks[0]["fit"], "good")
-        # With a 4 GB sandbox VM on 18 GB, the compact ternary build fits but was measured at under
-        # 8 tok/s, so the faster 1-bit 27B comes first.
-        top18 = fit.recommend(apple(18), cfg)[0]
-        self.assertEqual((top18["id"], top18["ctx"], top18["vision"]), ("bonsai-27b-1bit", 32768, True))
+        # The 1-bit 27B fits 18 GB, but its published scores (MMMU-Pro 60.5 against 75.8 for the model it
+        # was made from) put it below Qwen3.5-9B.
+        picks18 = fit.recommend(apple(18), cfg)
+        self.assertEqual((picks18[0]["id"], picks18[0]["ctx"], picks18[0]["vision"]), ("qwen3.5-9b", 32768, True))
+        onebit = next(c for c in picks18 if c["id"] == "bonsai-27b-1bit")
+        self.assertLess(onebit["ability"], picks18[0]["ability"])
+        self.assertIn(f"benchmark ability {onebit['ability']:+.2f}", onebit["reasons"])
         compact = fit.candidate(catalog.get("bonsai-2-27b-compact"), apple(18), cfg, "chat", "prism")
         self.assertLess(compact["tok_s"], fit.MIN_TOK_S)        # measured factor applied
         self.assertEqual(fit.recommend(apple(18), cfg, runtime="ollama")[0]["id"], "qwen3.5-9b")
@@ -223,10 +228,11 @@ class FitTests(TempHome):
         self.assertEqual(fit.recommend(small, cfg, runtime="llama.cpp")[0]["id"], "qwen3.5-9b")
         spark = linux(128, {"nvidia-smi": "NVIDIA GB10, [N/A], [N/A], 12.1\n"})
         self.assertFalse(any(c.get("offload") for c in fit.recommend(spark, cfg, runtime="llama.cpp")))
+        # On 24 GB, Qwen3.8-27B fits only tightly (94% of the budget), so the 9B that fits well comes first.
         picks24 = fit.recommend(nvidia(24), cfg, runtime="llama.cpp")
         self.assertSensible(picks24)
-        self.assertGreaterEqual(picks24[0]["params_b"], 20)
-        self.assertTrue(picks24[0]["vision"])
+        self.assertEqual((picks24[0]["id"], picks24[0]["vision"]), ("qwen3.5-9b", True))
+        self.assertEqual(next(c for c in picks24 if c["id"] == "qwen3.8-27b")["fit"], "tight")
 
     def test_eight_gb_macs_run_a_compact_model_text_only(self):
         for chip in ("Apple M1", "Apple M3"):
@@ -660,12 +666,12 @@ class ManagerTests(TempHome):
         self.assertEqual(result["embedding"]["id"], "embeddinggemma-2")
         self.assertIsNone(manager.plan(self.config(), hw=apple(8, "Apple M1"), runtime=FakeRuntime())["model"])
 
-    def test_big_macs_are_told_about_the_gpu_memory_limit(self):
-        notes = manager.plan(self.config(), hw=apple(96, "Apple M2 Max", sandbox=1), runtime=FakeRuntime())["notes"]
-        self.assertIn("allows qwen3.5-122b-a10b", " ".join(notes))
-        self.assertIn("sudo sysctl iogpu.wired_limit_mb=90112", " ".join(notes))
-        self.assertFalse(manager.plan(self.config(), hw=apple(128, "Apple M4 Max", sandbox=1),
-                                      runtime=FakeRuntime())["notes"])        # already runs the best model
+    def test_gpu_memory_limit_note_needs_a_clearly_better_model(self):
+        # Raising the limit on 96 GB would fit Qwen3.5-122B-A10B, which scores no better than the 27B.
+        for ram, chip in ((96, "Apple M2 Max"), (128, "Apple M4 Max")):
+            with self.subTest(ram=ram):
+                self.assertFalse(manager.plan(self.config(), hw=apple(ram, chip, sandbox=1),
+                                              runtime=FakeRuntime())["notes"])
 
     def test_spark_cluster_pools_memory(self):
         spark = linux(128, {"nvidia-smi": "NVIDIA GB10, [N/A], [N/A], 12.1\n"})
@@ -681,7 +687,9 @@ class ManagerTests(TempHome):
                 mock.patch.object(manager, "_prism", return_value=None), \
                 mock.patch.object(runtimes.LlamaCppRuntime, "available", return_value=False):
             result = manager.plan(self.config(), hw=rtx4070)
-        self.assertEqual(result["model"]["id"], "qwen3.5-9b")
+            self.assertEqual((result["model"]["id"], result["notes"]), ("qwen3.5-9b", []))   # gain too small to nag
+            with mock.patch.object(manager, "WORTH_A_NOTE", 0.0):
+                result = manager.plan(self.config(), hw=rtx4070)
         self.assertIn("qwen3.6-35b-a3b would rank higher but needs llama.cpp", " ".join(result["notes"]))
         main, llama = FakeRuntime(), FakeLlama()
         with mock.patch.object(manager, "choose_runtime", return_value=main), \
@@ -832,10 +840,16 @@ class PrismTests(TempHome):
         ollama, prism = FakeRuntime(), FakePrism()
         with mock.patch.object(manager, "choose_runtime", return_value=ollama), \
                 mock.patch.object(manager, "_prism", return_value=prism):
-            # On 18 GB with a 4 GB sandbox, the fast 1-bit 27B is the one that fits well.
-            self.assertEqual(manager.plan(self.config(), hw=apple(18))["model"]["id"], "bonsai-27b-1bit")
+            # With today's published scores Qwen3.5-9B leads on 18 GB; the 1-bit 27B is the alternative.
+            result = manager.plan(self.config(), hw=apple(18))
+            self.assertEqual(result["model"]["id"], "qwen3.5-9b")
+            self.assertIn("bonsai-27b-1bit", [c["id"] for c in result["alternatives"]])
+        # Were the ternary build to score like its base model, it would win on 24 GB and run on Prism's runtime.
+        scores = {**evidence.abilities(), "Qwen/Qwen3.8-27B": 1.5}
+        with mock.patch.object(manager, "choose_runtime", return_value=ollama), \
+                mock.patch.object(manager, "_prism", return_value=prism), \
+                mock.patch.object(evidence, "abilities", return_value=scores):
             result = manager.plan(self.config(), hw=apple(24))
-            # On 24 GB a 27B-class ternary model fits well where Ollama's best was a 9B.
             self.assertEqual((result["model"]["id"], result["model"]["runtime"]), ("bonsai-2-27b", "prism"))
             self.assertEqual(result["runtime"]["name"], "prism")
             self.assertIn("qwen3.5-9b", [c["id"] for c in result["alternatives"]])
