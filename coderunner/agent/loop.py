@@ -35,7 +35,8 @@ def render_plan(steps: list[dict]) -> str:
 
 PAGE_PREFIX = '<untrusted source="browser_snapshot">'
 DROPPED = "[earlier page snapshot removed to save space; take a new snapshot if you need it]\n</untrusted>"
-KEEP_PAGES = 2
+KEEP_PAGES = 1        # page snapshots left in full after a trim
+MOST_PAGES = 3        # trim once more than this many are in full
 
 
 @dataclass
@@ -120,14 +121,17 @@ class Agent:
             messages[index] = {"role": messages[index]["role"], "content": "[earlier screenshot removed]"}
 
     @staticmethod
-    def _drop_old_pages(messages: list[dict], keep: int = KEEP_PAGES) -> None:
-        """Only the latest page snapshots stay in full: older ones fill a small model's context and slow
-        every step, and once the context overflows the runtime cuts the oldest text, instructions first."""
+    def _drop_old_pages(messages: list[dict], keep: int = KEEP_PAGES, most: int = MOST_PAGES) -> None:
+        """Old page snapshots fill a small model's context and slow every step, and once the context
+        overflows the runtime cuts the oldest text, instructions first. They are dropped in batches: a
+        runtime's prompt cache only survives up to the first changed message, so trimming one page per
+        step would make it re-read everything after that page on every step."""
         pages = [i for i, m in enumerate(messages) if m.get("role") == "tool"
                  and isinstance(m.get("content"), str) and m["content"].startswith(PAGE_PREFIX)
                  and not m["content"].endswith(DROPPED)]
-        for index in pages[:-keep]:
-            messages[index] = {**messages[index], "content": PAGE_PREFIX + "\n" + DROPPED}
+        if len(pages) > most:
+            for index in pages[:-keep]:
+                messages[index] = {**messages[index], "content": PAGE_PREFIX + "\n" + DROPPED}
 
     async def run(self, ctx: RunContext, text: str, images: list[tuple[str, str]] | None = None) -> str:
         token = current_run.set(ctx)

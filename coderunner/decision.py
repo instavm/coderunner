@@ -59,7 +59,7 @@ def describe(site: str, path: str, action: str, role: str, name: str, *, title: 
 
 
 class DecisionModel:
-    def __init__(self, base_url: str, model: str, *, api: str = "systemone", timeout: float = 8.0,
+    def __init__(self, base_url: str, model: str, *, api: str = "systemone", timeout: float = 20.0,
                  api_key: str = "", transport=None):
         self.base_url = base_url.rstrip("/")
         self.model = model
