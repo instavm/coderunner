@@ -7,7 +7,7 @@ import json
 import pathlib
 
 PATH = pathlib.Path(__file__).with_name("catalog.json")
-ARTIFACT = {"ollama": "ollama", "llama.cpp": "gguf", "mlx": "mlx"}  # runtime -> artifact key
+ARTIFACT = {"ollama": "ollama", "llama.cpp": "gguf", "mlx": "mlx", "prism": "prism"}  # runtime -> artifact key
 
 
 @functools.lru_cache(maxsize=1)
@@ -35,7 +35,7 @@ def artifact(entry: dict, runtime: str | None) -> dict | None:
     arts = entry.get("artifacts", {})
     if runtime in ARTIFACT:
         return arts.get(ARTIFACT[runtime])
-    return arts.get("gguf") or arts.get("ollama") or arts.get("mlx")
+    return arts.get("gguf") or arts.get("ollama") or arts.get("mlx") or arts.get("prism")
 
 
 def has_vision(entry: dict, runtime: str | None = None) -> bool:

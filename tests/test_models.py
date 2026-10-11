@@ -218,8 +218,12 @@ class FitTests(TempHome):
             self.assertIn(licenses.classify(e["license"]["spdx"]), ("allow", "ask"))
             if "chat" in e["roles"]:
                 self.assertGreaterEqual(e["params_b"], 4)
-                self.assertIn("ollama", e["artifacts"])
-                self.assertIn("gguf", e["artifacts"])
+                # Ternary models need Prism's build; everything else ships for Ollama and llama.cpp.
+                if "prism" in e["artifacts"]:
+                    self.assertTrue({"sha256", "file", "repo"} <= set(e["artifacts"]["prism"]))
+                else:
+                    self.assertIn("ollama", e["artifacts"])
+                    self.assertIn("gguf", e["artifacts"])
 
 
 # ---- licenses and hub ------------------------------------------------------------

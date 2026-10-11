@@ -90,6 +90,43 @@
       "verified": "2026-10-10"
     },
     {
+      "id": "bonsai-2-27b",
+      "family": "qwen3.8",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 2.5,
+      "params_b": 27.36,
+      "active_params_b": 27.36,
+      "arch": {
+        "full_attn_layers": 16,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+        "link": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf",
+        "commercial": true
+      },
+      "artifacts": {
+        "prism": {
+          "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+          "file": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+          "sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+          "size_gb": 7.21,
+          "mmproj": "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+          "mmproj_sha256": "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903",
+          "mmproj_gb": 0.63,
+          "kv_bytes": 1
+        }
+      },
+      "notes": "Qwen3.8-27B with ternary weights (about 2 bits each); needs Prism ML's llama.cpp build (runtime prism). Maker reports 98% of full-precision quality.",
+      "verified": "2026-10-11"
+    },
+    {
       "id": "gpt-oss-120b",
       "family": "gpt-oss",
       "roles": [

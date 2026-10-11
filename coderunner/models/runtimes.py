@@ -334,6 +334,112 @@ class LlamaCppRuntime(Runtime):
         return catalog.has_vision(entry, self.name) and bool(active.get("mmproj")) and active.get("id") == entry["id"]
 
 
+class PrismRuntime(LlamaCppRuntime):
+    """Prism ML's llama.cpp build, needed for ternary Bonsai models (PQ2_0 / PTQ1_0 packings).
+
+    The build is pinned to a release and checked against its published SHA-256 before it is unpacked.
+    """
+
+    name = "prism"
+    RELEASE = "prism-b10743-adfffbe"
+    BUILDS = {  # (os, arch, gpu) -> (asset, sha256); gpu "" matches any
+        ("darwin", "arm64", ""): ("macos-arm64",
+                                  "596d257973080ca5011a4be50477c5f93ed1d231fcccfc2afb44bb573bb9629a"),
+        ("linux", "x86_64", "nvidia"): ("linux-cuda-12.4-x64",
+                                        "fef4c7e8d83ff261d89809c1b302fe5f826adc1a74e13654b67ec056fbc1c639"),
+        ("linux", "x86_64", ""): ("ubuntu-vulkan-x64",
+                                  "95a3d082629643642842bc2195e0730880273005171517cf857804702f693edc"),
+        ("linux", "aarch64", ""): ("ubuntu-arm64",
+                                   "ee4cb83a2985572459a5686ef175503d4e526b46b97c7fcc7152e868169b3060"),
+    }
+
+    def __init__(self, config=None, port: int = 8082, hub: Hub | None = None, hw: Hardware | None = None):
+        super().__init__(config, port, hub)
+        self.state_path = self.root / "prism.json"
+        self.bin_dir = paths.assistant_dir() / "runtimes" / self.RELEASE
+        self.hw = hw
+
+    @classmethod
+    def build_for(cls, hw: Hardware | None) -> tuple[str, str] | None:
+        system = hw.os if hw else platform.system().lower()
+        arch = (hw.arch if hw else platform.machine()).lower().replace("amd64", "x86_64").replace("arm64e", "arm64")
+        gpu = hw.gpu if hw else ""
+        return cls.BUILDS.get((system, arch, gpu)) or cls.BUILDS.get((system, arch, ""))
+
+    def binary(self) -> str | None:
+        found = sorted(self.bin_dir.glob("**/llama-server")) if self.bin_dir.exists() else []
+        return str(found[0]) if found and os.access(found[0], os.X_OK) else None
+
+    def available(self) -> bool:
+        return self.binary() is not None or self.build_for(self.hw) is not None    # can be installed
+
+    def install(self, progress: Progress | None = None) -> str:
+        build = self.build_for(self.hw)
+        if build is None:
+            raise RuntimeError("Prism ML publishes no llama.cpp build for this platform")
+        import hashlib
+        import tarfile
+        asset, sha256 = build
+        name = f"llama-{self.RELEASE}-bin-{asset}.tar.gz"
+        url = f"https://github.com/PrismML-Eng/llama.cpp/releases/download/{self.RELEASE}/{name}"
+        self.bin_dir.mkdir(parents=True, exist_ok=True)
+        archive = self.bin_dir / name
+        if progress:
+            progress(f"downloading {name}")
+        with httpx.stream("GET", url, follow_redirects=True, timeout=httpx.Timeout(30, read=300)) as response:
+            response.raise_for_status()
+            with open(archive, "wb") as handle:
+                for chunk in response.iter_bytes(1 << 20):
+                    handle.write(chunk)
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        if digest != sha256:
+            archive.unlink()
+            raise RuntimeError(f"{name} does not match its published checksum")
+        with tarfile.open(archive) as tar:
+            tar.extractall(self.bin_dir, filter="data")     # refuses absolute paths, links out, devices
+        archive.unlink()
+        binary = self.binary()
+        if not binary:
+            raise RuntimeError(f"{name} has no llama-server")
+        return binary
+
+    def pull(self, entry: dict, progress: Progress | None = None) -> None:
+        if not self.binary():
+            self.install(progress)
+        art = entry["artifacts"]["prism"]
+        hub = self.hub or Hub()
+        folder = self.root / art["repo"].replace("/", "--")
+        record = {"repo": art["repo"], "model": None, "mmproj": None}
+        record["model"] = str(hub.download(art["repo"], art["file"], folder / art["file"], sha256=art["sha256"],
+                                           progress=progress))
+        if art.get("mmproj"):
+            record["mmproj"] = str(hub.download(art["repo"], art["mmproj"], folder / art["mmproj"],
+                                                sha256=art.get("mmproj_sha256"), progress=progress))
+        state = self._state()
+        state.setdefault("models", {})[entry["id"]] = record
+        self._save(state)
+
+    def command(self, active: dict) -> list[str]:
+        # Medium reasoning effort: the maker's advice for API use (the default thinks at length and can
+        # run out of output budget). The context cache is kept at 8 bits, as the memory estimate assumes.
+        return super().command(active) + ["--chat-template-kwargs", json.dumps({"reasoning_effort": "medium"}),
+                                          "-ctk", "q8_0", "-ctv", "q8_0", "-ngl", "99"]
+
+    def start(self, timeout: float = 600) -> None:
+        if self.running():
+            return
+        if not self.binary():
+            self.install()
+        active = self._state().get("active")
+        if not active:
+            raise RuntimeError("No Bonsai model is configured; run setup first")
+        proc = _spawn("prism-server", self.command(active))
+        _wait_ready(self.running, proc, timeout, "prism llama-server", str(paths.assistant_dir() / "logs" / "prism-server.log"))
+
+    def stop(self) -> None:
+        _terminate("prism-server", "llama-server")
+
+
 class OpenAIRuntime(Runtime):
     """An endpoint the owner runs themselves (LM Studio, vLLM, a remote server...)."""
 
@@ -370,6 +476,7 @@ class MLXRuntime(OpenAIRuntime):
 
 RUNTIMES: dict[str, type[Runtime]] = {
     "ollama": OllamaRuntime, "llama.cpp": LlamaCppRuntime, "openai": OpenAIRuntime, "mlx": MLXRuntime,
+    "prism": PrismRuntime,
 }
 
 

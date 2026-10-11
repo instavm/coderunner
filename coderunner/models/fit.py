@@ -34,7 +34,8 @@ def estimate(entry: dict, hw: Hardware, ctx: int = 32768, runtime: str | None = 
     art = catalog.artifact(entry, runtime) or {}
     weights = art.get("size_gb", 0.0)
     mmproj = art.get("mmproj_gb", 0.0) if catalog.has_vision(entry, runtime) else 0.0
-    need =(weights + mmproj) * GB + kv_gib(entry, ctx) + OVERHEAD_GIB
+    kv = kv_gib(entry, ctx) * art.get("kv_bytes", 2) / 2     # some runtimes keep the cache at 8 bits
+    need = (weights + mmproj) * GB + kv + OVERHEAD_GIB
     fit = "good" if need <= GOOD * hw.budget_gb else "tight" if need <= hw.budget_gb else "no"
     active_gb = weights * entry.get("active_params_b", entry["params_b"]) / entry["params_b"]
     tok_s = 0.55 * hw.bandwidth_gbs / active_gb if active_gb else 0.0

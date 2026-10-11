@@ -16,10 +16,27 @@ from typing import Callable
 from ..llm import LLM
 from . import catalog, fit, hardware, licenses, smoketest
 from .hub import Hub
-from .runtimes import Runtime, choose_runtime, install_hint
+from .runtimes import OllamaRuntime, PrismRuntime, Runtime, choose_runtime, install_hint
 
 MAX_FALLBACKS = 2
-LOCAL = ("ollama", "llama.cpp")
+LOCAL = ("ollama", "llama.cpp", "prism")
+
+
+def _prism(config, hw: hardware.Hardware, rt: Runtime | None) -> PrismRuntime | None:
+    """Prism ML's llama.cpp build as a second runtime to rank models with, for ternary Bonsai models,
+    when this platform has a build and the owner has not pinned another runtime."""
+    if (rt is not None and rt.name == "prism") or (config.get("models.runtime") or "auto") != "auto":
+        return None
+    prism = PrismRuntime(config, hw=hw)
+    return prism if prism.available() else None
+
+
+def _ranked(hw, config, rt: Runtime | None, prism: Runtime | None) -> list[dict]:
+    """Chat candidates for the main runtime and, if available, Prism's, best first."""
+    found = fit.recommend(hw, config, "chat", _artifact_runtime(rt), include_rejected=True)
+    if prism is not None:
+        found += fit.recommend(hw, config, "chat", "prism")
+    return sorted((c for c in found if c["ok"]), key=fit._order) + [c for c in found if not c["ok"]]
 
 
 @dataclasses.dataclass
@@ -67,7 +84,8 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
     hw = _hardware(config, hw)
     rt = _runtime(config, hw, runtime)
     art = _artifact_runtime(rt)
-    candidates = fit.recommend(hw, config, "chat", art, include_rejected=True)
+    prism = _prism(config, hw, rt) if runtime is None else None     # only when the runtime is auto-chosen
+    candidates = _ranked(hw, config, rt, prism)
     viable = [c for c in candidates if c["ok"]]
     chosen = viable[0] if viable else None
     notes = []
@@ -79,15 +97,18 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
                      "models.base_url at a bigger machine with models.runtime set to openai.")
     elif chosen["license"] == "ask":
         notes.append(f"{chosen['id']}: {chosen['license_reason']}")
+    chosen_rt = prism if chosen and chosen.get("runtime") == "prism" else rt
     return {
         "hardware": hw.to_dict(),
-        "runtime": rt.describe() if rt else None,
+        "runtime": chosen_rt.describe() if chosen_rt else None,
         "model": chosen,
         "alternatives": viable[1:6],
         "rejected": [c for c in candidates if not c["ok"]],
         "license": ({"decision": chosen["license"], "reason": chosen["license_reason"],
                      "link": chosen["license_link"]} if chosen else None),
-        "embedding": next(iter(fit.recommend(hw, config, "embedding", art)), None) if art == "ollama" else None,
+        # Embeddings come from Ollama, also when Prism's build serves the chat model.
+        "embedding": next(iter(fit.recommend(hw, config, "embedding", "ollama")), None)
+        if art == "ollama" or (chosen_rt is prism and OllamaRuntime(config).available()) else None,
         "notes": notes,
     }
 
@@ -170,21 +191,26 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
     if rt.name not in LOCAL:
         return _external(config, rt, model_id, progress, smoke)
 
+    prism = _prism(config, hw, rt) if runtime is None else None     # only when the runtime is auto-chosen
     if model_id:
         entry = catalog.get(model_id)
         if "chat" not in entry["roles"] or entry["params_b"] < fit.MIN_CHAT_PARAMS_B:
             return {"ok": False, "error": f"{model_id} is not a chat model of at least {fit.MIN_CHAT_PARAMS_B:.0f}B"}
-        cand = fit.candidate(entry, hw, config, "chat", rt.name)
+        on = "prism" if prism is not None and catalog.artifact(entry, rt.name) is None \
+            and catalog.artifact(entry, "prism") else rt.name
+        cand = fit.candidate(entry, hw, config, "chat", on)
         if cand["fit"] == "no":
             progress(f"warning: {model_id} {cand['reasons'][0]}; trying anyway because it was requested")
         queue = [cand]  # an explicit choice is never silently replaced
     else:
-        queue = fit.recommend(hw, config, "chat", rt.name)[:1 + MAX_FALLBACKS]
+        queue = [c for c in _ranked(hw, config, rt, prism) if c["ok"]][:1 + MAX_FALLBACKS]
         if not queue:
             return {"ok": False, "error": plan(config, hw, rt)["notes"][-1]}
 
     attempts = []
+    main = rt
     for cand in queue:
+        rt = prism if cand.get("runtime") == "prism" and prism is not None else main
         entry = catalog.get(cand["id"])
         decision, why, link = _license_gate(entry, rt, config, accept_license, hub)
         if decision == "ask":
@@ -226,7 +252,12 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
         config.set("models.vision", vision)
         config.set("models.context", cand["ctx"])
         if embedding:
-            config.set("models.embedding", _setup_embedding(config, rt, hw, progress))
+            # Prism's build serves only the chat model; embeddings come from Ollama beside it.
+            embedder = main if rt is prism and main is not None and main.name == "ollama" else rt
+            if embedder is not rt and not embedder.running():
+                embedder.start()
+            config.set("models.embedding", _setup_embedding(config, embedder, hw, progress))
+            config.set("models.embedding_url", embedder.base_url if embedder is not rt else "")
         config.save()
         return {"ok": True, "runtime": rt.name, "base_url": rt.base_url, "model": model, "entry": entry["id"],
                 "ctx": cand["ctx"], "vision": vision, "embedding": config.get("models.embedding") or "",
