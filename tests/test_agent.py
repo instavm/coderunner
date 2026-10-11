@@ -176,6 +176,22 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("Your current plan", fake.requests[0]["messages"][0]["content"])
             await svc.llm.aclose()
 
+    async def test_only_the_latest_page_snapshots_stay_in_full(self):
+        from coderunner.agent.loop import DROPPED
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.browser = FakeBrowser("A long page")
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            fake.script = [tool_call("browser_snapshot", {}, f"c{i}") for i in range(4)] + [
+                {"role": "assistant", "content": "done"}]
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="s1"), "read it")
+            pages = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
+            self.assertEqual(len(pages), 4)
+            self.assertEqual([DROPPED in p for p in pages], [True, True, False, False])
+            self.assertIn("A long page", pages[-1])
+            await svc.llm.aclose()
+
     async def test_empty_answer_after_tool_is_asked_for_once(self):
         with FakeOpenAI() as fake:
             svc = Svc()

@@ -16,7 +16,7 @@ from unittest import mock
 from coderunner.audit import AuditLog
 from coderunner.browser import BrowserBroker, BrowserError
 from coderunner.browser import launcher
-from coderunner.browser.broker import CONTAINS_JS, DESCRIBE_JS, parse_url, render_ax
+from coderunner.browser.broker import CONTAINS_JS, DESCRIBE_JS, SELECT_OPTION_JS, parse_url, render_ax
 from coderunner.browser.cdp import CDPError, CDPPipe
 from coderunner.config import Config
 from coderunner.policy import Policy, current_run
@@ -35,6 +35,8 @@ class FakeBrowser:
         self.ax = []
         self.nodes = {}       # backendNodeId -> DOM.describeNode node
         self.labels = {}      # backendNodeId -> DESCRIBE_JS result
+        self.options = {}     # backendNodeId -> options of a <select>
+        self.selected = {}
         self.focused = None
         self.hit = None
         self.image = b"\xff\xd8 first"
@@ -116,6 +118,16 @@ class FakeBrowser:
             if params["functionDeclaration"] == CONTAINS_JS:
                 other = int(params["arguments"][0]["objectId"].split(":")[1])
                 return {"result": {"value": other == backend}}
+            if params["functionDeclaration"] == SELECT_OPTION_JS:
+                choice, options = params["arguments"][0]["value"].lower(), self.options.get(backend)
+                if options is None:
+                    return {"result": {"value": {"ok": False, "error": "not a dropdown (<select>); click it instead"}}}
+                match = next((o for o in options if o.lower() == choice), None) or \
+                    next((o for o in options if choice in o.lower()), None)
+                if match is None:
+                    return {"result": {"value": {"ok": False, "error": "no such option", "options": options}}}
+                self.selected[backend] = match
+                return {"result": {"value": {"ok": True, "selected": match}}}
             if params["functionDeclaration"] == DESCRIBE_JS:
                 default = {"tag": "button", "type": "", "autocomplete": "", "text": "", "submit": ""}
                 return {"result": {"value": self.labels.get(backend, default)}}
@@ -672,6 +684,27 @@ class DefaultPermissionTests(BrokerTestCase):
         self.broker.decider = None
         self.assertFalse((await self.broker.type(2, "rye"))["ok"])
         self.assertEqual(self.kinds(), ["browser.sensitive", "browser.sensitive"])
+
+    async def test_find_reads_the_whole_page(self):
+        browser, _ = await self.load_shop()
+        found = await self.broker.find("buy")
+        self.assertTrue(found["ok"], found)
+        self.assertIn('button "Buy now"', found["content"])
+        self.assertGreaterEqual(found["matches"], 1)
+        self.assertIn("Nothing on this page", (await self.broker.find("submarine"))["content"])
+        self.assertTrue((await self.broker.click(1))["ok"])           # refs from find are usable
+
+    async def test_select_chooses_an_option_of_a_dropdown(self):
+        browser, _ = await self.load_shop()
+        browser.options[109] = ["Economy", "Premium economy", "Business"]
+        chosen = await self.broker.select(2, "premium")
+        self.assertTrue(chosen["ok"], chosen)
+        self.assertEqual((chosen["selected"], browser.selected[109]), ("Premium economy", "Premium economy"))
+        self.assertIn("choose an option in", self.judge.states[-1])
+        missing = await self.broker.select(2, "First")
+        self.assertIn('options are "Economy", "Premium economy", "Business"', missing["error"])
+        self.assertIn("not a dropdown", (await self.broker.select(1, "x"))["error"])
+        self.assertEqual(self.asked, [])
 
     async def test_private_data_needs_approval_before_it_reaches_a_site(self):
         browser, _ = await self.load_shop()

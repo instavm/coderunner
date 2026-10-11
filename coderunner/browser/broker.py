@@ -66,6 +66,8 @@ MESSAGING_HOSTS = ("web.telegram.org", "*.web.telegram.org", "web.whatsapp.com",
                    "signal.org", "*.signal.org", "discord.com", "*.discord.com", "discordapp.com",
                    "*.discordapp.com", "slack.com", "*.slack.com")
 TEXT_LIMIT = 10000          # longer page text is cut, and the action is then treated as sensitive
+FIND_SCAN_CHARS = 400_000   # browser_find reads the whole page, not just the first snapshot screenful
+FIND_LIMIT = 40             # matching lines returned
 CLICK_ATTEMPTS = 3          # clicks nobody approved are re-checked when the page moves under them
 CLICK_SETTLE = 0.4          # seconds to let overlays and hover effects settle before re-checking
 SECRET_AUTOCOMPLETE = frozenset({"current-password", "new-password", "one-time-code"})
@@ -112,6 +114,21 @@ FOCUSED_JS = r"""(() => {
   return el && el !== document.body && el !== document.documentElement ? el : null;
 })()"""
 CONTAINS_JS = "function(other) { for (let n = other; n; n = n.parentNode || n.host) if (n === this) return true; return false; }"
+# Choose an option of a native <select>, whose popup is drawn by the OS where mouse events cannot reach it.
+SELECT_OPTION_JS = r"""function(choice) {
+  if (!this || this.tagName !== 'SELECT') return {ok: false, error: 'not a dropdown (<select>); click it instead'};
+  const want = String(choice).trim().toLowerCase();
+  const options = Array.from(this.options).filter(o => !o.disabled);
+  const label = o => (o.label || o.text || '').trim();
+  const match = options.find(o => label(o).toLowerCase() === want) || options.find(o => o.value.toLowerCase() === want)
+    || options.find(o => label(o).toLowerCase().includes(want));
+  if (!match) return {ok: false, error: 'no such option', options: options.slice(0, 60).map(label)};
+  this.value = match.value;
+  this.dispatchEvent(new Event('input', {bubbles: true}));
+  this.dispatchEvent(new Event('change', {bubbles: true}));
+  return {ok: true, selected: label(match)};
+}"""
+
 SELECT_ALL_JS = r"""function() {
   try { if (typeof this.select === 'function') { this.select(); return; } } catch (e) {}
   const range = document.createRange(); range.selectNodeContents(this);
@@ -462,6 +479,15 @@ class BrowserBroker:
         return await self._run("type", {"ref": ref, "chars": len(str(text)), "submit": submit, "tab": tab,
                                         "tainted": tainted},
                                lambda: self._type(ref, text, submit, tab, tainted, clear))
+
+    async def find(self, text: str, tab: str | None = None, tainted: bool = False) -> dict:
+        """The lines of the whole page (not just the first part) that mention text, with element refs."""
+        return await self._run("find", {"query": str(text)[:200], "tab": tab, "tainted": tainted},
+                               lambda: self._find(str(text), tab, tainted))
+
+    async def select(self, ref: int, option: str, tab: str | None = None, tainted: bool = False) -> dict:
+        return await self._run("select", {"ref": ref, "option": str(option)[:200], "tab": tab, "tainted": tainted},
+                               lambda: self._select(ref, str(option), tab, tainted))
 
     async def press(self, key: str, tab: str | None = None, tainted: bool = False) -> dict:
         return await self._run("press", {"key": key, "tab": tab, "tainted": tainted},
@@ -982,6 +1008,41 @@ class BrowserBroker:
             content = content[:limit] + f"\n… [truncated {len(content) - limit} characters]"
         result["content"] = content
         return result
+
+    async def _find(self, text: str, tab: str | None, tainted: bool) -> dict:
+        result = await self._snapshot(tab, FIND_SCAN_CHARS, tainted)        # fresh refs for the whole page
+        lines = result.pop("content").split("\n")
+        whole, words = text.strip().lower(), re.findall(r"\w+", text.lower())
+        hits = [i for i, line in enumerate(lines)
+                if whole in line.lower() or (words and all(word in line.lower() for word in words))]
+        shown: list[int] = []
+        for i in hits[:FIND_LIMIT]:
+            shown += [j for j in range(max(0, i - 1), min(len(lines), i + 2)) if j not in shown]
+        result["matches"] = len(hits)
+        result["content"] = "\n".join(lines[j] for j in shown) or f"Nothing on this page mentions {text!r}."
+        return result
+
+    async def _select(self, ref: int, option: str, tab: str | None, tainted: bool) -> dict:
+        target = await self._target(tab)
+        url, host = await self._web_page(target)
+        element = self._ref(target, ref)
+        sid = await self._session(target)
+        label = f'{element["role"]} {json.dumps(element["name"], ensure_ascii=False)}'
+        summary = f"Choose {json.dumps(option, ensure_ascii=False)} in {label} on {host}"
+        risky = await self._commits(host, url, "choose an option in", element["role"], element["name"], typed=option)
+        await self._allow("browser.sensitive" if risky else "browser.interact", host, summary, tainted,
+                          url=url, ref=ref, label=label, option=option)
+        async with self._acting(target, sid, tainted):
+            context = await self._world(sid, target)
+            outcome = await self._call(sid, await self._object(sid, element["backend"], context),
+                                       SELECT_OPTION_JS, {"value": option}) or {}
+            if not outcome.get("ok"):
+                choices = ", ".join(json.dumps(o, ensure_ascii=False) for o in outcome.get("options", [])[:30])
+                raise BrowserError(f"[{ref}]: {outcome.get('error', 'could not choose')}"
+                                   + (f"; options are {choices}" if choices else ""))
+            result = await self._result(target)
+            result["selected"] = outcome["selected"]
+            return result
 
     async def _secret_fields(self, sid: str, nodes: list[dict]) -> set[int]:
         candidates = [node["backendDOMNodeId"] for node in nodes

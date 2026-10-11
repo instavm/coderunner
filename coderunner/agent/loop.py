@@ -33,6 +33,11 @@ def render_plan(steps: list[dict]) -> str:
     return "\n".join(f"{i}. [{step.get('status', 'todo')}] {step.get('step', '')}" for i, step in enumerate(steps, 1))
 
 
+PAGE_PREFIX = '<untrusted source="browser_snapshot">'
+DROPPED = "[earlier page snapshot removed to save space; take a new snapshot if you need it]\n</untrusted>"
+KEEP_PAGES = 2
+
+
 @dataclass
 class RunContext:
     conversation: str
@@ -114,6 +119,16 @@ class Agent:
         for index in image_turns[:-1]:
             messages[index] = {"role": messages[index]["role"], "content": "[earlier screenshot removed]"}
 
+    @staticmethod
+    def _drop_old_pages(messages: list[dict], keep: int = KEEP_PAGES) -> None:
+        """Only the latest page snapshots stay in full: older ones fill a small model's context and slow
+        every step, and once the context overflows the runtime cuts the oldest text, instructions first."""
+        pages = [i for i, m in enumerate(messages) if m.get("role") == "tool"
+                 and isinstance(m.get("content"), str) and m["content"].startswith(PAGE_PREFIX)
+                 and not m["content"].endswith(DROPPED)]
+        for index in pages[:-keep]:
+            messages[index] = {**messages[index], "content": PAGE_PREFIX + "\n" + DROPPED}
+
     async def run(self, ctx: RunContext, text: str, images: list[tuple[str, str]] | None = None) -> str:
         token = current_run.set(ctx)
         try:
@@ -137,6 +152,7 @@ class Agent:
         system = messages[0]["content"]
         for _ in range(max_steps):
             self._drop_old_images(messages)
+            self._drop_old_pages(messages)
             # The plan sits in the instructions, so a small model keeps its place in long tasks.
             messages[0]["content"] = system + (f"\nYour current plan:\n{render_plan(ctx.plan)}" if ctx.plan else "")
             try:

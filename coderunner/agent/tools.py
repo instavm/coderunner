@@ -153,6 +153,12 @@ def browser_tools(svc) -> list[Tool]:
     async def press(args, ctx):
         return _result(await b.press(args["key"], tainted=ctx.tainted))
 
+    async def find(args, ctx):
+        return _result(await b.find(args["text"], tainted=ctx.tainted))
+
+    async def select(args, ctx):
+        return _result(await b.select(int(args["ref"]), args["option"], tainted=ctx.tainted))
+
     async def scroll(args, ctx):
         return _result(await b.scroll(args.get("direction", "down"), tainted=ctx.tainted))
 
@@ -189,6 +195,11 @@ def browser_tools(svc) -> list[Tool]:
              True),
         Tool("browser_type", "Type text into element [ref]. Never use for passwords or one-time codes; use "
              "browser_handoff instead.", _params({"ref": INT, "text": STR, "submit": BOOL}, ["ref", "text"]), type_, True),
+        Tool("browser_find", "Find where the current page mentions some text (the whole page, also beyond what a "
+             "snapshot shows) and get those lines with their element refs. Cheaper than reading the whole page.",
+             _params({"text": STR}, ["text"]), find, True),
+        Tool("browser_select", "Choose an option in a dropdown (<select>) [ref] by its visible text.",
+             _params({"ref": INT, "option": STR}, ["ref", "option"]), select, True),
         Tool("browser_press", "Press a key: Enter, Tab, Escape, ArrowDown, ArrowUp, Backspace, PageDown, PageUp.",
              _params({"key": STR}, ["key"]), press, True),
         Tool("browser_scroll", "Scroll the page up or down.", _params({"direction": {"type": "string", "enum": [
