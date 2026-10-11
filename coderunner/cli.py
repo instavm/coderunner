@@ -18,6 +18,9 @@ from .config import Config
 from .gateway import admin_request
 
 
+CHAT_TIMEOUT = 4 * 3600
+
+
 def _admin(config: Config, method: str, path: str, body: Any = None, timeout: float = 900) -> Any:
     base_url = f"http://127.0.0.1:{config.get('gateway.admin_port')}"
     return admin_request(method, path, base_url=base_url, token=paths.admin_token(), json_body=body,
@@ -164,8 +167,9 @@ def _chat_once(config: Config, message: str, conversation: str) -> str:
 
     def worker():
         try:
-            result["reply"] = _admin(config, "POST", "/api/chat", {"message": message,
-                                                                   "conversation": conversation})["reply"]
+            # Long tasks (a browser search with a local model) can take far longer than an API call.
+            result["reply"] = _admin(config, "POST", "/api/chat", {"message": message, "conversation": conversation},
+                                     timeout=CHAT_TIMEOUT)["reply"]
         except Exception as exc:
             result["reply"] = f"Error: {exc}"
 
