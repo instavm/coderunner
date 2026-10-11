@@ -83,8 +83,7 @@ class Agent:
         if self.svc.memory is not None and text:
             try:
                 # Only clearly relevant memories: every recalled one counts as private data in this run.
-                found = await self.svc.memory.recall(
-                    text, 5, min_similarity=float(self.svc.config.get("agent.recall_min_similarity", 0.5) or 0.5))
+                found = await self.svc.memory.recall(text, 5, min_similarity=self._recall_threshold())
             except Exception:
                 found = []
             if found:
@@ -100,6 +99,14 @@ class Agent:
                     memories += f"\nUnverified notes (saved after reading untrusted content):\n{block}"
         now = datetime.now().astimezone().strftime("%A %Y-%m-%d %H:%M %Z")
         return SYSTEM.format(owner=owner, now=now, memories=memories)
+
+    def _recall_threshold(self) -> float:
+        """Similarity above which a memory is clearly relevant: set in config, or known per embedding model."""
+        value = self.svc.config.get("agent.recall_min_similarity", "auto")
+        if value in (None, "", "auto"):
+            from ..files import embedding_profile
+            return embedding_profile(getattr(self.svc, "embedding_model", "") or "")["recall"]
+        return float(value)
 
     @staticmethod
     def _drop_old_images(messages: list[dict]) -> None:

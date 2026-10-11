@@ -6,17 +6,42 @@
     {
       "id": "qwen3.5-122b-a10b",
       "family": "qwen3.5",
-      "roles": ["chat", "vision"],
+      "roles": [
+        "chat",
+        "vision"
+      ],
       "rank": 1,
       "params_b": 125.1,
       "active_params_b": 10,
-      "arch": {"full_attn_layers": 12, "kv_heads": 2, "head_dim": 256},
+      "arch": {
+        "full_attn_layers": 12,
+        "kv_heads": 2,
+        "head_dim": 256
+      },
       "ctx_max": 262144,
-      "license": {"spdx": "apache-2.0", "base_repo": "Qwen/Qwen3.5-122B-A10B", "link": "https://huggingface.co/Qwen/Qwen3.5-122B-A10B/blob/main/LICENSE", "commercial": true},
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "Qwen/Qwen3.5-122B-A10B",
+        "link": "https://huggingface.co/Qwen/Qwen3.5-122B-A10B/blob/main/LICENSE",
+        "commercial": true
+      },
       "artifacts": {
-        "ollama": {"tag": "qwen3.5:122b-a10b", "size_gb": 81.37, "mmproj_gb": 0},
-        "gguf": {"repo": "unsloth/Qwen3.5-122B-A10B-GGUF", "quant": "Q4_K_M", "file": "Q4_K_M/Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf", "size_gb": 76.54, "mmproj_gb": 0.91},
-        "mlx": {"repo": "mlx-community/Qwen3.5-122B-A10B-4bit", "size_gb": 69.59}
+        "ollama": {
+          "tag": "qwen3.5:122b-a10b",
+          "size_gb": 81.37,
+          "mmproj_gb": 0
+        },
+        "gguf": {
+          "repo": "unsloth/Qwen3.5-122B-A10B-GGUF",
+          "quant": "Q4_K_M",
+          "file": "Q4_K_M/Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf",
+          "size_gb": 76.54,
+          "mmproj_gb": 0.91
+        },
+        "mlx": {
+          "repo": "mlx-community/Qwen3.5-122B-A10B-4bit",
+          "size_gb": 69.59
+        }
       },
       "notes": "MoE for 128 GB machines; vision is bundled in the Ollama blob",
       "verified": "2026-10-10"
@@ -24,17 +49,42 @@
     {
       "id": "qwen3.8-27b",
       "family": "qwen3.8",
-      "roles": ["chat", "vision"],
+      "roles": [
+        "chat",
+        "vision"
+      ],
       "rank": 2,
       "params_b": 27.8,
       "active_params_b": 27.8,
-      "arch": {"full_attn_layers": 16, "kv_heads": 4, "head_dim": 256},
+      "arch": {
+        "full_attn_layers": 16,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
       "ctx_max": 262144,
-      "license": {"spdx": "apache-2.0", "base_repo": "Qwen/Qwen3.8-27B", "link": "https://huggingface.co/Qwen/Qwen3.8-27B", "commercial": true},
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "Qwen/Qwen3.8-27B",
+        "link": "https://huggingface.co/Qwen/Qwen3.8-27B",
+        "commercial": true
+      },
       "artifacts": {
-        "ollama": {"tag": "qwen3.8:27b", "size_gb": 16.81, "mmproj_gb": 0.93},
-        "gguf": {"repo": "ggml-org/Qwen3.8-27B-GGUF", "quant": "Q4_K_M", "file": "Qwen3.8-27B-Q4_K_M.gguf", "size_gb": 18.97, "mmproj_gb": 0.63},
-        "mlx": {"repo": "mlx-community/Qwen3.8-27B-4bit", "size_gb": 16.05}
+        "ollama": {
+          "tag": "qwen3.8:27b",
+          "size_gb": 16.81,
+          "mmproj_gb": 0.93
+        },
+        "gguf": {
+          "repo": "ggml-org/Qwen3.8-27B-GGUF",
+          "quant": "Q4_K_M",
+          "file": "Qwen3.8-27B-Q4_K_M.gguf",
+          "size_gb": 18.97,
+          "mmproj_gb": 0.63
+        },
+        "mlx": {
+          "repo": "mlx-community/Qwen3.8-27B-4bit",
+          "size_gb": 16.05
+        }
       },
       "notes": "best computer use; dense, so slower than the MoE models",
       "verified": "2026-10-10"
@@ -42,17 +92,45 @@
     {
       "id": "gpt-oss-120b",
       "family": "gpt-oss",
-      "roles": ["chat"],
+      "roles": [
+        "chat"
+      ],
       "rank": 3,
       "params_b": 116.8,
       "active_params_b": 5.1,
-      "arch": {"full_attn_layers": 18, "kv_heads": 8, "head_dim": 64, "swa_layers": 18, "swa_kv_heads": 8, "swa_head_dim": 64, "swa_window": 128},
+      "arch": {
+        "full_attn_layers": 18,
+        "kv_heads": 8,
+        "head_dim": 64,
+        "swa_layers": 18,
+        "swa_kv_heads": 8,
+        "swa_head_dim": 64,
+        "swa_window": 128
+      },
       "ctx_max": 131072,
-      "license": {"spdx": "apache-2.0", "base_repo": "openai/gpt-oss-120b", "link": "https://huggingface.co/openai/gpt-oss-120b/blob/main/LICENSE", "commercial": true},
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "openai/gpt-oss-120b",
+        "link": "https://huggingface.co/openai/gpt-oss-120b/blob/main/LICENSE",
+        "commercial": true
+      },
       "artifacts": {
-        "ollama": {"tag": "gpt-oss:120b", "size_gb": 65.37, "mmproj_gb": 0},
-        "gguf": {"repo": "ggml-org/gpt-oss-120b-GGUF", "quant": "MXFP4", "file": "gpt-oss-120b-MXFP4.gguf", "size_gb": 63.39, "mmproj_gb": 0},
-        "mlx": {"repo": "mlx-community/gpt-oss-120b-MXFP4-Q8", "size_gb": 63.39}
+        "ollama": {
+          "tag": "gpt-oss:120b",
+          "size_gb": 65.37,
+          "mmproj_gb": 0
+        },
+        "gguf": {
+          "repo": "ggml-org/gpt-oss-120b-GGUF",
+          "quant": "MXFP4",
+          "file": "gpt-oss-120b-MXFP4.gguf",
+          "size_gb": 63.39,
+          "mmproj_gb": 0
+        },
+        "mlx": {
+          "repo": "mlx-community/gpt-oss-120b-MXFP4-Q8",
+          "size_gb": 63.39
+        }
       },
       "notes": "text only",
       "verified": "2026-10-10"
@@ -60,17 +138,42 @@
     {
       "id": "qwen3.6-35b-a3b",
       "family": "qwen3.6",
-      "roles": ["chat", "vision"],
+      "roles": [
+        "chat",
+        "vision"
+      ],
       "rank": 4,
       "params_b": 35.95,
       "active_params_b": 3,
-      "arch": {"full_attn_layers": 10, "kv_heads": 2, "head_dim": 256},
+      "arch": {
+        "full_attn_layers": 10,
+        "kv_heads": 2,
+        "head_dim": 256
+      },
       "ctx_max": 262144,
-      "license": {"spdx": "apache-2.0", "base_repo": "Qwen/Qwen3.6-35B-A3B", "link": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/LICENSE", "commercial": true},
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "Qwen/Qwen3.6-35B-A3B",
+        "link": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/LICENSE",
+        "commercial": true
+      },
       "artifacts": {
-        "ollama": {"tag": "qwen3.6:35b-a3b", "size_gb": 21.72, "mmproj_gb": 0.90},
-        "gguf": {"repo": "ggml-org/Qwen3.6-35B-A3B-GGUF", "quant": "Q4_K_M", "file": "Qwen3.6-35B-A3B-Q4_K_M.gguf", "size_gb": 20.42, "mmproj_gb": 0.61},
-        "mlx": {"repo": "mlx-community/Qwen3.6-35B-A3B-4bit", "size_gb": 20.40}
+        "ollama": {
+          "tag": "qwen3.6:35b-a3b",
+          "size_gb": 21.72,
+          "mmproj_gb": 0.9
+        },
+        "gguf": {
+          "repo": "ggml-org/Qwen3.6-35B-A3B-GGUF",
+          "quant": "Q4_K_M",
+          "file": "Qwen3.6-35B-A3B-Q4_K_M.gguf",
+          "size_gb": 20.42,
+          "mmproj_gb": 0.61
+        },
+        "mlx": {
+          "repo": "mlx-community/Qwen3.6-35B-A3B-4bit",
+          "size_gb": 20.4
+        }
       },
       "notes": "MoE with 3B active parameters: fast",
       "verified": "2026-10-10"
@@ -78,34 +181,92 @@
     {
       "id": "gemma-4-31b",
       "family": "gemma4",
-      "roles": ["chat", "vision"],
+      "roles": [
+        "chat",
+        "vision"
+      ],
       "rank": 5,
       "params_b": 31.27,
       "active_params_b": 31.27,
-      "arch": {"full_attn_layers": 10, "kv_heads": 4, "head_dim": 512, "swa_layers": 50, "swa_kv_heads": 16, "swa_head_dim": 256, "swa_window": 1024},
+      "arch": {
+        "full_attn_layers": 10,
+        "kv_heads": 4,
+        "head_dim": 512,
+        "swa_layers": 50,
+        "swa_kv_heads": 16,
+        "swa_head_dim": 256,
+        "swa_window": 1024
+      },
       "ctx_max": 262144,
-      "license": {"spdx": "apache-2.0", "base_repo": "google/gemma-4-31B-it", "link": "https://ai.google.dev/gemma/docs/gemma_4_license", "commercial": true},
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "google/gemma-4-31B-it",
+        "link": "https://ai.google.dev/gemma/docs/gemma_4_license",
+        "commercial": true
+      },
       "artifacts": {
-        "ollama": {"tag": "gemma4:31b", "size_gb": 19.18, "mmproj_gb": 1.20},
-        "gguf": {"repo": "unsloth/gemma-4-31B-it-GGUF", "quant": "Q4_K_M", "file": "gemma-4-31B-it-Q4_K_M.gguf", "size_gb": 18.32, "mmproj_gb": 1.20},
-        "mlx": {"repo": "mlx-community/gemma-4-31b-it-4bit", "size_gb": 18.41}
+        "ollama": {
+          "tag": "gemma4:31b",
+          "size_gb": 19.18,
+          "mmproj_gb": 1.2
+        },
+        "gguf": {
+          "repo": "unsloth/gemma-4-31B-it-GGUF",
+          "quant": "Q4_K_M",
+          "file": "gemma-4-31B-it-Q4_K_M.gguf",
+          "size_gb": 18.32,
+          "mmproj_gb": 1.2
+        },
+        "mlx": {
+          "repo": "mlx-community/gemma-4-31b-it-4bit",
+          "size_gb": 18.41
+        }
       },
       "verified": "2026-10-10"
     },
     {
       "id": "gemma-4-26b-a4b",
       "family": "gemma4",
-      "roles": ["chat", "vision"],
+      "roles": [
+        "chat",
+        "vision"
+      ],
       "rank": 6,
       "params_b": 25.81,
       "active_params_b": 4,
-      "arch": {"full_attn_layers": 5, "kv_heads": 2, "head_dim": 512, "swa_layers": 25, "swa_kv_heads": 8, "swa_head_dim": 256, "swa_window": 1024},
+      "arch": {
+        "full_attn_layers": 5,
+        "kv_heads": 2,
+        "head_dim": 512,
+        "swa_layers": 25,
+        "swa_kv_heads": 8,
+        "swa_head_dim": 256,
+        "swa_window": 1024
+      },
       "ctx_max": 262144,
-      "license": {"spdx": "apache-2.0", "base_repo": "google/gemma-4-26B-A4B-it", "link": "https://ai.google.dev/gemma/docs/gemma_4_license", "commercial": true},
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "google/gemma-4-26B-A4B-it",
+        "link": "https://ai.google.dev/gemma/docs/gemma_4_license",
+        "commercial": true
+      },
       "artifacts": {
-        "ollama": {"tag": "gemma4:26b", "size_gb": 17.53, "mmproj_gb": 1.19},
-        "gguf": {"repo": "bartowski/google_gemma-4-26B-A4B-it-GGUF", "quant": "Q4_K_M", "file": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf", "size_gb": 17.04, "mmproj_gb": 1.19},
-        "mlx": {"repo": "mlx-community/gemma-4-26b-a4b-it-4bit", "size_gb": 15.34}
+        "ollama": {
+          "tag": "gemma4:26b",
+          "size_gb": 17.53,
+          "mmproj_gb": 1.19
+        },
+        "gguf": {
+          "repo": "bartowski/google_gemma-4-26B-A4B-it-GGUF",
+          "quant": "Q4_K_M",
+          "file": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+          "size_gb": 17.04,
+          "mmproj_gb": 1.19
+        },
+        "mlx": {
+          "repo": "mlx-community/gemma-4-26b-a4b-it-4bit",
+          "size_gb": 15.34
+        }
       },
       "notes": "MoE with 4B active parameters",
       "verified": "2026-10-10"
@@ -113,17 +274,42 @@
     {
       "id": "qwen3.5-9b",
       "family": "qwen3.5",
-      "roles": ["chat", "vision"],
+      "roles": [
+        "chat",
+        "vision"
+      ],
       "rank": 7,
       "params_b": 9.65,
       "active_params_b": 9.65,
-      "arch": {"full_attn_layers": 8, "kv_heads": 4, "head_dim": 256},
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
       "ctx_max": 262144,
-      "license": {"spdx": "apache-2.0", "base_repo": "Qwen/Qwen3.5-9B", "link": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/LICENSE", "commercial": true},
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "Qwen/Qwen3.5-9B",
+        "link": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/LICENSE",
+        "commercial": true
+      },
       "artifacts": {
-        "ollama": {"tag": "qwen3.5:9b", "size_gb": 5.63, "mmproj_gb": 0.92},
-        "gguf": {"repo": "unsloth/Qwen3.5-9B-GGUF", "quant": "Q4_K_M", "file": "Qwen3.5-9B-Q4_K_M.gguf", "size_gb": 5.68, "mmproj_gb": 0.92},
-        "mlx": {"repo": "mlx-community/Qwen3.5-9B-4bit", "size_gb": 5.95}
+        "ollama": {
+          "tag": "qwen3.5:9b",
+          "size_gb": 5.63,
+          "mmproj_gb": 0.92
+        },
+        "gguf": {
+          "repo": "unsloth/Qwen3.5-9B-GGUF",
+          "quant": "Q4_K_M",
+          "file": "Qwen3.5-9B-Q4_K_M.gguf",
+          "size_gb": 5.68,
+          "mmproj_gb": 0.92
+        },
+        "mlx": {
+          "repo": "mlx-community/Qwen3.5-9B-4bit",
+          "size_gb": 5.95
+        }
       },
       "notes": "best pick for 16-24 GB machines",
       "verified": "2026-10-10"
@@ -131,17 +317,45 @@
     {
       "id": "gpt-oss-20b",
       "family": "gpt-oss",
-      "roles": ["chat"],
+      "roles": [
+        "chat"
+      ],
       "rank": 8,
       "params_b": 20.91,
       "active_params_b": 3.6,
-      "arch": {"full_attn_layers": 12, "kv_heads": 8, "head_dim": 64, "swa_layers": 12, "swa_kv_heads": 8, "swa_head_dim": 64, "swa_window": 128},
+      "arch": {
+        "full_attn_layers": 12,
+        "kv_heads": 8,
+        "head_dim": 64,
+        "swa_layers": 12,
+        "swa_kv_heads": 8,
+        "swa_head_dim": 64,
+        "swa_window": 128
+      },
       "ctx_max": 131072,
-      "license": {"spdx": "apache-2.0", "base_repo": "openai/gpt-oss-20b", "link": "https://huggingface.co/openai/gpt-oss-20b/blob/main/LICENSE", "commercial": true},
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "openai/gpt-oss-20b",
+        "link": "https://huggingface.co/openai/gpt-oss-20b/blob/main/LICENSE",
+        "commercial": true
+      },
       "artifacts": {
-        "ollama": {"tag": "gpt-oss:20b", "size_gb": 13.79, "mmproj_gb": 0},
-        "gguf": {"repo": "ggml-org/gpt-oss-20b-GGUF", "quant": "MXFP4", "file": "gpt-oss-20b-MXFP4.gguf", "size_gb": 12.11, "mmproj_gb": 0},
-        "mlx": {"repo": "mlx-community/gpt-oss-20b-MXFP4-Q8", "size_gb": 12.08}
+        "ollama": {
+          "tag": "gpt-oss:20b",
+          "size_gb": 13.79,
+          "mmproj_gb": 0
+        },
+        "gguf": {
+          "repo": "ggml-org/gpt-oss-20b-GGUF",
+          "quant": "MXFP4",
+          "file": "gpt-oss-20b-MXFP4.gguf",
+          "size_gb": 12.11,
+          "mmproj_gb": 0
+        },
+        "mlx": {
+          "repo": "mlx-community/gpt-oss-20b-MXFP4-Q8",
+          "size_gb": 12.08
+        }
       },
       "notes": "text only",
       "verified": "2026-10-10"
@@ -149,17 +363,42 @@
     {
       "id": "qwen3.5-4b",
       "family": "qwen3.5",
-      "roles": ["chat", "vision"],
+      "roles": [
+        "chat",
+        "vision"
+      ],
       "rank": 9,
       "params_b": 4.66,
       "active_params_b": 4.66,
-      "arch": {"full_attn_layers": 8, "kv_heads": 4, "head_dim": 256},
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
       "ctx_max": 262144,
-      "license": {"spdx": "apache-2.0", "base_repo": "Qwen/Qwen3.5-4B", "link": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/LICENSE", "commercial": true},
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "Qwen/Qwen3.5-4B",
+        "link": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/LICENSE",
+        "commercial": true
+      },
       "artifacts": {
-        "ollama": {"tag": "qwen3.5:4b", "size_gb": 2.65, "mmproj_gb": 0.68},
-        "gguf": {"repo": "unsloth/Qwen3.5-4B-GGUF", "quant": "Q4_K_M", "file": "Qwen3.5-4B-Q4_K_M.gguf", "size_gb": 2.74, "mmproj_gb": 0.67},
-        "mlx": {"repo": "mlx-community/Qwen3.5-4B-4bit", "size_gb": 3.03}
+        "ollama": {
+          "tag": "qwen3.5:4b",
+          "size_gb": 2.65,
+          "mmproj_gb": 0.68
+        },
+        "gguf": {
+          "repo": "unsloth/Qwen3.5-4B-GGUF",
+          "quant": "Q4_K_M",
+          "file": "Qwen3.5-4B-Q4_K_M.gguf",
+          "size_gb": 2.74,
+          "mmproj_gb": 0.67
+        },
+        "mlx": {
+          "repo": "mlx-community/Qwen3.5-4B-4bit",
+          "size_gb": 3.03
+        }
       },
       "notes": "smallest model trusted with tool calls",
       "verified": "2026-10-10"
@@ -167,50 +406,157 @@
     {
       "id": "gemma-4-e4b",
       "family": "gemma4",
-      "roles": ["chat", "vision"],
+      "roles": [
+        "chat",
+        "vision"
+      ],
       "rank": 10,
       "params_b": 8.0,
       "active_params_b": 4,
-      "arch": {"full_attn_layers": 4, "kv_heads": 2, "head_dim": 512, "swa_layers": 20, "swa_kv_heads": 2, "swa_head_dim": 256, "swa_window": 512},
+      "arch": {
+        "full_attn_layers": 4,
+        "kv_heads": 2,
+        "head_dim": 512,
+        "swa_layers": 20,
+        "swa_kv_heads": 2,
+        "swa_head_dim": 256,
+        "swa_window": 512
+      },
       "ctx_max": 131072,
-      "license": {"spdx": "apache-2.0", "base_repo": "google/gemma-4-E4B-it", "link": "https://ai.google.dev/gemma/docs/gemma_4_license", "commercial": true},
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "google/gemma-4-E4B-it",
+        "link": "https://ai.google.dev/gemma/docs/gemma_4_license",
+        "commercial": true
+      },
       "artifacts": {
-        "ollama": {"tag": "gemma4:e4b", "size_gb": 5.59, "mmproj_gb": 0.99},
-        "gguf": {"repo": "unsloth/gemma-4-E4B-it-GGUF", "quant": "Q4_K_M", "file": "gemma-4-E4B-it-Q4_K_M.gguf", "size_gb": 4.98, "mmproj_gb": 0.99},
-        "mlx": {"repo": "mlx-community/gemma-4-e4b-it-4bit", "size_gb": 5.15}
+        "ollama": {
+          "tag": "gemma4:e4b",
+          "size_gb": 5.59,
+          "mmproj_gb": 0.99
+        },
+        "gguf": {
+          "repo": "unsloth/gemma-4-E4B-it-GGUF",
+          "quant": "Q4_K_M",
+          "file": "gemma-4-E4B-it-Q4_K_M.gguf",
+          "size_gb": 4.98,
+          "mmproj_gb": 0.99
+        },
+        "mlx": {
+          "repo": "mlx-community/gemma-4-e4b-it-4bit",
+          "size_gb": 5.15
+        }
       },
       "notes": "weak at agentic tasks (tau2 42); last resort",
       "verified": "2026-10-10"
     },
     {
+      "id": "embeddinggemma-2",
+      "family": "gemma4",
+      "roles": [
+        "embedding"
+      ],
+      "rank": 1,
+      "params_b": 0.74,
+      "active_params_b": 0.74,
+      "arch": {
+        "full_attn_layers": 24,
+        "kv_heads": 1,
+        "head_dim": 256
+      },
+      "ctx_max": 8192,
+      "modalities": [
+        "text",
+        "image",
+        "audio"
+      ],
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "google/embeddinggemma-2",
+        "link": "https://huggingface.co/google/embeddinggemma-2",
+        "commercial": true
+      },
+      "artifacts": {
+        "ollama": {
+          "tag": "embeddinggemma-2",
+          "size_gb": 1.33,
+          "mmproj_gb": 0
+        }
+      },
+      "notes": "Text, images and audio in one 768-d space (video as frames plus sound); one model for memory and files",
+      "verified": "2026-10-11"
+    },
+    {
       "id": "qwen3-embedding-0.6b",
       "family": "qwen3",
-      "roles": ["embedding"],
-      "rank": 1,
+      "roles": [
+        "embedding"
+      ],
+      "rank": 2,
       "params_b": 0.6,
       "active_params_b": 0.6,
-      "arch": {"full_attn_layers": 28, "kv_heads": 8, "head_dim": 128},
+      "arch": {
+        "full_attn_layers": 28,
+        "kv_heads": 8,
+        "head_dim": 128
+      },
       "ctx_max": 32768,
-      "license": {"spdx": "apache-2.0", "base_repo": "Qwen/Qwen3-Embedding-0.6B", "link": "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B", "commercial": true},
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "Qwen/Qwen3-Embedding-0.6B",
+        "link": "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B",
+        "commercial": true
+      },
       "artifacts": {
-        "ollama": {"tag": "qwen3-embedding:0.6b", "size_gb": 0.64, "mmproj_gb": 0},
-        "gguf": {"repo": "Qwen/Qwen3-Embedding-0.6B-GGUF", "quant": "Q8_0", "file": "Qwen3-Embedding-0.6B-Q8_0.gguf", "size_gb": 0.64, "mmproj_gb": 0}
+        "ollama": {
+          "tag": "qwen3-embedding:0.6b",
+          "size_gb": 0.64,
+          "mmproj_gb": 0
+        },
+        "gguf": {
+          "repo": "Qwen/Qwen3-Embedding-0.6B-GGUF",
+          "quant": "Q8_0",
+          "file": "Qwen3-Embedding-0.6B-Q8_0.gguf",
+          "size_gb": 0.64,
+          "mmproj_gb": 0
+        }
       },
       "verified": "2026-10-10"
     },
     {
       "id": "embeddinggemma-300m",
       "family": "gemma3",
-      "roles": ["embedding"],
-      "rank": 2,
+      "roles": [
+        "embedding"
+      ],
+      "rank": 3,
       "params_b": 0.3,
       "active_params_b": 0.3,
-      "arch": {"full_attn_layers": 24, "kv_heads": 1, "head_dim": 256},
+      "arch": {
+        "full_attn_layers": 24,
+        "kv_heads": 1,
+        "head_dim": 256
+      },
       "ctx_max": 2048,
-      "license": {"spdx": "gemma", "base_repo": "google/embeddinggemma-300m", "link": "https://ai.google.dev/gemma/terms", "commercial": true},
+      "license": {
+        "spdx": "gemma",
+        "base_repo": "google/embeddinggemma-300m",
+        "link": "https://ai.google.dev/gemma/terms",
+        "commercial": true
+      },
       "artifacts": {
-        "ollama": {"tag": "embeddinggemma:300m", "size_gb": 0.62, "mmproj_gb": 0},
-        "gguf": {"repo": "ggml-org/embeddinggemma-300M-GGUF", "quant": "Q8_0", "file": "embeddinggemma-300M-Q8_0.gguf", "size_gb": 0.33, "mmproj_gb": 0}
+        "ollama": {
+          "tag": "embeddinggemma:300m",
+          "size_gb": 0.62,
+          "mmproj_gb": 0
+        },
+        "gguf": {
+          "repo": "ggml-org/embeddinggemma-300M-GGUF",
+          "quant": "Q8_0",
+          "file": "embeddinggemma-300M-Q8_0.gguf",
+          "size_gb": 0.33,
+          "mmproj_gb": 0
+        }
       },
       "notes": "GGUF mirror has no license metadata; base repo is gated under the Gemma terms",
       "verified": "2026-10-10"
@@ -218,16 +564,39 @@
     {
       "id": "qwen3.5-0.8b",
       "family": "qwen3.5",
-      "roles": ["guard"],
+      "roles": [
+        "guard"
+      ],
       "rank": 1,
       "params_b": 0.87,
       "active_params_b": 0.87,
-      "arch": {"full_attn_layers": 6, "kv_heads": 2, "head_dim": 256},
+      "arch": {
+        "full_attn_layers": 6,
+        "kv_heads": 2,
+        "head_dim": 256
+      },
       "ctx_max": 262144,
-      "license": {"spdx": "apache-2.0", "base_repo": "Qwen/Qwen3.5-0.8B", "link": "https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/LICENSE", "commercial": true},
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "Qwen/Qwen3.5-0.8B",
+        "link": "https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/LICENSE",
+        "commercial": true
+      },
       "artifacts": {
-        "ollama": {"tag": "qwen3.5:0.8b", "size_gb": 1.11, "mmproj_gb": 0.21, "vision": false},
-        "gguf": {"repo": "unsloth/Qwen3.5-0.8B-GGUF", "quant": "Q8_0", "file": "Qwen3.5-0.8B-Q8_0.gguf", "size_gb": 0.81, "mmproj_gb": 0, "vision": false}
+        "ollama": {
+          "tag": "qwen3.5:0.8b",
+          "size_gb": 1.11,
+          "mmproj_gb": 0.21,
+          "vision": false
+        },
+        "gguf": {
+          "repo": "unsloth/Qwen3.5-0.8B-GGUF",
+          "quant": "Q8_0",
+          "file": "Qwen3.5-0.8B-Q8_0.gguf",
+          "size_gb": 0.81,
+          "mmproj_gb": 0,
+          "vision": false
+        }
       },
       "notes": "small instruction model for guard.py's JSON injection classifier; never used for chat",
       "verified": "2026-10-10"

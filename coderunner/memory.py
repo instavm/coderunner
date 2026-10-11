@@ -49,10 +49,14 @@ def _unit(vector) -> list[float] | None:
 
 
 class Memory:
-    def __init__(self, store, audit, embedder: Embedder | None = None):
+    def __init__(self, store, audit, embedder: Embedder | None = None, *, query_prefix: str = "",
+                 doc_prefix: str = ""):
         self.store = store
         self.audit = audit
         self.embedder = embedder
+        # Some embedding models want queries and stored texts phrased differently (files.PROFILES).
+        self.query_prefix = query_prefix
+        self.doc_prefix = doc_prefix.replace("{title}", "none")
         self._embed_down = False
         self._vectors: dict[int, list[float]] = {}  # id -> unit vector, mirrors the embedding column
 
@@ -72,7 +76,7 @@ class Memory:
                 self.store.execute("UPDATE memories SET source = '' WHERE id = ?", (existing["id"],))
                 existing["source"] = ""
             return {**existing, "duplicate": True}
-        vectors = await self._embed([text])
+        vectors = await self._embed([self.doc_prefix + text])
         if existing := self._find(text):  # saved by someone else while we awaited the embedder
             return {**existing, "duplicate": True}
         vector = vectors[0] if vectors else None
@@ -102,7 +106,7 @@ class Memory:
             )
             rankings.append([row["id"] for row in rows])
         if self.embedder and self._refresh_vectors():
-            vectors = await self._embed([query])
+            vectors = await self._embed([self.query_prefix + query])
             if vectors:
                 rankings.append(self._nearest(vectors[0], pool))
 
@@ -127,7 +131,7 @@ class Memory:
         if not text:
             return []
         if self.embedder and self._refresh_vectors():
-            vectors = await self._embed([text])
+            vectors = await self._embed([self.query_prefix + text])
             if vectors:
                 return self._rows(self._nearest(vectors[0], limit, min_score=min_similarity))
         return []        # without embeddings the assistant decides when to call memory_search
@@ -165,7 +169,7 @@ class Memory:
         if not self.embedder:
             return 0
         rows = self.store.query("SELECT id, text FROM memories WHERE embedding IS NULL ORDER BY id LIMIT ?", (batch,))
-        vectors = await self._embed([r["text"] for r in rows]) if rows else None
+        vectors = await self._embed([self.doc_prefix + r["text"] for r in rows]) if rows else None
         if not vectors:
             return 0
         for row, vector in zip(rows, vectors):

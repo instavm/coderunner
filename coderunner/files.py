@@ -57,8 +57,17 @@ MAX_CHUNKS = 200           # per file
 AUDIO_SEGMENT = 60         # seconds of sound per embedding
 MAX_SEGMENTS = 10
 VIDEO_FRAMES = 6
-QUERY_PREFIX = {"embeddinggemma": "task: search result | query: "}
-DOC_PREFIX = {"embeddinggemma": "title: {title} | text: "}
+# How each embedding model family wants queries and documents phrased, and the similarity above which a
+# memory is clearly relevant to a task (measured on labelled examples; scales differ between models).
+PROFILES = {
+    "embeddinggemma": {"query": "task: search result | query: ", "doc": "title: {title} | text: ", "recall": 0.62},
+    "": {"query": "", "doc": "", "recall": 0.5},
+}
+
+
+def embedding_profile(model: str) -> dict:
+    family = next((name for name in PROFILES if name and name in (model or "").lower()), "")
+    return PROFILES[family]
 
 
 class FileAccessError(PermissionError):
@@ -93,9 +102,9 @@ class Embedder:
         self.model = model
         self._client = httpx.AsyncClient(timeout=timeout, trust_env=False, transport=transport)
         self._capabilities: set[str] | None = None
-        family = next((name for name in QUERY_PREFIX if name in model.lower()), "")
-        self.query_prefix = QUERY_PREFIX.get(family, "")
-        self.doc_prefix = DOC_PREFIX.get(family, "")
+        profile = embedding_profile(model)
+        self.query_prefix = profile["query"]
+        self.doc_prefix = profile["doc"]
 
     async def capabilities(self) -> set[str]:
         if self._capabilities is None:

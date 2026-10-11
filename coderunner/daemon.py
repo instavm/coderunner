@@ -135,7 +135,9 @@ class Daemon:
         if svc.embedding_model:
             async def embedder(texts: list[str]) -> list[list[float]]:
                 return await svc.llm.embed(texts, model=svc.embedding_model)
-        svc.memory = Memory(store, audit, embedder)
+        from .files import embedding_profile
+        profile = embedding_profile(svc.embedding_model)
+        svc.memory = Memory(store, audit, embedder, query_prefix=profile["query"], doc_prefix=profile["doc"])
 
         from .files import Embedder, FileIndex
         # Multimodal embeddings (text, images, audio) come from Ollama's native embed API.

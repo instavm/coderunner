@@ -195,8 +195,9 @@ class FitTests(TempHome):
         rejected = fit.recommend(apple(128, "Apple M4 Max"), self.config(), include_rejected=True)
         self.assertNotIn("qwen3.5-0.8b", [c["id"] for c in rejected])
         self.assertEqual(fit.recommend(apple(18), self.config(), role="guard")[0]["id"], "qwen3.5-0.8b")
+        # One multimodal model for memory and files where the runtime can serve it.
         self.assertEqual(fit.recommend(apple(18), self.config(), role="embedding", runtime="ollama")[0]["id"],
-                         "qwen3-embedding-0.6b")
+                         "embeddinggemma-2")
 
     def test_license_policy_applies_to_recommendations(self):
         cfg = self.config(allow_licenses=[])
@@ -204,7 +205,8 @@ class FitTests(TempHome):
             if c["id"] == "embeddinggemma-300m":
                 self.assertEqual(c["license"], "ask")
         picks = fit.recommend(apple(18), cfg, role="embedding")
-        self.assertEqual(picks[0]["id"], "qwen3-embedding-0.6b")     # permissive license ranks first
+        self.assertEqual(picks[0]["id"], "embeddinggemma-2")         # permissive licenses rank first
+        self.assertEqual(picks[1]["id"], "qwen3-embedding-0.6b")
 
     def test_catalog_is_well_formed(self):
         ids = set()
@@ -212,7 +214,7 @@ class FitTests(TempHome):
             self.assertNotIn(e["id"], ids)
             ids.add(e["id"])
             self.assertTrue(e["artifacts"])
-            self.assertEqual(e.get("verified"), "2026-10-10")
+            self.assertRegex(e.get("verified", ""), r"^2026-\d\d-\d\d$")
             self.assertIn(licenses.classify(e["license"]["spdx"]), ("allow", "ask"))
             if "chat" in e["roles"]:
                 self.assertGreaterEqual(e["params_b"], 4)
@@ -584,7 +586,7 @@ class ManagerTests(TempHome):
         self.assertEqual(result["license"]["decision"], "allow")
         self.assertIn("qwen3.5-4b", [c["id"] for c in result["alternatives"]])
         self.assertIn("qwen3.8-27b", [c["id"] for c in result["rejected"]])
-        self.assertEqual(result["embedding"]["id"], "qwen3-embedding-0.6b")
+        self.assertEqual(result["embedding"]["id"], "embeddinggemma-2")
         self.assertIsNone(manager.plan(self.config(), hw=apple(8, "Apple M1"), runtime=FakeRuntime())["model"])
 
     def test_setup_falls_back_and_writes_config(self):

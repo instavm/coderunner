@@ -52,7 +52,7 @@ DEFAULTS: dict[str, Any] = {
         "scan_interval": 600,        # seconds between checks for new or changed files
     },
     "agent": {"max_steps": 30, "tool_output_chars": 12000, "approval_timeout": 300,
-              "recall_min_similarity": 0.5},   # embedding similarity for memories to enter a task's prompt
+              "recall_min_similarity": "auto"},  # similarity for a memory to enter a task; auto: per model
     "policy": {
         "rules": [],                 # [{"kind": "browser.navigate", "target": "*.example.com", "decision": "allow"}]
     },
