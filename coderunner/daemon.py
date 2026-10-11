@@ -131,10 +131,14 @@ class Daemon:
                                     decider=ActionCheck.from_config(self.config, audit, **runtime))
 
         from .memory import Memory
+        # Embeddings can come from a different runtime than the chat model, e.g. EmbeddingGemma in
+        # Ollama beside a chat model served by llama.cpp.
+        embedding_url = self.config.get("models.embedding_url") or endpoint.base_url
+        embed_llm = svc.llm if embedding_url == endpoint.base_url else LLM(embedding_url, svc.embedding_model)
         embedder = None
         if svc.embedding_model:
             async def embedder(texts: list[str]) -> list[list[float]]:
-                return await svc.llm.embed(texts, model=svc.embedding_model)
+                return await embed_llm.embed(texts, model=svc.embedding_model)
         from .files import embedding_profile
         profile = embedding_profile(svc.embedding_model)
         svc.memory = Memory(store, audit, embedder, query_prefix=profile["query"], doc_prefix=profile["doc"])
@@ -142,9 +146,9 @@ class Daemon:
         from .files import Embedder, FileIndex
         # Multimodal embeddings (text, images, audio) come from Ollama's native embed API.
         file_model = self.config.get("files.embedding") or svc.embedding_model
-        ollama = self.config.get("models.runtime") in ("ollama", "auto")
+        ollama = self.config.get("models.runtime") in ("ollama", "auto") or bool(self.config.get("models.embedding_url"))
         svc.files = FileIndex(self.config, store, audit,
-                              Embedder(endpoint.base_url, file_model) if file_model and ollama else None)
+                              Embedder(embedding_url, file_model) if file_model and ollama else None)
 
         from .scheduler import Scheduler
         svc.scheduler = Scheduler(store, audit, self._run_schedule, self._deliver_schedule,

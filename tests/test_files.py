@@ -134,8 +134,9 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         await index.index_once()
         self.assertTrue(any(isinstance(item, dict) and "image" in item for item in seen))
         self.assertTrue(any(isinstance(item, dict) and "audio" in item for item in seen))
-        kinds = {r["kind"] for r in await index.search("image", limit=20)}
-        self.assertIn("image", kinds)
+        found = await index.search("image", limit=20)
+        self.assertIn("image", {r["kind"] for r in found})
+        self.assertEqual(len({r["path"] for r in found}), len(found))      # one result per file
         # Without vision support the image is indexed by name only.
         transport, seen = fake_embed_server(("embedding",))
         text_only = Embedder("http://ollama/v1", "embeddinggemma-2", transport=transport)

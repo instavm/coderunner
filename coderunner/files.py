@@ -429,18 +429,22 @@ class FileIndex:
         rows = {r["id"]: r for r in self.store.query(
             f"SELECT c.id, c.path, c.part, c.text, f.kind FROM file_chunks c JOIN files f ON f.path = c.path "
             f"WHERE c.id IN ({marks})", list(scores))}
-        results, seen = [], set()
+        # One result per file: its best part first, plus a few other parts that matched.
+        results: dict[str, dict] = {}
         for cid in sorted(scores, key=lambda i: -scores[i]):
             row = rows.get(cid)
-            if row is None or (kind and row["kind"] != kind) or (row["path"], row["part"]) in seen:
+            if row is None or (kind and row["kind"] != kind):
                 continue
-            seen.add((row["path"], row["part"]))
-            snippet = row["text"][:300] if row["kind"] in ("text", "doc") else ""
-            results.append({"path": row["path"], "kind": row["kind"], "part": row["part"],
-                            "score": round(scores[cid], 5), **({"snippet": snippet} if snippet else {})})
-            if len(results) >= limit:
-                break
-        return results
+            found = results.get(row["path"])
+            if found is None:
+                if len(results) >= limit:
+                    continue
+                snippet = row["text"][:300] if row["kind"] in ("text", "doc") else ""
+                results[row["path"]] = {"path": row["path"], "kind": row["kind"], "part": row["part"],
+                                        "score": round(scores[cid], 5), **({"snippet": snippet} if snippet else {})}
+            elif len(found.setdefault("also", [])) < 3 and row["part"] not in found["also"]:
+                found["also"].append(row["part"])
+        return list(results.values())
 
     def status(self) -> dict:
         rows = self.store.query("SELECT kind, COUNT(*) AS n, SUM(error != '') AS failed FROM files GROUP BY kind")

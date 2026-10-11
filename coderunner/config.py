@@ -36,6 +36,7 @@ DEFAULTS: dict[str, Any] = {
         "chat": "",                  # model id served for the assistant
         "vision": False,             # set by `coderunner setup` after the image check passes
         "embedding": "",             # optional embedding model id for memory
+        "embedding_url": "",         # Ollama endpoint for embeddings when the chat model runs elsewhere
         "guard": "",                 # decision model screening untrusted text; empty: models.decision
         "decision": "",              # decision model judging committing browser steps; empty: the chat model
         "decision_api": "",          # systemone (Ollama decision models) | chat; empty: chosen automatically
