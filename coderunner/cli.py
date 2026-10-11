@@ -247,6 +247,21 @@ def cmd_models(args, config: Config) -> int:
                                accept_license=args.accept_license, progress=print)
         _print(result)
         return 0 if result.get("ok") else 1
+    elif args.action == "discover":
+        from .models import discover, hardware
+        hw = hardware.detect(float(config.get("sandbox.memory_gb") or 1))
+        models = discover.cached(progress=print, refresh=True)
+        rows = []
+        for model in models:
+            for runtime in ("ollama", "mlx") if hw.gpu == "apple" else ("ollama",):
+                entry = discover.best_build(model, hw, config, runtime)
+                if entry:
+                    art = next(iter(entry["artifacts"].values()))
+                    rows.append({"model": model["repo"], "released": model["released"], "params_b": model["params_b"],
+                                 "runtime": runtime, "build": art.get("quant") or art.get("repo"),
+                                 "size_gb": art["size_gb"], "license": model["license"]["spdx"]})
+                    break
+        _print({"found": len(models), "fit_this_machine": rows})
     elif args.action == "test":
         import asyncio
         from .models import smoketest
@@ -463,7 +478,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_audit)
 
     p = sub.add_parser("models")
-    p.add_argument("action", choices=["plan", "setup", "test"])
+    p.add_argument("action", choices=["plan", "setup", "test", "discover"])
     p.add_argument("--model"), p.add_argument("--runtime")
     p.add_argument("--accept-license", action="store_true")
     p.set_defaults(func=cmd_models)

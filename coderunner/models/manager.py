@@ -31,12 +31,39 @@ def _prism(config, hw: hardware.Hardware, rt: Runtime | None) -> PrismRuntime | 
     return prism if prism.available() else None
 
 
-def _ranked(hw, config, rt: Runtime | None, prism: Runtime | None) -> list[dict]:
-    """Chat candidates for the main runtime and, if available, Prism's, best first."""
+def _discovered(config, hw, rt: Runtime | None, progress: Callable[[str], None] | None = None) -> list[dict]:
+    """Recent models found on Hugging Face, each with the best build that fits this machine."""
+    if not config.get("models.discover", True) or rt is None or rt.name not in ("ollama", "llama.cpp", "mlx"):
+        return []
+    from . import discover
+    known = {(e.get("license") or {}).get("base_repo", "").lower() for e in catalog.models()}
+    entries = []
+    for model in discover.cached(progress):
+        if model["repo"].lower() in known:
+            continue                        # curated entry with measured factors wins
+        entry = discover.best_build(model, hw, config, rt.name)
+        if entry:
+            entries.append(entry)
+    return discover.place(entries, catalog.models())
+
+
+def _ranked(hw, config, rt: Runtime | None, prism: Runtime | None, extra: list[dict] | None = None) -> list[dict]:
+    """Chat candidates for the main runtime, Prism's build and discovered models, best first."""
     found = fit.recommend(hw, config, "chat", _artifact_runtime(rt), include_rejected=True)
     if prism is not None:
         found += fit.recommend(hw, config, "chat", "prism")
+    for entry in extra or []:
+        cand = fit.candidate(entry, hw, config, "chat", _artifact_runtime(rt))
+        cand["discovered"] = True
+        found.append(cand)
     return sorted((c for c in found if c["ok"]), key=fit._order) + [c for c in found if not c["ok"]]
+
+
+def _entry(model_id: str, extra: list[dict]) -> dict:
+    for entry in extra:
+        if entry["id"] == model_id:
+            return entry
+    return catalog.get(model_id)
 
 
 @dataclasses.dataclass
@@ -85,7 +112,8 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
     rt = _runtime(config, hw, runtime)
     art = _artifact_runtime(rt)
     prism = _prism(config, hw, rt) if runtime is None else None     # only when the runtime is auto-chosen
-    candidates = _ranked(hw, config, rt, prism)
+    extra = _discovered(config, hw, rt) if runtime is None else []
+    candidates = _ranked(hw, config, rt, prism, extra)
     viable = [c for c in candidates if c["ok"]]
     chosen = viable[0] if viable else None
     notes = []
@@ -192,8 +220,9 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
         return _external(config, rt, model_id, progress, smoke)
 
     prism = _prism(config, hw, rt) if runtime is None else None     # only when the runtime is auto-chosen
+    extra = _discovered(config, hw, rt, progress) if runtime is None else []
     if model_id:
-        entry = catalog.get(model_id)
+        entry = _entry(model_id, extra)
         if "chat" not in entry["roles"] or entry["params_b"] < fit.MIN_CHAT_PARAMS_B:
             return {"ok": False, "error": f"{model_id} is not a chat model of at least {fit.MIN_CHAT_PARAMS_B:.0f}B"}
         on = "prism" if prism is not None and catalog.artifact(entry, rt.name) is None \
@@ -203,7 +232,7 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
             progress(f"warning: {model_id} {cand['reasons'][0]}; trying anyway because it was requested")
         queue = [cand]  # an explicit choice is never silently replaced
     else:
-        queue = [c for c in _ranked(hw, config, rt, prism) if c["ok"]][:1 + MAX_FALLBACKS]
+        queue = [c for c in _ranked(hw, config, rt, prism, extra) if c["ok"]][:1 + MAX_FALLBACKS]
         if not queue:
             return {"ok": False, "error": plan(config, hw, rt)["notes"][-1]}
 
@@ -211,7 +240,7 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
     main = rt
     for cand in queue:
         rt = prism if cand.get("runtime") == "prism" and prism is not None else main
-        entry = catalog.get(cand["id"])
+        entry = _entry(cand["id"], extra)
         decision, why, link = _license_gate(entry, rt, config, accept_license, hub)
         if decision == "ask":
             return {"ok": False, "needs_license": {"model": entry["id"], "reason": why, "link": link},

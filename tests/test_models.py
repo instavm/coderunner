@@ -33,7 +33,8 @@ class TempHome(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def config(self, **models):
-        return Config({"models": models} if models else {}, path=self.home / "config.json")
+        # Tests never reach Hugging Face; discovery has its own tests with a fake hub.
+        return Config({"models": {"discover": False, **models}}, path=self.home / "config.json")
 
 
 def fake_run(outputs):
