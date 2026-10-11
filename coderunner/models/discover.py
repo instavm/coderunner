@@ -49,9 +49,22 @@ QUANT_BITS = {"BF16": 16, "F16": 16, "Q8_0": 8.5, "Q6_K": 6.6, "Q5_K_M": 5.7, "U
               "UD-Q2_K_XL": 2.9, "Q2_K": 2.6, "IQ2_M": 2.7, "IQ2_XXS": 2.1, "UD-IQ1_S": 1.8, "IQ1_S": 1.6}
 QUANT = re.compile(r"(?i)(?:^|[-_./])((?:UD-)?(?:IQ\d_(?:XXS|XS|NL|S|M)|Q\d_K(?:_(?:XL|S|M|L))?|Q\d_\d|BF16|F16|MXFP4))"
                    r"(?=[-_.](?:\d{5}-of|gguf)|\.gguf|/)")
+# Families whose chat template and tool calls Ollama handles; others (DeepSeek V4, GLM-5.x, MiMo, Step,
+# Ling...) need llama-server --jinja or MLX, where tool calls go through the model's own template.
+OLLAMA_FAMILIES = ("qwen", "gemma", "granite", "llama", "mistral", "phi", "gpt_oss", "olmo", "lfm", "exaone")
+# Known breakages per machine: (model family or repo fragment, test on the hardware, reason).
+KNOWN_BROKEN = (
+    ("deepseek_v4", lambda hw: hw.gpu == "nvidia" and hw.unified and hw.compute_cap >= 12,
+     "llama.cpp corrupts copied strings, tool arguments included, on GB10 (llama.cpp issue 28132)"),
+    ("Qwen3.8-Flash-Next", lambda hw: "Thor" in hw.chip, "broken on Jetson Thor / SM110 (llama.cpp issue 27763)"),
+    ("DeepSeek-V4.1", lambda hw: True, "no llama.cpp support yet (llama.cpp pull request 28696)"),
+)
 MIN_BITS = 2.0            # below this quality collapses
 MIN_PARAMS_B = 4.0        # smaller models got tool arguments wrong in testing (fit.MIN_CHAT_PARAMS_B)
 GOOD_BITS = 4.0           # prefer at least this when it fits
+MAX_USEFUL_BITS = 6.6     # Q6_K: higher precision is barely better and much slower
+FAST_TOK_S = 15.0         # prefer a build at least this fast over a more precise, slower one
+CLEARLY_BETTER = 1.0      # prior margin (about twice the parameters) to rank ahead of a curated model
 CACHE_TTL = 24 * 3600
 RECENT_DAYS = 120
 
@@ -254,9 +267,21 @@ class Discovery:
 
 # ---- fitting to this machine -----------------------------------------------------------------------
 
+def broken(model: dict, hw) -> str | None:
+    """Why this model cannot be trusted on this machine, if a known issue applies."""
+    for fragment, applies, reason in KNOWN_BROKEN:
+        if (fragment in model.get("family", "") or fragment in model.get("repo", "")) and applies(hw):
+            return reason
+    return None
+
+
 def best_build(model: dict, hw, config, runtime: str | None) -> dict | None:
     """The model as a catalog entry with the best-quality build that fits this machine, or None."""
     from . import fit
+    if broken(model, hw):
+        return None
+    if runtime == "ollama" and not str(model.get("family", "")).startswith(OLLAMA_FAMILIES):
+        return None
     options: list[tuple[float, dict]] = []
     if runtime in (None, "llama.cpp", "ollama"):
         for quant, build in model["quants"].items():
@@ -272,48 +297,59 @@ def best_build(model: dict, hw, config, runtime: str | None) -> dict | None:
         bits = {"4bit": 4.5, "mxfp4": 4.25, "6bit": 6.5, "8bit": 8.5, "3bit": 3.5}.get(mlx["bits"], 4.5)
         options.append((bits, {"mlx": {"repo": mlx["repo"], "size_gb": mlx["size_gb"], "bits": bits}}))
     best = None
-    for bits, artifacts in sorted(options, key=lambda option: -option[0]):
+    for bits, artifacts in options:
         entry = {**{k: v for k, v in model.items() if k not in ("quants", "mmproj", "mlx")},
                  "artifacts": artifacts, "rank": 0}
         cand = fit.candidate(entry, hw, config, "chat", runtime)
         if not cand["ok"]:
             continue
-        score = (cand["fit"] == "good", bits >= GOOD_BITS, bits)
+        # Fits well at 4 bits or more, then with room for pages, then fast enough for agent loops; beyond
+        # 6-bit precision the gain is too small to pay for in speed.
+        score = (cand["fit"] == "good", bits >= GOOD_BITS, cand["ctx"] >= fit.MIN_AGENT_CTX,
+                 cand["tok_s"] >= FAST_TOK_S, min(bits, MAX_USEFUL_BITS), cand["tok_s"])
         if best is None or score > best[0]:
             best = (score, entry, cand)
-        if cand["fit"] == "good" and bits >= GOOD_BITS:
-            break                      # the highest-quality build that fits well
     return best[1] if best else None
 
 
 def quality(entry: dict) -> float:
-    """A rough prior for ranking models we have not measured: size, active size, recency and precision."""
+    """A rough prior for ranking models we have not measured: size, active size and precision. (Every
+    discovered model is recent, so recency would only tilt the comparison against the curated ones.)"""
     total = max(entry.get("params_b", 1), 0.5)
     active = max(entry.get("active_params_b", total), 0.5)
-    released = entry.get("released") or "2025-01-01"
-    months = (date.fromisoformat(released[:10]) - date(2025, 1, 1)).days / 30 if released[:4].isdigit() else 0
     art = next(iter(entry.get("artifacts", {}).values()), {})
     bits = art.get("bits", 4.8)
     precision = -1.5 if bits < 3 else -0.6 if bits < 4 else 0.0
-    return math.log2(total) + 0.5 * math.log2(active) + 0.08 * months + precision
+    return math.log2(total) + 0.5 * math.log2(active) + precision
 
 
 def place(discovered: list[dict], catalog_entries: list[dict]) -> list[dict]:
-    """Give discovered entries a rank on the catalog's scale: just behind the curated model whose prior
-    is closest below theirs, so measured, curated models win ties."""
+    """Give discovered entries a rank on the catalog's scale. A model goes just behind the best curated
+    model it matches, so measured, curated models win ties, and ahead of it only when its prior is clearly
+    higher (e.g. a 300B mixture of experts against a 120B one)."""
     scored = sorted(((quality(e), e["rank"]) for e in catalog_entries if "chat" in e.get("roles", [])), reverse=True)
     for entry in discovered:
         mine = quality(entry)
-        below = [rank for score, rank in scored if score <= mine]
-        entry["rank"] = (min(below) + 0.5) if below else (max((r for _, r in scored), default=10) + 1)
+        below = [(rank, score) for score, rank in scored if score <= mine]
+        if not below:
+            entry["rank"] = max((r for _, r in scored), default=10) + 1
+            continue
+        rank, score = min(below)
+        entry["rank"] = rank - 0.5 if mine - score >= CLEARLY_BETTER else rank + 0.5
     return discovered
+
+
+def usable(model: dict) -> bool:
+    """Whether a cached model still passes the filters, which may have changed since it was written."""
+    name = str(model.get("repo", "")).split("/", 1)[-1]
+    return not (NOT_CHAT.search(name) or SPECIALIST.search(name)) and model.get("params_b", 0) >= MIN_PARAMS_B
 
 
 def cached(progress: Callable[[str], None] | None = None, refresh: bool = False, hub: Hub | None = None) -> list[dict]:
     path = paths.assistant_dir() / "models" / "discovered.json"
     if not refresh and path.exists() and time.time() - path.stat().st_mtime < CACHE_TTL:
         try:
-            return json.loads(path.read_text())
+            return [m for m in json.loads(path.read_text()) if usable(m)]
         except (OSError, json.JSONDecodeError):
             pass
     try:
@@ -321,7 +357,7 @@ def cached(progress: Callable[[str], None] | None = None, refresh: bool = False,
     except Exception as exc:          # offline or rate-limited: the catalog still works
         if progress:
             progress(f"model discovery unavailable: {exc}")
-        return json.loads(path.read_text()) if path.exists() else []
+        return [m for m in json.loads(path.read_text()) if usable(m)] if path.exists() else []
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(models, indent=1))
     return models

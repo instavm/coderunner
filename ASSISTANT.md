@@ -56,10 +56,13 @@ images. The same process runs on every machine, from an 8 GB MacBook Air to a
    speed factors) and from recent releases discovered on Hugging Face from
    trusted publishers (`coderunner models discover`).
 2. Each model's own config gives its context-cache cost; its real GGUF and
-   MLX builds give the file sizes; the best-quality build that fits this
-   machine's budget at a usable context is chosen (Q8 where there is room,
-   4-bit or lower where there is not).
-3. Candidates are ranked by fit, speed and quality, and the top ones are
+   MLX builds give the file sizes; the build chosen is the most precise one
+   that fits this machine's budget at 4 bits or more with at least 16K of
+   context, up to 6-bit when it still runs at 15 tok/s or more (beyond that,
+   precision costs more speed than it is worth in long agent loops).
+3. Candidates are ranked by fit, context, speed and quality. A discovered
+   model sits just behind the curated model it matches and ahead of it only
+   when it is clearly bigger, so measured models win ties. The top ones are
    downloaded and tested on the machine itself until one passes. It then
 pulls it through Ollama, or straight from Hugging Face as GGUF for llama.cpp
 when you prefer, starts the runtime and runs a smoke test (exact tool
@@ -89,6 +92,40 @@ declares success. If a model fails the test, the next candidate is tried.
   reads prompts at 81 tok/s; Bonsai 2 27B 9 and 70. Reading the prompt is the
   slow part on this class of chip, so the agent keeps its instructions and
   conversation stable for the runtime's prompt cache.
+
+* Runtimes per model: Ollama serves families whose tool calls it parses;
+  others (GLM-5.x, DeepSeek V4, MiMo, Ling...) run on llama.cpp's own server
+  next to it. When llama.cpp is missing, the plan says which better model it
+  would allow and how to install it.
+* NVIDIA cards with plenty of system RAM run mixture-of-experts models with
+  the experts in RAM (llama.cpp `--cpu-moe`): a 12 GB card with 64 GB of RAM
+  runs a 35B-A3B model instead of a 9B one.
+* Combinations known to be broken are skipped with the reason, e.g. DeepSeek
+  V4 on GB10 (copied strings, tool arguments included, come out corrupted)
+  and DeepSeek V4.1, which llama.cpp does not support yet.
+* An 8 GB Mac gets a compact 4B build, text only: the vision part does not
+  fit next to the sandbox and macOS.
+* On Macs with 48 GB or more, the plan notes when raising the GPU memory
+  limit (`sudo sysctl iogpu.wired_limit_mb=...`, until restart) would allow
+  a better model, e.g. Qwen3.5-122B-A10B on a 96 GB Mac.
+* Several machines (e.g. two or four DGX Sparks) can pool memory through
+  llama.cpp's RPC mode: list the others under `models.cluster` as
+  `{"host", "port", "memory_gb"}`, each running `rpc-server`. This is
+  experimental and untested on real hardware. The RPC link has no
+  authentication or encryption, so use it only on a direct cable or a
+  private network you control.
+* With discovery today (October 2026) the planner picks, by its estimates:
+
+  | Machine | Assistant model |
+  | --- | --- |
+  | 8 GB Mac | Qwen3.5-4B compact, text only, 8K context |
+  | 16 GB Mac | Qwen3.5-9B |
+  | 64 GB Mac, 24-32 GB NVIDIA | Qwen3.8-27B |
+  | 128 GB Mac, DGX Spark | Qwen3.5-122B-A10B |
+  | 256-512 GB Mac Studio | GLM-5.3-Flash (llama.cpp) |
+  | 12 GB NVIDIA, 64 GB RAM | Ling-3.0-flash, experts in RAM (llama.cpp) |
+
+  Prism ML's builds (table above) come first where their runtime is used.
 
 * The sandbox runs the lite profile with the assistant: code runs as plain
   processes in a work folder per session (files persist, variables do not),

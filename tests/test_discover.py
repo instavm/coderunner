@@ -1,12 +1,14 @@
+import json
 import os
 import pathlib
 import tempfile
 import unittest
 from unittest import mock
 
+from coderunner import paths
 from coderunner.config import Config
 from coderunner.models import catalog, discover, manager
-from test_models import FakeRuntime, apple, nvidia
+from test_models import FakeLlama, FakeRuntime, apple, linux, nvidia
 
 GiB = 1e9
 
@@ -34,10 +36,10 @@ def tree(*files):
     return [{"path": name, "size": int(size * GiB)} for name, size in files]
 
 
-DENSE = {"num_hidden_layers": 64, "layer_types": ["linear_attention", "linear_attention", "linear_attention",
+DENSE = {"model_type": "qwen3_5", "num_hidden_layers": 64, "layer_types": ["linear_attention", "linear_attention", "linear_attention",
                                                   "full_attention"] * 16,
          "num_attention_heads": 24, "num_key_value_heads": 4, "head_dim": 256, "max_position_embeddings": 262144}
-MOE = {"text_config": {"num_hidden_layers": 43, "num_attention_heads": 64, "kv_lora_rank": 512,
+MOE = {"model_type": "deepseek_v4", "text_config": {"num_hidden_layers": 43, "num_attention_heads": 64, "kv_lora_rank": 512,
                        "qk_rope_head_dim": 64, "n_routed_experts": 256, "num_experts_per_tok": 8,
                        "n_shared_experts": 1, "max_position_embeddings": 1048576}}
 
@@ -106,6 +108,62 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(studio["artifacts"]["gguf"]["quant"], "UD-Q4_K_XL")
         spark = discover.best_build(big, nvidia(24), self.config, "llama.cpp")
         self.assertIsNone(spark)
+
+    def test_precision_is_not_bought_with_speed(self):
+        agent = self.models["lab/Agent-27B"]
+        # Q8_0 fits a 64 GB M4 Max but runs at ~10 tok/s; the 4-bit build stays above 15.
+        mac = discover.best_build(agent, apple(64, "Apple M4 Max", sandbox=1), self.config, "llama.cpp")
+        self.assertEqual(mac["artifacts"]["gguf"]["quant"], "UD-Q4_K_XL")
+
+    def test_clearly_bigger_models_rank_ahead_of_curated_ones(self):
+        studio = apple(512, "Apple M3 Ultra", sandbox=1)
+        big = discover.best_build(self.models["lab/Big-300B-A30B"], studio, self.config, "llama.cpp")
+        agent = discover.best_build(self.models["lab/Agent-27B"], studio, self.config, "llama.cpp")
+        best_curated = min(e["rank"] for e in catalog.models() if "chat" in e["roles"])
+        placed = {e["id"]: e["rank"] for e in discover.place([big, agent], catalog.models())}
+        self.assertLess(placed["hf-lab-big-300b-a30b"], best_curated)
+        self.assertGreater(placed["hf-lab-agent-27b"], catalog.get("qwen3.8-27b")["rank"])    # curated wins ties
+
+    def test_cached_models_are_filtered_again(self):
+        path = paths.assistant_dir() / "models" / "discovered.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stale = [*self.models.values(), {**self.models["lab/Agent-27B"], "repo": "lab/Fara2-27B"},
+                 {**self.models["lab/Agent-27B"], "repo": "lab/Tiny-1B", "params_b": 1.0}]
+        path.write_text(json.dumps(stale))
+        self.assertEqual({m["repo"] for m in discover.cached()}, set(self.models))
+
+    def test_models_ollama_cannot_serve_and_known_breakages(self):
+        big, studio = self.models["lab/Big-300B-A30B"], apple(512, "Apple M3 Ultra", sandbox=1)
+        self.assertIsNone(discover.best_build(big, studio, self.config, "ollama"))      # no parser for its tools
+        self.assertIsNotNone(discover.best_build(big, studio, self.config, "llama.cpp"))
+        spark = linux(128, {"nvidia-smi": "NVIDIA GB10, [N/A], [N/A], 12.1\n"})
+        self.assertIn("28132", discover.broken(big, spark))
+        self.assertIsNone(discover.best_build(big, spark, self.config, "llama.cpp"))
+        self.assertIsNone(discover.broken(big, studio))
+        self.assertIsNone(discover.broken({**big, "repo": "lab/Qwen3.8-Flash-Next"}, studio))
+        thor = linux(128, {"nvidia-smi": "NVIDIA Thor, [N/A], [N/A], 11.0\n"})
+        self.assertIn("27763", discover.broken({**big, "repo": "lab/Qwen3.8-Flash-Next"}, thor))
+
+    def test_discovered_models_route_to_llama_cpp(self):
+        cfg = Config({"models": {"discover": True}}, path=pathlib.Path(self.tmp.name) / "c3.json")
+        studio = apple(512, "Apple M3 Ultra", sandbox=1)
+        with mock.patch.object(discover, "cached", return_value=list(self.models.values())), \
+                mock.patch.object(manager, "choose_runtime", return_value=FakeRuntime()), \
+                mock.patch.object(manager, "_prism", return_value=None):
+            with mock.patch.object(manager, "_llama", return_value=FakeLlama()):
+                result = manager.plan(cfg, hw=studio)
+            found = {c["id"]: c for c in [result["model"], *result["alternatives"]]}
+            self.assertEqual(found["hf-lab-big-300b-a30b"]["runtime"], "llama.cpp")
+            self.assertEqual(found["hf-lab-agent-27b"]["runtime"], "ollama")
+            with mock.patch.object(manager, "_llama", return_value=None):
+                result = manager.plan(cfg, hw=studio)
+            rejected = {c["id"]: c for c in result["rejected"]}
+            self.assertIn("needs llama.cpp", rejected["hf-lab-big-300b-a30b"]["reasons"][0])
+            self.assertIn("hf-lab-big-300b-a30b would rank higher but needs llama.cpp", " ".join(result["notes"]))
+            done = manager.setup(cfg, model_id="hf-lab-big-300b-a30b", hw=studio, progress=lambda m: None,
+                                 embedding=False)
+            self.assertFalse(done["ok"])
+            self.assertIn("brew install llama.cpp", done["error"])
 
     def test_discovered_models_rank_among_catalog_models_and_reach_setup(self):
         placed = discover.place([discover.best_build(self.models["lab/Agent-27B"], nvidia(24), self.config,

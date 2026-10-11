@@ -16,7 +16,7 @@ from typing import Callable
 from ..llm import LLM
 from . import catalog, fit, hardware, licenses, smoketest
 from .hub import Hub
-from .runtimes import OllamaRuntime, PrismRuntime, Runtime, choose_runtime, install_hint
+from .runtimes import LlamaCppRuntime, OllamaRuntime, PrismRuntime, Runtime, choose_runtime, install_hint
 
 MAX_FALLBACKS = 2
 LOCAL = ("ollama", "llama.cpp", "prism")
@@ -31,7 +31,16 @@ def _prism(config, hw: hardware.Hardware, rt: Runtime | None) -> PrismRuntime | 
     return prism if prism.available() else None
 
 
-def _discovered(config, hw, rt: Runtime | None, progress: Callable[[str], None] | None = None) -> list[dict]:
+def _llama(config, rt: Runtime | None) -> Runtime | None:
+    """llama.cpp next to Ollama, for models Ollama cannot serve: tool formats it does not parse, experts in RAM."""
+    if rt is None or rt.name != "ollama":
+        return None
+    llama = LlamaCppRuntime(config)
+    return llama if llama.available() else None
+
+
+def _discovered(config, hw, rt: Runtime | None, progress: Callable[[str], None] | None = None,
+                llama: Runtime | None = None) -> list[dict]:
     """Recent models found on Hugging Face, each with the best build that fits this machine."""
     if not config.get("models.discover", True) or rt is None or rt.name not in ("ollama", "llama.cpp", "mlx"):
         return []
@@ -41,20 +50,31 @@ def _discovered(config, hw, rt: Runtime | None, progress: Callable[[str], None] 
     for model in discover.cached(progress):
         if model["repo"].lower() in known:
             continue                        # curated entry with measured factors wins
-        entry = discover.best_build(model, hw, config, rt.name)
+        entry, on = discover.best_build(model, hw, config, rt.name), rt.name
+        if entry is None and rt.name == "ollama":
+            entry, on = discover.best_build(model, hw, config, "llama.cpp"), "llama.cpp"
         if entry:
+            entry["runtime"] = on
+            entry["missing_runtime"] = on == "llama.cpp" and llama is None     # worth installing llama.cpp
             entries.append(entry)
     return discover.place(entries, catalog.models())
 
 
-def _ranked(hw, config, rt: Runtime | None, prism: Runtime | None, extra: list[dict] | None = None) -> list[dict]:
+def _ranked(hw, config, rt: Runtime | None, prism: Runtime | None, extra: list[dict] | None = None,
+            llama: Runtime | None = None) -> list[dict]:
     """Chat candidates for the main runtime, Prism's build and discovered models, best first."""
     found = fit.recommend(hw, config, "chat", _artifact_runtime(rt), include_rejected=True)
     if prism is not None:
         found += fit.recommend(hw, config, "chat", "prism")
+    if llama is not None:
+        found += [c for c in fit.recommend(hw, config, "chat", "llama.cpp") if c.get("offload")]
     for entry in extra or []:
-        cand = fit.candidate(entry, hw, config, "chat", _artifact_runtime(rt))
+        cand = fit.candidate(entry, hw, config, "chat", entry.get("runtime") or _artifact_runtime(rt))
         cand["discovered"] = True
+        if entry.get("missing_runtime") and cand["ok"]:
+            cand["ok"] = False
+            cand["reasons"].insert(0, f"needs {cand['runtime']}, which is not installed")
+            cand["missing_runtime"] = True
         found.append(cand)
     return sorted((c for c in found if c["ok"]), key=fit._order) + [c for c in found if not c["ok"]]
 
@@ -76,7 +96,13 @@ class Endpoint:
 
 
 def _hardware(config, hw: hardware.Hardware | None) -> hardware.Hardware:
-    return hw or hardware.detect(float(config.get("sandbox.memory_gb") or 1))
+    hw = hw or hardware.detect(float(config.get("sandbox.memory_gb") or 1))
+    peers = [node for node in (config.get("models.cluster") or []) if node.get("host")]
+    if peers and hw.nodes == 1:
+        # Machines pooled over llama.cpp RPC (e.g. several DGX Sparks): each lends most of its memory.
+        extra = sum(max(0.0, float(node.get("memory_gb") or 0) * 0.85 - 4) for node in peers)
+        hw = dataclasses.replace(hw, budget_gb=hw.budget_gb + extra, nodes=1 + len(peers))
+    return hw
 
 
 def _runtime(config, hw, runtime: str | Runtime | None) -> Runtime | None:
@@ -112,8 +138,9 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
     rt = _runtime(config, hw, runtime)
     art = _artifact_runtime(rt)
     prism = _prism(config, hw, rt) if runtime is None else None     # only when the runtime is auto-chosen
-    extra = _discovered(config, hw, rt) if runtime is None else []
-    candidates = _ranked(hw, config, rt, prism, extra)
+    llama = _llama(config, rt) if runtime is None else None
+    extra = _discovered(config, hw, rt, llama=llama) if runtime is None else []
+    candidates = _ranked(hw, config, rt, prism, extra, llama)
     viable = [c for c in candidates if c["ok"]]
     chosen = viable[0] if viable else None
     notes = []
@@ -125,7 +152,32 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
                      "models.base_url at a bigger machine with models.runtime set to openai.")
     elif chosen["license"] == "ask":
         notes.append(f"{chosen['id']}: {chosen['license_reason']}")
-    chosen_rt = prism if chosen and chosen.get("runtime") == "prism" else rt
+    if chosen and hw.gpu == "apple" and hw.ram_gb >= 48:
+        # macOS lets the GPU wire about 75% of memory; on big Macs the limit can be raised until restart.
+        limit = hw.ram_gb - 8
+        raised = dataclasses.replace(hw, gpu_limit_gb=limit,
+                                     budget_gb=hardware.apple_budget(hw.ram_gb, limit, hw.sandbox_memory_gb))
+        better = min((c for c in _ranked(raised, config, rt, prism, extra, llama)
+                      if c["ok"] and c["tok_s"] >= fit.MIN_TOK_S and c["rank"] < chosen["rank"]),
+                     key=lambda c: c["rank"], default=None)
+        if better:
+            notes.append(f"Raising the GPU memory limit allows {better['id']} ({better['need_gb']:.0f} GB): "
+                         f"sudo sysctl iogpu.wired_limit_mb={int(limit * 1024)} (until restart)")
+    unserved = [c for c in candidates if c.get("missing_runtime")]
+    if runtime is None and llama is None and rt is not None and rt.name == "ollama":
+        # Mixture-of-experts models with their experts in system RAM, which only llama.cpp does.
+        unserved += [{**c, "missing_runtime": True}
+                     for c in fit.recommend(hw, config, "chat", "llama.cpp") if c.get("offload")]
+    missing = min((c for c in unserved if c["tok_s"] >= fit.MIN_TOK_S
+                   and (chosen is None or c["rank"] < chosen["rank"])), key=fit._order, default=None)
+    if missing:
+        notes.append(f"{missing['id']} would rank higher but needs {missing['runtime']}: "
+                     f"{install_hint(hw, missing['runtime'])}")
+    chosen_rt = rt
+    if chosen and chosen.get("runtime") == "prism":
+        chosen_rt = prism
+    elif chosen and chosen.get("runtime") == "llama.cpp" and llama is not None:
+        chosen_rt = llama
     return {
         "hardware": hw.to_dict(),
         "runtime": chosen_rt.describe() if chosen_rt else None,
@@ -136,7 +188,7 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
                      "link": chosen["license_link"]} if chosen else None),
         # Embeddings come from Ollama, also when Prism's build serves the chat model.
         "embedding": next(iter(fit.recommend(hw, config, "embedding", "ollama")), None)
-        if art == "ollama" or (chosen_rt is prism and OllamaRuntime(config).available()) else None,
+        if art == "ollama" or (chosen_rt is not rt and OllamaRuntime(config).available()) else None,
         "notes": notes,
     }
 
@@ -220,27 +272,37 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
         return _external(config, rt, model_id, progress, smoke)
 
     prism = _prism(config, hw, rt) if runtime is None else None     # only when the runtime is auto-chosen
-    extra = _discovered(config, hw, rt, progress) if runtime is None else []
+    llama = _llama(config, rt) if runtime is None else None
+    extra = _discovered(config, hw, rt, progress, llama) if runtime is None else []
     if model_id:
         entry = _entry(model_id, extra)
         if "chat" not in entry["roles"] or entry["params_b"] < fit.MIN_CHAT_PARAMS_B:
             return {"ok": False, "error": f"{model_id} is not a chat model of at least {fit.MIN_CHAT_PARAMS_B:.0f}B"}
-        on = "prism" if prism is not None and catalog.artifact(entry, rt.name) is None \
-            and catalog.artifact(entry, "prism") else rt.name
+        on = entry.get("runtime") or ("prism" if prism is not None and catalog.artifact(entry, rt.name) is None
+                                      and catalog.artifact(entry, "prism") else rt.name)
+        if on == "llama.cpp" and rt.name != "llama.cpp" and llama is None:
+            return {"ok": False, "error": f"{model_id} needs llama.cpp. {install_hint(hw, 'llama.cpp')}"}
         cand = fit.candidate(entry, hw, config, "chat", on)
         if cand["fit"] == "no":
             progress(f"warning: {model_id} {cand['reasons'][0]}; trying anyway because it was requested")
         queue = [cand]  # an explicit choice is never silently replaced
     else:
-        queue = [c for c in _ranked(hw, config, rt, prism, extra) if c["ok"]][:1 + MAX_FALLBACKS]
+        queue = [c for c in _ranked(hw, config, rt, prism, extra, llama) if c["ok"]][:1 + MAX_FALLBACKS]
         if not queue:
             return {"ok": False, "error": plan(config, hw, rt)["notes"][-1]}
 
     attempts = []
     main = rt
     for cand in queue:
-        rt = prism if cand.get("runtime") == "prism" and prism is not None else main
+        if cand.get("runtime") == "prism" and prism is not None:
+            rt = prism
+        elif cand.get("runtime") == "llama.cpp" and llama is not None:
+            rt = llama
+        else:
+            rt = main
         entry = _entry(cand["id"], extra)
+        if not cand.get("vision") and "vision" in entry.get("roles", []):
+            entry = {**entry, "roles": [r for r in entry["roles"] if r != "vision"]}    # projector does not fit
         decision, why, link = _license_gate(entry, rt, config, accept_license, hub)
         if decision == "ask":
             return {"ok": False, "needs_license": {"model": entry["id"], "reason": why, "link": link},
@@ -256,7 +318,8 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
                 rt.start()  # the Ollama API does the pulling
             if not rt.installed(entry):
                 rt.pull(entry, progress)
-            model = rt.prepare(entry, cand["ctx"])
+            model = rt.prepare(entry, cand["ctx"], offload=True) if cand.get("offload") else \
+                rt.prepare(entry, cand["ctx"])
             rt.start()
             vision = rt.vision(entry, model)
             progress(f"smoke testing {model}{' with vision' if vision else ''}")
@@ -282,7 +345,7 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
         config.set("models.context", cand["ctx"])
         if embedding:
             # Prism's build serves only the chat model; embeddings come from Ollama beside it.
-            embedder = main if rt is prism and main is not None and main.name == "ollama" else rt
+            embedder = main if rt is not main and main is not None and main.name == "ollama" else rt
             if embedder is not rt and not embedder.running():
                 embedder.start()
             config.set("models.embedding", _setup_embedding(config, embedder, hw, progress))

@@ -209,13 +209,31 @@ class FitTests(TempHome):
 
     def test_nvidia_recommendations(self):
         cfg = self.config()
-        picks12 = fit.recommend(nvidia(12, name="NVIDIA GeForce RTX 4070"), cfg, runtime="llama.cpp")
+        rtx4070 = nvidia(12, name="NVIDIA GeForce RTX 4070")
+        picks12 = fit.recommend(rtx4070, cfg, runtime="llama.cpp")
         self.assertSensible(picks12)
-        self.assertEqual(picks12[0]["id"], "qwen3.5-9b")
+        # With 64 GB of RAM, a mixture-of-experts model keeps its experts in system RAM (llama.cpp --cpu-moe).
+        self.assertEqual((picks12[0]["id"], picks12[0]["offload"]), ("qwen3.6-35b-a3b", True))
+        self.assertIn("experts in system RAM", " ".join(picks12[0]["reasons"]))
+        self.assertLess(picks12[0]["need_gb"], rtx4070.budget_gb)
+        self.assertGreater(picks12[0]["tok_s"], fit.MIN_TOK_S)
+        # Ollama cannot place experts in RAM, and a machine without spare RAM cannot either.
+        self.assertEqual(fit.recommend(rtx4070, cfg, runtime="ollama")[0]["id"], "qwen3.5-9b")
+        small = linux(16, {"nvidia-smi": "NVIDIA GeForce RTX 4070, 12288, 11776\n"})
+        self.assertEqual(fit.recommend(small, cfg, runtime="llama.cpp")[0]["id"], "qwen3.5-9b")
+        spark = linux(128, {"nvidia-smi": "NVIDIA GB10, [N/A], [N/A], 12.1\n"})
+        self.assertFalse(any(c.get("offload") for c in fit.recommend(spark, cfg, runtime="llama.cpp")))
         picks24 = fit.recommend(nvidia(24), cfg, runtime="llama.cpp")
         self.assertSensible(picks24)
         self.assertGreaterEqual(picks24[0]["params_b"], 20)
         self.assertTrue(picks24[0]["vision"])
+
+    def test_eight_gb_macs_run_a_compact_model_text_only(self):
+        for chip in ("Apple M1", "Apple M3"):
+            with self.subTest(chip=chip):
+                top = fit.recommend(apple(8, chip, sandbox=1), self.config())[0]
+                self.assertEqual((top["id"], top["vision"]), ("qwen3.5-4b-compact", False))
+                self.assertIn("text only: the vision projector does not fit", top["reasons"])
 
     def test_small_models_never_chat(self):
         rejected = fit.recommend(apple(128, "Apple M4 Max"), self.config(), include_rejected=True)
@@ -555,6 +573,22 @@ class RuntimeTests(TempHome):
         with self.assertRaisesRegex(RuntimeError, "not been downloaded"):
             rt.prepare(catalog.get("qwen3.5-4b"), 8192)
 
+    def test_llama_server_offload_and_cluster_flags(self):
+        cfg = self.config(cluster=[{"host": "10.0.0.2", "memory_gb": 128}, {"host": "10.0.0.3", "port": 50060}])
+        rt = runtimes.LlamaCppRuntime(cfg)
+        entry = catalog.get("qwen3.6-35b-a3b")
+        rt._save({"models": {entry["id"]: {"model": "/m/q.gguf"}}})
+        with mock.patch.object(rt, "running", return_value=False):
+            rt.prepare(entry, 32768, offload=True)
+        with mock.patch.object(rt, "binary", return_value="llama-server"):
+            cmd = rt.command(rt._state()["active"])
+        self.assertIn("--cpu-moe", cmd)
+        self.assertEqual(cmd[cmd.index("--rpc") + 1], "10.0.0.2:50052,10.0.0.3:50060")
+        with mock.patch.object(rt, "running", return_value=False):
+            rt.prepare(entry, 32768)
+        with mock.patch.object(rt, "binary", return_value="llama-server"):
+            self.assertNotIn("--cpu-moe", rt.command(rt._state()["active"]))
+
     def test_choose_runtime(self):
         self.assertIsInstance(runtimes.choose_runtime(self.config(runtime="llama.cpp")), runtimes.LlamaCppRuntime)
         external = runtimes.choose_runtime(self.config(runtime="openai", base_url="http://10.0.0.2:1234/v1/"))
@@ -579,7 +613,7 @@ class FakeRuntime(runtimes.Runtime):
 
     def __init__(self):
         super().__init__()
-        self.pulled, self.prepared = [], []
+        self.pulled, self.prepared, self.offloaded = [], [], []
 
     def available(self):
         return True
@@ -590,9 +624,16 @@ class FakeRuntime(runtimes.Runtime):
     def pull(self, entry, progress=None):
         self.pulled.append(entry["id"])
 
-    def prepare(self, entry, ctx):
+    def prepare(self, entry, ctx, offload=False):
         self.prepared.append((entry["id"], ctx))
+        if offload:
+            self.offloaded.append(entry["id"])
         return self.model_id(entry)
+
+
+class FakeLlama(FakeRuntime):
+    name = "llama.cpp"
+    base_url = "http://127.0.0.1:8/v1"
 
 
 def fake_smoke(outcomes):
@@ -618,6 +659,42 @@ class ManagerTests(TempHome):
         self.assertIn("qwen3.8-27b", [c["id"] for c in result["rejected"]])
         self.assertEqual(result["embedding"]["id"], "embeddinggemma-2")
         self.assertIsNone(manager.plan(self.config(), hw=apple(8, "Apple M1"), runtime=FakeRuntime())["model"])
+
+    def test_big_macs_are_told_about_the_gpu_memory_limit(self):
+        notes = manager.plan(self.config(), hw=apple(96, "Apple M2 Max", sandbox=1), runtime=FakeRuntime())["notes"]
+        self.assertIn("allows qwen3.5-122b-a10b", " ".join(notes))
+        self.assertIn("sudo sysctl iogpu.wired_limit_mb=90112", " ".join(notes))
+        self.assertFalse(manager.plan(self.config(), hw=apple(128, "Apple M4 Max", sandbox=1),
+                                      runtime=FakeRuntime())["notes"])        # already runs the best model
+
+    def test_spark_cluster_pools_memory(self):
+        spark = linux(128, {"nvidia-smi": "NVIDIA GB10, [N/A], [N/A], 12.1\n"})
+        cfg = self.config(cluster=[{"host": "spark-2.local", "memory_gb": 128}])
+        hw = manager._hardware(cfg, spark)
+        self.assertEqual(hw.nodes, 2)
+        self.assertAlmostEqual(hw.budget_gb, spark.budget_gb + 128 * 0.85 - 4)
+        self.assertEqual(manager.plan(cfg, hw=spark, runtime=FakeRuntime())["hardware"]["nodes"], 2)
+
+    def test_experts_in_ram_run_on_llama_cpp_next_to_ollama(self):
+        rtx4070 = nvidia(12, name="NVIDIA GeForce RTX 4070")
+        with mock.patch.object(manager, "choose_runtime", return_value=FakeRuntime()), \
+                mock.patch.object(manager, "_prism", return_value=None), \
+                mock.patch.object(runtimes.LlamaCppRuntime, "available", return_value=False):
+            result = manager.plan(self.config(), hw=rtx4070)
+        self.assertEqual(result["model"]["id"], "qwen3.5-9b")
+        self.assertIn("qwen3.6-35b-a3b would rank higher but needs llama.cpp", " ".join(result["notes"]))
+        main, llama = FakeRuntime(), FakeLlama()
+        with mock.patch.object(manager, "choose_runtime", return_value=main), \
+                mock.patch.object(manager, "_prism", return_value=None), \
+                mock.patch.object(manager, "_llama", return_value=llama):
+            result = manager.plan(self.config(), hw=rtx4070)
+            self.assertEqual((result["model"]["id"], result["model"]["runtime"]), ("qwen3.6-35b-a3b", "llama.cpp"))
+            self.assertEqual(result["runtime"]["name"], "llama.cpp")
+            self.assertEqual(result["embedding"]["id"], "embeddinggemma-2")        # still from Ollama
+            done = manager.setup(self.config(), hw=rtx4070, progress=lambda m: None, embedding=False,
+                                 smoke=fake_smoke({}))
+        self.assertTrue(done["ok"], done)
+        self.assertEqual((llama.offloaded, main.prepared), (["qwen3.6-35b-a3b"], []))
 
     def test_setup_falls_back_and_writes_config(self):
         rt, smoke = FakeRuntime(), fake_smoke({"coderunner-qwen3.5-9b": False, "coderunner-qwen3.5-4b:vision": False})

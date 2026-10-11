@@ -21,7 +21,8 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
 | Agent (`test_agent.py`) | Tool calls, text-form tool calls from local models, invalid arguments fed back, step limit, untrusted wrapping, injection flagging, taint |
 | Browser (`test_browser.py`) | URL and host rules, policy kinds per action, password and card fields, accessibility snapshots and change detection, plus an end-to-end run against the installed Chrome (headless) including a redirect to a private address being blocked and no leftover processes |
 | Daemon (`test_daemon.py`) | Real HTTP servers: owner chat, memory recall across conversations, sandbox model proxy, credential separation, scheduled delivery, and the agent driving the real browser where a "Buy now" click waits for an owner approval over the API |
-| Models (`test_models.py`) | Hardware parsing (Apple, NVIDIA, AMD, CPU, WSL2), budgets, KV-cache sizing, picks per memory tier, licence resolution through base models, resumable verified downloads, smoke-test pass/fail including the wrong-argument case below |
+| Models (`test_models.py`) | Hardware parsing (Apple, NVIDIA, AMD, CPU, WSL2), budgets, KV-cache sizing, picks per memory tier from 8 GB Macs to 512 GB, expert offload on NVIDIA, runtime routing to llama.cpp, cluster flags, GPU-limit notes, licence resolution through base models, resumable verified downloads, smoke-test pass/fail including the wrong-argument case below |
+| Discovery (`test_discover.py`) | Hugging Face listings, configs and file trees from a fake hub: filters, sharded builds, KV and MoE sizes, build choice per machine, placement among curated models, known breakages, stale caches |
 | Memory, scheduler, connectors, channels, voice, service, remote | Unit tests with fakes; see each test file |
 
 ## Manual checks on this branch
@@ -75,16 +76,17 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
   on-device ranking among several downloaded candidates.
 * Microsoft Fara1.5-9B (screenshot-based browser specialist) as a second browser driver.
 * Starting the sandbox VM on demand on 16-18 GB machines, to leave room for a bigger model.
-
-* No sandbox image was built or launched from this branch, and the Apple
-  `container` 1.5.0 upgrade path was not run end to end. Build with
-  `./install.sh --build` before release; previously published images ignore
-  the token and are refused by the installer.
+* Model picks for machines other than the 18 GB M3 Pro are the planner's estimates from file sizes
+  and memory bandwidth: llama.cpp next to Ollama, experts in RAM (`--cpu-moe`) on NVIDIA cards,
+  the GPU-limit note on big Macs, and the per-tier picks in ASSISTANT.md have not been run on that
+  hardware.
+* Pooling several machines (`models.cluster`, llama.cpp RPC), e.g. DGX Sparks, has not been run.
+* Previously published sandbox images ignore the token and are refused by the installer; build
+  with `./install.sh --build` until new images are published.
 * Proxy network mode assumes the host is reachable from an `--internal`
   Apple `container` network at the network's gateway address. Verify that the
   sandbox can reach `:8223`/`:8225` and nothing else.
 * Linux/Docker and WSL2 installation paths have not been run.
-* No real model has completed the tool-calling smoke test on this branch.
 * macOS connectors were compiled and argument handling tested, but not run
   against Calendar, Reminders, Notes, Mail or Contacts.
 * Telegram, iMessage, Signal and WhatsApp adapters were tested against fakes

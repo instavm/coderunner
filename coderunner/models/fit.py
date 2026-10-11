@@ -2,13 +2,14 @@
 
 need = weights + projector + KV cache + ~1 GiB of runtime and compute buffers.
 A fit is "good" within 85% of the budget and "tight" within 100%. Context
-shrinks (32K -> 16K -> 8K) before a lower-ranked model is considered.
+shrinks (32K -> 16K) before a lower-ranked model is considered; 8K only when
+nothing fits at 16K, because browser pages alone fill most of it.
 """
 
 from __future__ import annotations
 
 from . import catalog, licenses
-from .hardware import GiB, Hardware
+from .hardware import GiB, Hardware, cpu_budget
 
 GB = 1e9 / GiB                  # decimal GB (artifact sizes) -> GiB (budgets)
 OVERHEAD_GIB = 1.0              # runtime buffers (0.5) + compute graph (0.5)
@@ -16,6 +17,7 @@ GOOD = 0.85
 CONTEXTS = (32768, 16384, 8192)
 MIN_CHAT_PARAMS_B = 4.0         # smaller models produced wrong tool arguments in testing
 MIN_TOK_S = 8.0                 # estimated; slower fits rank below faster ones (agent loops are long)
+MIN_AGENT_CTX = 16384           # smaller contexts rank below larger ones
 EMBED_CTX = 8192
 
 
@@ -41,7 +43,27 @@ def estimate(entry: dict, hw: Hardware, ctx: int = 32768, runtime: str | None = 
     active_gb = weights * float(entry.get("active_params_b") or params) / params
     # Bandwidth-bound estimate, scaled by a factor measured for builds whose kernels fall short of it.
     tok_s = 0.55 * hw.bandwidth_gbs / active_gb * art.get("tok_s_factor", 1.0) if active_gb else 0.0
-    return {"need_gb": round(need, 2), "fit": fit, "tok_s": round(tok_s, 1), "ctx": ctx}
+    result = {"need_gb": round(need, 2), "fit": fit, "tok_s": round(tok_s, 1), "ctx": ctx}
+    if fit == "no" and _can_offload(entry, hw, runtime):
+        # llama.cpp --cpu-moe: attention and shared weights (~10%) on the GPU, experts in system RAM.
+        gpu_need = (0.1 * weights + mmproj) * GB + kv + OVERHEAD_GIB
+        ram_need = 0.9 * weights * GB
+        ram_budget = cpu_budget(hw.ram_gb)
+        if gpu_need <= hw.budget_gb and ram_need <= ram_budget:
+            fit = "good" if gpu_need <= GOOD * hw.budget_gb and ram_need <= GOOD * ram_budget else "tight"
+            dense, experts = 0.1 * weights, max(active_gb - 0.1 * weights, 0.5 * active_gb)
+            tok_s = 0.55 / (dense / hw.bandwidth_gbs + experts / hw.ram_bandwidth_gbs)
+            result = {"need_gb": round(gpu_need, 2), "ram_gb": round(ram_need, 2), "fit": fit,
+                      "tok_s": round(tok_s, 1), "ctx": ctx, "offload": True}
+    return result
+
+
+def _can_offload(entry: dict, hw: Hardware, runtime: str | None) -> bool:
+    """Mixture-of-experts models on a discrete NVIDIA GPU under llama.cpp, with system RAM to spare."""
+    params = float(entry.get("params_b") or 0)
+    active = float(entry.get("active_params_b") or params)
+    return (runtime == "llama.cpp" and hw.gpu == "nvidia" and not hw.unified and params > 0
+            and active < 0.35 * params and hw.ram_gb > hw.vram_gb)
 
 
 def best_context(entry: dict, hw: Hardware, target: int = 32768, runtime: str | None = None,
@@ -63,11 +85,20 @@ def candidate(entry: dict, hw: Hardware, config, role: str = "chat", runtime: st
     decision, why, link = licenses.check(entry, config)
     vision = catalog.has_vision(entry, runtime)
     reasons = []
+    if est["fit"] == "no" and vision:
+        # Without its vision projector the model may still fit (8 GB machines): text only, but usable.
+        text = best_context({**entry, "roles": [r for r in entry["roles"] if r != "vision"]}, hw,
+                            int(config.get("models.context") or 32768), runtime, role)
+        if text["fit"] != "no":
+            est, vision = text, False
+            reasons.append("text only: the vision projector does not fit")
     if est["fit"] == "no":
         reasons.append(f"needs {est['need_gb']:.1f} GB but the budget is {hw.budget_gb:.1f} GB")
     else:
         reasons.append(f"{'fits' if est['fit'] == 'good' else 'tight fit'}: {est['need_gb']:.1f} of "
                        f"{hw.budget_gb:.1f} GB at {est['ctx'] // 1024}K context")
+        if est.get("offload"):
+            reasons.append(f"experts in system RAM ({est['ram_gb']:.0f} GB)")
     reasons.append(f"~{est['tok_s']:.0f} tok/s")
     if role == "chat":
         reasons.append("vision" if vision else "text only")
@@ -86,7 +117,8 @@ def candidate(entry: dict, hw: Hardware, config, role: str = "chat", runtime: st
 
 
 def _order(c: dict) -> tuple:
-    return (c["fit"] != "good", c["tok_s"] < MIN_TOK_S, c["license"] != "allow", c["rank"], not c["vision"])
+    return (c["fit"] != "good", c["ctx"] < MIN_AGENT_CTX, c["tok_s"] < MIN_TOK_S, c["license"] != "allow",
+            c["rank"], not c["vision"])
 
 
 def recommend(hw: Hardware, config, role: str = "chat", runtime: str | None = None,

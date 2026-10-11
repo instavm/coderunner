@@ -518,6 +518,45 @@
       "verified": "2026-10-10"
     },
     {
+      "id": "qwen3.5-4b-compact",
+      "family": "qwen3.5",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 9.5,
+      "params_b": 4.66,
+      "active_params_b": 4.66,
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "Qwen/Qwen3.5-4B",
+        "link": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/LICENSE",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "unsloth/Qwen3.5-4B-GGUF",
+          "quant": "IQ4_XS",
+          "file": "Qwen3.5-4B-IQ4_XS.gguf",
+          "size_gb": 2.48,
+          "mmproj_gb": 0.67
+        },
+        "ollama": {
+          "tag": "hf.co/unsloth/Qwen3.5-4B-GGUF:IQ4_XS",
+          "size_gb": 2.48,
+          "mmproj_gb": 0.67
+        }
+      },
+      "notes": "Qwen3.5-4B at IQ4_XS for 8 GB machines (text only fits there at 8K context).",
+      "verified": "2026-10-10"
+    },
+    {
       "id": "gemma-4-e4b",
       "family": "gemma4",
       "roles": [

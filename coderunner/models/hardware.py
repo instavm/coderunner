@@ -58,6 +58,8 @@ class Hardware:
     gpus: int = 0                # NVIDIA/AMD cards counted in vram_gb
     compute_cap: float = 0.0     # NVIDIA compute capability (8.9 Ada, 9.0 Hopper, 10.x/12.x Blackwell)
     unified: bool = False        # GPU shares system memory (Apple silicon, DGX Spark / GB10, Jetson)
+    ram_bandwidth_gbs: float = 80.0   # system RAM, for MoE experts kept in RAM (desktop DDR5 dual channel)
+    nodes: int = 1               # machines pooled over llama.cpp RPC (models.cluster)
 
     def to_dict(self) -> dict:
         return {k: round(v, 2) if isinstance(v, float) else v for k, v in dataclasses.asdict(self).items()}

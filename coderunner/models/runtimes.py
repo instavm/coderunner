@@ -294,13 +294,13 @@ class LlamaCppRuntime(Runtime):
         record = self._state().get("models", {}).get(entry["id"]) or {}
         return bool(record.get("model")) and os.path.exists(record["model"])
 
-    def prepare(self, entry: dict, ctx: int) -> str:
+    def prepare(self, entry: dict, ctx: int, offload: bool = False) -> str:
         state = self._state()
         record = state.get("models", {}).get(entry["id"])
         if not record:
             raise RuntimeError(f"{entry['id']} has not been downloaded for llama.cpp")
         active = {"id": entry["id"], "alias": self.model_id(entry), "ctx": ctx,
-                  "model": record["model"], "mmproj": record.get("mmproj")}
+                  "model": record["model"], "mmproj": record.get("mmproj"), "offload": offload}
         if state.get("active") != active:
             self.stop()  # restarts with the new model on the next start()
         state["active"] = active
@@ -312,8 +312,15 @@ class LlamaCppRuntime(Runtime):
         if active.get("mmproj"):
             cmd += ["--mmproj", active["mmproj"]]
         # --cache-ram 0 avoids a prompt-cache bug that leaks state across conversations.
-        return cmd + ["--jinja", "-c", str(active["ctx"]), "--host", "127.0.0.1", "--port", str(self.port),
-                      "--cache-ram", "0", "-np", "1", "--alias", active["alias"]]
+        cmd += ["--jinja", "-c", str(active["ctx"]), "--host", "127.0.0.1", "--port", str(self.port),
+                "--cache-ram", "0", "-np", "1", "--alias", active["alias"]]
+        if active.get("offload"):
+            cmd += ["--cpu-moe"]          # experts in system RAM, the rest on the GPU
+        peers = [node for node in (self.config.get("models.cluster") or []) if node.get("host")] if self.config else []
+        if peers:
+            # Other machines running llama.cpp's rpc-server (models.cluster); layers are spread across them.
+            cmd += ["--rpc", ",".join(f"{node['host']}:{int(node.get('port') or 50052)}" for node in peers)]
+        return cmd
 
     def start(self, timeout: float = 600) -> None:
         if self.running():
