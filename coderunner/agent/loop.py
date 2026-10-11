@@ -35,6 +35,7 @@ def render_plan(steps: list[dict]) -> str:
 
 PAGE_PREFIX = '<untrusted source="browser_snapshot">'
 DROPPED = "[earlier page snapshot removed to save space; take a new snapshot if you need it]\n</untrusted>"
+PLAN_REMINDER = "[Reminder of your plan, not a new request]\n"
 KEEP_PAGES = 1        # page snapshots left in full after a trim
 MOST_PAGES = 3        # trim once more than this many are in full
 
@@ -153,14 +154,16 @@ class Agent:
         max_steps = int(self.svc.config.get("agent.max_steps", 30))
         final = ""
         nudged = False
-        system = messages[0]["content"]
         for _ in range(max_steps):
             self._drop_old_images(messages)
             self._drop_old_pages(messages)
-            # The plan sits in the instructions, so a small model keeps its place in long tasks.
-            messages[0]["content"] = system + (f"\nYour current plan:\n{render_plan(ctx.plan)}" if ctx.plan else "")
+            # The plan is repeated at the end of every request so a small model keeps its place in long
+            # tasks. It goes last, not into the instructions: a runtime's prompt cache only covers the
+            # unchanged start of a request, and the instructions plus tool list are ~2,600 tokens.
+            request = messages + ([{"role": "user", "content": PLAN_REMINDER + render_plan(ctx.plan)}]
+                                  if ctx.plan else [])
             try:
-                reply = await self.llm.chat(messages, tools=self.registry.schemas())
+                reply = await self.llm.chat(request, tools=self.registry.schemas())
             except LLMError as exc:
                 final = f"I couldn't reach the local model: {exc}"
                 break

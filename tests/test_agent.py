@@ -171,9 +171,12 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             await Agent(svc, svc.llm, svc.registry).run(ctx, "find me a fare")
             self.assertEqual(ctx.plan, [{"step": "Open the airline site", "status": "doing"},
                                         {"step": "Compare fares", "status": "todo"}])
-            system = fake.requests[-1]["messages"][0]["content"]
-            self.assertIn("Your current plan:\n1. [doing] Open the airline site\n2. [todo] Compare fares", system)
-            self.assertNotIn("Your current plan", fake.requests[0]["messages"][0]["content"])
+            last = fake.requests[-1]["messages"]
+            self.assertEqual(last[-1]["role"], "user")
+            self.assertIn("1. [doing] Open the airline site\n2. [todo] Compare fares", last[-1]["content"])
+            # The instructions stay identical between steps, so a prompt cache keeps covering them.
+            self.assertEqual(last[0]["content"], fake.requests[0]["messages"][0]["content"])
+            self.assertNotIn("Reminder of your plan", str(fake.requests[0]["messages"]))
             await svc.llm.aclose()
 
     async def test_old_page_snapshots_are_dropped_in_batches(self):
