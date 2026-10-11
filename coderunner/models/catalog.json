@@ -127,6 +127,43 @@
       "verified": "2026-10-11"
     },
     {
+      "id": "bonsai-2-27b-compact",
+      "family": "qwen3.8",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 2.6,
+      "params_b": 27.36,
+      "active_params_b": 27.36,
+      "arch": {
+        "full_attn_layers": 16,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+        "link": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf",
+        "commercial": true
+      },
+      "artifacts": {
+        "prism": {
+          "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+          "file": "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+          "sha256": "53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3",
+          "size_gb": 5.95,
+          "mmproj": "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+          "mmproj_sha256": "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903",
+          "mmproj_gb": 0.63,
+          "kv_bytes": 1
+        }
+      },
+      "notes": "Bonsai 2 27B in the denser PTQ1_0 packing (1.75 bits per weight): 1.3 GB smaller than bonsai-2-27b, with slower prompt processing. Needs Prism ML's llama.cpp build (runtime prism).",
+      "verified": "2026-10-11"
+    },
+    {
       "id": "gpt-oss-120b",
       "family": "gpt-oss",
       "roles": [
