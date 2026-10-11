@@ -373,8 +373,25 @@ def channel_tools(svc) -> list[Tool]:
                  "approval.", _params({"channel": STR, "to": STR, "text": STR}, ["channel", "to", "text"]), send)]
 
 
+def plan_tools(svc) -> list[Tool]:
+    async def update(args, ctx):
+        steps = []
+        for item in (args.get("steps") or [])[:15]:
+            if isinstance(item, dict) and str(item.get("step", "")).strip():
+                status = item.get("status") if item.get("status") in ("todo", "doing", "done") else "todo"
+                steps.append({"step": str(item["step"]).strip()[:200], "status": status})
+        ctx.plan = steps
+        return "Plan saved." if steps else "Plan cleared."
+
+    step = {"type": "object", "properties": {"step": STR, "status": {"type": "string", "enum": ["todo", "doing", "done"]}},
+            "required": ["step"]}
+    return [Tool("plan_update", "Write or update the plan for a task with several steps: a short list of steps, "
+                 "each todo, doing or done. It is shown to you at every step.",
+                 _params({"steps": {"type": "array", "items": step}}, ["steps"]), update)]
+
+
 def build_registry(svc) -> ToolRegistry:
-    tools: list[Tool] = []
+    tools: list[Tool] = plan_tools(svc)
     if svc.sandbox is not None:
         tools += sandbox_tools(svc)
     if svc.browser is not None:

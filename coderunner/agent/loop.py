@@ -22,9 +22,15 @@ How you work:
 - Ordinary steps (opening pages, clicking through a site, searching, filling search forms) need no approval; just do them.
 - Steps that pay, book, send, post, delete or change settings wait for {owner}'s approval. If an action is denied, do not retry it or look for a workaround; say what you needed.
 - Never type passwords or one-time codes; use browser_handoff so {owner} does it.
+- For a task with several steps, first write a short plan with plan_update, then work through it and keep it current as steps finish or the approach changes.
+- The owner's shared folders are searchable with files_search (text, code, documents, images, audio, video).
 - Save lasting preferences and facts with memory_save. Never store secrets.
 - Be brief: answers may be read on a phone.
 {memories}"""
+
+
+def render_plan(steps: list[dict]) -> str:
+    return "\n".join(f"{i}. [{step.get('status', 'todo')}] {step.get('step', '')}" for i, step in enumerate(steps, 1))
 
 
 @dataclass
@@ -43,6 +49,7 @@ class RunContext:
     private_sources: set[str] = field(default_factory=set)
     shared: set[str] = field(default_factory=set)
     images: list[tuple[str, str]] = field(default_factory=list)
+    plan: list[dict] = field(default_factory=list)      # written by the model with plan_update
 
     def taint(self, content: bool = True) -> None:
         self.tainted = True
@@ -117,11 +124,14 @@ class Agent:
         messages = [{"role": "system", "content": await self._system(text, ctx)}, *self._history(ctx.conversation),
                     {"role": "user", "content": user_content}]
         self.svc.audit.write("agent.start", conversation=ctx.conversation, origin=ctx.origin)
-        max_steps = int(self.svc.config.get("agent.max_steps", 20))
+        max_steps = int(self.svc.config.get("agent.max_steps", 30))
         final = ""
         nudged = False
+        system = messages[0]["content"]
         for _ in range(max_steps):
             self._drop_old_images(messages)
+            # The plan sits in the instructions, so a small model keeps its place in long tasks.
+            messages[0]["content"] = system + (f"\nYour current plan:\n{render_plan(ctx.plan)}" if ctx.plan else "")
             try:
                 reply = await self.llm.chat(messages, tools=self.registry.schemas())
             except LLMError as exc:

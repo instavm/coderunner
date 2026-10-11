@@ -58,7 +58,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             # Sandbox output reaches the model wrapped as untrusted data.
             self.assertEqual(reply, 'The answer is <untrusted source="run_python">\n10\n</untrusted>')
             self.assertEqual(svc.sandbox.calls, [("print(3 + 7)", "main")])
-            self.assertEqual(fake.requests[0]["tools"][0]["function"]["name"], "run_python")
+            self.assertIn("run_python", [t["function"]["name"] for t in fake.requests[0]["tools"]])
             # History is kept per conversation.
             fake.script = [{"role": "assistant", "content": "ok"}]
             await agent.run(RunContext(conversation="t1"), "thanks")
@@ -157,6 +157,23 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             fake.script = [tool_call("run_python", {"code": "print(1)"})] * 5
             reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t4"), "loop")
             self.assertIn("step limit", reply)
+            await svc.llm.aclose()
+
+    async def test_plan_is_shown_at_every_step(self):
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            fake.script = [tool_call("plan_update", {"steps": [{"step": "Open the airline site", "status": "doing"},
+                                                               {"step": "Compare fares"}, {"step": ""}]}),
+                           {"role": "assistant", "content": "done"}]
+            ctx = RunContext(conversation="p1")
+            await Agent(svc, svc.llm, svc.registry).run(ctx, "find me a fare")
+            self.assertEqual(ctx.plan, [{"step": "Open the airline site", "status": "doing"},
+                                        {"step": "Compare fares", "status": "todo"}])
+            system = fake.requests[-1]["messages"][0]["content"]
+            self.assertIn("Your current plan:\n1. [doing] Open the airline site\n2. [todo] Compare fares", system)
+            self.assertNotIn("Your current plan", fake.requests[0]["messages"][0]["content"])
             await svc.llm.aclose()
 
     async def test_empty_answer_after_tool_is_asked_for_once(self):

@@ -51,7 +51,7 @@ DEFAULTS: dict[str, Any] = {
         "max_file_mb": 200,
         "scan_interval": 600,        # seconds between checks for new or changed files
     },
-    "agent": {"max_steps": 20, "tool_output_chars": 12000, "approval_timeout": 300,
+    "agent": {"max_steps": 30, "tool_output_chars": 12000, "approval_timeout": 300,
               "recall_min_similarity": 0.5},   # embedding similarity for memories to enter a task's prompt
     "policy": {
         "rules": [],                 # [{"kind": "browser.navigate", "target": "*.example.com", "decision": "allow"}]
