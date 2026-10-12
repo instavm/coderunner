@@ -473,6 +473,15 @@ class InteractionPolicyTests(BrokerTestCase):
     browser_config = {"allow": ["shop.example"]}
     rules = [{"kind": "browser.interact", "target": "shop.example", "decision": "allow"}]
 
+    async def test_a_click_that_changes_nothing_says_what_it_landed_on(self):
+        browser, _ = await self.load_shop()
+        result = await self.broker.click(self.ref("Read more"))
+        self.assertEqual(result["changes"], "No visible change on the page.")
+        self.assertEqual(result["note"], 'The click landed on link "Read more".')
+        browser.pages[self.broker._active]["url"] = "https://shop.example/hotels"
+        result = await self.broker.click(self.ref("Read more"))         # a late redirect the model has not read
+        self.assertIn("address changed since you read it", result["note"])
+
     async def test_a_blank_page_gets_time_to_show_text(self):
         self.broker.blank_wait = 5
 

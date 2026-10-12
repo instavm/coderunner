@@ -79,6 +79,7 @@ SETTLE_START = {"type": 1.5, "load": 1.5}
 SETTLE_START_DEFAULT = 0.6
 SETTLE_QUIET = 0.3
 SETTLE_MOST = 3.0
+NO_CHANGE = "No visible change on the page."
 BLANK_WAIT = 10.0           # a page with no text yet (a bot check, a script-drawn app) gets this long to show some
 DENIED_PERMISSIONS = ("geolocation", "notifications", "camera", "microphone", "midi", "clipboard-read",
                       "display-capture", "idle-detection", "window-management", "local-fonts",
@@ -142,6 +143,7 @@ class BrowserBroker:
         self._refs: dict[str, dict[int, dict]] = {}
         self._numbers: dict[str, dict] = {}       # tab -> element numbers kept across renderings (render_ax)
         self._lines: dict[str, list[str]] = {}    # tab -> the page as the model last saw it, line by line
+        self._read_urls: dict[str, str] = {}      # tab -> the address of the page as the model last saw it
         self._snapshots: dict[str, str] = {}
         self._shots: dict[str, str] = {}
         self._loads: dict[str, collections.deque] = {}
@@ -355,7 +357,8 @@ class BrowserBroker:
         if not target:
             return
         self._forget_session(self._sessions.get(target))
-        for table in (self._refs, self._numbers, self._lines, self._snapshots, self._shots, self._dialogs, self._dismissed, self._blocked,
+        for table in (self._refs, self._numbers, self._lines, self._read_urls, self._snapshots, self._shots,
+                      self._dialogs, self._dismissed, self._blocked,
                       self._committed, self._page_targets, self._spawned, self._new_tabs, self._expected):
             table.pop(target, None)
         self._opened.discard(target)
@@ -780,6 +783,7 @@ class BrowserBroker:
         changed = self._snapshots.get(target) != digest
         self._snapshots[target] = digest
         self._lines[target] = content.split("\n")
+        self._read_urls[target] = url
         return changed
 
     async def _observe(self, target: str, sid: str, result: dict, tainted: bool, action: str = "") -> dict:
@@ -822,7 +826,7 @@ class BrowserBroker:
         if changes is None:
             result["content"] = cut(content, PAGE_CHARS)
         else:
-            result["changes"] = cut(changes, PAGE_CHARS) if changes else "No visible change on the page."
+            result["changes"] = cut(changes, PAGE_CHARS) if changes else NO_CHANGE
         return result
 
     async def _find(self, text: str, tab: str | None, tainted: bool) -> dict:
@@ -883,6 +887,7 @@ class BrowserBroker:
     async def _click(self, ref: int, tab: str | None, tainted: bool) -> dict:
         target = await self._target(tab)
         url, host = await self._web_page(target)
+        read = self._read_urls.get(target, "")      # the page as the model last saw it
         element = self._ref(target, ref)
         sid = await self._session(target)
         for attempt in range(CLICK_ATTEMPTS):
@@ -914,6 +919,12 @@ class BrowserBroker:
                     result = await self._observe(target, sid, await self._result(target, navigated=navigated),
                                                  tainted, "load" if navigated else "")
                     result["_audit"] = {"clicked": now["label"]}    # what was under the pointer, as checked
+                    if result.get("changes") == NO_CHANGE:
+                        # Say what the click landed on: covered by a banner or an overlay, or a page that has
+                        # moved on (a late redirect) explains a click that did nothing better than a retry.
+                        result["note"] = f"The click landed on {now['label']}."
+                        if read and result.get("url") and result["url"].split("#")[0] != read.split("#")[0]:
+                            result["note"] += " The page's address changed since you read it; take a new snapshot."
                     return result
             if approved or attempt == CLICK_ATTEMPTS - 1:
                 break
