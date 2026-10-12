@@ -174,8 +174,9 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             last = fake.requests[-1]["messages"]
             self.assertEqual(last[-1]["role"], "user")
             self.assertIn("1. [doing] Open the airline site\n2. [todo] Compare fares", last[-1]["content"])
-            # The instructions stay identical between steps, so a prompt cache keeps covering them.
-            self.assertEqual(last[0]["content"], fake.requests[0]["messages"][0]["content"])
+            # Every request extends the previous one, so a prompt cache (or a hybrid model's checkpoint) holds.
+            first = fake.requests[0]["messages"]
+            self.assertEqual(last[:len(first)], first)
             self.assertNotIn("Reminder of your plan", str(fake.requests[0]["messages"]))
             await svc.llm.aclose()
 

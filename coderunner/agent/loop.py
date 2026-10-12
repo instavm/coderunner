@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from .. import paths
 from ..llm import LLM, LLMError
 from ..policy import current_run
 from .tools import ToolRegistry
@@ -37,6 +39,7 @@ PAGE_PREFIX = '<untrusted source="browser_'
 PAGE_CHARS = 1500     # browser results longer than this hold a page, or a large part of one
 DROPPED = "[earlier page text removed to save space; take a new snapshot if you need it]\n</untrusted>"
 PLAN_REMINDER = "[Reminder of your plan, not a new request]\n"
+REMIND_EVERY = 6      # steps between plan reminders while the plan stays the same
 KEEP_PAGES = 1        # page snapshots left in full after a trim
 MOST_PAGES = 3        # trim once more than this many are in full
 
@@ -136,6 +139,19 @@ class Agent:
                 opener = messages[index]["content"].split("\n", 1)[0]
                 messages[index] = {**messages[index], "content": opener + "\n" + DROPPED}
 
+    def _transcript(self, ctx: RunContext, messages: list[dict]) -> None:
+        """With agent.transcript on, keep every message of the run (page text included) for debugging, locally."""
+        if not self.svc.config.get("agent.transcript", False):
+            return
+        folder = paths.assistant_dir() / "logs" / "transcripts"
+        folder.mkdir(parents=True, exist_ok=True)
+        name = re.sub(r"[^\w.-]", "_", ctx.conversation)[:100] or "run"
+        with open(folder / f"{name}.jsonl", "w") as out:
+            for message in messages:
+                if isinstance(message.get("content"), list):
+                    message = {**message, "content": "[message with images]"}
+                out.write(json.dumps(message, ensure_ascii=False) + "\n")
+
     async def run(self, ctx: RunContext, text: str, images: list[tuple[str, str]] | None = None) -> str:
         token = current_run.set(ctx)
         try:
@@ -160,19 +176,25 @@ class Agent:
         final = ""
         nudged = False
         failed = False
+        reminded: list[dict] = []
+        since = 0
         for step in range(max_steps):
             self._drop_old_images(messages)
             self._drop_old_pages(messages)
-            # The plan is repeated at the end of every request so a small model keeps its place in long
-            # tasks. It goes last, not into the instructions: a runtime's prompt cache only covers the
-            # unchanged start of a request, and the instructions plus tool list are ~2,600 tokens.
-            request = messages + ([{"role": "user", "content": PLAN_REMINDER + render_plan(ctx.plan)}]
-                                  if ctx.plan else [])
+            # Each request only extends the one before: hybrid models such as Qwen3.5 can resume only from a
+            # cache checkpoint near the end of the previous prompt, so a message that came and went (or an
+            # edit to the instructions) means re-reading the whole conversation, ~80 s for 20K tokens on a
+            # laptop. The plan is therefore appended, and kept, whenever it changes and every few steps, so
+            # a small model keeps its place in long tasks.
+            since += 1
+            if ctx.plan and (ctx.plan != reminded or since > REMIND_EVERY):
+                messages.append({"role": "user", "content": PLAN_REMINDER + render_plan(ctx.plan)})
+                reminded, since = [dict(item) for item in ctx.plan], 1
             think = None if thinking != "auto" or step == 0 or failed else False
             if thinking == "off":
                 think = False
             try:
-                reply = await self.llm.chat(request, tools=self.registry.schemas(), think=think)
+                reply = await self.llm.chat(messages, tools=self.registry.schemas(), think=think)
             except LLMError as exc:
                 final = f"I couldn't reach the local model: {exc}"
                 break
@@ -197,6 +219,7 @@ class Agent:
                           for mime, data in ctx.images]
                 messages.append({"role": "user", "content": parts})
                 ctx.images.clear()
+            self._transcript(ctx, messages)
         else:
             final = "I stopped after reaching the step limit. Tell me how you'd like to continue."
         self._remember(ctx.conversation, "user", text)
