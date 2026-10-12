@@ -1056,10 +1056,13 @@ class PrismTests(TempHome):
         rt = runtimes.PrismRuntime(self.config(), hw=apple(18))
         cmd = rt.command({"model": "/m.gguf", "mmproj": "/p.gguf", "ctx": 32768, "alias": "bonsai-2-27b"})
         joined = " ".join(cmd)
-        for flag in ("--mmproj /p.gguf", "--jinja", "-ctk q8_0", "-ctv q8_0", "--load-mode mlock", "-c 32768",
+        for flag in ("--mmproj /p.gguf", "--jinja", "-ctk q8_0", "-ctv q8_0", "--load-mode none", "-c 32768",
                      "-np 2", "--kv-unified"):
             self.assertIn(flag, joined)
         self.assertIn(json.dumps({"reasoning_effort": "medium"}), cmd)
+        # Locked weights cannot be reclaimed; with a second model loaded an 18 GB Mac froze. Opt-in only.
+        locked = runtimes.PrismRuntime(self.config(lock_weights=True), hw=apple(18))
+        self.assertIn("--load-mode mlock", " ".join(locked.command({"model": "/m.gguf", "ctx": 8192})))
 
     def test_install_refuses_a_build_that_does_not_match_its_checksum(self):
         rt = runtimes.PrismRuntime(self.config(), hw=apple(18))

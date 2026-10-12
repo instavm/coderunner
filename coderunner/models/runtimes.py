@@ -551,11 +551,14 @@ class PrismRuntime(LlamaCppRuntime):
     def command(self, active: dict) -> list[str]:
         # Medium reasoning effort: the maker's advice for API use (the default thinks at length and can
         # run out of output budget). The context cache is kept at 8 bits, as the memory estimate assumes.
-        # The weights are locked in memory: memory-mapped, macOS evicts them under pressure and re-reads
-        # them from disk, which slowed a 250-token prompt to 0.27 tokens/s on an 18 GB Mac.
+        # Weights are read into the server's own memory ("none"): memory-mapped, macOS evicted them under
+        # pressure and re-read them from disk (0.27 tokens/s on an 18 GB Mac); locked ("mlock"), they could
+        # not be reclaimed at all, and with a second model loaded the Mac stopped responding until the
+        # watchdog restarted it. models.lock_weights brings the lock back for machines with room to spare.
         # The judge's own slot matters most here: a re-read conversation goes at about 70 tokens/s.
+        mode = "mlock" if self.config is not None and self.config.get("models.lock_weights", False) else "none"
         return super().command(active) + ["--chat-template-kwargs", json.dumps({"reasoning_effort": "medium"}),
-                                          "-ctk", "q8_0", "-ctv", "q8_0", "-ngl", "99", "--load-mode", "mlock"]
+                                          "-ctk", "q8_0", "-ctv", "q8_0", "-ngl", "99", "--load-mode", mode]
 
     def start(self, timeout: float = 600) -> None:
         if self.running():

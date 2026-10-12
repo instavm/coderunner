@@ -43,6 +43,7 @@ DEFAULTS: dict[str, Any] = {
         "decision_api": "",          # systemone (Ollama decision models) | chat; empty: chosen automatically
         "decision_threshold": 0.7,   # P(commits or unclear) at which a step needs approval
         "context": 32768,
+        "lock_weights": False,       # keep weights locked in RAM; can freeze a small Mac when another model loads
         "allow_licenses": ["apache-2.0", "mit", "bsd-3-clause", "bsd-2-clause"],
         "accepted_licenses": [],     # licenses the owner explicitly accepted
     },
