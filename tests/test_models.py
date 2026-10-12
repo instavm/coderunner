@@ -774,6 +774,20 @@ class ManagerTests(TempHome):
         self.assertTrue(done["ok"], done)
         self.assertEqual((llama.offloaded, main.prepared), (["qwen3.6-35b-a3b"], []))
 
+    def test_driver_setup_installs_llama_server_when_missing(self):
+        installed = []
+
+        def install(rt, progress=None):
+            installed.append(True)
+        with mock.patch.object(manager, "_hardware", return_value=apple(18)), \
+                mock.patch.object(runtimes.DriverRuntime, "binary", lambda rt: "/bin/llama-server" if installed else None), \
+                mock.patch.object(runtimes.DriverRuntime, "install", install), \
+                mock.patch.object(runtimes.DriverRuntime, "installed", return_value=True), \
+                mock.patch.object(runtimes.DriverRuntime, "prepare", return_value="coderunner-fara1.5-4b"):
+            result = manager.setup_driver(self.config(), progress=lambda m: None)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(installed, [True])      # without the server the driver could never start
+
     def test_an_interrupted_download_is_kept_for_resuming(self):
         class Flaky(FakeRuntime):
             def pull(self, entry, progress=None):

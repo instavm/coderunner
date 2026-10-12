@@ -364,7 +364,12 @@ class LlamaCppRuntime(Runtime):
         self.state_path = self.root / "llama.cpp.json"
 
     def binary(self) -> str | None:
-        return shutil.which("llama-server")
+        found = shutil.which("llama-server")
+        if found:
+            return found
+        # llama.cpp's official build in CODERUNNER_HOME, as install() (and voice setup) puts it there.
+        builds = sorted((paths.assistant_dir() / "runtimes").glob("llama-b*/**/llama-server"))
+        return str(builds[-1]) if builds else None
 
     def available(self) -> bool:
         return self.binary() is not None
@@ -430,6 +435,13 @@ class LlamaCppRuntime(Runtime):
         state["active"] = active
         self._save(state)
         return active["alias"]
+
+    def install(self, progress: Progress | None = None) -> None:
+        """llama.cpp's official build (pinned, checksum-checked), the one voice setup installs for Qwen3-ASR."""
+        from ..voice.qwen import QwenASR
+        QwenASR().install_llama(progress)
+        if not self.binary():
+            raise RuntimeError("llama.cpp's build has no llama-server")
 
     def command(self, active: dict) -> list[str]:
         cmd = [self.binary() or "llama-server", "-m", active["model"]]
@@ -597,12 +609,7 @@ class DriverRuntime(LlamaCppRuntime):
         configured = (self.config.get("models.driver.binary") if self.config else "") or ""
         if configured and os.access(configured, os.X_OK):
             return configured
-        found = shutil.which("llama-server")
-        if found:
-            return found
-        # llama.cpp's official build, as voice setup installs it for Qwen3-ASR.
-        builds = sorted((paths.assistant_dir() / "runtimes").glob("llama-b*/**/llama-server"))
-        return str(builds[-1]) if builds else None
+        return super().binary()
 
     def command(self, active: dict) -> list[str]:
         cmd = [self.binary() or "llama-server", "-m", active["model"]]
@@ -615,8 +622,8 @@ class DriverRuntime(LlamaCppRuntime):
         if self.running():
             return
         if not self.available():
-            raise RuntimeError("The browser driver needs llama.cpp's llama-server: brew install llama.cpp, or run "
-                               "coderunner voice setup, which installs llama.cpp's own build")
+            raise RuntimeError("The browser driver needs llama.cpp's llama-server: run coderunner models driver "
+                               "again, which installs it")
         active = self._state().get("active")
         if not active:
             raise RuntimeError("No browser driver is set up; run coderunner models driver")

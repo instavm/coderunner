@@ -538,6 +538,8 @@ def setup_driver(config, model_id: str | None = None, progress: Callable[[str], 
         return {"ok": False, "error": "no browser driver fits this machine"}
     entry = catalog.get(pick["id"])
     runtime = DriverRuntime(config, hub=hub)
+    if not runtime.available():
+        runtime.install(progress)
     if not runtime.installed(entry):
         runtime.pull(entry, progress)
     alias = runtime.prepare(entry, DRIVER_CTX)
