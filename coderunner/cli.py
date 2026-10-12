@@ -151,12 +151,17 @@ def cmd_doctor(args, config: Config) -> int:
     from .sandbox import driver_for
     hw = hardware.detect()
     driver = driver_for(config)
+    from .safety import selfcheck
+    security = selfcheck.run(config)
     report = {"version": __version__, "hardware": hw.to_dict(), "sandbox_driver": driver.name,
               "sandbox_state": driver.status(), "daemon": _daemon_up(config),
-              "browser": _browser_report(config),
+              "browser": _browser_report(config), "security": security,
               "api_token_file": str(paths.api_token_path()), "config": str(config.path)}
     _print(report)
-    return 0
+    failed = [c["check"] for c in security if not c["ok"] and c["severity"] == "high"]
+    if failed:
+        print(f"Security: {len(failed)} problem(s): {'; '.join(failed)}. See the fixes above.")
+    return 1 if failed else 0
 
 
 def _browser_report(config: Config) -> dict:
