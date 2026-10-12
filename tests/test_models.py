@@ -770,7 +770,7 @@ class ManagerTests(TempHome):
             self.assertEqual(result["runtime"]["name"], "llama.cpp")
             self.assertEqual(result["embedding"]["id"], "embeddinggemma-2")        # still from Ollama
             done = manager.setup(self.config(), hw=rtx4070, progress=lambda m: None, embedding=False,
-                                 smoke=fake_smoke({}))
+                                 smoke=fake_smoke({}), hub=ApacheHub())     # the GGUF repo's live licence
         self.assertTrue(done["ok"], done)
         self.assertEqual((llama.offloaded, main.prepared), (["qwen3.6-35b-a3b"], []))
 
@@ -1045,6 +1045,13 @@ class FakePrism(FakeRuntime):
     base_url = "http://127.0.0.1:8/v1"
 
 
+class ApacheHub:
+    """Answers a repo's licence lookup without the network (tests must not reach Hugging Face)."""
+
+    def resolve_license(self, repo):
+        return {"repo": repo, "spdx": "apache-2.0", "name": "apache-2.0", "link": f"https://huggingface.co/{repo}"}
+
+
 class PrismTests(TempHome):
     def test_pinned_builds_per_platform(self):
         self.assertEqual(runtimes.PrismRuntime.build_for(apple(18))[0], "macos-arm64")
@@ -1062,7 +1069,8 @@ class PrismTests(TempHome):
         self.assertIn(json.dumps({"reasoning_effort": "medium"}), cmd)
         # Locked weights cannot be reclaimed; with a second model loaded an 18 GB Mac froze. Opt-in only.
         locked = runtimes.PrismRuntime(self.config(lock_weights=True), hw=apple(18))
-        self.assertIn("--load-mode mlock", " ".join(locked.command({"model": "/m.gguf", "ctx": 8192})))
+        self.assertIn("--load-mode mlock", " ".join(locked.command({"model": "/m.gguf", "ctx": 8192,
+                                                                     "alias": "bonsai-2-27b"})))
 
     def test_install_refuses_a_build_that_does_not_match_its_checksum(self):
         rt = runtimes.PrismRuntime(self.config(), hw=apple(18))
