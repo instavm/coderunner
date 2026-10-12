@@ -278,6 +278,34 @@ and can use only the tabs in that group. To set it up:
 `coderunner browser disconnect` goes back to the dedicated profile. Chrome needs to be open for the
 assistant to browse; if it is not, the assistant says so. Windows is not supported yet.
 
+### A browser driver for website tasks
+
+`coderunner models driver` adds a second model trained to use websites from screenshots: Microsoft's
+Fara1.5 (MIT; 80.8% on WebVoyager for the 4B, 86.6% for the 9B, as Microsoft reports). The assistant
+hands it whole website tasks with the `browser_task` tool and gets its report back. On 11 captured
+states of a booking.com flight search, Fara1.5-4B chose the right next step every time and read the
+three cheapest flights with their prices from the results; a step took 7.5 s (median) on an M3 Pro,
+against about 43 s for Bonsai 2 27B reading the page as text.
+
+The driver acts through the same broker as the assistant: a point on the screenshot is turned into the
+element under it, which is then clicked with the usual checks, so policy, the step judge, approvals and
+the password and card rules all apply; a point with nothing actionable under it is refused. The driver
+also stops before irreversible steps on its own and asks.
+
+Where the driver and the assistant's model do not both fit in memory, they take turns: the assistant's
+model is unloaded while the driver works (the step judge asks the driver meanwhile) and loaded again
+after. Each turn costs a model load (Fara1.5-4B 10-20 s, Bonsai 2 27B 4-19 s on an M3 Pro) and the
+assistant's model reading its conversation again. Estimated from memory needs:
+
+| Mac | Assistant's model | Driver |
+| --- | --- | --- |
+| 16-36 GB | Qwen3.5-9B, Bonsai 2 27B or Qwen3.8-27B | Fara1.5-4B, taking turns |
+| 48 GB and up | Qwen3.8-27B | Fara1.5-9B, loaded alongside |
+
+On an 18 GB M3 Pro, Bonsai 2 27B and Fara1.5-4B loaded together ran the GPU out of memory, which is why
+they take turns there. 24 GB is just over the estimate (16.5 of 16 GB) and may fit both; not yet tried.
+`coderunner models driver --model fara1.5-9b` picks a model by hand, `--off` switches the driver off.
+
 ## Channels
 
 Only paired owners can instruct the assistant; everything else is ignored and

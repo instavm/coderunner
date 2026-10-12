@@ -234,6 +234,16 @@ def browser_tools(svc) -> list[Tool]:
              "password, 2FA, CAPTCHA, payment details). Waits until they finish.",
              _params({"reason": STR}, ["reason"]), handoff),
     ]
+    if getattr(svc, "driver", None) is not None:
+        async def browser_task(args, ctx):
+            return await svc.driver.run(str(args["goal"]), ctx)
+
+        tools.append(Tool(
+            "browser_task", "Hand a whole browser task to the browser driver, a model trained to use web pages from "
+            "screenshots, and get its report back. Give the complete goal with every detail it needs (site, dates, "
+            "names, limits, what to report). It stops and asks before anything irreversible. Prefer this for tasks "
+            "on websites over clicking through them yourself.",
+            _params({"goal": STR}, ["goal"]), browser_task, True))
     if svc.vision:
         tools.append(Tool("browser_screenshot", "Take a screenshot of the current page to look at it.",
                           _params({}), screenshot, True))

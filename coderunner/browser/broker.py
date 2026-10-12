@@ -45,7 +45,8 @@ from . import launcher as default_launcher
 from .cdp import CDPError, CDPPipe
 from .errors import BrowserError
 from .page import PAGE_CHARS, ax_value, cut, page_changes, render_ax, squash
-from .scripts import CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, SCROLL_JS, SELECT_ALL_JS, SELECT_OPTION_JS, SETTLE_JS
+from .scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, SCROLL_JS, SELECT_ALL_JS, SELECT_OPTION_JS,
+                      SETTLE_JS)
 from .urls import is_local_ip, local_problem, page_host, parse_url, same_site
 
 
@@ -224,6 +225,19 @@ class BrowserBroker:
         return await self._run("type", {"ref": ref, "chars": len(str(text)), "submit": submit, "tab": tab,
                                         "tainted": tainted},
                                lambda: self._type(ref, text, submit, tab, tainted, clear))
+
+    async def click_at(self, x: float, y: float, tab: str | None = None, tainted: bool = False) -> dict:
+        """Click what is at viewport point (x, y) of a screenshot: the element there is found first and clicked
+        through the same checks as click(ref), so a point never bypasses policy, the judge or approvals."""
+        return await self._run("click_at", {"x": round(float(x)), "y": round(float(y)), "tab": tab, "tainted": tainted},
+                               lambda: self._click_at(float(x), float(y), tab, tainted))
+
+    async def type_focused(self, text: str, submit: bool = False, tab: str | None = None,
+                           tainted: bool = False) -> dict:
+        """Type into the field that has the focus (after a click on it), with the same checks as type(ref)."""
+        return await self._run("type_focused", {"chars": len(str(text)), "submit": submit, "tab": tab,
+                                                "tainted": tainted},
+                               lambda: self._type_focused(str(text), submit, tab, tainted))
 
     async def find(self, text: str, tab: str | None = None, tainted: bool = False) -> dict:
         """The lines of the whole page (not just the first part) that mention text, with element refs."""
@@ -905,6 +919,66 @@ class BrowserBroker:
             await asyncio.sleep(CLICK_SETTLE)
         raise BrowserError("The page changed under the pointer; nothing was clicked. Take a new snapshot")
 
+    async def _click_at(self, x: float, y: float, tab: str | None, tainted: bool) -> dict:
+        target = await self._target(tab)
+        url, host = await self._web_page(target)
+        sid = await self._session(target)
+        async with self._acting(target, sid, tainted):
+            try:
+                hit = await self._send(sid, "DOM.getNodeForLocation", {
+                    "x": int(x), "y": int(y), "includeUserAgentShadowDOM": True, "ignorePointerEventsNone": True})
+            except CDPError:
+                raise BrowserError(f"Nothing is at ({x:.0f}, {y:.0f}); take a new screenshot") from None
+            if hit.get("frameId") not in (None, target):
+                raise BrowserError("That point is inside an embedded frame, which the assistant cannot use")
+            ref = await self._numbered(sid, target, url, hit.get("backendNodeId"))
+        if ref is None:
+            raise BrowserError(f"Nothing the assistant can click is at ({x:.0f}, {y:.0f}); take a new screenshot")
+        return await self._click(ref, tab, tainted)
+
+    async def _type_focused(self, text: str, submit: bool, tab: str | None, tainted: bool) -> dict:
+        target = await self._target(tab)
+        url, _ = await self._web_page(target)
+        sid = await self._session(target)
+        async with self._acting(target, sid, tainted):
+            found = await self._send(sid, "Runtime.evaluate", {
+                "expression": FOCUSED_JS, "contextId": await self._world(sid, target), "objectGroup": "coderunner"})
+            object_id = (found.get("result") or {}).get("objectId")
+            backend = None
+            if object_id:
+                backend = (await self._send(sid, "DOM.describeNode", {"objectId": object_id}))["node"].get(
+                    "backendNodeId")
+            ref = await self._numbered(sid, target, url, backend) if backend else None
+        if ref is None:
+            raise BrowserError("No text field has the focus; click the field first")
+        return await self._type(ref, text, submit, tab, tainted, clear=False)
+
+    async def _numbered(self, sid: str, target: str, url: str, backend: int | None) -> int | None:
+        """The number of the nearest element at or above a node that the page text numbers (a button around an
+        icon, say). The page is read again first, so the number is current."""
+        if not backend:
+            return None
+        await self._render(target, sid, url, whole=True)        # a point may land on a footer link
+        numbers = {info["backend"]: ref for ref, info in self._refs.get(target, {}).items()}
+        if backend in numbers:
+            return numbers[backend]
+        context = await self._world(sid, target)
+        chain = await self._send(sid, "Runtime.callFunctionOn", {
+            "functionDeclaration": ANCESTORS_JS, "objectId": await self._object(sid, backend, context),
+            "returnByValue": False, "objectGroup": "coderunner"})
+        array = (chain.get("result") or {}).get("objectId")
+        if not array:
+            return None
+        items = (await self._send(sid, "Runtime.getProperties", {"objectId": array, "ownProperties": True}))["result"]
+        for item in sorted((i for i in items if i.get("name", "").isdigit()), key=lambda i: int(i["name"])):
+            object_id = (item.get("value") or {}).get("objectId")
+            if not object_id:
+                continue
+            node = (await self._send(sid, "DOM.describeNode", {"objectId": object_id}))["node"]
+            if node.get("backendNodeId") in numbers:
+                return numbers[node["backendNodeId"]]
+        return None
+
     async def _click_plan(self, sid: str, target: str, element: dict) -> dict:
         with contextlib.suppress(CDPError):
             await self._send(sid, "DOM.scrollIntoViewIfNeeded", {"backendNodeId": element["backend"]})
@@ -1127,8 +1201,9 @@ class BrowserBroker:
             params: dict[str, Any] = {"format": format}
             if format != "png":
                 params["quality"] = min(max(int(quality), 1), 100)
+            metrics = await self._send(sid, "Page.getLayoutMetrics")
+            view = metrics.get("cssVisualViewport") or metrics.get("visualViewport") or {}
             if full_page:
-                metrics = await self._send(sid, "Page.getLayoutMetrics")
                 size = metrics.get("cssContentSize") or metrics.get("contentSize") or {}
                 params["captureBeyondViewport"] = True
                 params["clip"] = {"x": 0, "y": 0, "width": min(size.get("width", 1280), 4096),
@@ -1136,7 +1211,9 @@ class BrowserBroker:
             data = (await self._send(sid, "Page.captureScreenshot", params, timeout=60))["data"]
             result = await self._result(target)
         digest = hashlib.sha256(base64.b64decode(data)).hexdigest()
-        result.update(mime=f"image/{format}", data_b64=data, changed=self._shots.get(target) != digest)
+        result.update(mime=f"image/{format}", data_b64=data, changed=self._shots.get(target) != digest,
+                      # in CSS pixels, the space click_at takes points in, whatever the screen's pixel density
+                      viewport=[view.get("clientWidth", 0), view.get("clientHeight", 0)])
         self._shots[target] = digest
         return result
 

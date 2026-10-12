@@ -7,6 +7,7 @@ assistant_dir()/run, and stop() only ever signals a process it started.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
@@ -190,6 +191,12 @@ class OllamaRuntime(Runtime):
 
     def running(self) -> bool:
         return _ok(f"{self.api}/api/version")
+
+    def unload(self, model: str) -> None:
+        """Free one model's memory now; the server and its other models (embeddings) stay up."""
+        with contextlib.suppress(httpx.HTTPError):
+            httpx.post(f"{self.api}/api/generate", json={"model": model, "keep_alive": 0}, timeout=30,
+                       trust_env=False)
 
     def version(self) -> tuple[int, int, int] | None:
         """The running server's version (what answers requests), else the binary's."""
@@ -573,6 +580,52 @@ class PrismRuntime(LlamaCppRuntime):
 
     def stop(self) -> None:
         _terminate("prism-server", "llama-server")
+
+
+class DriverRuntime(LlamaCppRuntime):
+    """A second llama.cpp server for the browser driver: a model that acts on web pages from screenshots
+    (Fara1.5). It has its own port, state and process, so it can run beside the assistant's model where
+    memory allows, or take turns with it where it does not (models.driver.exclusive)."""
+
+    name = "driver"
+
+    def __init__(self, config=None, port: int = 8083, hub: Hub | None = None):
+        super().__init__(config, port, hub)
+        self.state_path = self.root / "driver.json"
+
+    def binary(self) -> str | None:
+        configured = (self.config.get("models.driver.binary") if self.config else "") or ""
+        if configured and os.access(configured, os.X_OK):
+            return configured
+        found = shutil.which("llama-server")
+        if found:
+            return found
+        # llama.cpp's official build, as voice setup installs it for Qwen3-ASR.
+        builds = sorted((paths.assistant_dir() / "runtimes").glob("llama-b*/**/llama-server"))
+        return str(builds[-1]) if builds else None
+
+    def command(self, active: dict) -> list[str]:
+        cmd = [self.binary() or "llama-server", "-m", active["model"]]
+        if active.get("mmproj"):
+            cmd += ["--mmproj", active["mmproj"]]
+        return cmd + ["--jinja", "-c", str(active["ctx"]), "--host", "127.0.0.1", "--port", str(self.port),
+                      "-np", "1", "-ngl", "99", "--alias", active["alias"]]
+
+    def start(self, timeout: float = 300) -> None:
+        if self.running():
+            return
+        if not self.available():
+            raise RuntimeError("The browser driver needs llama.cpp's llama-server: brew install llama.cpp, or run "
+                               "coderunner voice setup, which installs llama.cpp's own build")
+        active = self._state().get("active")
+        if not active:
+            raise RuntimeError("No browser driver is set up; run coderunner models driver")
+        proc = _spawn("llama-driver", self.command(active))
+        _wait_ready(self.running, proc, timeout, "the browser driver",
+                    str(paths.assistant_dir() / "logs" / "llama-driver.log"))
+
+    def stop(self) -> None:
+        _terminate("llama-driver", "llama-server")
 
 
 class OpenAIRuntime(Runtime):

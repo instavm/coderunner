@@ -477,6 +477,76 @@ def _setup_decision(config, rt: Runtime | None, chat_rt: Runtime, hw, used_gb: f
     progress(f"decision model: {tag} ({entry['decision']['measured']})")
 
 
+DRIVER_CTX = 16384     # a driver keeps its last three screenshots (about 1,300 tokens each) and its steps
+
+
+def _chat_need(config, hw) -> float | None:
+    """Memory the assistant's configured model needs; None when it is not a catalog model."""
+    alias = config.get("models.chat") or ""
+    model_id = alias.removeprefix("coderunner-")
+    try:
+        entry = catalog.get(model_id)
+    except KeyError:
+        return None
+    runtime = config.get("models.runtime") or None
+    return fit.estimate(entry, hw, ctx=int(config.get("models.context") or 32768),
+                        runtime=None if runtime in ("auto", "openai") else runtime)["need_gb"]
+
+
+def driver_pick(hw: hardware.Hardware, config, used_gb: float | None) -> dict | None:
+    """The browser driver for this machine. The best-scoring one that fits beside the assistant's model
+    stays loaded with it. Where none does (18 GB Macs and below), the smallest one that fits on its own takes
+    turns with it: each turn costs a load (Fara1.5-4B: 10-20 s on an M3 Pro) and the assistant's model
+    reloading after, so the quickest to load wins there."""
+    drivers = sorted(catalog.by_role("driver"), key=lambda e: -e["driver"]["webvoyager"])
+    sized = [(e, fit.estimate(e, hw, ctx=DRIVER_CTX, runtime="driver")["need_gb"]) for e in drivers]
+    if used_gb is not None:
+        for entry, need in sized:
+            if used_gb + need <= hw.budget_gb:
+                return {"id": entry["id"], "need_gb": need, "exclusive": False,
+                        "reason": f"fits beside the assistant's model ({used_gb + need:.1f} of {hw.budget_gb:.1f} GB)"}
+    embedding = _embedding_need(config, hw)
+    alone = sorted(((e, need) for e, need in sized if embedding + need <= hw.budget_gb), key=lambda pair: pair[1])
+    if not alone:
+        return None
+    entry, need = alone[0]
+    return {"id": entry["id"], "need_gb": need, "exclusive": True,
+            "reason": f"takes turns with the assistant's model: both need more than {hw.budget_gb:.1f} GB"}
+
+
+def setup_driver(config, model_id: str | None = None, progress: Callable[[str], None] = print,
+                 hub: Hub | None = None, off: bool = False) -> dict:
+    """Download and configure the browser driver (models.driver), or switch it off."""
+    if off:
+        config.set("models.driver", {})
+        config.save()
+        return {"ok": True, "driver": None}
+    from .runtimes import DriverRuntime
+    hw = _hardware(config, None)
+    used = _chat_need(config, hw)
+    used = None if used is None else used + _embedding_need(config, hw)
+    pick = driver_pick(hw, config, used)
+    if model_id:
+        entry = catalog.get(model_id)
+        need = fit.estimate(entry, hw, ctx=DRIVER_CTX, runtime="driver")["need_gb"]
+        exclusive = used is None or used + need > hw.budget_gb
+        pick = {"id": model_id, "need_gb": need, "exclusive": exclusive,
+                "reason": "chosen" + (" (takes turns with the assistant's model)" if exclusive else "")}
+    if pick is None:
+        return {"ok": False, "error": "no browser driver fits this machine"}
+    entry = catalog.get(pick["id"])
+    runtime = DriverRuntime(config, hub=hub)
+    if not runtime.installed(entry):
+        runtime.pull(entry, progress)
+    alias = runtime.prepare(entry, DRIVER_CTX)
+    settings = dict(config.get("models.driver") or {})       # keeps a hand-set binary
+    settings.update(model=entry["id"], exclusive=pick["exclusive"], steps=int(settings.get("steps") or 30))
+    config.set("models.driver", settings)
+    config.save()
+    progress(f"browser driver: {entry['id']} ({pick['reason']})")
+    return {"ok": True, "driver": entry["id"], "alias": alias, "base_url": runtime.base_url, **pick}
+
+
 def bench_here(config, model: str | None = None, measure=None, hw: hardware.Hardware | None = None) -> dict:
     """Time the configured model (or `model` on the configured runtime), save the calibration and re-plan."""
     hw = hw or hardware.detect(float(config.get("sandbox.memory_gb") or 1))

@@ -815,6 +815,87 @@
       },
       "notes": "small instruction model for guard.py's JSON injection classifier; never used for chat",
       "verified": "2026-10-10"
+    },
+    {
+      "id": "fara1.5-4b",
+      "family": "fara1.5",
+      "roles": [
+        "driver",
+        "vision"
+      ],
+      "rank": 1.0,
+      "params_b": 4.66,
+      "active_params_b": 4.66,
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "mit",
+        "base_repo": "microsoft/Fara1.5-4B",
+        "link": "https://huggingface.co/microsoft/Fara1.5-4B",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "bartowski/Fara1.5-4B-GGUF",
+          "quant": "Q4_K_M",
+          "file": "Fara1.5-4B-Q4_K_M.gguf",
+          "size_gb": 2.88,
+          "mmproj_gb": 0.67
+        }
+      },
+      "driver": {
+        "format": "fara1.5",
+        "webvoyager": 80.8,
+        "online_mind2web": 57.3,
+        "webtailbench": 27.4,
+        "measured": "11/11 booking.com flight-search states, 7.5 s median step, M3 Pro 18 GB"
+      },
+      "notes": "Microsoft's browser computer-use model on Qwen3.5-4B: acts from screenshots by coordinates (0-1000 space) with a computer_use tool; scores are Microsoft's, averaged over three runs.",
+      "verified": "2026-10-12",
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 4,
+        "head_dim": 256
+      }
+    },
+    {
+      "id": "fara1.5-9b",
+      "family": "fara1.5",
+      "roles": [
+        "driver",
+        "vision"
+      ],
+      "rank": 0.5,
+      "params_b": 9.65,
+      "active_params_b": 9.65,
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "mit",
+        "base_repo": "microsoft/Fara1.5-9B",
+        "link": "https://huggingface.co/microsoft/Fara1.5-9B",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "bartowski/Fara1.5-9B-GGUF",
+          "quant": "Q4_K_M",
+          "file": "Fara1.5-9B-Q4_K_M.gguf",
+          "size_gb": 5.91,
+          "mmproj_gb": 0.92
+        }
+      },
+      "driver": {
+        "format": "fara1.5",
+        "webvoyager": 86.6,
+        "online_mind2web": 63.4,
+        "webtailbench": 32.3
+      },
+      "notes": "Microsoft's browser computer-use model on Qwen3.5-9B: acts from screenshots by coordinates (0-1000 space) with a computer_use tool; scores are Microsoft's, averaged over three runs.",
+      "verified": "2026-10-12",
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 4,
+        "head_dim": 256
+      }
     }
   ]
 }

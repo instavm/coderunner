@@ -58,6 +58,7 @@ class Services:
     channels: dict = field(default_factory=dict)
     registry: Any = None
     agent: Agent | None = None
+    driver: Any = None              # agent.driver.Driver: a screenshot-driven model for browser tasks
 
 
 class _Server(uvicorn.Server):
@@ -182,10 +183,24 @@ class Daemon:
         from ..channels import load_channels
         svc.channels = load_channels(self.config, svc, self._on_channel_message)
 
+        svc.driver = self._driver(svc)
         svc.registry = build_registry(svc)
         svc.agent = Agent(svc, svc.llm, svc.registry)
         svc.policy.add_listener(self._announce_approval)
         return svc
+
+    def _driver(self, svc: Services):
+        """The browser driver (models.driver), when one is set up: a model that acts from screenshots."""
+        settings = self.config.get("models.driver") or {}
+        if not settings.get("model"):
+            return None
+        from ..agent.driver import Driver, Swap
+        from ..models.runtimes import DriverRuntime, choose_runtime
+        runtime = DriverRuntime(self.config)
+        alias = (runtime._state().get("active") or {}).get("alias") or settings["model"]
+        swap = Swap(svc, choose_runtime(self.config), runtime) if settings.get("exclusive") else None
+        return Driver(svc, LLM(runtime.base_url, alias), steps=int(settings.get("steps") or 30), swap=swap,
+                      runtime=runtime)
 
     # ---- message handling --------------------------------------------------
 
