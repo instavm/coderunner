@@ -271,6 +271,22 @@ class RenderTests(unittest.TestCase):
         self.assertTrue(refs[3]["password"])
         self.assertEqual(refs[4]["name"], "Buy now")
 
+    def test_result_lists_keep_each_entrys_values(self):
+        def card(first, logo, stop, button):
+            return [ax(first, "listitem", parent=1, children=[first + 1, first + 2, first + 3], backend=first),
+                    ax(first + 1, "image", logo, parent=first, backend=first + 1),
+                    ax(first + 2, "StaticText", stop, parent=first),
+                    ax(first + 3, "button", "View details", parent=first, backend=button)]
+        nodes = [ax(1, "RootWebArea", "Flights", children=[2, 3, 10, 20], backend=1),
+                 ax(2, "radio", "One-way", parent=1, backend=200, checked="true"),
+                 ax(3, "StaticText", "One-way", parent=1)]
+        nodes += card(10, "IndiGo", "Direct", 300) + card(20, "IndiGo", "Direct", 301)
+        content, _ = render_ax(nodes)
+        self.assertEqual(content.splitlines(), [
+            '[1] radio "One-way" checked',                  # its label is not repeated under it
+            "IndiGo Direct", '[2] button "View details"',
+            "IndiGo Direct", '[3] button "View details"'])   # each result keeps its airline and stops
+
     def test_numbers_stay_with_their_elements(self):
         numbers = {"next": 1, "ids": {}}
         render_ax(SHOP_AX, "https://shop.example/", numbers=numbers)

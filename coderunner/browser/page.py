@@ -15,6 +15,7 @@ INTERACTIVE = frozenset({
 INLINE = frozenset({"strong", "emphasis", "mark", "subscript", "superscript", "time", "code", "abbr",
                     "insertion", "deletion"})
 CHECKABLE = frozenset({"checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"})
+IMAGES = frozenset({"image", "img"})     # their alternative text is read like text (an airline's logo)
 PAGE_CHARS = 12000          # page text returned at once; browser_find reaches the rest
 SHOWN_REMOVED = 5           # removed lines listed per change; more are counted
 MOSTLY_NEW = 0.5            # below this similarity an action's result is the whole page, not the changes
@@ -67,9 +68,12 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
               numbers: dict | None = None) -> tuple[str, dict]:
     """Compact text for an Accessibility.getFullAXTree result.
 
-    Headings become "# name", interactive elements "[N] role "name" ...", and
-    other text is joined per block and deduplicated. Returns (text, refs)
-    where refs maps N to the element's backendDOMNodeId, role and name.
+    Headings become "# name", interactive elements "[N] role "name" ...", images
+    their alternative text, and other text is joined per block. Text equal to
+    the line just above it (a label under its control, a paragraph shown twice)
+    is dropped; repeated text elsewhere is kept, since in lists of results each
+    entry's "Direct" or "2h 55m" belongs to it. Returns (text, refs) where refs
+    maps N to the element's backendDOMNodeId, role and name.
 
     numbers ({"next": N, "ids": {backendDOMNodeId: N}}) keeps an element's
     number across renderings of the same document, so a model can act on a
@@ -80,17 +84,20 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
     roots = [node["nodeId"] for node in nodes if node.get("parentId") not in by_id]
     lines: list[str] = []
     refs: dict[int, dict] = {}
-    seen: set[str] = set()
+    last = [""]                     # the text of the line above: an element's name or a text block
     parts: list[str] = []
     owner: list[Any] = [None]
+
+    def emit(line: str, text: str) -> None:
+        lines.append(line)
+        last[0] = text
 
     def flush() -> None:
         text = squash("".join(parts))
         parts.clear()
         owner[0] = None
-        if text and text not in seen:
-            seen.add(text)
-            lines.append(text)
+        if text and text != last[0]:
+            emit(text, text)
 
     # Iterative depth-first walk: (node id, text block owner, name that already covers the text).
     stack: list[tuple[str, Any, str]] = [(root, None, "") for root in reversed(roots)]
@@ -109,12 +116,12 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
 
         if node.get("ignored"):
             descend(block, covered)
-        elif role == "StaticText":
+        elif role == "StaticText" or (role in IMAGES and name):
             if name and not (covered and name in covered):
                 if block != owner[0]:
                     flush()
                     owner[0] = block
-                parts.append(raw_name)
+                parts.append(raw_name if role == "StaticText" else f" {raw_name} ")
         elif role == "LineBreak":
             flush()
         elif role == "InlineTextBox":
@@ -127,7 +134,7 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
                     level = min(max(int(props.get("level") or 1), 1), 6)
                 except (TypeError, ValueError):
                     level = 1
-                lines.append("#" * level + " " + name)
+                emit("#" * level + " " + name, name)
             descend(node_id, name)
         elif role in INTERACTIVE and node.get("backendDOMNodeId"):
             flush()
@@ -139,7 +146,7 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
                 numbers["next"] += 1
             is_secret = backend in secret
             refs[ref] = {"backend": backend, "role": role, "name": name, "password": is_secret}
-            lines.append(_element_line(ref, role, name, node, props, page_url, is_secret))
+            emit(_element_line(ref, role, name, node, props, page_url, is_secret), name)
             if role not in ("textbox", "searchbox") and not props.get("editable"):
                 descend(node_id, name)      # the value is already shown; skip editor internals
         elif role in INLINE:
