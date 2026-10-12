@@ -1201,8 +1201,9 @@ class BrowserBroker:
             params: dict[str, Any] = {"format": format}
             if format != "png":
                 params["quality"] = min(max(int(quality), 1), 100)
+            metrics = await self._send(sid, "Page.getLayoutMetrics")
+            view = metrics.get("cssVisualViewport") or metrics.get("visualViewport") or {}
             if full_page:
-                metrics = await self._send(sid, "Page.getLayoutMetrics")
                 size = metrics.get("cssContentSize") or metrics.get("contentSize") or {}
                 params["captureBeyondViewport"] = True
                 params["clip"] = {"x": 0, "y": 0, "width": min(size.get("width", 1280), 4096),
@@ -1210,7 +1211,9 @@ class BrowserBroker:
             data = (await self._send(sid, "Page.captureScreenshot", params, timeout=60))["data"]
             result = await self._result(target)
         digest = hashlib.sha256(base64.b64decode(data)).hexdigest()
-        result.update(mime=f"image/{format}", data_b64=data, changed=self._shots.get(target) != digest)
+        result.update(mime=f"image/{format}", data_b64=data, changed=self._shots.get(target) != digest,
+                      # in CSS pixels, the space click_at takes points in, whatever the screen's pixel density
+                      viewport=[view.get("clientWidth", 0), view.get("clientHeight", 0)])
         self._shots[target] = digest
         return result
 

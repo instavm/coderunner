@@ -370,6 +370,10 @@ def cmd_models(args, config: Config) -> int:
                                accept_license=args.accept_license, progress=print)
         _print(result)
         return 0 if result.get("ok") else 1
+    elif args.action == "driver":
+        result = manager.setup_driver(config, model_id=args.model, progress=print, off=args.off)
+        _print(result)
+        return 0 if result.get("ok") else 1
     elif args.action == "discover":
         from .models import discover, evidence, hardware
         hw = hardware.detect(float(config.get("sandbox.memory_gb") or 1))
@@ -688,7 +692,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_audit)
 
     p = sub.add_parser("models", help="plan, set up, test, discover, or bench (time the model on this machine)")
-    p.add_argument("action", choices=["plan", "setup", "test", "discover", "bench"])
+    p.add_argument("action", choices=["plan", "setup", "test", "discover", "bench", "driver"])
+    p.add_argument("--off", action="store_true", help="with driver: switch the browser driver off")
     p.add_argument("--model"), p.add_argument("--runtime")
     p.add_argument("--accept-license", action="store_true")
     p.add_argument("--report", action="store_true", help="bench: print a summary to share (no names or paths)")
