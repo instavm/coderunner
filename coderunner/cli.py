@@ -59,6 +59,15 @@ def cmd_setup(args, config: Config) -> int:
     _print(result)
     if not result.get("ok"):
         return 1
+    if not args.no_voice:
+        import asyncio
+
+        from .voice import Voice
+        print("\nSetting up speech to text (voice messages and `coderunner chat --voice`)…")
+        try:
+            _print(asyncio.run(Voice(config).setup(progress=print)))
+        except Exception as exc:          # voice is optional; the assistant works without it
+            print(f"Voice setup failed ({exc}); retry later with `coderunner voice setup`.")
     print("\nNext: `coderunner up` to start the assistant, then `coderunner chat`.")
     return 0
 
@@ -245,10 +254,70 @@ def _chat_once(config: Config, message: str, conversation: str) -> str:
     return result.get("reply", "")
 
 
+def _record(voice) -> str | None:
+    """Record from the default microphone until Enter is pressed; the path of the recording, or None."""
+    import tempfile
+    ffmpeg = voice.ffmpeg()
+    if not ffmpeg:
+        print("Recording needs ffmpeg; run `coderunner voice setup`.")
+        return None
+    source = ["-f", "avfoundation", "-i", ":default"] if sys.platform == "darwin" else ["-f", "pulse", "-i", "default"]
+    path = os.path.join(tempfile.mkdtemp(prefix="coderunner-mic-"), "message.wav")
+    proc = subprocess.Popen([ffmpeg, "-hide_banner", "-loglevel", "error", *source, "-ac", "1", "-ar", "16000", path],
+                            stdin=subprocess.PIPE)
+    try:
+        input("  listening… press Enter to send ")
+    finally:
+        if proc.poll() is None:
+            proc.communicate(b"q", timeout=10)        # ffmpeg finishes the file when it reads q
+    return path if os.path.exists(path) and os.path.getsize(path) > 1000 else None
+
+
+def _speak_aloud(voice, text: str) -> None:
+    tts = voice.tts()
+    if tts and tts[0] == "say" and text:
+        subprocess.run([tts[1]], input=text.encode(), check=False)   # text on stdin, never as arguments
+
+
+def _voice_chat(config: Config, conversation: str) -> int:
+    import asyncio
+    import shutil
+
+    from .voice import Voice
+    voice = Voice(config)
+    if not voice.available():
+        print("Speech to text is not set up yet. Run `coderunner voice setup` first.")
+        return 1
+    print("Talk to your assistant: press Enter to start speaking, Enter again to send. Ctrl-D to exit.")
+    while True:
+        try:
+            input("\n🎤 ")
+            path = _record(voice)
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not path:
+            print("Nothing was recorded (is the microphone allowed for this terminal?).")
+            continue
+        try:
+            text = asyncio.run(voice.transcribe(path)).strip()
+        finally:
+            shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+        if not text:
+            print("I couldn't make out any words.")
+            continue
+        print(f"› {text}")
+        reply = _chat_once(config, text, conversation)
+        print(reply)
+        _speak_aloud(voice, reply)
+
+
 def cmd_chat(args, config: Config) -> int:
     if not _daemon_up(config):
         print("The daemon is not running. Start it with `coderunner up`.")
         return 1
+    if args.voice:
+        return _voice_chat(config, args.conversation)
     if args.message:
         print(_chat_once(config, " ".join(args.message), args.conversation))
         return 0
@@ -539,6 +608,28 @@ async def _find_here(config: Config, query: str, kind: str | None, limit: int) -
             await embedder.aclose()
 
 
+def cmd_voice(args, config: Config) -> int:
+    import asyncio
+
+    from .voice import Voice
+    if args.language:
+        config.set("voice.language", args.language)
+        config.save()
+    voice = Voice(config)
+    if args.action == "setup":
+        result = asyncio.run(voice.setup(progress=print, engine=args.engine))
+        _print(result)
+        return 0 if result.get("ok") else 1
+    if args.action == "transcribe":
+        if not args.file:
+            print("Say which audio file to transcribe.")
+            return 2
+        print(asyncio.run(voice.transcribe(args.file)))
+        return 0
+    _print(voice.status())
+    return 0
+
+
 def cmd_token(args, config: Config) -> int:
     print(paths.admin_token() if args.admin else paths.api_token())
     return 0
@@ -563,6 +654,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--network", choices=["default", "none", "proxy"])
     p.add_argument("--accept-license", action="store_true")
     p.add_argument("--no-models", action="store_true")
+    p.add_argument("--no-voice", action="store_true", help="Skip speech-to-text setup")
     p.set_defaults(func=cmd_setup)
 
     p = sub.add_parser("up", help="Start the sandbox and the assistant daemon")
@@ -578,6 +670,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("chat", help="Talk to the assistant; approvals are asked here")
     p.add_argument("message", nargs="*")
     p.add_argument("--conversation", default="cli")
+    p.add_argument("--voice", action="store_true", help="Speak instead of typing; replies are read aloud on macOS")
     p.set_defaults(func=cmd_chat)
 
     p = sub.add_parser("approvals")
@@ -653,6 +746,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=8)
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_find)
+
+    p = sub.add_parser("voice", help="On-device speech to text: Apple's on macOS 26, else Qwen3-ASR on llama.cpp")
+    p.add_argument("action", choices=["status", "setup", "transcribe"], nargs="?", default="status")
+    p.add_argument("file", nargs="?", help="audio file to transcribe")
+    p.add_argument("--engine", choices=["apple", "qwen3-asr"], help="set up only this engine")
+    p.add_argument("--language", help='spoken language, e.g. "en-IN" or "hi"; "auto" follows the system')
+    p.set_defaults(func=cmd_voice)
 
     p = sub.add_parser("token", help="Print the sandbox API token (or --admin)")
     p.add_argument("--admin", action="store_true")

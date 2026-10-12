@@ -353,8 +353,9 @@ def file_tools(svc) -> list[Tool]:
         path = await open_file(args, ctx, "Listen to")
         if kind_of(path) not in ("audio", "video"):
             return f"Error: {path.name} has no sound; use file_read or file_view."
-        if getattr(svc, "voice", None) is None:
-            return "No speech-to-text engine is installed (whisper.cpp, parakeet-mlx or mlx_whisper)."
+        voice = getattr(svc, "voice", None)
+        if voice is None or not voice.available():
+            return "Speech to text is not set up yet; the owner can run `coderunner voice setup`."
         return f"Transcript of {path.name}:\n" + await svc.voice.transcribe(path)
 
     kinds = {"type": "string", "enum": ["text", "doc", "image", "audio", "video"]}

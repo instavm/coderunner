@@ -1,5 +1,8 @@
 import asyncio
+import os
+import pathlib
 import unittest
+from unittest import mock
 
 import httpx
 
@@ -73,6 +76,33 @@ class AdminGatewayTests(unittest.IsolatedAsyncioTestCase):
 
     def client(self, base="http://127.0.0.1:8224"):
         return httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url=base)
+
+    async def test_voice_messages_are_transcribed_and_removed(self):
+        class FakeVoice:
+            def __init__(self):
+                self.seen = []
+
+            def available(self):
+                return True
+
+            async def transcribe(self, path):
+                self.seen.append((str(path), pathlib.Path(path).read_bytes()))
+                return "what is on my calendar"
+
+        admin = {"Authorization": "Bearer " + ADMIN}
+        async with self.client() as client:
+            self.assertEqual((await client.post("/api/voice", content=b"x", headers=admin)).status_code, 503)
+            self.svc.voice = FakeVoice()
+            self.assertEqual((await client.post("/api/voice", content=b"OggS")).status_code, 401)
+            response = await client.post("/api/voice", content=b"OggS audio", headers=admin)
+            self.assertEqual(response.json(), {"text": "what is on my calendar"})
+            path, data = self.svc.voice.seen[0]
+            self.assertEqual(data, b"OggS audio")
+            self.assertFalse(os.path.exists(path))
+            self.assertEqual((await client.post("/api/voice", content=b"", headers=admin)).status_code, 400)
+            with mock.patch("coderunner.gateway.VOICE_LIMIT", 4):
+                self.assertEqual((await client.post("/api/voice", content=b"12345", headers=admin)).status_code, 413)
+            self.assertEqual(len(self.svc.voice.seen), 1)
 
     async def test_requires_admin_token(self):
         async with self.client() as client:

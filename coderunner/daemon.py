@@ -160,11 +160,8 @@ class Daemon:
                                   tz=self.config.get("owner.timezone") or None)
 
         from .voice import Voice
-        voice = Voice(self.config)
-        svc.voice = voice if voice.available() else None
-        if svc.voice is not None:
-            from .files.extract import untimed
-            svc.files.transcriber = untimed(svc.voice.transcribe)       # used with files.transcribe on
+        svc.voice = Voice(self.config)      # usable once `coderunner voice setup` has run, no restart needed
+        svc.files.transcriber = svc.voice.timed                         # used with files.transcribe on
 
         from .connectors import load_connectors
         svc.connectors = load_connectors(self.config)
@@ -194,7 +191,7 @@ class Daemon:
     async def _on_channel_message(self, message) -> str | None:
         text = message.text
         if message.audio_path:
-            if self.svc.voice is None:
+            if self.svc.voice is None or not self.svc.voice.available():
                 return "Voice messages aren't set up on this computer yet."
             text = (await self.svc.voice.transcribe(message.audio_path)).strip()
             if not text:
@@ -238,6 +235,7 @@ class Daemon:
             "network": self.config.get("sandbox.network"),
             "channels": sorted(svc.channels),
             "connectors": sorted({c.connector for c in svc.connectors}),
+            "voice": [engine.name for engine in svc.voice.engines()] if svc.voice is not None else [],
             "pending_approvals": len(svc.policy.pending()),
             "tools": sorted(svc.registry.tools),
             "browser": {"mode": svc.browser.mode, "running": svc.browser.running(),

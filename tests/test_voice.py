@@ -1,4 +1,7 @@
+import array
 import asyncio
+import hashlib
+import io
 import json
 import math
 import os
@@ -6,14 +9,18 @@ import pathlib
 import shutil
 import struct
 import sys
+import tarfile
 import tempfile
 import unittest
 import wave
 from unittest import mock
 
-from coderunner import voice as voice_module
+from coderunner import native, process
 from coderunner.config import Config
-from coderunner.voice import Voice, VoiceUnavailable, find_binary, run
+from coderunner.voice import Segment, Voice, VoiceUnavailable, find_binary, run
+from coderunner.voice import apple as apple_module
+from coderunner.voice import qwen as qwen_module
+from coderunner.voice.qwen import QwenASR, asr_transcript, cut_points
 
 FFMPEG = shutil.which("ffmpeg") or next(
     (p for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg") if os.path.exists(p)), None)
@@ -35,6 +42,26 @@ out = pathlib.Path(args[args.index("--output-dir") + 1]) / (pathlib.Path(args[0]
 out.write_text("parakeet heard you")
 '''
 FAKE_FAILING = "import sys\nsys.stderr.write('model exploded')\nsys.exit(3)\n"
+# Apple's helper: `transcribe <wav> <language>` or `prepare <language>`; exit 3 means no model for the language.
+FAKE_APPLE = r'''
+import json, pathlib, sys, wave
+with pathlib.Path(__file__).with_suffix(".log").open("a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[-1] == "hi":
+    sys.stderr.write("no on-device speech model for hi"); sys.exit(3)
+if sys.argv[1] == "transcribe":
+    with wave.open(sys.argv[2]) as w:
+        print(json.dumps({"start": 0, "end": 0.5, "text": f"Apple heard {w.getframerate()} Hz,"}))
+        print(json.dumps({"start": 0.5, "end": 1.0, "text": " twice."}))
+'''
+FAKE_LLAMA = r'''
+import pathlib, sys, wave
+args = sys.argv[1:]
+assert pathlib.Path(args[args.index("-m") + 1]).is_file() and pathlib.Path(args[args.index("--mmproj") + 1]).is_file()
+assert args[args.index("-p") + 1] == "<__media__>"
+with wave.open(args[args.index("--audio") + 1]) as w:
+    print(f"language English<asr_text>Qwen heard {w.getframerate()} Hz\n  on {w.getnchannels()} channel.")
+'''
 FAKE_TTS = r'''
 import json, math, pathlib, struct, sys, wave
 args = sys.argv[1:]
@@ -67,9 +94,11 @@ class VoiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.work.mkdir()
         self.models = self.dir / "home" / "assistant" / "models"
         self.models.mkdir(parents=True)
-        # Only our fake tools are visible, whatever is installed on this machine.
+        # Only our fake tools are visible, whatever is installed on this machine, and Apple speech is off
+        # unless a test turns it on.
         for patcher in (mock.patch.dict(os.environ, {"PATH": str(self.bin), "CODERUNNER_HOME": str(self.dir / "home")}),
-                        mock.patch.object(voice_module, "EXTRA_PATHS", [])):
+                        mock.patch.object(process, "EXTRA_PATHS", []),
+                        mock.patch.object(apple_module, "macos_major", lambda: 0)):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -83,25 +112,94 @@ class VoiceTestCase(unittest.IsolatedAsyncioTestCase):
     def voice(self, **settings):
         return Voice(Config({"voice": {"ffmpeg": FFMPEG or "", **settings}}), tmp_root=str(self.work))
 
+    def macos_26(self):
+        patcher = mock.patch.object(apple_module, "macos_major", lambda: 26)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def apple(self, voice, body=FAKE_APPLE):
+        """A built Apple helper on a macOS 26 Mac."""
+        helper = voice.apple.helper()
+        helper.parent.mkdir(parents=True, exist_ok=True)
+        helper.write_text(f"#!{sys.executable}\n{body}")
+        helper.chmod(0o755)
+        self.macos_26()
+        return helper
+
+    def llama(self, body=FAKE_LLAMA):
+        cli = QwenASR.llama_dir() / f"llama-{qwen_module.LLAMA_RELEASE}" / "llama-mtmd-cli"
+        cli.parent.mkdir(parents=True, exist_ok=True)
+        cli.write_text(f"#!{sys.executable}\n{body}")
+        cli.chmod(0o755)
+        return str(cli)
+
+    def qwen(self, voice, body=FAKE_LLAMA):
+        """llama.cpp and the Qwen3-ASR files, as `coderunner voice setup` leaves them."""
+        cli = self.llama(body)
+        QwenASR.models_dir().mkdir(parents=True, exist_ok=True)
+        for name, _ in qwen_module.MODELS[voice.qwen.model]["files"]:
+            (QwenASR.models_dir() / name).write_bytes(b"gguf")
+        return cli
+
 
 class EngineDetectionTests(VoiceTestCase):
     async def test_nothing_installed(self):
         voice = self.voice()
-        self.assertIsNone(voice.engine())
+        self.assertEqual(voice.engines(), [])
         self.assertFalse(voice.available())
-        with self.assertRaisesRegex(VoiceUnavailable, "whisper-cpp"):
+        with self.assertRaisesRegex(VoiceUnavailable, "coderunner voice setup"):
             await voice.transcribe(self.dir / "note.ogg")
 
     def test_engine_preference_order(self):
+        names = lambda voice: [engine.name for engine in voice.engines()]  # noqa: E731
         self.tool("mlx_whisper", FAKE_DIR_ENGINE)
-        self.assertEqual(self.voice().engine()[0], "mlx_whisper")
+        self.assertEqual(names(self.voice()), ["mlx_whisper"])
         self.tool("parakeet-mlx", FAKE_DIR_ENGINE)
-        self.assertEqual(self.voice().engine()[0], "parakeet-mlx")
         self.tool("whisper-cli", FAKE_WHISPER)
-        self.assertEqual(self.voice().engine()[0], "parakeet-mlx")  # whisper-cli is useless without a model
+        self.assertEqual(names(self.voice()), ["parakeet-mlx", "mlx_whisper"])  # whisper-cli needs a model
         (self.models / "ggml-base.en.bin").write_bytes(b"model")
-        self.assertEqual(self.voice().engine(), ("whisper-cli", str(self.bin / "whisper-cli")))
-        self.assertEqual(self.voice(whisper_model=str(self.dir / "missing.bin")).engine()[0], "parakeet-mlx")
+        self.assertEqual(names(self.voice()), ["whisper-cli", "parakeet-mlx", "mlx_whisper"])
+        self.assertEqual(names(self.voice(whisper_model=str(self.dir / "missing.bin")))[0], "parakeet-mlx")
+        # Qwen3-ASR once set up, and Apple speech on macOS 26, come before the engines found installed.
+        voice = self.voice()
+        self.qwen(voice)
+        self.assertEqual(names(voice), ["qwen3-asr", "whisper-cli", "parakeet-mlx", "mlx_whisper"])
+        self.apple(voice)
+        self.assertEqual(names(voice)[:2], ["apple", "qwen3-asr"])
+        self.assertEqual(names(self.voice(stt="qwen3-asr")), ["qwen3-asr"])
+        self.assertEqual(self.voice(stt="nonsense").engines(), [])
+        self.assertEqual(voice.status()["engines"], names(voice))
+
+    def test_apple_needs_macos_26_and_a_way_to_build(self):
+        voice = self.voice()
+        self.assertFalse(voice.apple.possible())               # macOS 15 or Linux
+        self.macos_26()
+        self.assertFalse(voice.apple.possible())               # no helper and no Swift compiler
+        if sys.platform == "darwin":
+            self.tool("xcrun", "")
+            self.assertTrue(voice.apple.possible())
+
+    def test_asr_model_follows_memory(self):
+        with mock.patch.object(qwen_module, "memory_gb", lambda: 8.0):
+            self.assertEqual(self.voice().qwen.model, "qwen3-asr-0.6b")
+        with mock.patch.object(qwen_module, "memory_gb", lambda: 18.0):
+            self.assertEqual(self.voice().qwen.model, "qwen3-asr-1.7b")
+            self.assertEqual(self.voice(asr_model="qwen3-asr-0.6b").qwen.model, "qwen3-asr-0.6b")
+
+    def test_asr_transcript(self):
+        self.assertEqual(asr_transcript("language English<asr_text>Hello  there.\n"), "Hello there.")
+        self.assertEqual(asr_transcript("plain text"), "plain text")
+
+    def test_long_recordings_are_cut_in_pauses(self):
+        rate = 100
+        loud = [1000] * (rate * 10)
+        quiet = [0] * (rate // 5)
+        samples = array.array("h", loud * 3 + quiet + loud * 3 + quiet + loud)    # pauses at 30.0 s and 60.2 s
+        cuts = cut_points(samples, rate, chunk=35, slack=8)
+        self.assertEqual(len(cuts), 2)
+        self.assertTrue(30 * rate <= cuts[0] <= 30.2 * rate, cuts)
+        self.assertTrue(60.2 * rate <= cuts[1] <= 60.4 * rate, cuts)
+        self.assertEqual(cut_points(array.array("h", loud), rate), [])
 
     def test_ffmpeg_is_required(self):
         self.tool("parakeet-mlx", FAKE_DIR_ENGINE)
@@ -131,6 +229,7 @@ class TranscribeTests(VoiceTestCase):
         voice = self.voice()
         self.assertTrue(voice.available())
         self.assertEqual(await voice.transcribe(note), "rate=16000 channels=1")
+        self.assertEqual(await voice.segments(note), [Segment(0.0, 1.0, "rate=16000 channels=1")])
         self.assertEqual(list(self.work.iterdir()), [])
         self.assertTrue(note.exists())
 
@@ -144,6 +243,65 @@ class TranscribeTests(VoiceTestCase):
             await self.voice().transcribe(note)
         self.assertEqual(list(self.work.iterdir()), [])
 
+    async def test_apple_speech_gives_timed_phrases(self):
+        voice = self.voice(language="en-IN")
+        helper = self.apple(voice)
+        note = self.dir / "note.wav"
+        write_tone(note)
+        self.assertEqual(await voice.segments(note), [Segment(0.0, 0.5, "Apple heard 16000 Hz,"),
+                                                      Segment(0.5, 1.0, "twice.")])
+        self.assertEqual(await voice.transcribe(note), "Apple heard 16000 Hz, twice.")
+        logged = helper.with_suffix(".log").read_text().split()
+        self.assertEqual((logged[0], logged[2]), ("transcribe", "en-IN"))
+        self.assertEqual(list(self.work.iterdir()), [])
+
+    async def test_timed_pieces_for_the_file_index(self):
+        voice = self.voice()
+        self.assertEqual(await voice.timed(self.dir / "absent.wav"), [])     # not set up: nothing, no error
+        self.apple(voice)
+        note = self.dir / "memo.wav"
+        write_tone(note)
+        self.assertEqual(await voice.timed(note), [(0.0, "Apple heard 16000 Hz,"), (0.5, "twice.")])
+
+    async def test_languages_apple_lacks_go_to_qwen(self):
+        voice = self.voice(language="hi")
+        self.apple(voice)
+        self.qwen(voice)
+        note = self.dir / "note.wav"
+        write_tone(note, rate=8000)
+        self.assertEqual(await voice.transcribe(note), "Qwen heard 16000 Hz on 1 channel.")
+        # Without a fallback the reason is reported.
+        with self.assertRaisesRegex(RuntimeError, "no on-device speech model for hi"):
+            await self.voice(language="hi", stt="apple").transcribe(note)
+
+    async def test_failing_engine_hands_over(self):
+        voice = self.voice()
+        self.apple(voice, FAKE_FAILING)
+        self.qwen(voice)
+        note = self.dir / "note.wav"
+        write_tone(note)
+        self.assertEqual(await voice.transcribe(note), "Qwen heard 16000 Hz on 1 channel.")
+        self.llama(FAKE_FAILING)
+        with self.assertRaisesRegex(RuntimeError, "qwen3-asr failed.*model exploded"):
+            await self.voice(stt="qwen3-asr").transcribe(note)
+        self.llama("print('a log line but no transcript')")
+        with self.assertRaisesRegex(RuntimeError, "no transcript"):
+            await self.voice(stt="qwen3-asr").transcribe(note)
+
+    async def test_qwen_segments_long_recordings(self):
+        voice = self.voice(stt="qwen3-asr")
+        self.qwen(voice)
+        note = self.dir / "long.wav"
+        write_tone(note, rate=16000, channels=1, seconds=1.0)
+        with mock.patch.object(qwen_module, "CHUNK", 0.4), mock.patch.object(qwen_module, "SLACK", 0.2):
+            segments = await voice.segments(note)
+        self.assertGreaterEqual(len(segments), 3)
+        self.assertTrue(all(0.2 <= s.end - s.start <= 0.4 for s in segments[:-1]), segments)
+        self.assertEqual((segments[0].start, segments[-1].end), (0.0, 1.0))
+        self.assertTrue(all(a.end == b.start for a, b in zip(segments, segments[1:])))
+        self.assertTrue(all(s.text == "Qwen heard 16000 Hz on 1 channel." for s in segments))
+        self.assertEqual(list(self.work.iterdir()), [])
+
     async def test_unreadable_audio_raises(self):
         self.tool("parakeet-mlx", FAKE_DIR_ENGINE)
         bogus = self.dir / "bogus.ogg"
@@ -151,6 +309,136 @@ class TranscribeTests(VoiceTestCase):
         with self.assertRaisesRegex(RuntimeError, "ffmpeg failed"):
             await self.voice().transcribe(bogus)
         self.assertEqual(list(self.work.iterdir()), [])
+
+
+def tarball(files: dict[str, str]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for name, body in files.items():
+            data = body.encode()
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = len(data), 0o755
+            tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+class FakeStream:
+    def __init__(self, data):
+        self.data = data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        pass
+
+    def iter_bytes(self, size):
+        yield self.data
+
+
+class FakeHub:
+    def __init__(self):
+        self.calls = []
+
+    def download(self, repo, file, dest, sha256=None, progress=None):
+        self.calls.append((repo, file, sha256))
+        pathlib.Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        pathlib.Path(dest).write_bytes(b"gguf")
+        return pathlib.Path(dest)
+
+
+FAKE_SWIFTC = r'''
+import pathlib, sys
+out = pathlib.Path(sys.argv[sys.argv.index("-o") + 1])
+out.write_text("#!/bin/sh\necho built\n"); out.chmod(0o755)
+with pathlib.Path(__file__).with_suffix(".log").open("a") as log:
+    log.write(sys.argv[1] + "\n")
+'''
+
+
+class SetupTests(VoiceTestCase):
+    def install(self, archive, sha256):
+        build = ("macos-arm64", sha256)
+        with mock.patch.object(QwenASR, "build_for_host", staticmethod(lambda: build)), \
+                mock.patch("httpx.stream", lambda *args, **kwargs: FakeStream(archive)):
+            return QwenASR().install_llama()
+
+    def test_llama_build_is_checked_before_unpacking(self):
+        archive = tarball({f"llama-{qwen_module.LLAMA_RELEASE}/llama-mtmd-cli": "#!/bin/sh\n"})
+        cli = self.install(archive, hashlib.sha256(archive).hexdigest())
+        self.assertEqual(QwenASR().cli(), cli)
+        self.assertEqual([p.name for p in QwenASR.llama_dir().iterdir()], [f"llama-{qwen_module.LLAMA_RELEASE}"])
+        with self.assertRaisesRegex(RuntimeError, "checksum"):
+            self.install(archive, "0" * 64)
+        with mock.patch.object(QwenASR, "build_for_host", staticmethod(lambda: None)):
+            with self.assertRaisesRegex(VoiceUnavailable, "no build"):
+                QwenASR().install_llama()
+
+    async def test_setup_downloads_qwen_only_when_apple_cannot_serve(self):
+        hub, installs = FakeHub(), []
+
+        def install_llama(qwen, progress=None):
+            installs.append(qwen.model)
+            return self.llama()
+
+        with mock.patch.object(QwenASR, "install_llama", install_llama):
+            # Apple speech has the language: nothing to download.
+            voice = self.voice()
+            self.apple(voice)
+            result = await voice.setup(hub=hub)
+            self.assertEqual((result["apple"], result["engines"], hub.calls, installs), ("ready", ["apple"], [], []))
+            # Hindi: no Apple model, so llama.cpp and Qwen3-ASR are fetched, with pinned checksums.
+            voice = self.voice(language="hi")
+            result = await voice.setup(hub=hub)
+            self.assertIn("no on-device speech model", result["apple"])
+            spec = qwen_module.MODELS[voice.qwen.model]
+            self.assertEqual(hub.calls, [(spec["repo"], name, sha) for name, sha in spec["files"]])
+            self.assertEqual((result["engines"], len(installs)), (["apple", "qwen3-asr"], 1))
+            self.assertEqual(result["ok"], bool(FFMPEG))
+
+    @unittest.skipUnless(sys.platform == "darwin", "Swift helpers are built on macOS")
+    async def test_apple_helper_is_built_once_and_a_failure_is_remembered(self):
+        voice = self.voice()
+        self.macos_26()
+        self.tool("swiftc", FAKE_SWIFTC)
+        first = await voice.apple.build()
+        self.assertEqual(first, str(voice.apple.helper()))
+        self.assertEqual(await voice.apple.build(), first)
+        self.assertEqual((self.bin / "swiftc.log").read_text(), "-O\n")
+        # A changed source that fails to build is remembered, so it is not rebuilt on every message.
+        source = self.dir / "apple_speech.swift"
+        source.write_text("broken")
+        self.tool("swiftc", "import sys\nsys.stderr.write('syntax error'); sys.exit(1)")
+        with mock.patch.object(apple_module, "SOURCE", source):
+            self.assertTrue(voice.apple.possible())
+            with self.assertRaisesRegex(VoiceUnavailable, "could not be built"):
+                await voice.apple.build()
+            self.assertFalse(voice.apple.possible())
+            failed = native.helper_path(source, apple_module.NAME)
+            self.assertIn("syntax error", failed.with_name(failed.name + ".failed").read_text())
+
+
+@unittest.skipUnless(os.environ.get("CODERUNNER_REAL_VOICE") and FFMPEG and os.path.exists("/usr/bin/say"),
+                     "set CODERUNNER_REAL_VOICE=1 on a Mac to transcribe real speech")
+class RealSpeechTests(unittest.IsolatedAsyncioTestCase):
+    async def test_spoken_sentence_round_trip(self):
+        """macOS `say` speaks a sentence; the engine voice setup chose writes it down."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = os.environ.get("CODERUNNER_HOME", tmp)
+            with mock.patch.dict(os.environ, {"CODERUNNER_HOME": home}):
+                voice = Voice(Config({"voice": {"ffmpeg": FFMPEG, "language": "en-US"}}), tmp_root=tmp)
+                await voice.setup()
+                speech = pathlib.Path(tmp) / "speech.aiff"
+                await run(["/usr/bin/say", "-o", str(speech), "Book a table for two at seven tonight."], 60)
+                segments = await voice.segments(speech)
+        text = " ".join(segment.text for segment in segments).lower()
+        for word in ("book", "table", "tonight"):
+            self.assertIn(word, text)
+        self.assertTrue("seven" in text or "7" in text, text)    # engines may write numbers as digits
+        self.assertTrue(all(0 <= s.start <= s.end <= 4 for s in segments), segments)
 
 
 @needs_ffmpeg
