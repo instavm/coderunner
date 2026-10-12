@@ -43,6 +43,10 @@ SHRINK = 1.0              # pulls models with one or two scores toward the mean
 ITERATIONS = 200
 # Ability lost by builds below the precision their scores were published at: (bits at least, loss).
 PRECISION_LOSS = ((4.5, 0.0), (4.0, 0.05), (3.0, 0.15), (2.0, 0.3), (1.5, 0.5), (0.0, 0.7))
+# Ability lost per unit of benchmark score a build does not keep, for builds whose makers publish how much
+# of the full model's scores they retain. Calibrated so a conventional 2-bit build keeps today's 2-bit loss:
+# IQ2_XXS keeps 84.1% of Qwen3.8-27B's average in Prism's comparison, and 1.9 x 0.159 = 0.30.
+RETENTION_LOSS = 1.9
 
 
 def scores_from(eval_results: list[dict]) -> dict[str, float]:
@@ -151,13 +155,16 @@ def ability(entry: dict, bits: float | None = None) -> float | None:
     """The entry's ability, less what its build loses to quantization; None without published scores.
 
     Scores normally describe the full-precision model (the catalog's base repo, or a discovered repo).
-    An entry's "evidence" can point elsewhere, e.g. a quantized release scored as such ("build": true).
+    An entry's "evidence" can point elsewhere, e.g. a quantized release scored as such ("build": true), or
+    give the share of the full model's scores its maker measured the build to keep ("retained": 0.982).
     """
     known = abilities()
     evidence = entry.get("evidence") or {}
     repo = evidence.get("repo") or (entry.get("license") or {}).get("base_repo") or entry.get("repo")
     if repo not in known:
         return None
+    if evidence.get("retained") is not None:
+        return round(known[repo] - RETENTION_LOSS * (1 - float(evidence["retained"])), 3)
     if evidence.get("build") or bits is None:
         return known[repo]
     return round(known[repo] - precision_loss(bits), 3)

@@ -22,7 +22,7 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
 | Browser (`test_browser.py`) | URL and host rules, policy kinds per action, password and card fields, accessibility snapshots and change detection, plus an end-to-end run against the installed Chrome (headless) including a redirect to a private address being blocked and no leftover processes |
 | Everyday browser (`test_chrome.py`, `test_chrome_e2e.py`) | Extension ID pinned by its key; the native host relays both ways, answers commands too large for the browser and refuses other extensions; the daemon socket is 0600 and refuses a wrong token or origin and a second browser; the broker drives a fake extension through the bridge, says how to connect when it is missing, and stops when it goes away; `browser connect` registers the host for installed browsers only. With Chromium or Chrome for Testing (`CODERUNNER_CHROME_E2E=/path/to/chrome`): the real extension opens the assistant's tab in a CodeRunner group, types, clicks, answers a confirm(), takes a screenshot, puts a page's popup into the group, blocks a link to a private address and a cross-site frame from a blocked host, hides and refuses the owner's other tab (and the Storage domain), lets go of a tab dragged out of the group and of idle tabs (attaching again on the next step), and leaves the browser open on stop. `CODERUNNER_E2E_HEADFUL=1` adds a normal window with no debugging switches (navigator.webdriver is false); `CODERUNNER_E2E_LIVE=1` adds booking.com's destination suggestions |
 | Daemon (`test_daemon.py`) | Real HTTP servers: owner chat, memory recall across conversations, sandbox model proxy, credential separation, scheduled delivery, and the agent driving the real browser where a "Buy now" click waits for an owner approval over the API |
-| Models (`test_models.py`) | Hardware parsing (Apple, NVIDIA, AMD, CPU, WSL2), budgets, KV-cache sizing, picks per memory tier from 8 GB Macs to 512 GB, expert offload on NVIDIA, runtime routing to llama.cpp, cluster flags, GPU-limit notes, licence resolution through base models, resumable verified downloads, smoke-test pass/fail including the wrong-argument case below |
+| Models (`test_models.py`) | Hardware parsing (Apple, NVIDIA, AMD, CPU, WSL2), budgets, KV-cache sizing, picks per memory tier from 8 GB Macs to 512 GB, expert offload on NVIDIA, runtime routing to llama.cpp, cluster flags, GPU-limit notes, licence resolution through base models, resumable verified downloads, smoke-test pass/fail including the wrong-argument case below; timing a served model (streamed and llama.cpp timings), calibration per machine, setup moving on from a model far slower than estimated and deleting its weights, the shareable report; the decision model only where it fits; published retention for Bonsai 2; Ollama version checks and its own checksum-verified copy |
 | Discovery (`test_discover.py`) | Hugging Face listings, configs and file trees from a fake hub: filters, sharded builds, KV and MoE sizes, build choice per machine, known breakages, stale caches; published scores read from eval results, ranking by them (a model scored like Granite 4.2 30B ranks below Qwen3.5-9B), quantization losses, GPU-limit notes |
 | Memory, scheduler, connectors, channels, voice, service, remote | Unit tests with fakes; see each test file |
 
@@ -90,6 +90,56 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
   One file per embedding request managed about 31 files a second, and search over 18,000 vectors
   took 125-550 ms: both are being reworked.
 
+### Backends, prompt cache and decision models (October 12, same Mac)
+
+Qwen3.5-9B at about 4 bits, no reasoning, nothing else loaded (tokens per second; a fresh page each
+time, so no prompt cache helps; the other track's test suite was using one CPU core):
+
+| Backend | Read 3.7K tokens | Read 15.3K | Write (after 3.7K / 15.3K) | Tool call |
+| --- | --- | --- | --- | --- |
+| Ollama 0.40.3 (llama.cpp runner, Q4_K_M) | 254 | 236 | 22.2 / 19.9 | ok |
+| llama.cpp b11564, CodeRunner's flags | 262 | 242 | 21.3 / 19.3 | ok |
+| llama.cpp b11564, `-b 2048 -ub 2048` | 219 | 202 | 20.8 / 19.4 | ok |
+| mlx-lm 0.32, mlx-community 4-bit | 247 | 253 | 25.6 / 22.9 | ok |
+| Ollama 0.40.3 MLX engine (`qwen3.5:9b-nvfp4`) | 22.1 s for the 3.8K request (llama.cpp: 23.4-24) | out of memory after 6m51s | | not reached |
+
+Prompt reading is a tie; MLX writes about 15% faster, about 6% of an agent step. CodeRunner stays on
+llama.cpp and adds no MLX runtime.
+
+Prompt cache in an agent loop (6 append-only steps of about 800 new tokens; tokens the server
+processed per step, from its log):
+
+| Setup | Without judge calls | With a same-model judge call between steps |
+| --- | --- | --- |
+| llama.cpp, one slot, `--cache-ram 0` | ~810 (3.7 s) | whole prompt, 1.5K to 4.8K (6 to 19 s) |
+| llama.cpp, `-np 2 --kv-unified` | | ~820 (3.6 s) |
+| Ollama 0.40.3, one slot (its runner keeps llama.cpp's RAM prompt cache) | | ~815 (3.7 s) |
+
+Qwen3.5 is a hybrid model: llama.cpp can only resume its cache where an earlier prompt ended, so a
+plan reminder appended to each request and dropped from the next forced a full re-read every step
+(seen in the Ollama log as "forcing full prompt re-processing"). CodeRunner's llama.cpp servers now
+run two slots.
+
+Decision models on the 66 labelled browser steps (judged as CodeRunner does: ask when P(commit) +
+P(unclear) reaches the threshold):
+
+| Model | Threshold | Missed commits (of 27) | False prompts (of 39) | Median |
+| --- | --- | --- | --- | --- |
+| tev1:4b (mxfp8, 4.4 GB) | 0.7 | 0 | 7 | 0.5 s |
+| tev1:4b | 0.9 | 2 | 1 | 0.5 s |
+| laya (421M) | 0.7 | 7 | 21 | 0.05 s |
+| laya | 0.5 | 1 | 38 | 0.05 s |
+
+`coderunner models bench --report` against Prism's server with Bonsai 2 27B (PQ2_0, 32K context; load
+average about 18 from other work during the run): prompt reading 68 tok/s (estimate 69), generation
+11.2 tok/s (estimate 9.0), 42.7 s per agent step (estimate 45.5), first token 58.6 s after a fresh
+3,984-token page. The plan on this Mac picks Bonsai 2 27B on Prism with EmbeddingGemma 2 from Ollama;
+Qwen3.5-9B (about 19 s per step) is the first Ollama alternative.
+
+Setup installs tev1 4B where it fits beside the chat and embedding models (24 GB Macs and up). It
+does not fit on 18 GB, where the chat model judges. nimble (9B) and clef-flash (9B, 11 GB) were not
+measured: they cannot sit beside a 27B or 9B chat model on this Mac.
+
 ## Not yet validated
 
 * The everyday-browser extension in branded Chrome with the owner's real profile (loaded by hand),
@@ -101,12 +151,20 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
 * Microsoft Fara1.5-9B (screenshot-based browser specialist) as a second browser driver.
 * Starting the sandbox VM on demand on 16-18 GB machines, to leave room for a bigger model.
 * Model picks for machines other than the 18 GB M3 Pro are the planner's estimates from file sizes
-  and memory bandwidth: llama.cpp next to Ollama, experts in RAM (`--cpu-moe`) on NVIDIA cards,
-  the GPU-limit note on big Macs, and the per-tier picks in ASSISTANT.md have not been run on that
-  hardware.
+  and memory bandwidth (prompt reading: a factor per accelerator, measured only on this M3 Pro):
+  llama.cpp next to Ollama, experts in RAM (`--cpu-moe`) on NVIDIA cards, the GPU-limit note on big
+  Macs, and the per-tier picks in ASSISTANT.md have not been run on that hardware.
+  `coderunner models bench --report` on those machines would replace the estimates.
+* `coderunner models bench` ran end to end against a real server (above); setup's own timing and its
+  fallback to the next model were tested with fakes only.
+* tev1 4B as the decision model beside a chat model on a 24 GB or larger Mac.
+* Ollama's own copy (setup downloading 0.40.3 when the installed one is older) was tested with
+  fakes; the download and checksum were not run.
 * Pooling several machines (`models.cluster`, llama.cpp RPC), e.g. DGX Sparks, has not been run.
-* Previously published sandbox images ignore the token and are refused by the installer; build
-  with `./install.sh --build` until new images are published.
+* Sandbox images: the installer now pulls `instavm/coderunner:0.2.0` and builds from the checkout
+  when that tag is not published yet (the published `latest` images ignore the token). Publishing
+  is prepared but not done: `gh workflow run docker-build.yml -f version=0.2.0` once the workflow is
+  on the default branch.
 * Proxy network mode assumes the host is reachable from an `--internal`
   Apple `container` network at the network's gateway address. Verify that the
   sandbox can reach `:8223`/`:8225` and nothing else.

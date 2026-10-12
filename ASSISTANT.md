@@ -64,15 +64,32 @@ images. The same process runs on every machine, from an 8 GB MacBook Air to a
    size. Hugging Face's structured evaluation results (GPQA, MMLU-Pro,
    Terminal-Bench, Toolathlon, SWE-bench, MMMU-Pro, AIME) give each model one
    ability score, fitted across whichever benchmarks it reports, less what
-   its quantized build loses. Speed counts next, up to about 32 tok/s.
-   Models with no published scores come last. The scores ship with the
-   catalog and are refreshed with discovery each day; `models discover` and
-   `models plan` show them. The top candidates are downloaded and tested on
-   the machine itself until one passes. It then
+   its quantized build loses. Speed counts next, as the time of one agent
+   step: reading what changed (about 2,000 tokens of page or tool output)
+   and writing a tool call (about 150 tokens). Prompt reading is bound by
+   compute and often takes longer than writing, so generation speed alone
+   misjudges models. Quality comes first: each halving of the step time
+   below 30 s is worth 0.1 of ability (about a tenth of the spread between
+   models), down to 7.5 s; steps over 90 s rank last; utilities within a
+   tenth count as a tie that benchmark scores break. Models with
+   no published scores come last. The scores ship with the catalog and are
+   refreshed with discovery each day; `models discover` and `models plan`
+   show them. The top candidates are downloaded and tested on the machine
+   itself until one passes. It then
 pulls it through Ollama, or straight from Hugging Face as GGUF for llama.cpp
 when you prefer, starts the runtime and runs a smoke test (exact tool
 arguments, tool choice, plain answers, and image understanding) before it
 declares success. If a model fails the test, the next candidate is tried.
+4. Setup then times the model on this machine: a fresh page of about 3,900
+   tokens and a 128-token answer. The measurement replaces the spec-sheet
+   numbers (memory bandwidth per chip, a rough compute factor per
+   accelerator) for every candidate on this machine. If the model is more
+   than 1.5x slower than estimated and another candidate now ranks clearly
+   higher, setup moves on to it and deletes the weights it downloaded for
+   the first. `coderunner models bench` repeats the measurement;
+   `coderunner models bench --report` prints a summary to share (hardware,
+   runtime, measured and estimated speeds, the plan), with no names, paths
+   or tokens.
 
 * Licences are checked from the model's base repository. Permissive licences
   are used automatically; licences with extra terms need `--accept-license`;
@@ -85,14 +102,30 @@ declares success. If a model fails the test, the next candidate is tried.
 * Models are ranked across runtimes. Prism ML's Bonsai builds of 27B models
   (1-bit, 3.8 GB; ternary Bonsai 2, 6-7 GB) run on Prism's llama.cpp build,
   which setup downloads pinned to a release and checks against its published
-  checksum. They fit 16-24 GB Macs, but quantization costs them: Prism's own
-  scores for the 1-bit 27B are 60.5 on MMMU-Pro and 87.1 on AIME 2026,
-  against 75.8 and 94.1 for Qwen3.6-27B, which puts it below Qwen3.5-9B. They
-  stay available as alternatives (`coderunner models setup --model
+  checksum. Where a maker publishes how much of the full model's scores a
+  build keeps, that figure sets its loss instead of the generic one for its
+  bit width: Bonsai 2 27B (1.72 bits per weight) keeps 98.2% of
+  Qwen3.8-27B's scores across 14 benchmarks in Prism's measurement (84.78
+  against 86.32; a conventional 2-bit IQ2_XXS build keeps 84.1%), so it
+  leads on 16-24 GB Macs, ahead of Qwen3.5-9B. The 1-bit Bonsai 27B is
+  scored on its own published results (60.5 on MMMU-Pro and 87.1 on AIME
+  2026, against 75.8 and 94.1 for Qwen3.6-27B), which keep it below
+  Qwen3.5-9B; it stays available (`coderunner models setup --model
   bonsai-27b-1bit`). Speeds measured on an M3 Pro: the 1-bit 27B generates
-  14.6 tok/s and reads prompts at 81 tok/s; Bonsai 2 27B 9 and 70. Reading
-  the prompt is the slow part on this class of chip, so the agent keeps its
-  instructions and conversation stable for the runtime's prompt cache.
+  14.6 tok/s and reads prompts at 81 tok/s; Bonsai 2 27B 11 and 68, so its
+  agent steps take about 43 s against 15-20 s for Qwen3.5-9B. Reading the
+  prompt is the slow part on this class of chip, so the agent keeps its
+  prompts append-only for the runtime's prompt cache (Qwen3.5 and the
+  Bonsai models are hybrid models, whose cache can only resume where the
+  previous prompt ended).
+* Backends on Apple silicon, measured with Qwen3.5-9B (Q4_K_M, or MLX
+  4-bit) on an M3 Pro: prompt reading is a tie between Ollama (254 tok/s at
+  4K tokens, 236 at 15K), llama.cpp b11564 (262 and 242) and mlx-lm 0.32
+  (247 and 253); MLX generates about 15% faster (25.6 against 21-22 tok/s),
+  which is about 6% of an agent step. CodeRunner stays on llama.cpp (Ollama
+  runs llama.cpp's server for GGUF models) and adds no MLX runtime. Ollama's
+  own MLX-engine build (`qwen3.5:9b-nvfp4`) ran out of memory on a
+  15K-token prompt on 18 GB.
 
 * Runtimes per model: Ollama serves families whose tool calls it parses;
   others (GLM-5.x, DeepSeek V4, MiMo, Ling...) run on llama.cpp's own server
@@ -111,7 +144,8 @@ declares success. If a model fails the test, the next candidate is tried.
   a clearly better model.
 * Several machines (e.g. two or four DGX Sparks) can pool memory through
   llama.cpp's RPC mode: list the others under `models.cluster` as
-  `{"host", "port", "memory_gb"}`, each running `rpc-server`. This is
+  `{"host", "port", "memory_gb"}`, each running llama.cpp's
+  `ggml-rpc-server` (`rpc-server` in older releases). This is
   experimental and untested on real hardware. The RPC link has no
   authentication or encryption, so use it only on a direct cable or a
   private network you control.
@@ -121,12 +155,16 @@ declares success. If a model fails the test, the next candidate is tried.
   | Machine | Assistant model |
   | --- | --- |
   | 8 GB Mac | Qwen3.5-4B compact, text only, 8K context |
-  | 16-24 GB Mac | Qwen3.5-9B |
-  | 64-128 GB Mac (M4 Max), 24-32 GB NVIDIA | Qwen3.8-27B |
-  | 64 GB M1 Max | Qwen3.6-35B-A3B (about 9x faster than the 27B there) |
-  | DGX Spark | Qwen3.6-35B-A3B (a dense 27B is slow on its memory) |
-  | 256-512 GB Mac Studio | MiMo-V2.6-Flash (llama.cpp) |
-  | 12 GB NVIDIA, 64 GB RAM | Qwen3.6-35B-A3B, experts in RAM (llama.cpp) |
+  | 16 GB M1 | Qwen3.5-9B (Bonsai 2 steps would take about 100 s) |
+  | 16 GB M2 and newer, 18-24 GB Macs | Bonsai 2 27B (Prism's llama.cpp build) |
+  | 32-128 GB Macs | Qwen3.8-27B |
+  | 12 GB NVIDIA | Bonsai 2 27B (Prism's CUDA build), 16K context |
+  | 24-32 GB NVIDIA | Qwen3.8-27B, 16K context on 24 GB |
+  | DGX Spark | Qwen3.8-27B (Prism has no CUDA build for ARM) |
+  | 256-512 GB Mac Studio | MiMo-V2.6-Flash (llama.cpp; not re-checked after the October 12 ranking change) |
+
+  `coderunner models bench --report` prints what a given machine measures
+  and picks; reports from other machines replace these estimates.
 
   A larger model with weaker published scores is not picked: Granite 4.2 30B
   scores below Qwen3.5-9B on MMLU-Pro (77.6 against 82.5) and far below
@@ -152,13 +190,28 @@ declares success. If a model fails the test, the next candidate is tried.
 * Embeddings for memory and files: EmbeddingGemma 2 (text, images and audio
   in one space) through Ollama, also when the assistant model runs elsewhere
   (`models.embedding_url`).
-* Optional fast "System 1" models share the runtime: an embedding model for
-  memory search, and a decision model (`models.decision`, served through
-  Ollama's decision API) that judges whether a browser step commits something
-  and screens untrusted text for instructions aimed at the assistant. Without
-  a decision model, the assistant model judges browser steps itself and
-  untrusted text is not screened (it is still wrapped and taints the task).
-  There are no keyword lists: these judgements come from models.
+* Fast "System 1" models share the runtime: an embedding model for memory
+  search, and a decision model (`models.decision`, served through Ollama's
+  decision API) that judges whether a browser step commits something and
+  screens untrusted text for instructions aimed at the assistant. Setup
+  installs one when it fits well beside the chat and embedding models (24
+  GB Macs and up), chosen by accuracy on 66 labelled browser steps: tev1 4B
+  missed no committing step and asked on 7 of 39 safe ones (0.5 s each);
+  laya (421M) missed 7 and asked on 21; tev1 0.8B asked on 35 of 39.
+  Otherwise the assistant model judges browser steps itself (Qwen3.5-9B
+  missed 1 of 27, an injected label, with 3 false prompts; Bonsai 2 missed
+  none with 6) and untrusted text is not screened (it is still wrapped and
+  taints the task). A judge call on the assistant's own model keeps the
+  agent's cached conversation: Ollama keeps llama.cpp's prompt cache, and
+  CodeRunner's llama.cpp servers give the judge its own slot (with one slot,
+  every step after a judge call re-read the whole conversation). There are
+  no keyword lists: these judgements come from models.
+* EmbeddingGemma 2 needs Ollama 0.36.0 and decision models 0.35.0. When the
+  installed Ollama is older, the installer upgrades a Homebrew install, and
+  on macOS setup otherwise downloads Ollama 0.40.3 into
+  `~/.coderunner/runtime` (checked against its published checksum) and
+  leaves the Ollama app alone; if the app is serving an older version, setup
+  asks you to update or quit it.
 
 ## Safety model
 

@@ -14,14 +14,20 @@ from unittest import mock
 import httpx
 
 from coderunner.config import Config
-from coderunner.models import catalog, evidence, fit, hardware, licenses, manager, runtimes, smoketest
+from coderunner import decision as decision_module
+from coderunner.models import bench, catalog, evidence, fit, hardware, licenses, manager, runtimes, smoketest
 from coderunner.models.hub import Hub, HubError
 
 GiB = 1024 ** 3
+REAL_MEASURE = bench.measure
+
+
+async def no_measure(*args, **kwargs):
+    raise ConnectionError("not timed in this test")
 
 
 class TempHome(unittest.TestCase):
-    """Keeps every test away from the real ~/.coderunner."""
+    """Keeps every test away from the real ~/.coderunner and from timing real servers."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -31,6 +37,9 @@ class TempHome(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.addCleanup(self._tmp.cleanup)
+        timing = mock.patch.object(bench, "measure", no_measure)       # setup times models through bench
+        timing.start()
+        self.addCleanup(timing.stop)
 
     def config(self, **models):
         # Tests never reach Hugging Face; discovery has its own tests with a fake hub.
@@ -183,9 +192,9 @@ class FitTests(TempHome):
 
     def test_apple_recommendations(self):
         cfg = self.config()
-        # Ranked by published benchmarks, then speed: on a 64 GB M1 Max the 35B-A3B runs ~9x faster than
-        # Qwen3.8-27B at slightly lower scores; on a 128 GB M4 Max the 27B is fast enough and scores higher.
-        expected = {16: "qwen3.5-4b", 18: "qwen3.5-9b", 24: "qwen3.5-9b", 64: "qwen3.6-35b-a3b", 128: "qwen3.8-27b"}
+        # Ranked by published benchmarks first, then speed: on 64-128 GB Macs Qwen3.8-27B's scores outweigh
+        # the 35B-A3B's faster steps (Ollama and llama.cpp builds only here; Prism's builds are below).
+        expected = {16: "qwen3.5-4b", 18: "qwen3.5-9b", 24: "qwen3.5-9b", 64: "qwen3.8-27b", 128: "qwen3.8-27b"}
         chips = {8: "Apple M1", 16: "Apple M2", 18: "Apple M3 Pro", 24: "Apple M4 Pro", 32: "Apple M2 Pro",
                  64: "Apple M1 Max", 128: "Apple M4 Max"}
         for ram, chip in chips.items():
@@ -200,17 +209,28 @@ class FitTests(TempHome):
                         self.assertEqual(picks[0]["id"], expected[ram])
                     self.assertTrue(picks[0]["vision"])
                     self.assertEqual(picks[0]["fit"], "good")
-        # The 1-bit 27B fits 18 GB, but its published scores (MMMU-Pro 60.5 against 75.8 for the model it
-        # was made from) put it below Qwen3.5-9B.
+        # Across runtimes, Bonsai 2 27B (Prism's build) leads on 16-24 GB Macs with the lite sandbox: Prism
+        # measured it at 98.2% of Qwen3.8-27B's scores, far above Qwen3.5-9B, at about twice the step time.
+        for ram, chip in ((16, "Apple M2"), (18, "Apple M3 Pro"), (24, "Apple M4 Pro")):
+            with self.subTest(ram=ram):
+                picks = fit.recommend(apple(ram, chip, sandbox=1), cfg)
+                self.assertEqual((picks[0]["id"], picks[0]["vision"]), ("bonsai-2-27b", True))
+                self.assertIn("prism", catalog.get(picks[0]["id"])["artifacts"])
+                nine = next(c for c in picks if c["id"] == "qwen3.5-9b")
+                self.assertGreater(picks[0]["ability"], nine["ability"] + 0.2)
+                self.assertGreater(picks[0]["step_s"], nine["step_s"])
+        # The 1-bit 27B fits too, but its own published scores (MMMU-Pro 60.5 against 75.8 for the model it
+        # was made from) put it below Qwen3.5-9B; a base M1's steps would be too slow for Bonsai 2.
         picks18 = fit.recommend(apple(18), cfg)
-        self.assertEqual((picks18[0]["id"], picks18[0]["ctx"], picks18[0]["vision"]), ("qwen3.5-9b", 32768, True))
         onebit = next(c for c in picks18 if c["id"] == "bonsai-27b-1bit")
-        self.assertLess(onebit["ability"], picks18[0]["ability"])
+        self.assertLess(onebit["ability"], next(c for c in picks18 if c["id"] == "qwen3.5-9b")["ability"])
         self.assertIn(f"benchmark ability {onebit['ability']:+.2f}", onebit["reasons"])
+        self.assertEqual(fit.recommend(apple(16, "Apple M1", sandbox=1), cfg)[0]["id"], "qwen3.5-9b")
         compact = fit.candidate(catalog.get("bonsai-2-27b-compact"), apple(18), cfg, "chat", "prism")
         self.assertLess(compact["tok_s"], fit.MIN_TOK_S)        # measured factor applied
         self.assertEqual(fit.recommend(apple(18), cfg, runtime="ollama")[0]["id"], "qwen3.5-9b")
-        self.assertEqual(fit.recommend(apple(32, "Apple M2 Pro"), cfg, runtime="llama.cpp")[0]["id"], "gemma-4-26b-a4b")
+        # Qwen3.5-9B scores above Gemma 4 26B-A4B, which is faster but no longer outranks it on speed.
+        self.assertEqual(fit.recommend(apple(32, "Apple M2 Pro"), cfg, runtime="llama.cpp")[0]["id"], "qwen3.5-9b")
 
     def test_nvidia_recommendations(self):
         cfg = self.config()
@@ -572,8 +592,8 @@ class RuntimeTests(TempHome):
         with mock.patch.object(rt, "binary", return_value="llama-server"):
             cmd = rt.command(rt._state()["active"])
         self.assertEqual(cmd, ["llama-server", "-m", "/m/q.gguf", "--mmproj", "/m/mmproj.gguf", "--jinja", "-c", "32768",
-                               "--host", "127.0.0.1", "--port", "8081", "--cache-ram", "0", "-np", "1",
-                               "--alias", "coderunner-qwen3.5-9b"])
+                               "--host", "127.0.0.1", "--port", "8081", "--cache-ram", "0", "-np", "2",
+                               "--kv-unified", "--alias", "coderunner-qwen3.5-9b"])
         self.assertTrue(rt.vision(entry))
         self.assertEqual(rt.base_url, "http://127.0.0.1:8081/v1")
         with self.assertRaisesRegex(RuntimeError, "not been downloaded"):
@@ -619,7 +639,7 @@ class FakeRuntime(runtimes.Runtime):
 
     def __init__(self):
         super().__init__()
-        self.pulled, self.prepared, self.offloaded = [], [], []
+        self.pulled, self.prepared, self.offloaded, self.removed = [], [], [], []
 
     def available(self):
         return True
@@ -629,6 +649,9 @@ class FakeRuntime(runtimes.Runtime):
 
     def pull(self, entry, progress=None):
         self.pulled.append(entry["id"])
+
+    def remove(self, entry):
+        self.removed.append(entry["id"])
 
     def prepare(self, entry, ctx, offload=False):
         self.prepared.append((entry["id"], ctx))
@@ -656,6 +679,19 @@ def fake_smoke(outcomes):
     return smoke
 
 
+def fake_measure(speed):
+    """A bench.measure stand-in: speed(model) -> (read tok/s, generation tok/s)."""
+    calls = []
+
+    async def measure(base_url, model, api_key="", **_):
+        calls.append(model)
+        read, gen = speed(model)
+        return {"prompt_tokens": 4000, "written_tokens": 128, "first_token_s": round(4000 / read, 2),
+                "read_tok_s": read, "gen_tok_s": gen, "step_s": round(fit.step_seconds(read, gen), 1)}
+    measure.calls = calls
+    return measure
+
+
 class ManagerTests(TempHome):
     def test_plan_reports_choice_and_alternatives(self):
         result = manager.plan(self.config(), hw=apple(18), runtime=FakeRuntime())
@@ -665,6 +701,40 @@ class ManagerTests(TempHome):
         self.assertIn("qwen3.8-27b", [c["id"] for c in result["rejected"]])
         self.assertEqual(result["embedding"]["id"], "embeddinggemma-2")
         self.assertIsNone(manager.plan(self.config(), hw=apple(8, "Apple M1"), runtime=FakeRuntime())["model"])
+
+    def test_decision_model_only_where_it_fits_beside_the_chat_model(self):
+        # tev1 4B judged 66 labelled browser steps with no missed commit; it runs beside the chat and
+        # embedding models when they leave room (24 GB here), otherwise the chat model judges (18 GB).
+        small = manager.plan(self.config(), hw=apple(18, sandbox=1), runtime=FakeRuntime())
+        self.assertIsNone(small["decision"])
+        big = manager.plan(self.config(), hw=apple(24, "Apple M4 Pro", sandbox=1), runtime=FakeRuntime())
+        self.assertEqual(big["decision"]["id"], "tev1-4b")
+        entry = catalog.get("tev1-4b")
+        self.assertEqual((entry["decision"]["missed"], entry["decision"]["false_asks"]), (0, 7))
+        rt, cfg = FakeRuntime(), self.config()
+
+        async def answers(*args, **kwargs):
+            return 0.0
+        with mock.patch.object(decision_module.DecisionModel, "probability", answers):
+            result = manager.setup(cfg, runtime=rt, hw=apple(24, "Apple M4 Pro", sandbox=1), progress=lambda m: None,
+                                   smoke=fake_smoke({}), measure=False)
+        self.assertTrue(result["ok"], result)
+        self.assertIn("tev1-4b", rt.pulled)
+        self.assertEqual((cfg.get("models.decision"), cfg.get("models.decision_api"), cfg.get("models.decision_threshold")),
+                         ("tev1:4b", "systemone", 0.7))
+        self.assertEqual(cfg.get("models.decision_url"), "")              # same runtime as the chat model
+        # Where it does not fit, setup clears any earlier choice so the chat model judges.
+        with mock.patch.object(decision_module.DecisionModel, "probability", answers):
+            manager.setup(cfg, runtime=FakeRuntime(), hw=apple(18, sandbox=1), progress=lambda m: None,
+                          smoke=fake_smoke({}), measure=False)
+        self.assertEqual(cfg.get("models.decision"), "")
+        # A decision model on Ollama is reached there even when another runtime serves the chat model.
+        judge = decision_module.DecisionModel.from_config(self.config(chat="bonsai", decision="tev1:4b",
+                                                                      decision_url="http://127.0.0.1:11434/v1"),
+                                                          base_url="http://127.0.0.1:8082/v1")
+        self.assertEqual((judge.base_url, judge.api), ("http://127.0.0.1:11434/v1", "systemone"))
+        own = decision_module.DecisionModel.from_config(self.config(chat="bonsai"), base_url="http://127.0.0.1:8082/v1")
+        self.assertEqual((own.base_url, own.api), ("http://127.0.0.1:8082/v1", "chat"))
 
     def test_gpu_memory_limit_note_needs_a_clearly_better_model(self):
         # Raising the limit on 96 GB would fit Qwen3.5-122B-A10B, which scores no better than the 27B.
@@ -769,6 +839,190 @@ class ManagerTests(TempHome):
         self.assertIn("brew install ollama", result["error"])
 
 
+# ---- measuring this machine ------------------------------------------------------------------
+
+def sse(*events) -> bytes:
+    return "".join(f"data: {json.dumps(e)}\n\n" for e in events).encode() + b"data: [DONE]\n\n"
+
+
+class BenchTests(TempHome):
+    def test_measure_reads_the_stream_and_prefers_llama_cpp_timings(self):
+        requests = []
+
+        def handler(request):
+            body = json.loads(request.content)
+            requests.append(body)
+            chunk = {"choices": [{"delta": {"content": "Delhi"}}]}
+            usage = {"choices": [], "usage": {"prompt_tokens": 4100, "completion_tokens": 128}}
+            if body["max_tokens"] == bench.WRITE_TOKENS and len(requests) == 4:    # second run, as llama.cpp
+                usage["timings"] = {"prompt_n": 4100, "prompt_per_second": 812.5, "predicted_n": 128,
+                                    "predicted_per_second": 21.3}
+            return httpx.Response(200, content=sse(chunk, chunk, chunk, usage),
+                                  headers={"content-type": "text/event-stream"})
+        transport = httpx.MockTransport(handler)
+        plain = asyncio.run(REAL_MEASURE("http://127.0.0.1:9/v1", "m", transport=transport))
+        self.assertEqual((plain["prompt_tokens"], plain["written_tokens"]), (4100, 128))
+        self.assertGreater(plain["read_tok_s"], 0)
+        timed = asyncio.run(REAL_MEASURE("http://127.0.0.1:9/v1", "m", transport=transport))
+        self.assertEqual((timed["read_tok_s"], timed["gen_tok_s"]), (812.5, 21.3))
+        self.assertEqual(timed["step_s"], round(fit.step_seconds(812.5, 21.3), 1))
+        # The page is new every time (no prompt cache helps), long enough, and asks for no reasoning.
+        pages = [r["messages"][-1]["content"] for r in requests if r["max_tokens"] == bench.WRITE_TOKENS]
+        self.assertNotEqual(pages[0], pages[1])
+        self.assertGreater(len(pages[0]), 7000)            # about 3,900 tokens
+        self.assertEqual(requests[1]["reasoning_effort"], "none")
+
+    def test_measurements_calibrate_every_candidate_on_this_machine(self):
+        cfg, hw, entry = self.config(), apple(18), catalog.get("qwen3.5-9b")
+        spec = fit.candidate(entry, hw, cfg, "chat", "ollama")
+        self.assertFalse(manager._hardware(cfg, apple(18)).measured)
+        measured = {"read_tok_s": spec["read_tok_s"] / 2, "gen_tok_s": spec["tok_s"] / 2, "prompt_tokens": 4000,
+                    "first_token_s": 1.0, "step_s": fit.step_seconds(spec["read_tok_s"] / 2, spec["tok_s"] / 2)}
+        cal = bench.calibration(hw, entry, "ollama", measured)
+        self.assertAlmostEqual(cal["gen_factor"], 0.5, places=2)
+        bench.save(cal)
+        here = manager._hardware(cfg, apple(18))
+        self.assertIn("qwen3.5-9b on ollama", here.measured)
+        again = fit.candidate(entry, here, cfg, "chat", "ollama")
+        self.assertAlmostEqual(again["tok_s"], spec["tok_s"] / 2, delta=0.1)
+        self.assertAlmostEqual(again["read_tok_s"], spec["read_tok_s"] / 2, delta=1)
+        self.assertIn("(measured here)", " ".join(again["reasons"]))
+        # Other models get the same machine factors; another machine ignores them.
+        four, four_spec = (fit.candidate(catalog.get("qwen3.5-4b"), h, cfg, "chat", "ollama") for h in (here, hw))
+        self.assertAlmostEqual(four["read_tok_s"], four_spec["read_tok_s"] / 2, delta=1)
+        self.assertFalse(manager._hardware(cfg, apple(24, "Apple M4 Pro")).measured)
+        # A wildly off measurement says more about the run than the machine.
+        wild = bench.calibration(hw, entry, "ollama", dict(measured, gen_tok_s=0.01, read_tok_s=1e6))
+        self.assertEqual(wild["gen_factor"], bench.FACTOR_RANGE[0])
+        self.assertLessEqual(wild["read_k"], bench.FACTOR_RANGE[1] * spec["read_tok_s"] * entry["params_b"] + 1)
+
+    def test_setup_times_the_pick_and_moves_on_when_it_is_far_slower_here(self):
+        # On a 128 GB M4 Max the dense 27B is picked by its scores (~15 s per agent step estimated). If this
+        # machine runs at a sixth of the estimate, a 27B step takes over the 90 s limit: setup moves on to the
+        # best remaining candidate under it and deletes the 27B it downloaded.
+        cfg, hw = self.config(), apple(128, "Apple M4 Max")
+
+        def sixth(model):
+            est = fit.candidate(catalog.get(model.removeprefix("coderunner-")), hw, cfg, "chat", "ollama")
+            return est["read_tok_s"] / 6, est["tok_s"] / 6
+        rt, measure = FakeRuntime(), fake_measure(sixth)
+        result = manager.setup(cfg, runtime=rt, hw=hw, progress=lambda m: None, embedding=False, decision=False,
+                               smoke=fake_smoke({}), measure=measure)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(measure.calls[0], "coderunner-qwen3.8-27b")
+        self.assertEqual(len(measure.calls), 2)
+        self.assertEqual((result["entry"], rt.removed), (result["attempts"][1]["model"], ["qwen3.8-27b"]))
+        self.assertGreater(result["attempts"][0]["speed"]["step_s"], fit.MAX_STEP_S)
+        self.assertLess(result["attempts"][1]["speed"]["step_s"], fit.MAX_STEP_S)
+        self.assertIn("slower on this machine", result["attempts"][0]["error"])
+        self.assertTrue(bench.load(hw))
+        # Measured as estimated: the pick stays, and plans now use the measurement.
+        rt = FakeRuntime()
+        (self.home / "assistant" / "models" / "bench.json").unlink()
+        same = fake_measure(lambda m: (fit.candidate(catalog.get(m.removeprefix("coderunner-")), hw, cfg, "chat",
+                                                     "ollama")["read_tok_s"], 18.0))
+        result = manager.setup(self.config(), runtime=rt, hw=hw, progress=lambda m: None, embedding=False,
+                               decision=False, smoke=fake_smoke({}), measure=same)
+        self.assertEqual((result["entry"], rt.removed, len(same.calls)), ("qwen3.8-27b", [], 1))
+        self.assertIn("qwen3.8-27b", manager.plan(self.config(), hw=hw, runtime=FakeRuntime())["hardware"]["measured"])
+
+    def test_bench_command_times_the_configured_model_and_reports(self):
+        cfg = self.config(runtime="prism", chat="coderunner-bonsai-2-27b", base_url="http://127.0.0.1:8082/v1",
+                          context=32768)
+        hw = apple(18, sandbox=1)
+        endpoint = manager.Endpoint(base_url="http://127.0.0.1:8082/v1", model="coderunner-bonsai-2-27b")
+        measure = fake_measure(lambda m: (70.0, 9.0))
+        with mock.patch.object(manager, "ensure_running", return_value=endpoint):
+            result = manager.bench_here(cfg, measure=measure, hw=hw)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(measure.calls, ["coderunner-bonsai-2-27b"])
+        self.assertEqual((result["calibration"]["model"], result["calibration"]["runtime"]), ("bonsai-2-27b", "prism"))
+        self.assertIn("| prompt reading | 70 tok/s", result["report"])
+        self.assertTrue(bench.load(hw))
+        with mock.patch.object(manager, "ensure_running", return_value=manager.Endpoint(base_url="", model="")):
+            self.assertFalse(manager.bench_here(self.config(), measure=measure, hw=hw)["ok"])
+
+    def test_report_is_shareable(self):
+        cfg, hw, entry = self.config(), apple(18), catalog.get("qwen3.5-9b")
+        cal = bench.calibration(hw, entry, "ollama", {"read_tok_s": 240.0, "gen_tok_s": 12.6, "prompt_tokens": 4100,
+                                                       "first_token_s": 17.1, "step_s": 20.2})
+        picks = fit.recommend(bench.apply(hw, cal), cfg, runtime="ollama")[:3]
+        text = bench.report(bench.apply(hw, cal), cal, picks, {"name": "ollama", "version": "0.40.3"})
+        for part in ("Apple M3 Pro", "18 GB RAM", "ollama 0.40.3", "| prompt reading | 240 tok/s", "qwen3.5-9b"):
+            self.assertIn(part, text)
+        for private in (str(self.home), os.environ.get("USER") or "nobody-here", str(pathlib.Path.home())):
+            self.assertNotIn(private, text)
+        self.assertIn("Not measured yet", bench.report(hw, None, picks))
+
+
+class OllamaVersionTests(TempHome):
+    def test_versions_are_parsed_and_compared(self):
+        self.assertEqual(runtimes.parse_version("ollama version is 0.40.3"), (0, 40, 3))
+        self.assertEqual(runtimes.parse_version("0.36.0-rc2"), (0, 36, 0))
+        self.assertIsNone(runtimes.parse_version("unknown"))
+        rt = runtimes.OllamaRuntime(self.config())
+        with mock.patch.object(rt, "version", return_value=(0, 32, 15)):
+            self.assertTrue(rt.outdated())
+        with mock.patch.object(rt, "version", return_value=(0, 40, 3)):
+            self.assertFalse(rt.outdated())
+        with mock.patch.object(rt, "version", return_value=None):
+            self.assertFalse(rt.outdated())            # nothing installed: setup's install hint covers it
+
+    def test_old_ollama_gets_coderunners_own_copy(self):
+        rt = runtimes.OllamaRuntime(self.config())
+        versions = iter([(0, 32, 15), (0, 32, 15), (0, 40, 3)])
+
+        def install(progress=None):
+            rt.managed_dir.mkdir(parents=True)
+            (rt.managed_dir / "ollama").write_text("#!/bin/sh\n")
+            (rt.managed_dir / "ollama").chmod(0o755)
+            return str(rt.managed_dir / "ollama")
+        with mock.patch.object(rt, "version", side_effect=lambda: next(versions)), \
+                mock.patch.object(rt, "running", return_value=False), \
+                mock.patch.object(rt, "can_install", return_value=True), \
+                mock.patch.object(rt, "install", side_effect=install) as installed:
+            rt.ensure_current(lambda m: None)
+        installed.assert_called_once()
+        self.assertEqual(rt.binary(), str(rt.managed_dir / "ollama"))
+        self.assertIn(f"ollama-{rt.RELEASE}", rt.binary())
+
+    def test_an_old_server_someone_else_runs_is_explained(self):
+        rt = runtimes.OllamaRuntime(self.config())
+        with mock.patch.object(rt, "version", return_value=(0, 32, 15)), \
+                mock.patch.object(rt, "running", return_value=True), \
+                mock.patch.object(rt, "stop", return_value=False), \
+                mock.patch.object(rt, "pull", side_effect=AssertionError("setup must stop before pulling")):
+            with self.assertRaisesRegex(RuntimeError, "Ollama 0.32.15 is running .* quit it"):
+                rt.ensure_current()
+            result = manager.setup(self.config(), runtime=rt, hw=apple(18), progress=lambda m: None)
+        self.assertFalse(result["ok"])
+        self.assertIn("0.36.0 or later", result["error"])
+
+    def test_install_refuses_a_build_that_does_not_match_its_checksum(self):
+        rt = runtimes.OllamaRuntime(self.config())
+
+        class Response:
+            def raise_for_status(self):
+                pass
+
+            def iter_bytes(self, size):
+                yield b"not the published build"
+
+        class Stream:
+            def __enter__(self):
+                return Response()
+
+            def __exit__(self, *exc):
+                return False
+
+        with mock.patch.object(runtimes.platform, "system", return_value="Darwin"), \
+                mock.patch.object(runtimes.httpx, "stream", return_value=Stream()):
+            with self.assertRaisesRegex(RuntimeError, "checksum"):
+                rt.install()
+        self.assertFalse((rt.managed_dir / "ollama").exists())
+        self.assertEqual(list(rt.managed_dir.glob("*.tgz")), [])
+
+
 @unittest.skipUnless(os.environ.get("CODERUNNER_LIVE_MODELS") == "1", "set CODERUNNER_LIVE_MODELS=1 for live HF calls")
 class LiveHubTests(unittest.TestCase):
     def test_manifest_and_license(self):
@@ -840,27 +1094,28 @@ class PrismTests(TempHome):
         ollama, prism = FakeRuntime(), FakePrism()
         with mock.patch.object(manager, "choose_runtime", return_value=ollama), \
                 mock.patch.object(manager, "_prism", return_value=prism):
-            # With today's published scores Qwen3.5-9B leads on 18 GB; the 1-bit 27B is the alternative.
-            result = manager.plan(self.config(), hw=apple(18))
-            self.assertEqual(result["model"]["id"], "qwen3.5-9b")
-            self.assertIn("bonsai-27b-1bit", [c["id"] for c in result["alternatives"]])
-        # Were the ternary build to score like its base model, it would win on 24 GB and run on Prism's runtime.
-        scores = {**evidence.abilities(), "Qwen/Qwen3.8-27B": 1.5}
-        with mock.patch.object(manager, "choose_runtime", return_value=ollama), \
-                mock.patch.object(manager, "_prism", return_value=prism), \
-                mock.patch.object(evidence, "abilities", return_value=scores):
-            result = manager.plan(self.config(), hw=apple(24))
-            self.assertEqual((result["model"]["id"], result["model"]["runtime"]), ("bonsai-2-27b", "prism"))
-            self.assertEqual(result["runtime"]["name"], "prism")
-            self.assertIn("qwen3.5-9b", [c["id"] for c in result["alternatives"]])
+            # Bonsai 2 27B keeps 98.2% of Qwen3.8-27B's scores (Prism's measurement), so it leads on 18 and
+            # 24 GB and runs on Prism's runtime; Qwen3.5-9B stays an alternative.
+            for ram, chip in ((18, "Apple M3 Pro"), (24, "Apple M4 Pro")):
+                result = manager.plan(self.config(), hw=apple(ram, chip, sandbox=1))
+                self.assertEqual((result["model"]["id"], result["model"]["runtime"]), ("bonsai-2-27b", "prism"))
+                self.assertEqual(result["runtime"]["name"], "prism")
+                self.assertIn("qwen3.5-9b", [c["id"] for c in result["alternatives"]])
+            self.assertEqual(result["embedding"]["id"], "embeddinggemma-2")      # from Ollama beside it
             cfg = self.config()
-            setup = manager.setup(cfg, hw=apple(24), progress=lambda m: None, embedding=False,
-                                  smoke=fake_smoke({"coderunner-qwen3.5-9b": True}))
+            setup = manager.setup(cfg, hw=apple(24, "Apple M4 Pro", sandbox=1), progress=lambda m: None,
+                                  embedding=False, decision=False, smoke=fake_smoke({}))
             self.assertTrue(setup["ok"], setup)
             self.assertEqual((setup["entry"], setup["runtime"]), ("bonsai-2-27b", "prism"))
             self.assertEqual(prism.pulled, ["bonsai-2-27b"])
             self.assertEqual(ollama.pulled, [])
             self.assertEqual(cfg.get("models.runtime"), "prism")
+        # Without the published retention figure, the generic 2-bit loss would put it below Qwen3.5-9B.
+        entry = catalog.get("bonsai-2-27b")
+        generic = evidence.ability({**entry, "evidence": {"repo": "Qwen/Qwen3.8-27B"}}, 2.13)
+        self.assertLess(generic, evidence.ability(catalog.get("qwen3.5-9b"), 4.8) + 0.05)
+        self.assertAlmostEqual(evidence.ability(entry, 2.13),
+                               evidence.abilities()["Qwen/Qwen3.8-27B"] - evidence.RETENTION_LOSS * 0.018, places=3)
         # A runtime the owner chose is not second-guessed.
         result = manager.plan(self.config(), hw=apple(18), runtime=FakeRuntime())
         self.assertEqual(result["model"]["id"], "qwen3.5-9b")

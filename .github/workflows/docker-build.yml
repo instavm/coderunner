@@ -7,6 +7,12 @@ on:
     branches: [ main ]
   release:
     types: [ published ]
+  # Publish a sandbox image by hand: gh workflow run docker-build.yml -f version=0.2.0
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Image version (install.sh pulls instavm/coderunner:<SANDBOX_TAG>)
+        required: true
 
 env:
   REGISTRY: docker.io
@@ -48,6 +54,9 @@ jobs:
           # Tag releases with version + 'docker' suffix
           type=semver,pattern={{version}}-docker
           type=semver,pattern={{major}}.{{minor}}-docker
+          # The multi-arch image install.sh pulls for Apple container and Docker alike (SANDBOX_TAG)
+          type=semver,pattern={{version}}
+          type=raw,value=${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
         labels: |
           org.opencontainers.image.title=CodeRunner Docker
           org.opencontainers.image.description=CodeRunner MCP server for Docker/Linux environments

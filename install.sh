@@ -31,6 +31,9 @@ VOLUME_ARGS=()
 NETWORK_MODE="${CODERUNNER_NETWORK:-default}"
 IMAGE="${CODERUNNER_IMAGE:-}"
 BUILD_IMAGE=0
+# Published sandbox images for this checkout (see .github/workflows/docker-build.yml). Until a tag is
+# published, the installer builds the image from the checkout instead.
+SANDBOX_TAG="0.2.0"
 ASSISTANT=1
 MODEL=""
 ASSUME_YES=0
@@ -486,11 +489,17 @@ print(networks[0]["network"] if networks else "default")
             exit 1
         fi
     else
-        IMAGE="${IMAGE:-instavm/coderunner}"
+        IMAGE="${IMAGE:-instavm/coderunner:$SANDBOX_TAG}"
         echo "Pulling the image: $IMAGE"
         if ! container image pull "$IMAGE"; then
-            echo "❌ Failed to pull image. Please check your internet connection and try again."
-            exit 1
+            if [ "$IMAGE" != "instavm/coderunner:$SANDBOX_TAG" ] || [ ! -f "$SCRIPT_DIR/Dockerfile" ]; then
+                echo "❌ Failed to pull image. Please check your internet connection and try again."
+                exit 1
+            fi
+            echo "The $SANDBOX_TAG sandbox image is not published yet; building it from this checkout instead."
+            IMAGE="coderunner-local:latest"
+            container builder start >/dev/null 2>&1 || true
+            container build -t "$IMAGE" "$SCRIPT_DIR" || { echo "❌ Image build failed."; exit 1; }
         fi
     fi
 
@@ -572,8 +581,16 @@ install_sandbox_linux() {
         echo "Building the sandbox image $IMAGE from $SCRIPT_DIR (this takes a while)..."
         docker build -t "$IMAGE" "$SCRIPT_DIR" || { echo "❌ Image build failed."; exit 1; }
     else
-        IMAGE="${IMAGE:-instavm/coderunner:docker-latest}"
-        docker pull "$IMAGE" || { echo "❌ Failed to pull $IMAGE."; exit 1; }
+        IMAGE="${IMAGE:-instavm/coderunner:$SANDBOX_TAG}"
+        if ! docker pull "$IMAGE"; then
+            if [ "$IMAGE" != "instavm/coderunner:$SANDBOX_TAG" ] || [ ! -f "$SCRIPT_DIR/Dockerfile" ]; then
+                echo "❌ Failed to pull $IMAGE."
+                exit 1
+            fi
+            echo "The $SANDBOX_TAG sandbox image is not published yet; building it from this checkout instead."
+            IMAGE="coderunner-local:latest"
+            docker build -t "$IMAGE" "$SCRIPT_DIR" || { echo "❌ Image build failed."; exit 1; }
+        fi
     fi
     DOCKER_VOLUMES=()
     for spec in ${NORMALIZED_MOUNTS[@]+"${NORMALIZED_MOUNTS[@]}"}; do
@@ -598,6 +615,29 @@ install_sandbox_linux() {
 }
 
 # --------------------------------------------------------- host runtime ----
+
+# EmbeddingGemma 2 needs Ollama 0.36.0 and decision models 0.35.0. Homebrew installs are upgraded
+# here; otherwise `coderunner setup` fetches its own pinned copy on macOS (leaving the Ollama app
+# alone) or explains how to update.
+MIN_OLLAMA="0.36.0"
+check_ollama_version() {
+    command -v ollama &> /dev/null || return 0
+    local found
+    found=$(ollama --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | tail -1)
+    [ -n "$found" ] || return 0
+    if [ "$(printf '%s\n%s\n' "$MIN_OLLAMA" "$found" | sort -V | head -1)" = "$MIN_OLLAMA" ]; then
+        return 0
+    fi
+    echo "Ollama $found is older than $MIN_OLLAMA, which EmbeddingGemma 2 and decision models need."
+    if [[ "$OSTYPE" == "darwin"* ]] && command -v brew &> /dev/null && brew list --formula ollama &> /dev/null; then
+        brew upgrade ollama || echo "Warning: brew upgrade ollama failed."
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "coderunner setup will download its own copy of Ollama into $CODERUNNER_HOME/runtime."
+        echo "If the Ollama app is running, update it from its menu (Restart to Update) or quit it first."
+    else
+        echo "Update it with the official script after reviewing it: curl -fsSL https://ollama.com/install.sh | sh"
+    fi
+}
 
 # A dedicated virtualenv holds the host assistant (`coderunner` CLI and
 # daemon) and the Claude Desktop stdio proxy, independent of system Python.
@@ -641,6 +681,7 @@ setup_host_runtime() {
             echo "then run: coderunner setup"
         fi
     fi
+    check_ollama_version
 
     setup_args=(setup --network "$NETWORK_MODE")
     [ -n "$MODEL" ] && setup_args+=(--model "$MODEL")
