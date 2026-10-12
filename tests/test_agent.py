@@ -154,8 +154,13 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             svc.sandbox = FakeSandbox()
             svc.llm = LLM(fake.base_url, "test")
             svc.registry = build_registry(svc)
-            fake.script = [tool_call("run_python", {"code": "print(1)"})] * 5
+            fake.script = [tool_call("run_python", {"code": "print(1)"})] * 3 + [
+                {"role": "assistant", "content": "Found 1 so far; the rest is unfinished."}]
             reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t4"), "loop")
+            self.assertEqual(reply, "Found 1 so far; the rest is unfinished.")   # what it found is not lost
+            self.assertNotIn("tools", fake.requests[-1])
+            fake.script = [tool_call("run_python", {"code": "print(1)"})] * 3 + [{"role": "assistant", "content": ""}]
+            reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t5"), "loop")
             self.assertIn("step limit", reply)
             await svc.llm.aclose()
 

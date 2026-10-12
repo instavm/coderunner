@@ -39,6 +39,8 @@ PAGE_PREFIX = '<untrusted source="browser_'
 BIG_RESULT = 1500     # browser results longer than this hold a page, or a large part of one
 DROPPED = "[earlier page text removed to save space; take a new snapshot if you need it]\n</untrusted>"
 PLAN_REMINDER = "[Reminder of your plan, not a new request]\n"
+OUT_OF_STEPS = ("You have used all the steps for this task. Without calling any tools, write your reply to me now "
+                "from what you have found, and say briefly what is unfinished.")
 REMIND_EVERY = 6      # steps between plan reminders while the plan stays the same
 KEEP_PAGES = 1        # page snapshots left in full after a trim
 MOST_PAGES = 3        # trim once more than this many are in full
@@ -221,7 +223,14 @@ class Agent:
                 ctx.images.clear()
             self._transcript(ctx, messages)
         else:
+            # Out of steps: what the model found so far is still worth an answer.
             final = "I stopped after reaching the step limit. Tell me how you'd like to continue."
+            messages.append({"role": "user", "content": OUT_OF_STEPS})
+            try:
+                reply = await self.llm.chat(messages, think=False)
+                final = reply["content"] or final
+            except LLMError:
+                pass
         self._remember(ctx.conversation, "user", text)
         self._remember(ctx.conversation, "assistant", final)
         self.svc.audit.write("agent.finish", conversation=ctx.conversation, origin=ctx.origin, tainted=ctx.tainted)
