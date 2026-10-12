@@ -140,8 +140,11 @@ def browser_tools(svc) -> list[Tool]:
         """A browser result as plain text: page text inside JSON would escape every quote and line break."""
         if not isinstance(value, dict):
             return value
+        hidden = {"ok", "content", "changes"}
+        if value.get("navigated") is False:
+            hidden |= {"url", "title"}            # still the same page: its long address adds nothing
         lines = [f"{key}: {item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)}"
-                 for key, item in value.items() if key not in ("ok", "content", "changes")]
+                 for key, item in value.items() if key not in hidden]
         if "changes" in value:
             lines += ["Changes on the page (+ added, - removed, unmarked lines show where):", value["changes"]]
         elif "content" in value:
@@ -168,7 +171,11 @@ def browser_tools(svc) -> list[Tool]:
         return _text(_result(await b.press(args["key"], tainted=ctx.tainted)))
 
     async def find(args, ctx):
-        return _text(_result(await b.find(args["text"], tainted=ctx.tainted)))
+        result = _result(await b.find(args["text"], tainted=ctx.tainted))
+        if isinstance(result, dict) and result.get("matches") == 0 and svc.vision:
+            result["content"] += (" The page text leaves out what is only drawn (prices or names shown as "
+                                  "images, for example): browser_screenshot shows the page as it looks.")
+        return _text(result)
 
     async def select(args, ctx):
         return _text(_result(await b.select(int(args["ref"]), args["option"], tainted=ctx.tainted)))

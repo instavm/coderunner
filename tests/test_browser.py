@@ -287,6 +287,19 @@ class RenderTests(unittest.TestCase):
             "IndiGo Direct", '[2] button "View details"',
             "IndiGo Direct", '[3] button "View details"'])   # each result keeps its airline and stops
 
+    def test_footer_is_one_line_and_long_links_lose_their_tracking(self):
+        nodes = [ax(1, "RootWebArea", "Shop", children=[2, 3], backend=1),
+                 ax(2, "link", "Deals", parent=1, backend=20,
+                    url="https://shop.example/deals/index.html?label=gen173nr-10CAEoggI46AdIM1gEaGyIAQGYATO4AQfIAQzYAQPo&aid=304142"),
+                 ax(3, "contentinfo", parent=1, children=[4, 5], backend=3),
+                 ax(4, "link", "Careers", parent=3, backend=40, url="https://shop.example/careers"),
+                 ax(5, "link", "Press", parent=3, backend=50, url="https://shop.example/press")]
+        content, _ = render_ax(nodes, "https://shop.example/")
+        self.assertEqual(content.splitlines(), ['[1] link "Deals" -> /deals/index.html?…',
+                                                "[footer with 2 links and buttons; browser_find searches it]"])
+        whole, _ = render_ax(nodes, "https://shop.example/", whole=True)
+        self.assertIn('link "Careers" -> /careers', whole)
+
     def test_numbers_stay_with_their_elements(self):
         numbers = {"next": 1, "ids": {}}
         render_ax(SHOP_AX, "https://shop.example/", numbers=numbers)
@@ -306,7 +319,9 @@ class RenderTests(unittest.TestCase):
             '  [1] button "From"', '- [2] combobox "To" value=""', '+ [2] combobox "To" value="Del"',
             '+ [7] option "Delhi (DEL)"'])
         self.assertEqual(page_changes(before, before), "")
-        self.assertIsNone(page_changes(before, ["# Results"] + [f"[{n}] link \"Flight {n}\"" for n in range(9)]))
+        results = ["# Results"] + [f"[{n}] link \"Flight {n} from Bengaluru to Delhi\" -> /flight/{n}" for n in range(60)]
+        self.assertIsNone(page_changes(before, results))          # a new page is sent whole
+        self.assertIn("+ [7] option", page_changes(before + results, after + results))   # small news, big page
 
 
 class StubJudge:

@@ -739,22 +739,24 @@ class BrowserBroker:
         self._forget_target(target)
         return {"ok": True, "closed": str(tab)}
 
-    async def _snapshot(self, tab: str | None, max_chars: int, tainted: bool) -> dict:
+    async def _snapshot(self, tab: str | None, max_chars: int, tainted: bool, whole: bool = False) -> dict:
         target = await self._target(tab)
         url, host = await self._web_page(target)
         await self._allow("browser.read", host, f"Read {url}", tainted)
         sid = await self._session(target)
         async with self._acting(target, sid, tainted):
-            content = await self._render(target, sid, url)
+            content = await self._render(target, sid, url, whole)
             result = await self._result(target)
-        result["changed"] = self._seen(target, result["url"], content)
+        if not whole:                   # a search through the whole page is not the page as the model reads it
+            result["changed"] = self._seen(target, result["url"], content)
         result["content"] = cut(content, max(100, int(max_chars)))
         return result
 
-    async def _render(self, target: str, sid: str, url: str) -> str:
+    async def _render(self, target: str, sid: str, url: str, whole: bool = False) -> str:
         nodes = (await self._send(sid, "Accessibility.getFullAXTree", timeout=60)).get("nodes", [])
         secret = await self._secret_fields(sid, nodes)
-        content, refs = render_ax(nodes, url, secret, self._numbers.setdefault(target, {"next": 1, "ids": {}}))
+        content, refs = render_ax(nodes, url, secret, self._numbers.setdefault(target, {"next": 1, "ids": {}}),
+                                  whole=whole)
         self._refs[target] = refs
         return content
 
@@ -810,7 +812,7 @@ class BrowserBroker:
         return result
 
     async def _find(self, text: str, tab: str | None, tainted: bool) -> dict:
-        result = await self._snapshot(tab, FIND_SCAN_CHARS, tainted)        # fresh refs for the whole page
+        result = await self._snapshot(tab, FIND_SCAN_CHARS, tainted, whole=True)   # footer included
         lines = result.pop("content").split("\n")
         whole, words = text.strip().lower(), re.findall(r"\w+", text.lower())
         hits = [i for i, line in enumerate(lines)

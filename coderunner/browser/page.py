@@ -18,7 +18,10 @@ CHECKABLE = frozenset({"checkbox", "radio", "switch", "menuitemcheckbox", "menui
 IMAGES = frozenset({"image", "img"})     # their alternative text is read like text (an airline's logo)
 PAGE_CHARS = 12000          # page text returned at once; browser_find reaches the rest
 SHOWN_REMOVED = 5           # removed lines listed per change; more are counted
-MOSTLY_NEW = 0.5            # below this similarity an action's result is the whole page, not the changes
+CHANGES_SHARE = 0.7         # changes longer than this share of the page are sent as the whole page
+SMALL_PAGE = 1500           # below this size a page's changes are always sent as changes
+LINK_CHARS = 60             # link addresses are cut to this
+FOOTERS = frozenset({"contentinfo"})     # a page's footer: shown as one line unless the whole page is asked for
 
 
 def ax_value(field: Any) -> Any:
@@ -39,7 +42,11 @@ def short_url(url: str, page_url: str) -> str:
     target, page = urllib.parse.urlsplit(url), urllib.parse.urlsplit(page_url)
     if target.scheme in ("http", "https") and (target.scheme, target.netloc) == (page.scheme, page.netloc):
         url = urllib.parse.urlunsplit(("", "", target.path or "/", target.query, target.fragment))
-    return url if len(url) <= 120 else url[:119] + "…"
+    if len(url) <= LINK_CHARS:
+        return url
+    # Tracking parameters fill most long links; the path says where a link goes.
+    path = url.split("?", 1)[0]
+    return path + "?…" if "?" in url and len(path) < LINK_CHARS else url[:LINK_CHARS - 1] + "…"
 
 
 def _element_line(ref: int, role: str, name: str, node: dict, props: dict, page_url: str, secret: bool) -> str:
@@ -65,7 +72,7 @@ def _element_line(ref: int, role: str, name: str, node: dict, props: dict, page_
 
 
 def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = frozenset(),
-              numbers: dict | None = None) -> tuple[str, dict]:
+              numbers: dict | None = None, whole: bool = False) -> tuple[str, dict]:
     """Compact text for an Accessibility.getFullAXTree result.
 
     Headings become "# name", interactive elements "[N] role "name" ...", images
@@ -78,6 +85,8 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
     numbers ({"next": N, "ids": {backendDOMNodeId: N}}) keeps an element's
     number across renderings of the same document, so a model can act on a
     number it saw earlier and changes between renderings stay small.
+
+    The footer (dozens of links on most sites) is one line unless whole is set.
     """
     numbers = numbers if numbers is not None else {"next": 1, "ids": {}}
     by_id = {node["nodeId"]: node for node in nodes}
@@ -116,6 +125,9 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
 
         if node.get("ignored"):
             descend(block, covered)
+        elif role in FOOTERS and not whole:
+            flush()
+            emit(f"[footer with {_count_controls(by_id, node_id)} links and buttons; browser_find searches it]", "")
         elif role == "StaticText" or (role in IMAGES and name):
             if name and not (covered and name in covered):
                 if block != owner[0]:
@@ -157,12 +169,21 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
     return "\n".join(lines), refs
 
 
+def _count_controls(by_id: dict, root: str) -> int:
+    count, stack = 0, [root]
+    while stack:
+        node = by_id.get(stack.pop())
+        if node is None:
+            continue
+        count += str(ax_value(node.get("role")) or "") in INTERACTIVE and not node.get("ignored")
+        stack.extend(node.get("childIds") or [])
+    return count
+
+
 def page_changes(before: list[str], after: list[str]) -> str | None:
     """What changed between two renderings of a page: added lines (+), removed lines (-) and the line above
-    each change for orientation. None when most of the page is new, so the whole page is worth reading."""
+    each change for orientation. None when the changes are not much shorter than the page itself."""
     matcher = difflib.SequenceMatcher(None, before, after, autojunk=False)
-    if matcher.ratio() < MOSTLY_NEW:
-        return None
     out: list[str] = []
     for op, i1, i2, j1, j2 in matcher.get_opcodes():
         if op == "equal":
@@ -174,4 +195,5 @@ def page_changes(before: list[str], after: list[str]) -> str | None:
         if len(removed) > SHOWN_REMOVED:
             out.append(f"- … {len(removed) - SHOWN_REMOVED} more lines")
         out += ["+ " + line for line in after[j1:j2]]
-    return "\n".join(out)
+    changes, page = "\n".join(out), "\n".join(after)
+    return None if len(page) > SMALL_PAGE and len(changes) > CHANGES_SHARE * len(page) else changes
