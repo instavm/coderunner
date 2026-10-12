@@ -21,6 +21,7 @@
   .muted { opacity: .65; font-size: 13px; } .risk-high { border-color: var(--danger); }
   .badge { background: var(--danger); color: white; border-radius: 9px; padding: 0 6px; font-size: 12px; }
   code { word-break: break-all; }
+  button.rec { background: var(--danger); }
 </style>
 </head>
 <body>
@@ -39,7 +40,9 @@
 
 <section id="chat" class="on">
   <div id="messages"></div>
-  <form id="chatForm"><textarea id="input" rows="2" placeholder="Ask your assistant…"></textarea><button class="act">Send</button></form>
+  <form id="chatForm"><textarea id="input" rows="2" placeholder="Ask your assistant…"></textarea>
+  <button type="button" id="mic" class="act plain" title="Talk: click to start, click again to send">🎤</button><button class="act">Send</button></form>
+  <label class="muted"><input type="checkbox" id="speak" style="flex:none"> Read replies aloud (on-device voices only)</label>
   <p id="thinking" class="muted"></p>
 </section>
 <section id="approvals"><div id="approvalList"></div></section>
@@ -86,9 +89,42 @@ $("chatForm").onsubmit = async (e) => {
   const text = $("input").value.trim(); if (!text) return;
   $("input").value = ""; addMessage("user", text); $("thinking").textContent = "Working… approvals will appear in the Approvals tab.";
   try { const r = await api("/api/chat", {method: "POST", body: JSON.stringify({message: text, conversation: "web"})});
-        addMessage("assistant", r.reply || r.error); }
+        addMessage("assistant", r.reply || r.error); speak(r.reply || ""); }
   finally { $("thinking").textContent = ""; }
 };
+
+// Voice: the recording is transcribed on the assistant's computer, then sent like a typed message.
+let recorder = null;
+$("mic").onclick = async () => {
+  if (recorder) { recorder.stop(); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); }
+  catch (e) { $("thinking").textContent = "The microphone is not available: " + e.message; return; }
+  const chunks = [];
+  recorder = new MediaRecorder(stream);
+  recorder.ondataavailable = (e) => chunks.push(e.data);
+  recorder.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop());
+    const blob = new Blob(chunks, {type: recorder.mimeType});
+    recorder = null; $("mic").classList.remove("rec"); $("thinking").textContent = "Transcribing…";
+    const r = await fetch("/api/voice", {method: "POST", credentials: "same-origin", body: blob,
+      headers: {"Content-Type": blob.type || "application/octet-stream", "X-CodeRunner": "1"}});
+    if (r.status === 401) { showPair(); return; }
+    const result = await r.json();
+    if (result.text) { $("input").value = result.text; $("chatForm").requestSubmit(); }
+    else $("thinking").textContent = result.error || "I couldn't make out any words.";
+  };
+  recorder.start(); $("mic").classList.add("rec"); $("thinking").textContent = "Listening… click 🎤 again to send.";
+};
+function speak(text) {
+  if (!$("speak").checked || !text || !window.speechSynthesis) return;
+  // Only voices that run on this device: others send the text to a speech service.
+  const lang = (navigator.language || "en").slice(0, 2);
+  const voice = speechSynthesis.getVoices().find(v => v.localService && v.lang.startsWith(lang));
+  if (!voice) return;
+  const utterance = new SpeechSynthesisUtterance(text); utterance.voice = voice;
+  speechSynthesis.speak(utterance);
+}
 
 async function decide(id, allow, scope) {
   await api("/api/approvals/" + id, {method: "POST", body: JSON.stringify({allow, scope})});

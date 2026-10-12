@@ -31,16 +31,28 @@ def _compiler() -> list[str] | None:
     return None
 
 
+def helper_path(source: pathlib.Path, name: str) -> pathlib.Path:
+    """Where the helper built from this version of the source lives."""
+    digest = hashlib.sha256(pathlib.Path(source).read_bytes()).hexdigest()[:12]
+    return paths.assistant_dir() / "bin" / f"{name}-{digest}"
+
+
+def can_build(source: pathlib.Path, name: str) -> bool:
+    """Whether the helper is built, or could be: macOS, a Swift compiler, and no failed build of this source."""
+    binary = helper_path(source, name)
+    if binary.exists():
+        return True
+    failed = binary.with_name(binary.name + ".failed")
+    return sys.platform == "darwin" and _compiler() is not None and not failed.exists()
+
+
 def build(source: pathlib.Path, name: str) -> str | None:
     """Path of the helper built from source, building it now if needed; None where it cannot be built."""
-    if sys.platform != "darwin":
-        return None
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()[:12]
-    folder = paths.assistant_dir() / "bin"
-    binary, failed = folder / f"{name}-{digest}", folder / f"{name}-{digest}.failed"
+    binary = helper_path(source, name)
+    folder, failed = binary.parent, binary.with_name(binary.name + ".failed")
     if binary.exists():
         return str(binary)
-    if failed.exists():                     # do not retry a failed build on every call
+    if sys.platform != "darwin" or failed.exists():     # a failed build is not retried on every call
         return None
     compiler = _compiler()
     if compiler is None:
@@ -49,7 +61,7 @@ def build(source: pathlib.Path, name: str) -> str | None:
         if binary.exists():
             return str(binary)
         folder.mkdir(parents=True, exist_ok=True)
-        partial = folder / f".{name}-{digest}.{os.getpid()}"
+        partial = folder / f".{binary.name}.{os.getpid()}"
         try:
             done = subprocess.run([*compiler, "-O", "-o", str(partial), str(source)], capture_output=True,
                                   text=True, timeout=BUILD_TIMEOUT)

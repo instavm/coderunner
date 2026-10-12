@@ -287,14 +287,34 @@ needs a public webhook.
 
 | Channel | Setup | Notes |
 | --- | --- | --- |
-| Telegram | Create a bot with @BotFather, `coderunner channels enable telegram` (stores the token as a secret), restart, `coderunner channels pair telegram`, send `/pair <code>` | Private chats only by default; voice notes are transcribed locally when a speech engine is installed |
+| Telegram | Create a bot with @BotFather, `coderunner channels enable telegram` (stores the token as a secret), restart, `coderunner channels pair telegram`, send `/pair <code>` | Private chats only by default; voice notes are transcribed locally once voice is set up (see Voice) |
 | iMessage | `brew install steipete/tap/imsg`; sign Messages on this Mac into a dedicated Apple ID; grant the daemon Full Disk Access and Automation → Messages; enable and pair | Messages.app may fetch link previews for URLs in replies, so a URL written by the model can be fetched from your Mac |
 | Signal | Link signal-cli as a secondary device and run `signal-cli -a +NUM daemon --http=127.0.0.1:8080`; `coderunner channels enable signal --set url=http://127.0.0.1:8080 --set account=+NUM` | CodeRunner does not launch signal-cli |
 | WhatsApp (experimental) | `brew install openclaw/tap/wacli`, `wacli auth` with a secondary number; enable with `--set accept_tos_risk=true` | Uses the unofficial linked-device protocol; the account can be banned. The official Cloud API does not allow general-purpose assistants |
 
-Voice: install `whisper-cli` (whisper.cpp) with a `ggml-*.bin` model in
-`~/.coderunner/assistant/models/`, or `parakeet-mlx` / `mlx_whisper`. Spoken
-replies use macOS `say`, `piper` or `kokoro` with `ffmpeg`.
+## Voice
+
+Speech is turned into text on this computer. `coderunner setup` (or `coderunner
+voice setup` later) prepares it:
+
+* macOS 26 and later: Apple's on-device speech model (SpeechAnalyzer), through
+  a small helper built with the Xcode command line tools. Nothing to download
+  for languages macOS already has; it transcribes one set language
+  (`--language en-IN`, otherwise the Mac's own) from 30 that Apple supports.
+* Everywhere else, and for languages Apple lacks (Hindi, for example):
+  Qwen3-ASR on llama.cpp's official build, both downloaded and checksummed into
+  the CodeRunner folder (1.7B, about 2.5 GB; 0.6B, about 1 GB, on 8 GB
+  machines). It detects the language itself. Of the open speech models
+  llama.cpp runs, it scores best on the Open ASR Leaderboard (5.75% average
+  English WER; Whisper large v3 7.84%).
+
+Talk to the assistant with the 🎤 button in the web page (it can read replies
+aloud with the browser's on-device voices) or `coderunner chat --voice`
+(replies spoken with `say` on macOS). Voice notes from paired chat apps are
+transcribed the same way, and `file_listen` transcribes audio and video in
+shared folders. `coderunner voice transcribe <file>` checks the setup. Spoken
+replies to chat apps use macOS `say`, `piper` or `kokoro`; ffmpeg converts
+formats (setup installs it with Homebrew when missing).
 
 ## Connectors (macOS)
 
@@ -346,7 +366,7 @@ terminal by describing what you want.
 
 The assistant finds files with `files_search`, then uses them with `file_read`,
 `file_view` (images and video frames, for vision models) and `file_listen`
-(speech, with a speech-to-text engine installed). Rules:
+(speech, once voice is set up). Rules:
 
 * Only shared folders are read. Hidden folders, `~/Library`, key, certificate
   and credential files, `.env` files and CodeRunner's own state are never

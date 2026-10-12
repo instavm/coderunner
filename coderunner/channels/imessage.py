@@ -35,7 +35,7 @@ import json
 import os
 from typing import Any
 
-from ..voice import find_binary, run, terminate
+from ..process import find_binary, run, terminate
 from .base import IncomingMessage, NO_VOICE, NO_WORDS, PollingChannel, split_text
 
 CURSOR = "imessage:rowid"

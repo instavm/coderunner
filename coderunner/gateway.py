@@ -18,6 +18,8 @@ import hmac
 import json
 import pathlib
 import secrets
+import shutil
+import tempfile
 import time
 from typing import Any
 
@@ -33,6 +35,7 @@ from .policy import current_run
 WEB_DIR = pathlib.Path(__file__).parent / "web"
 DEVICE_COOKIE = "cr_device"
 PAIR_TTL = 600
+VOICE_LIMIT = 25 * 1024 * 1024      # a recorded message; about 100 minutes of Opus
 
 
 def _bearer(request: Request) -> str:
@@ -249,6 +252,32 @@ def admin_app(svc, daemon) -> Starlette:
         reply = await daemon.handle_message("web", conversation, message, origin=principal(request))
         return JSONResponse({"reply": reply})
 
+    async def voice_message(request: Request):
+        """Transcribe a recording from the web page (the client then sends the text as a chat message)."""
+        from .voice import STT_HINT
+        voice = getattr(svc, "voice", None)
+        if voice is None or not voice.available():
+            return JSONResponse({"error": STT_HINT}, status_code=503)
+        work = pathlib.Path(tempfile.mkdtemp(prefix="coderunner-voice-"))
+        try:
+            note, size = work / "message", 0
+            with open(note, "wb") as handle:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > VOICE_LIMIT:
+                        return JSONResponse({"error": "The recording is too long."}, status_code=413)
+                    handle.write(chunk)
+            if not size:
+                return JSONResponse({"error": "The recording is empty."}, status_code=400)
+            try:
+                text = await voice.transcribe(note)     # ffmpeg reads the format from the content
+            except Exception as exc:
+                svc.audit.write("voice.error", error=str(exc)[:300])
+                return JSONResponse({"error": "I couldn't transcribe that recording."}, status_code=500)
+            return JSONResponse({"text": text})
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
     async def history(request: Request):
         conversation = f"web:{request.path_params['conversation']}"  # matches handle_message("web", ...)
         rows = svc.store.query("SELECT role, content, created FROM messages WHERE conversation = ? "
@@ -396,6 +425,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/audit", audit, methods=["GET"]),
         Route("/api/chat", chat, methods=["POST"]),
         Route("/api/chat/{conversation}", history, methods=["GET"]),
+        Route("/api/voice", voice_message, methods=["POST"]),
         Route("/api/tools", tools, methods=["GET"]),
         Route("/api/tools/{name}", call_tool, methods=["POST"]),
         Route("/api/schedules", schedules, methods=["GET", "POST"]),

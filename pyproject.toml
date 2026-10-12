@@ -31,6 +31,7 @@ packages = [
     "coderunner.files",
     "coderunner.models",
     "coderunner.sandbox",
+    "coderunner.voice",
 ]
 
 [tool.setuptools.package-data]
@@ -38,3 +39,4 @@ packages = [
 "coderunner.models" = ["catalog.json", "evidence.json"]
 "coderunner.browser" = ["extension/*.json", "extension/*.js"]
 "coderunner.files" = ["helper.swift"]
+"coderunner.voice" = ["apple_speech.swift"]

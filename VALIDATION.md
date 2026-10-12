@@ -25,7 +25,8 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
 | Models (`test_models.py`) | Hardware parsing (Apple, NVIDIA, AMD, CPU, WSL2), budgets, KV-cache sizing, picks per memory tier from 8 GB Macs to 512 GB, expert offload on NVIDIA, runtime routing to llama.cpp, cluster flags, GPU-limit notes, licence resolution through base models, resumable verified downloads, smoke-test pass/fail including the wrong-argument case below; timing a served model (streamed and llama.cpp timings), calibration per machine, setup moving on from a model far slower than estimated and deleting its weights, the shareable report; the decision model only where it fits; published retention for Bonsai 2; Ollama version checks and its own checksum-verified copy |
 | Discovery (`test_discover.py`) | Hugging Face listings, configs and file trees from a fake hub: filters, sharded builds, KV and MoE sizes, build choice per machine, known breakages, stale caches; published scores read from eval results, ranking by them (a model scored like Granite 4.2 30B ranks below Qwen3.5-9B), quantization losses, GPU-limit notes |
 | Files (`test_files.py`) | Only shared, non-secret files; iCloud-only files named but not read (read once on the Mac or with `files.cloud_files`); bundles, libraries and code in source checkouts skipped; half-precision vectors and sign codes; embedding batched across files (153 files in at most 12 requests); a new embedding model means indexing again; file events bring changes in first; pausing on a low battery or Low Power Mode; figures matched by words only; passages with lines; ranking on a calibrated corpus (a picture ranks by its own scale, a kind hint, weak results cut, codes lean on words); the first pass finds the closest codes; `coderunner find` output and direct fallback. With the Swift compiler: PDFs by page, OCR of a screenshot, FSEvents within seconds |
-| Memory, scheduler, connectors, channels, voice, service, remote | Unit tests with fakes; see each test file |
+| Voice (`test_voice.py`) | Engine order (Apple speech, Qwen3-ASR, installed engines), languages Apple lacks and failing engines handing over, 16 kHz mono WAV for every engine, the Apple helper built once per source, llama.cpp checked against its checksum before unpacking, Qwen3-ASR downloaded only when Apple cannot serve the language; the web page's voice upload (size limit, temporary files removed) |
+| Memory, scheduler, connectors, channels, service, remote | Unit tests with fakes; see each test file |
 
 ## Manual checks on this branch
 
@@ -107,6 +108,16 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
 * Ollama embeds short texts at 39/s one at a time and 80/s in batches of 64-256 (quiet M3 Pro);
   more sequence slots (OLLAMA_NUM_PARALLEL 8) were slower (46-63/s). Indexing a large folder faster
   needs a runtime that embeds many sequences in one pass (llama.cpp's server), not yet tried.
+* Speech to text on 20 LibriSpeech clips (188 s of read English): word error rate 2.0% for Apple's
+  on-device model, 2.5% for Qwen3-ASR 1.7B and 4.0% for 0.6B (Q8_0, llama.cpp b11564). Apple needed
+  no download (English was installed) and builds its helper in about 6 s. An 84 s recording came
+  back as timed phrases from Apple and as three pieces cut at pauses from Qwen3-ASR, with no words
+  lost at the cuts; a WebM/Opus recording sent to the web page's voice endpoint came back word for
+  word. Qwen3-ASR twice returned no transcript while other heavy jobs ran; that now counts as a
+  failure and the next engine is tried. Speed was not measured cleanly (Spotlight was re-indexing
+  after a restart, load 5-15): under that load a clip of about 9 s took about 0.4 s with Apple
+  (real-time factor 0.04), 1.7 s with Qwen3-ASR 1.7B (0.18) and 1.1 s with 0.6B (0.12), each call
+  starting its engine.
 
 ### Backends, prompt cache and decision models (October 12, same Mac)
 
@@ -159,6 +170,10 @@ does not fit on 18 GB, where the chat model judges. nimble (9B) and clef-flash (
 measured: they cannot sit beside a 27B or 9B chat model on this Mac.
 
 ## Not yet validated
+
+* Voice: Qwen3-ASR on Linux and NVIDIA machines; the 🎤 button in a real browser and
+  `coderunner chat --voice` with a real microphone (both ask for microphone permission); setup's
+  Homebrew install of ffmpeg; Apple speech for languages other than English.
 
 * The everyday-browser extension in branded Chrome with the owner's real profile (loaded by hand),
   Brave and Edge, and on Linux; Windows is not supported (no native host registration in the
