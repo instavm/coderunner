@@ -16,6 +16,10 @@ INLINE = frozenset({"strong", "emphasis", "mark", "subscript", "superscript", "t
                     "insertion", "deletion"})
 CHECKABLE = frozenset({"checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"})
 IMAGES = frozenset({"image", "img"})     # their alternative text is read like text (an airline's logo)
+# Containers whose name can be content: booking.com puts a flight's price in a region's name, with no text
+# inside. The name is read like text, and text inside that only repeats it is skipped.
+NAMED = frozenset({"region", "group", "article", "figure", "status", "alert", "note", "cell", "gridcell",
+                   "listitem", "term", "definition", "math", "timer", "log"})
 PAGE_CHARS = 12000          # page text returned at once; browser_find reaches the rest
 SHOWN_REMOVED = 5           # removed lines listed per change; more are counted
 CHANGES_SHARE = 0.7         # changes longer than this share of the page are sent as the whole page
@@ -163,6 +167,12 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
                 descend(node_id, name)      # the value is already shown; skip editor internals
         elif role in INLINE:
             descend(block, covered)
+        elif role in NAMED and name and not (covered and name in covered):
+            if owner[0] is not None:
+                flush()
+            owner[0] = node_id
+            parts.append(f" {raw_name} ")
+            descend(node_id, name)
         else:
             descend(node_id, covered)
     flush()

@@ -300,6 +300,15 @@ class RenderTests(unittest.TestCase):
         whole, _ = render_ax(nodes, "https://shop.example/", whole=True)
         self.assertIn('link "Careers" -> /careers', whole)
 
+    def test_a_containers_name_can_be_its_content(self):
+        nodes = [ax(1, "RootWebArea", "Flights", children=[2], backend=1),
+                 ax(2, "listitem", parent=1, children=[3, 4], backend=2),
+                 ax(3, "StaticText", "SpiceJet", parent=2),
+                 ax(4, "region", "INR9,995", parent=2, children=[5], backend=4),
+                 ax(5, "StaticText", "9,995", parent=4)]           # only repeats the name
+        content, _ = render_ax(nodes)
+        self.assertEqual(content, "SpiceJet INR9,995")
+
     def test_numbers_stay_with_their_elements(self):
         numbers = {"next": 1, "ids": {}}
         render_ax(SHOP_AX, "https://shop.example/", numbers=numbers)
