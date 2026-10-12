@@ -201,8 +201,8 @@ def browser_tools(svc) -> list[Tool]:
         return result
 
     tools = [
-        Tool("browser_open", "Open a URL in the owner's CodeRunner browser window (a dedicated profile the owner "
-             "can watch). Returns the page as text with numbered elements [N].",
+        Tool("browser_open", "Open a URL in a new tab of the CodeRunner browser window or tab group, which the "
+             "owner can watch. Returns the page as text with numbered elements [N].",
              _params({"url": STR}, ["url"]), open_, True),
         Tool("browser_snapshot", "Read the whole current page again as text with numbered elements [N]. Other "
              "browser actions already return what they changed, so use this only when you need the full page.",

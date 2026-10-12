@@ -70,6 +70,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "secrets": {},                   # name -> {"hosts": ["api.github.com"], "header": "Authorization"}
     "browser": {
+        "mode": "dedicated",         # dedicated: own profile; chrome: a tab group in the owner's browser (extension)
         "executable": "",            # empty = detect Chrome, Brave, Edge or Chromium
         "headless": False,
         "allow": [],                 # domains the agent may open without asking

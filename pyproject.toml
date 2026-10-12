@@ -34,3 +34,4 @@ packages = [
 [tool.setuptools.package-data]
 "coderunner" = ["web/*.html"]
 "coderunner.models" = ["catalog.json", "evidence.json"]
+"coderunner.browser" = ["extension/*.json", "extension/*.js"]

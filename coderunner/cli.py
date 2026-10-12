@@ -143,8 +143,61 @@ def cmd_doctor(args, config: Config) -> int:
     driver = driver_for(config)
     report = {"version": __version__, "hardware": hw.to_dict(), "sandbox_driver": driver.name,
               "sandbox_state": driver.status(), "daemon": _daemon_up(config),
+              "browser": _browser_report(config),
               "api_token_file": str(paths.api_token_path()), "config": str(config.path)}
     _print(report)
+    return 0
+
+
+def _browser_report(config: Config) -> dict:
+    from .browser import extension
+    report: dict[str, Any] = {"mode": config.get("browser.mode") or "dedicated"}
+    if report["mode"] == "chrome":
+        report["host_registered"] = extension.installed()
+        try:
+            report["extension"] = (_admin(config, "GET", "/api/status", timeout=5).get("browser") or {}).get("extension")
+        except Exception:
+            report["extension"] = "unknown: the assistant is not running"
+    return report
+
+
+CONNECT_STEPS = """The CodeRunner extension is ready to load. In Chrome (or Brave, Edge):
+  1. Open chrome://extensions and turn on Developer mode (top right).
+  2. Click "Load unpacked" and choose:
+       {extension_dir}
+  3. Restart the assistant: coderunner down && coderunner up
+The assistant then opens its tabs in a "CodeRunner" tab group in a window of its own. It can only
+see and use the tabs in that group: drag a tab out to take it back, or in to hand it over.
+Check the connection with: coderunner browser status"""
+
+
+def cmd_browser(args, config: Config) -> int:
+    from .browser import extension
+    if args.action == "connect":
+        try:
+            result = extension.install(args.browser or None)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 2
+        if not result["manifests"]:
+            print("No Chrome, Brave, Edge or Chromium profile folder found. Start the browser once, or name it "
+                  "with --browser chrome|brave|edge|chromium.")
+            return 1
+        config.set("browser.mode", "chrome")
+        config.save()
+        for manifest in result["manifests"]:
+            print(f"Registered the native host for {manifest['browser']}: {manifest['path']}")
+        print(CONNECT_STEPS.format(extension_dir=result["extension_dir"]))
+        return 0
+    if args.action == "disconnect":
+        for path in extension.uninstall():
+            print(f"Removed {path}")
+        config.set("browser.mode", "dedicated")
+        config.save()
+        print("The assistant uses its own browser profile again (restart it: coderunner down && coderunner up). "
+              "You can remove the CodeRunner extension in chrome://extensions.")
+        return 0
+    _print(_browser_report(config))
     return 0
 
 
@@ -519,6 +572,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--name"), p.add_argument("--spec"), p.add_argument("--prompt")
     p.add_argument("--id", type=int)
     p.set_defaults(func=cmd_schedule)
+
+    p = sub.add_parser("browser", help="Use a CodeRunner tab group in your everyday Chrome, or a separate profile")
+    p.add_argument("action", choices=["status", "connect", "disconnect"], nargs="?", default="status")
+    p.add_argument("--browser", action="append", help="chrome, brave, edge, chromium... (default: all installed)")
+    p.set_defaults(func=cmd_browser)
 
     p = sub.add_parser("files", help="Folders the assistant may search and read (text, code, images, audio, video)")
     p.add_argument("action", choices=["status", "add", "remove", "index", "search"], nargs="?", default="status")

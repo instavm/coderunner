@@ -19,8 +19,8 @@ coderunner chat       # talk to it; approvals are asked right in the terminal
  ┌──────────────────────── host (trusted) ────┴──────────────────────────────┐
  │ coderunner daemon: agent loop · policy + approvals · audit log · secrets   │
  │   ├─ model runtime (Ollama / llama.cpp)       127.0.0.1 only              │
- │   ├─ browser broker ── your Chrome/Brave/Edge, dedicated profile,        │
- │   │                     controlled over a private pipe (no debug port)    │
+ │   ├─ browser broker ── your Chrome/Brave/Edge: its own profile over a     │
+ │   │     private pipe, or a CodeRunner tab group (extension)               │
  │   ├─ connectors: Calendar, Reminders, Notes, Mail drafts, Contacts (opt-in)│
  │   └─ channels: Telegram, iMessage, Signal, WhatsApp (experimental)         │
  │ sandbox gateway  <VM bridge>:8223  model API + secret-injecting fetch      │
@@ -164,6 +164,7 @@ picking dates and filters, running code, saving notes) runs without prompts.
 | The model approves its own actions | Approvals are decided only through the owner API (CLI, web UI, paired channel). The model never sees an approval endpoint. |
 | Passwords and one-time codes | The model may not type into password or OTP fields. It hands off to you in the visible browser window. |
 | Using your browser | A dedicated profile in your installed Chrome/Brave/Edge, visible so you can watch and take over, controlled over `--remote-debugging-pipe` (no TCP port exists for anything else to reach). No JavaScript evaluation, cookie or storage access is exposed; downloads and file pickers are blocked; `file:`, `chrome:` and LAN addresses are refused; web chat clients count every click and keystroke as committing. Prefer stricter? Add `{"kind": "browser.navigate", "target": "*", "decision": "ask"}` to `policy.rules` to approve every new site. |
+| Using your everyday browser (optional, `coderunner browser connect`) | The CodeRunner extension lets the assistant use only the tabs in its "CodeRunner" tab group (and popups those tabs open); your other tabs are never listed, read or controlled, and dragging a tab out of the group takes it back. The extension reaches the daemon through a native messaging host registered for its ID alone, over a unix socket only your account can open, with a token. The same approvals, step judge, password and payment rules and request guard apply. What differs from the dedicated profile: the group's tabs have your sign-ins and cookies; permission prompts (camera, location...) are shown to you instead of being denied; the protocol is limited to the page domains the assistant needs (no cookie, storage or browser-wide access); a popup's very first request can leave before the guard attaches to it. Chrome shows that CodeRunner is debugging the browser while the assistant works. |
 | Sandbox exfiltration | Network mode `proxy`: the VM is on a host-only network whose only way out is the egress proxy. Destinations are allow-listed or approved per host; LAN, loopback, link-local and tailnet (CGNAT) addresses are refused; connections go to the address that was checked; denials are remembered for five minutes and at most five network approvals can wait at once. Mode `none` has no egress at all (the secret-injecting fetch is disabled too). |
 | API keys | Stored on the host. Sandbox code writes `{{secret:name}}` in a header; the gateway substitutes it only over https, only for hosts you named (and the header you named, if any), and strips it from responses. |
 | Connectors | Off until enabled one by one. Writes only create calendar events (no invitations), reminders, notes and mail drafts; they run without a prompt unless the task has read untrusted content. Mail can only create drafts. One-time codes and reset links are redacted from mail. Scripts get data as arguments, never as code. |
@@ -191,6 +192,28 @@ Limits worth knowing:
 * macOS privacy permissions (Automation, Full Disk Access) attach to the
   process that asks. Run `coderunner connectors test <name>` from Terminal to
   grant them; a background service may not be able to show the prompt.
+
+## Your browser: its own profile, or a tab group in your Chrome
+
+By default the assistant starts your Chrome (or Brave, Edge, Chromium) with a profile of its own: no
+sign-ins, nothing shared with your everyday browsing. Some sites treat that browser as automated
+(it is started with a debugging pipe, so `navigator.webdriver` is true) and refuse it: booking.com's
+flight search answers its destination suggestions with an error there.
+
+`coderunner browser connect` switches to your everyday browser instead, the way browser assistant
+extensions do it: the assistant opens its tabs in a "CodeRunner" tab group, in a window of its own,
+and can use only the tabs in that group. To set it up:
+
+1. `coderunner browser connect` registers the extension's native messaging host with each installed
+   Chrome-family browser (or `--browser chrome|brave|edge|chromium`) and switches `browser.mode` to
+   `chrome`.
+2. In Chrome, open `chrome://extensions`, turn on Developer mode and choose "Load unpacked" with the
+   folder it prints (`~/.coderunner/assistant/chrome/extension`).
+3. Restart the assistant (`coderunner down && coderunner up`). `coderunner browser status` shows
+   whether the extension is connected; the extension's badge reads "on".
+
+`coderunner browser disconnect` goes back to the dedicated profile. Chrome needs to be open for the
+assistant to browse; if it is not, the assistant says so. Windows is not supported yet.
 
 ## Channels
 
@@ -260,6 +283,7 @@ coderunner grants [revoke <id>]
 coderunner secrets set github --host api.github.com
 coderunner connectors enable calendar && coderunner connectors test calendar
 coderunner files add ~/Documents     # let it find and use your files
+coderunner browser connect           # browse in a CodeRunner tab group in your own Chrome
 coderunner channels enable telegram && coderunner channels pair telegram
 coderunner remote enable --owner you@example.com && coderunner remote pair
 coderunner schedule add --name brief --spec "weekdays 08:00" --prompt "Summarise my day"

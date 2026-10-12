@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import platform
 import signal
 import socket
@@ -48,6 +49,7 @@ class Services:
     egress: EgressGuard | None = None
     sandbox: SandboxClient | None = None
     browser: Any = None
+    chrome: Any = None              # browser.extension.ChromeBridge: the owner's browser via the extension
     memory: Any = None
     scheduler: Any = None
     voice: Any = None
@@ -127,8 +129,11 @@ class Daemon:
         svc.sandbox = SandboxClient(url, paths.api_token())
 
         from .browser import BrowserBroker
+        if os.name == "posix":
+            from .browser.extension import ChromeBridge
+            svc.chrome = ChromeBridge(audit=audit)
         svc.browser = BrowserBroker(self.config, svc.policy, audit,
-                                    decider=ActionCheck.from_config(self.config, audit, **runtime))
+                                    decider=ActionCheck.from_config(self.config, audit, **runtime), chrome=svc.chrome)
 
         from .memory import Memory
         # Embeddings can come from a different runtime than the chat model, e.g. EmbeddingGemma in
@@ -232,6 +237,8 @@ class Daemon:
             "connectors": sorted({c.connector for c in svc.connectors}),
             "pending_approvals": len(svc.policy.pending()),
             "tools": sorted(svc.registry.tools),
+            "browser": {"mode": svc.browser.mode, "running": svc.browser.running(),
+                        **({"extension": svc.chrome.status()} if svc.chrome is not None else {})},
         }
 
     # ---- serving -----------------------------------------------------------
@@ -302,6 +309,11 @@ class Daemon:
             self._tasks.append(asyncio.create_task(self._proxy_with_retry(proxy_servers)))
         self._tasks.append(asyncio.create_task(svc.scheduler.run_forever()))
         self._tasks.append(asyncio.create_task(svc.files.run_forever()))
+        if svc.chrome is not None:
+            try:
+                await svc.chrome.start()
+            except OSError as exc:
+                svc.audit.write("browser.extension_bridge_failed", error=str(exc))
         for channel in svc.channels.values():
             try:
                 await channel.start()
@@ -324,6 +336,9 @@ class Daemon:
             proxy_server.close()
         with contextlib.suppress(Exception):
             await svc.browser.stop()
+        if svc.chrome is not None:
+            with contextlib.suppress(Exception):
+                await svc.chrome.stop()
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
