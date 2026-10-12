@@ -84,6 +84,38 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(path=path.name), self.assertRaises(FileAccessError):
                 index.resolve(str(path))
 
+    async def test_cloud_only_files_and_bundles_are_left_alone(self):
+        (self.docs / "Photos Library.photoslibrary" / "originals").mkdir(parents=True)
+        (self.docs / "Photos Library.photoslibrary" / "originals" / "trip.txt").write_text("photo notes")
+        (self.docs / "Tool.app" / "Contents").mkdir(parents=True)
+        (self.docs / "Tool.app" / "Contents" / "readme.md").write_text("bundle insides")
+        (self.docs / "in-icloud.txt").write_text("cloud!!")                  # 7 bytes: stands for a cloud-only file
+        (self.docs / "repo" / ".git").mkdir(parents=True)
+        (self.docs / "repo" / "src").mkdir()
+        (self.docs / "repo" / "src" / "main.c").write_text("int main() { return 0; }")
+        (self.docs / "repo" / "README.md").write_text("How to build the invoice tool")
+        index = self.index()
+        with mock.patch("coderunner.files.in_cloud_only", lambda stat: stat.st_size == 7):
+            result = await index.index_once()
+        self.assertEqual((result["indexed"], result["cloud_only"]), (5, 1))
+        names = {pathlib.Path(r["path"]).name: r["part"] for r in self.store.query("SELECT path, part FROM file_chunks")}
+        self.assertNotIn("trip.txt", names)                                  # inside a Photos library
+        self.assertNotIn("readme.md", names)                                 # inside an app
+        self.assertNotIn("main.c", names)                                    # source code in a git checkout
+        self.assertIn("README.md", names)                                    # ...but its docs are kept
+        self.assertTrue(names["in-icloud.txt"].startswith("name only"))     # not downloaded
+        self.assertEqual(index.status()["cloud_only_skipped"], 1)
+        self.config.set("files.cloud_files", True)                          # the owner opts in to downloads
+        with mock.patch("coderunner.files.in_cloud_only", lambda stat: stat.st_size == 7):
+            self.assertEqual((await index.index_once())["indexed"], 1)
+        part = self.store.one("SELECT part FROM file_chunks WHERE path LIKE '%in-icloud.txt'")["part"]
+        self.assertEqual(part, "from line 1")
+
+    async def test_vectors_are_float32_and_old_json_rows_still_load(self):
+        from coderunner.files import pack, unpack
+        self.assertEqual(list(unpack(pack([0.5, -0.25]))), [0.5, -0.25])
+        self.assertEqual(list(unpack("[0.5, -0.25]")), [0.5, -0.25])
+
     async def test_folders_that_cannot_be_shared(self):
         index = self.index()
         for folder in ("/", str(pathlib.Path.home() / "Library"), str(self.home)):

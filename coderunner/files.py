@@ -7,7 +7,12 @@ and video is indexed as sampled frames plus its sound. Text also goes into a
 keyword index. Nothing leaves the machine.
 
 Only regular files inside the chosen folders are read, after resolving
-symlinks. Secrets (key files, .env files, ~/.ssh, keychains, password
+symlinks. Files kept only in iCloud (macOS "Optimize Storage") are indexed by
+name only unless files.cloud_files is on, since reading one downloads it, and
+folders kept only in iCloud are not listed. Source code inside git
+repositories is left to code tools unless files.code_in_repos is on: a few
+checkouts hold hundreds of thousands of files. App bundles and libraries
+(Photos, Music...) are skipped. Secrets (key files, .env files, ~/.ssh, keychains, password
 databases) and CodeRunner's own state are never indexed or read. File
 contents are the owner's private data and may also be third-party text
 (downloads, attachments), so the tools that return them mark the task as
@@ -16,12 +21,14 @@ holding private data and as having read untrusted content.
 
 from __future__ import annotations
 
+import array
 import asyncio
 import base64
 import fnmatch
 import heapq
 import json
 import math
+import operator
 import os
 import pathlib
 import shutil
@@ -38,6 +45,7 @@ TEXT = {".txt", ".md", ".markdown", ".rst", ".org", ".csv", ".tsv", ".json", ".j
         ".py", ".ipynb", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".h",
         ".cc", ".cpp", ".hpp", ".m", ".mm", ".cs", ".rb", ".php", ".pl", ".lua", ".r", ".jl", ".scala", ".dart",
         ".sh", ".bash", ".zsh", ".fish", ".ps1", ".sql", ".graphql", ".proto", ".vue", ".svelte", ".zig", ".nim"}
+PROSE = {".txt", ".md", ".markdown", ".rst", ".org", ".csv", ".tsv", ".tex", ".bib", ".srt", ".vtt"}
 DOCS = {".pdf", ".docx", ".doc", ".rtf", ".odt", ".pages"}         # converted to text by local tools
 IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif", ".bmp", ".tiff", ".tif"}
 AUDIO = {".wav", ".mp3", ".m4a", ".aac", ".aiff", ".aif", ".flac", ".ogg", ".opus", ".caf"}
@@ -48,6 +56,11 @@ SECRET_DIRS = {".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".passwor
 SECRET_FILES = (".env", ".env.*", "*.env", ".netrc", ".npmrc", ".pypirc", ".git-credentials", "credentials",
                 "credentials.*", "id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*", "*.pem", "*.key", "*.p12",
                 "*.pfx", "*.jks", "*.keystore", "*.kdbx", "*.keychain", "*.keychain-db", "*.ovpn", "*.gpg", "*.asc")
+# Folders that are single documents to macOS (apps, Photos and Music libraries...): their insides are not files.
+PACKAGES = {".app", ".bundle", ".framework", ".photoslibrary", ".musiclibrary", ".tvlibrary", ".imovielibrary",
+            ".fcpbundle", ".logicx", ".band", ".lrlibrary", ".xcodeproj", ".xcworkspace"}
+NAME_ONLY = "name only"   # part label of a file indexed by its name, without reading it
+DATALESS = 0x40000000      # st_flags: the content is only in iCloud, and reading the file downloads it
 SKIP_DIRS = {".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache",
              ".tox", "target", "build", "dist", ".next", ".cache", ".Trash", "DerivedData", "Pods"}
 
@@ -89,6 +102,30 @@ def is_secret(path: pathlib.Path) -> bool:
         return True
     name = path.name.lower()
     return any(fnmatch.fnmatch(name, pattern) for pattern in SECRET_FILES)
+
+
+try:
+    from math import sumprod as _dot          # Python 3.12+: a C loop
+except ImportError:                           # pragma: no cover
+    def _dot(a, b) -> float:
+        return sum(map(operator.mul, a, b))
+
+
+def pack(vector: list[float]) -> bytes:
+    """Embeddings are stored as float32: a quarter of the space of JSON text, and quick to load."""
+    return array.array("f", vector).tobytes()
+
+
+def unpack(value: Any) -> array.array:
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        vector = array.array("f")
+        vector.frombytes(bytes(value))
+        return vector
+    return array.array("f", json.loads(value))      # rows written before float32 storage
+
+
+def in_cloud_only(stat: os.stat_result) -> bool:
+    return bool(getattr(stat, "st_flags", 0) & DATALESS)
 
 
 def _unit(vector: list[float]) -> list[float]:
@@ -203,7 +240,10 @@ class FileIndex:
         self.audit = audit
         self.embedder = embedder
         self.media = media or Media()
-        self._vectors: dict[int, list[float]] | None = None
+        self._vectors: dict[int, array.array] | None = None
+        self._queue: list[tuple[pathlib.Path, os.stat_result, bool]] = []   # changed files found by the last walk
+        self._files = 0
+        self.cloud_only = 0         # files left alone because only iCloud holds their content
         self._lock = asyncio.Lock()
         self.wake = asyncio.Event()
 
@@ -257,22 +297,47 @@ class FileIndex:
         return {pathlib.Path.home().resolve() / "Library"}
 
     def _walk(self):
+        """(path, stat, cloud) for each file to index; cloud: only iCloud has its content (index the name)."""
         limit = int(self.config.get("files.max_file_mb", 200) or 200) * 1024 * 1024
+        cloud = bool(self.config.get("files.cloud_files", False))
+        code = bool(self.config.get("files.code_in_repos", False))
         private = self._private_dirs()
+        self.cloud_only = 0
+        repos: set[str] = set()                     # folders inside a git checkout
         for root in self.roots():
             for folder, dirs, names in os.walk(root, followlinks=False):
+                in_repo = folder in repos or ".git" in dirs or ".git" in names
                 dirs[:] = [d for d in dirs if d not in SKIP_DIRS and d not in SECRET_DIRS and not d.startswith(".")
-                           and pathlib.Path(folder, d) not in private]
+                           and os.path.splitext(d)[1].lower() not in PACKAGES
+                           and pathlib.Path(folder, d) not in private
+                           and (cloud or not self._cloud_folder(os.path.join(folder, d)))]
+                if in_repo:
+                    repos.update(os.path.join(folder, d) for d in dirs)
                 for name in names:
                     path = pathlib.Path(folder) / name
-                    if name.startswith(".") or is_secret(path) or kind_of(path) is None or path.is_symlink():
+                    kind = kind_of(path)
+                    if name.startswith(".") or is_secret(path) or kind is None or path.is_symlink():
+                        continue
+                    if in_repo and not code and kind == "text" and path.suffix.lower() not in PROSE:
                         continue
                     try:
                         stat = path.stat()
                     except OSError:
                         continue
-                    if 0 < stat.st_size <= limit:
-                        yield path, stat
+                    if not 0 < stat.st_size <= limit:
+                        continue
+                    remote = not cloud and in_cloud_only(stat)
+                    self.cloud_only += remote
+                    yield path, stat, remote
+
+    def _cloud_folder(self, path: str) -> bool:
+        """A folder whose listing is only in iCloud: even listing it waits for a download."""
+        try:
+            gone = in_cloud_only(os.lstat(path))
+        except OSError:
+            return True
+        self.cloud_only += gone
+        return gone
 
     def _forget_outside(self) -> int:
         roots = self.roots()
@@ -288,20 +353,32 @@ class FileIndex:
         self._vectors = None
 
     async def index_once(self, budget: int = 200) -> dict:
-        """Index new or changed files (at most `budget` per pass) and forget removed ones."""
+        """Index new or changed files (at most `budget` per pass) and forget removed ones. The folders are
+        walked once, then the changed files are worked through over as many passes as it takes."""
         async with self._lock:
-            known = {r["path"]: r for r in self.store.query("SELECT path, size, mtime FROM files")}
-            seen, done, failed = set(), 0, 0
-            for path, stat in self._walk():
+            removed: list[str] = []
+            if not self._queue:
+                known = {r["path"]: r for r in self.store.query(
+                    "SELECT path, size, mtime, (SELECT part FROM file_chunks c WHERE c.path = f.path LIMIT 1) "
+                    "AS part FROM files f")}
+                seen = set()
+                for path, stat, remote in self._walk():
+                    seen.add(str(path))
+                    row = known.get(str(path))
+                    # Also redone: a file now on this Mac that was indexed by name while only iCloud had it.
+                    if not (row and row["size"] == stat.st_size and row["mtime"] == stat.st_mtime
+                            and (row["part"] or "").startswith(NAME_ONLY) == remote):
+                        self._queue.append((path, stat, remote))
+                self._files = len(seen)
+                removed = [p for p in known if p not in seen]
+                for path in removed:
+                    self._drop(path)
+            batch, self._queue = self._queue[:budget], self._queue[budget:]
+            done = failed = 0
+            for path, stat, remote in batch:
                 key = str(path)
-                seen.add(key)
-                row = known.get(key)
-                if row and row["size"] == stat.st_size and row["mtime"] == stat.st_mtime:
-                    continue
-                if done + failed >= budget:
-                    continue
                 try:
-                    chunks = await self._chunks(path, kind_of(path))
+                    chunks = self._name_only(path) if remote else await self._chunks(path, kind_of(path))
                     vectors = await self._embed_chunks(chunks)
                     error = ""
                     done += 1
@@ -314,16 +391,17 @@ class FileIndex:
                                    (key, kind_of(path), stat.st_size, stat.st_mtime, time.time(), len(chunks), error))
                 for (part, text, _), vector in zip(chunks, vectors or [None] * len(chunks)):
                     self.store.execute("INSERT INTO file_chunks(path, part, text, embedding) VALUES (?, ?, ?, ?)",
-                                       (key, part, text, json.dumps(vector) if vector else None))
-            removed = [p for p in known if p not in seen]
-            for path in removed:
-                self._drop(path)
+                                       (key, part, text, pack(vector) if vector else None))
             self._vectors = None
-            result = {"indexed": done, "failed": failed, "removed": len(removed), "files": len(seen),
-                      "more": done + failed >= budget}
+            result = {"indexed": done, "failed": failed, "removed": len(removed), "files": self._files,
+                      "more": bool(self._queue), "cloud_only": self.cloud_only}
             if done or failed or removed:
                 self.audit.write("files.indexed", **result)
             return result
+
+    def _name_only(self, path: pathlib.Path) -> list[tuple[str, str, Any]]:
+        prefix = self.embedder.doc_prefix.format(title=path.name) if self.embedder else ""
+        return [(NAME_ONLY + ": the file is in iCloud, opening it downloads it", path.name, prefix + path.stem)]
 
     async def _chunks(self, path: pathlib.Path, kind: str) -> list[tuple[str, str, Any]]:
         """(part label, keyword text, embedding input) for each piece of a file."""
@@ -396,12 +474,12 @@ class FileIndex:
 
     # ---- search ------------------------------------------------------------------
 
-    def _load_vectors(self) -> dict[int, list[float]]:
+    def _load_vectors(self) -> dict[int, array.array]:
         if self._vectors is None:
             self._vectors = {}
             for row in self.store.query("SELECT id, embedding FROM file_chunks WHERE embedding IS NOT NULL"):
                 try:
-                    self._vectors[row["id"]] = json.loads(row["embedding"])
+                    self._vectors[row["id"]] = unpack(row["embedding"])
                 except (TypeError, ValueError):
                     continue
         return self._vectors
@@ -415,7 +493,7 @@ class FileIndex:
         if self.embedder is not None and (vectors := self._load_vectors()):
             try:
                 [q] = await self.embedder.embed([self.embedder.query_prefix + query])
-                scored = ((sum(a * b for a, b in zip(q, v)), cid) for cid, v in vectors.items() if len(v) == len(q))
+                scored = ((_dot(q, v), cid) for cid, v in vectors.items() if len(v) == len(q))
                 rankings.append([cid for _, cid in heapq.nlargest(limit * 6, scored)])
             except (httpx.HTTPError, KeyError, ValueError) as exc:
                 self.audit.write("files.embedding_unavailable", error=str(exc)[:200])
@@ -457,4 +535,5 @@ class FileIndex:
         rows = self.store.query("SELECT kind, COUNT(*) AS n, SUM(error != '') AS failed FROM files GROUP BY kind")
         return {"roots": [str(r) for r in self.roots()], "model": self.embedder.model if self.embedder else None,
                 "by_kind": {r["kind"]: {"files": r["n"], "failed": r["failed"] or 0} for r in rows},
-                "chunks": (self.store.one("SELECT COUNT(*) AS n FROM file_chunks") or {}).get("n", 0)}
+                "chunks": (self.store.one("SELECT COUNT(*) AS n FROM file_chunks") or {}).get("n", 0),
+                "cloud_only_skipped": self.cloud_only}

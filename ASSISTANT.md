@@ -139,6 +139,16 @@ declares success. If a model fails the test, the next candidate is tried.
   browser on the host. `./install.sh --profile full` keeps Jupyter kernels and
   the headless browser for MCP clients that use them.
 
+* The browser is read as text from Chrome's accessibility tree over CDP, with
+  numbered elements that keep their numbers while the page changes (new pages
+  continue the numbering, so a stale number fails instead of hitting another
+  element). Each click, typed entry, key press, choice or scroll returns only
+  what it changed on the page, or the whole page after it navigates, so a
+  local model does not spend a step and a page read after every action.
+  Vision models can also take screenshots. With `agent.thinking` set to
+  `auto` (the default) the model reasons before the first step and after a
+  failed one, and answers routine steps directly; `on` and `off` force it.
+
 * Embeddings for memory and files: EmbeddingGemma 2 (text, images and audio
   in one space) through Ollama, also when the assistant model runs elsewhere
   (`models.embedding_url`).
