@@ -36,7 +36,7 @@ def render_plan(steps: list[dict]) -> str:
 
 
 PAGE_PREFIX = '<untrusted source="browser_'
-PAGE_CHARS = 1500     # browser results longer than this hold a page, or a large part of one
+BIG_RESULT = 1500     # browser results longer than this hold a page, or a large part of one
 DROPPED = "[earlier page text removed to save space; take a new snapshot if you need it]\n</untrusted>"
 PLAN_REMINDER = "[Reminder of your plan, not a new request]\n"
 REMIND_EVERY = 6      # steps between plan reminders while the plan stays the same
@@ -133,7 +133,7 @@ class Agent:
         step would make it re-read everything after that page on every step."""
         pages = [i for i, m in enumerate(messages) if m.get("role") == "tool"
                  and isinstance(m.get("content"), str) and m["content"].startswith(PAGE_PREFIX)
-                 and len(m["content"]) > PAGE_CHARS and not m["content"].endswith(DROPPED)]
+                 and len(m["content"]) > BIG_RESULT and not m["content"].endswith(DROPPED)]
         if len(pages) > most:
             for index in pages[:-keep]:
                 opener = messages[index]["content"].split("\n", 1)[0]

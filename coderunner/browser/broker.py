@@ -28,7 +28,6 @@ import asyncio
 import base64
 import collections
 import contextlib
-import difflib
 import hashlib
 import ipaddress
 import json
@@ -43,10 +42,12 @@ from .. import decision, paths
 from ..policy import Action, Decision, _matches
 from . import launcher as default_launcher
 from .cdp import CDPError, CDPPipe
+from .errors import BrowserError
+from .page import PAGE_CHARS, ax_value, cut, page_changes, render_ax, squash
+from .scripts import (CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, SCROLL_JS, SELECT_ALL_JS, SELECT_OPTION_JS,
+                      SETTLE_JS)
+from .urls import is_local_ip, local_problem, page_host, parse_url, same_site
 
-
-class BrowserError(Exception):
-    """An action could not be done; the message is written for the agent."""
 
 
 NAV_TIMEOUT = 20.0
@@ -54,19 +55,11 @@ NAV_START_WINDOW = 0.5      # how long a click or key press gets to start a navi
 HANDOFF_WAIT = 600
 SPAWN_WINDOW = 10.0         # popups opened by an action follow its navigation rules for this long
 
-INTERACTIVE = frozenset({
-    "link", "button", "textbox", "searchbox", "combobox", "checkbox", "radio", "menuitem",
-    "menuitemcheckbox", "menuitemradio", "tab", "option", "switch", "slider", "spinbutton", "listbox",
-})
-INLINE = frozenset({"strong", "emphasis", "mark", "subscript", "superscript", "time", "code", "abbr",
-                    "insertion", "deletion"})
-CHECKABLE = frozenset({"checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"})
 # Web chat clients: anything typed or clicked there could message people or answer
 # an approval request on a paired channel, so every interaction is sensitive.
 MESSAGING_HOSTS = ("web.telegram.org", "*.web.telegram.org", "web.whatsapp.com", "messages.google.com",
                    "signal.org", "*.signal.org", "discord.com", "*.discord.com", "discordapp.com",
                    "*.discordapp.com", "slack.com", "*.slack.com")
-TEXT_LIMIT = 10000          # longer page text is cut, and the action is then treated as sensitive
 FIND_SCAN_CHARS = 400_000   # browser_find reads the whole page, not just the first snapshot screenful
 FIND_LIMIT = 40             # matching lines returned
 CLICK_ATTEMPTS = 3          # clicks nobody approved are re-checked when the page moves under them
@@ -79,192 +72,17 @@ KEYS = {  # name -> (windows virtual key code, text)
     "Delete": (46, ""), "PageDown": (34, ""), "PageUp": (33, ""), "Space": (32, " "),
 }
 ACTIVATING_KEYS = frozenset({"Enter", "Space"})   # press the focused control, or submit its form
-PAGE_CHARS = 12000          # page text returned at once; browser_find reaches the rest
-SHOWN_REMOVED = 5           # removed lines listed per change; more are counted
-MOSTLY_NEW = 0.5            # below this similarity an action's result is the whole page, not the changes
+# Before reading the page after an action: how long to wait for it to start changing (typed text often brings
+# suggestions about a second later), then for it to stay still, and at most in all (seconds).
+SETTLE_START = {"type": 1.5, "load": 1.5}
+SETTLE_START_DEFAULT = 0.6
+SETTLE_QUIET = 0.3
+SETTLE_MOST = 3.0
 DENIED_PERMISSIONS = ("geolocation", "notifications", "camera", "microphone", "midi", "clipboard-read",
                       "display-capture", "idle-detection", "window-management", "local-fonts",
                       "local-network-access", "payment-handler", "nfc")
-LOCAL_NETS = tuple(ipaddress.ip_network(n) for n in (
-    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
-    "192.168.0.0/16", "224.0.0.0/4", "255.255.255.255/32",
-    "::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8"))
 PASSWORD_HINT = ("This is a password or one-time-code field. The owner types those, never the assistant: "
                  "call handoff(reason) so they can finish it in the CodeRunner browser window.")
-
-# Broker-owned constant scripts. They run in an isolated world, so page scripts
-# cannot tamper with the prototypes they use; the model never supplies script.
-DESCRIBE_JS = r"""function(closest) {
-  let el = this.nodeType === 1 ? this : this.parentElement;
-  if (el && closest) el = el.closest('a,button,input,select,textarea,summary,[role],[onclick]') || el;
-  if (!el) return null;
-  let truncated = false;
-  const clean = s => {
-    s = String(s || '').replace(/\s+/g, ' ').trim();
-    if (s.length > LIMIT) { truncated = true; s = s.slice(0, LIMIT); }
-    return s;
-  };
-  const text = e => [e.getAttribute('aria-label'), e.getAttribute('title'), e.innerText,
-                     e.tagName === 'INPUT' ? e.value : ''].map(clean).filter(Boolean).join(' / ');
-  const type = (el.getAttribute('type') || '').toLowerCase();
-  const field = el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && !/^(submit|button|reset|image)$/.test(type));
-  const form = el.form || el.closest('form');
-  const submit = form && form.querySelector('button[type=submit],input[type=submit],input[type=image],button:not([type])');
-  return {tag: el.tagName.toLowerCase(), type, autocomplete: (el.getAttribute('autocomplete') || '').toLowerCase(),
-          text: field ? clean(el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name) : text(el),
-          submit: submit ? text(submit) : '', truncated};
-}""".replace("LIMIT", str(TEXT_LIMIT))
-FOCUSED_JS = r"""(() => {
-  let el = document.activeElement;
-  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
-  return el && el !== document.body && el !== document.documentElement ? el : null;
-})()"""
-CONTAINS_JS = "function(other) { for (let n = other; n; n = n.parentNode || n.host) if (n === this) return true; return false; }"
-# Choose an option of a native <select>, whose popup is drawn by the OS where mouse events cannot reach it.
-SELECT_OPTION_JS = r"""function(choice) {
-  if (!this || this.tagName !== 'SELECT') return {ok: false, error: 'not a dropdown (<select>); click it instead'};
-  const want = String(choice).trim().toLowerCase();
-  const options = Array.from(this.options).filter(o => !o.disabled);
-  const label = o => (o.label || o.text || '').trim();
-  const match = options.find(o => label(o).toLowerCase() === want) || options.find(o => o.value.toLowerCase() === want)
-    || options.find(o => label(o).toLowerCase().includes(want));
-  if (!match) return {ok: false, error: 'no such option', options: options.slice(0, 60).map(label)};
-  this.value = match.value;
-  this.dispatchEvent(new Event('input', {bubbles: true}));
-  this.dispatchEvent(new Event('change', {bubbles: true}));
-  return {ok: true, selected: label(match)};
-}"""
-
-SELECT_ALL_JS = r"""function() {
-  try { if (typeof this.select === 'function') { this.select(); return; } } catch (e) {}
-  const range = document.createRange(); range.selectNodeContents(this);
-  const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
-}"""
-# Scrolls whatever scrolls at the middle of the window (a results list, a dialog, or the page) by script:
-# synthetic wheel events wait for the compositor and hang when the window is hidden or busy.
-SCROLL_JS = r"""function(dx, dy) {
-  const scrolls = el => {
-    const style = getComputedStyle(el);
-    return (dy && /(auto|scroll|overlay)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1)
-      || (dx && /(auto|scroll|overlay)/.test(style.overflowX) && el.scrollWidth > el.clientWidth + 1);
-  };
-  let el = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
-  while (el && el !== document.body && el !== document.documentElement && !scrolls(el)) el = el.parentElement;
-  if (!el || el === document.body || el === document.documentElement) el = document.scrollingElement || document.documentElement;
-  const before = [el.scrollLeft, el.scrollTop];
-  el.scrollBy({left: dx, top: dy, behavior: 'instant'});
-  const range = Math.max(el.scrollHeight - el.clientHeight, 1);
-  return {moved: el.scrollLeft !== before[0] || el.scrollTop !== before[1],
-          percent: Math.round(100 * el.scrollTop / range)};
-}"""
-
-
-# ---- URLs and hosts -------------------------------------------------------
-
-def _ipv4_number(host: str) -> ipaddress.IPv4Address | None:
-    """WHATWG IPv4 parsing, so 127.1 or 0x7f.0.0.1 are seen the way the browser sees them."""
-    labels = host.split(".")
-    if not re.fullmatch(r"\d+|0x[0-9a-f]*", labels[-1]):
-        return None
-    if len(labels) > 4:
-        raise BrowserError(f"Invalid IPv4 address {host}")
-    numbers = []
-    for label in labels:
-        try:
-            if label.startswith("0x"):
-                numbers.append(int(label[2:] or "0", 16))
-            elif len(label) > 1 and label.startswith("0"):
-                numbers.append(int(label, 8))
-            else:
-                numbers.append(int(label))
-        except ValueError:
-            raise BrowserError(f"Invalid IPv4 address {host}") from None
-    if any(n > 255 for n in numbers[:-1]) or numbers[-1] >= 256 ** (5 - len(numbers)):
-        raise BrowserError(f"Invalid IPv4 address {host}")
-    return ipaddress.IPv4Address(numbers[-1] + sum(n << 8 * (3 - i) for i, n in enumerate(numbers[:-1])))
-
-
-def parse_url(url: str) -> tuple[str, str]:
-    """Normalise a URL to (url, host). Only http(s) and about:blank are accepted.
-
-    The URL is rebuilt from the parsed parts so the browser opens exactly the
-    host that policy saw.
-    """
-    url = (url or "").strip()
-    if not url:
-        raise BrowserError("URL is empty")
-    if url.lower() == "about:blank":
-        return "about:blank", "about:blank"
-    if "\\" in url or any(ord(c) <= 0x20 or ord(c) == 0x7f for c in url):
-        raise BrowserError("URL must not contain spaces, backslashes or control characters; percent-encode them")
-    scheme = re.match(r"([a-zA-Z][a-zA-Z0-9+.-]*):", url)
-    if scheme is None or re.fullmatch(r"[^/:?#@]+:\d+(?:[/?#].*)?", url, re.S):
-        url = "https://" + url                      # bare host such as example.com or example.com:8080/x
-    elif scheme.group(1).lower() not in ("http", "https"):
-        raise BrowserError(f"Only http and https URLs are allowed, not {scheme.group(1).lower()}:")
-    parts = urllib.parse.urlsplit(url)
-    if "@" in parts.netloc:
-        raise BrowserError("URLs with embedded credentials are not allowed")
-    try:
-        port = parts.port
-    except ValueError:
-        raise BrowserError("URL has an invalid port") from None
-    host = (parts.hostname or "").rstrip(".")
-    if not host:
-        raise BrowserError("URL has no host")
-    if ":" in host:
-        try:
-            host = ipaddress.IPv6Address(host).compressed
-        except ValueError:
-            raise BrowserError(f"Invalid host {host}") from None
-        netloc = f"[{host}]"
-    else:
-        try:
-            host = host.encode("idna").decode("ascii").lower()
-        except UnicodeError:
-            raise BrowserError(f"Invalid host name {host}") from None
-        if not re.fullmatch(r"[a-z0-9_.-]+", host):
-            raise BrowserError(f"Invalid host name {host}")
-        ip = _ipv4_number(host)
-        if ip is not None:
-            host = str(ip)
-        netloc = host
-    if port is not None:
-        netloc += f":{port}"
-    return urllib.parse.urlunsplit((parts.scheme.lower(), netloc, parts.path or "/", parts.query,
-                                    parts.fragment)), host
-
-
-def _local_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if ip.version == 6 and ip.ipv4_mapped:
-        ip = ip.ipv4_mapped
-    return any(ip in net for net in LOCAL_NETS if net.version == ip.version)
-
-
-def local_problem(host: str) -> str | None:
-    """Why a host must not be opened without an explicit browser.allow entry, if it must not."""
-    if host == "localhost" or host.endswith(".localhost"):
-        return f"{host} is this computer"
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return None
-    return f"{host} is a local or private network address" if _local_ip(ip) else None
-
-
-def page_host(url: str) -> str | None:
-    """Policy target for a page URL; None for pages that are not ordinary web pages."""
-    if url.startswith("about:blank"):
-        return "about:blank"
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme in ("http", "https") and parts.hostname:
-        return parts.hostname.rstrip(".")
-    return None
-
-
-def _same_site(a: str, b: str) -> bool:
-    return a == b or a.removeprefix("www.") == b.removeprefix("www.")
-
 
 def field_kind(node: dict) -> str | None:
     """'password' for secret fields, 'payment' for card fields, from a DOM.describeNode result."""
@@ -291,158 +109,6 @@ def card_field(node: dict) -> str:
 
 def _fingerprint(plan: dict) -> tuple:
     return plan["hit"], plan["frame"], plan["label"], plan["kind"]
-
-
-# ---- accessibility snapshot -----------------------------------------------
-
-def _value(field: Any) -> Any:
-    return field.get("value") if isinstance(field, dict) else None
-
-
-def _squash(text: str) -> str:
-    return " ".join(text.split())
-
-
-def _cut(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + f"\n… [{len(text) - limit} more characters; browser_find searches all of the page]"
-
-
-def _short_url(url: str, page_url: str) -> str:
-    target, page = urllib.parse.urlsplit(url), urllib.parse.urlsplit(page_url)
-    if target.scheme in ("http", "https") and (target.scheme, target.netloc) == (page.scheme, page.netloc):
-        url = urllib.parse.urlunsplit(("", "", target.path or "/", target.query, target.fragment))
-    return url if len(url) <= 120 else url[:119] + "…"
-
-
-def _element_line(ref: int, role: str, name: str, node: dict, props: dict, page_url: str, secret: bool) -> str:
-    line = f"[{ref}] {role}"
-    if name:
-        line += " " + json.dumps(name[:200], ensure_ascii=False)
-    value = _value(node.get("value"))
-    if secret:
-        line += " (password field: the owner fills it in, use handoff)"
-    elif value not in (None, "") and str(value) != name:
-        line += " value=" + json.dumps(str(value)[:200], ensure_ascii=False)
-    checked = props.get("checked")
-    if role in CHECKABLE and checked is not None:
-        line += {"true": " checked", "mixed": " mixed"}.get(str(checked).lower(), " unchecked")
-    if props.get("expanded") is not None:
-        line += " expanded" if props["expanded"] in (True, "true") else " collapsed"
-    for flag in ("selected", "disabled"):
-        if props.get(flag) in (True, "true"):
-            line += f" {flag}"
-    if role == "link" and props.get("url"):
-        line += " -> " + _short_url(str(props["url"]), page_url)
-    return line
-
-
-def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = frozenset(),
-              numbers: dict | None = None) -> tuple[str, dict]:
-    """Compact text for an Accessibility.getFullAXTree result.
-
-    Headings become "# name", interactive elements "[N] role "name" ...", and
-    other text is joined per block and deduplicated. Returns (text, refs)
-    where refs maps N to the element's backendDOMNodeId, role and name.
-
-    numbers ({"next": N, "ids": {backendDOMNodeId: N}}) keeps an element's
-    number across renderings of the same document, so a model can act on a
-    number it saw earlier and changes between renderings stay small.
-    """
-    numbers = numbers if numbers is not None else {"next": 1, "ids": {}}
-    by_id = {node["nodeId"]: node for node in nodes}
-    roots = [node["nodeId"] for node in nodes if node.get("parentId") not in by_id]
-    lines: list[str] = []
-    refs: dict[int, dict] = {}
-    seen: set[str] = set()
-    parts: list[str] = []
-    owner: list[Any] = [None]
-
-    def flush() -> None:
-        text = _squash("".join(parts))
-        parts.clear()
-        owner[0] = None
-        if text and text not in seen:
-            seen.add(text)
-            lines.append(text)
-
-    # Iterative depth-first walk: (node id, text block owner, name that already covers the text).
-    stack: list[tuple[str, Any, str]] = [(root, None, "") for root in reversed(roots)]
-    while stack:
-        node_id, block, covered = stack.pop()
-        node = by_id.get(node_id)
-        if node is None:
-            continue
-        children = node.get("childIds") or []
-        role = str(_value(node.get("role")) or "")
-        raw_name = str(_value(node.get("name")) or "")
-        name = _squash(raw_name)
-
-        def descend(new_block: Any, new_covered: str) -> None:
-            stack.extend((child, new_block, new_covered) for child in reversed(children))
-
-        if node.get("ignored"):
-            descend(block, covered)
-        elif role == "StaticText":
-            if name and not (covered and name in covered):
-                if block != owner[0]:
-                    flush()
-                    owner[0] = block
-                parts.append(raw_name)
-        elif role == "LineBreak":
-            flush()
-        elif role == "InlineTextBox":
-            continue
-        elif role == "heading":
-            flush()
-            props = {p.get("name"): _value(p.get("value")) for p in node.get("properties", [])}
-            if name:
-                try:
-                    level = min(max(int(props.get("level") or 1), 1), 6)
-                except (TypeError, ValueError):
-                    level = 1
-                lines.append("#" * level + " " + name)
-            descend(node_id, name)
-        elif role in INTERACTIVE and node.get("backendDOMNodeId"):
-            flush()
-            props = {p.get("name"): _value(p.get("value")) for p in node.get("properties", [])}
-            backend = node["backendDOMNodeId"]
-            ref = numbers["ids"].get(backend)
-            if ref is None or ref in refs:
-                ref = numbers["ids"][backend] = numbers["next"]
-                numbers["next"] += 1
-            is_secret = backend in secret
-            refs[ref] = {"backend": backend, "role": role, "name": name, "password": is_secret}
-            lines.append(_element_line(ref, role, name, node, props, page_url, is_secret))
-            if role not in ("textbox", "searchbox") and not props.get("editable"):
-                descend(node_id, name)      # the value is already shown; skip editor internals
-        elif role in INLINE:
-            descend(block, covered)
-        else:
-            descend(node_id, covered)
-    flush()
-    return "\n".join(lines), refs
-
-
-def page_changes(before: list[str], after: list[str]) -> str | None:
-    """What changed between two renderings of a page: added lines (+), removed lines (-) and the line above
-    each change for orientation. None when most of the page is new, so the whole page is worth reading."""
-    matcher = difflib.SequenceMatcher(None, before, after, autojunk=False)
-    if matcher.ratio() < MOSTLY_NEW:
-        return None
-    out: list[str] = []
-    for op, i1, i2, j1, j2 in matcher.get_opcodes():
-        if op == "equal":
-            continue
-        if j1 > 0:
-            out.append("  " + after[j1 - 1])
-        removed = before[i1:i2]
-        out += ["- " + line for line in removed[:SHOWN_REMOVED]]
-        if len(removed) > SHOWN_REMOVED:
-            out.append(f"- … {len(removed) - SHOWN_REMOVED} more lines")
-        out += ["+ " + line for line in after[j1:j2]]
-    return "\n".join(out)
 
 
 # ---- broker ---------------------------------------------------------------
@@ -848,7 +514,7 @@ class BrowserBroker:
         try:
             for address in await asyncio.wait_for(self._resolve(host), 5):
                 ip = ipaddress.ip_address(address.split("%", 1)[0])
-                if _local_ip(ip):
+                if is_local_ip(ip):
                     problem = f"{host} resolves to a local or private address ({ip})"
                     break
         except (OSError, ValueError, asyncio.TimeoutError):
@@ -952,7 +618,7 @@ class BrowserBroker:
             reference = {page_host(self._committed.get(target, "")), self._expected.get(target)}
         else:
             return None                              # the owner's own browsing
-        if any(_same_site(host, other) for other in reference if other):
+        if any(same_site(host, other) for other in reference if other):
             return None
         action = Action("browser.navigate", host, f"Open {url}", {"url": url}, tainted)
         if self.policy.evaluate(action) is Decision.ALLOW:
@@ -1006,7 +672,7 @@ class BrowserBroker:
                 loaded = await self._wait_load(sid, result.get("loaderId"))
             finally:
                 self._expected.pop(target, None)
-            return await self._observe(target, sid, await self._result(target, loaded=loaded), tainted)
+            return await self._observe(target, sid, await self._result(target, loaded=loaded), tainted, "load")
 
     # ---- action bodies ------------------------------------------------------
 
@@ -1057,7 +723,7 @@ class BrowserBroker:
                 await self._settle(sid, watch, window=NAV_TIMEOUT)
             finally:
                 self._expected.pop(target, None)
-            return await self._observe(target, sid, await self._result(target), tainted)
+            return await self._observe(target, sid, await self._result(target), tainted, "load")
 
     async def _close_tab(self, tab: str, tainted: bool) -> dict:
         if tab is None:
@@ -1080,7 +746,7 @@ class BrowserBroker:
             content = await self._render(target, sid, url)
             result = await self._result(target)
         result["changed"] = self._seen(target, result["url"], content)
-        result["content"] = _cut(content, max(100, int(max_chars)))
+        result["content"] = cut(content, max(100, int(max_chars)))
         return result
 
     async def _render(self, target: str, sid: str, url: str) -> str:
@@ -1098,7 +764,7 @@ class BrowserBroker:
         self._lines[target] = content.split("\n")
         return changed
 
-    async def _observe(self, target: str, sid: str, result: dict, tainted: bool) -> dict:
+    async def _observe(self, target: str, sid: str, result: dict, tainted: bool, action: str = "") -> dict:
         """Add the page after an action to its result: only what changed since the model last read it, or the
         whole page after a navigation or a large change. Saves the model a step (and re-reading the page)
         after every click. Left out when reading the page would need the owner's approval."""
@@ -1109,6 +775,12 @@ class BrowserBroker:
         if self.policy.evaluate(Action("browser.read", host, f"Read {url}", tainted=tainted)) is not Decision.ALLOW:
             return result
         before = self._lines.get(target)
+        start = SETTLE_START.get(action, SETTLE_START_DEFAULT)
+        with contextlib.suppress(CDPError):
+            await self._send(sid, "Runtime.callFunctionOn", {
+                "functionDeclaration": SETTLE_JS, "executionContextId": await self._world(sid, target),
+                "arguments": [{"value": start * 1000}, {"value": SETTLE_QUIET * 1000}, {"value": SETTLE_MOST * 1000}],
+                "awaitPromise": True, "returnByValue": True}, timeout=SETTLE_MOST + 5)
         try:
             content = await self._render(target, sid, url)
         except CDPError:
@@ -1116,9 +788,9 @@ class BrowserBroker:
         self._seen(target, url, content)
         changes = page_changes(before, content.split("\n")) if before is not None else None
         if changes is None:
-            result["content"] = _cut(content, PAGE_CHARS)
+            result["content"] = cut(content, PAGE_CHARS)
         else:
-            result["changes"] = _cut(changes, PAGE_CHARS) if changes else "No visible change on the page."
+            result["changes"] = cut(changes, PAGE_CHARS) if changes else "No visible change on the page."
         return result
 
     async def _find(self, text: str, tab: str | None, tainted: bool) -> dict:
@@ -1159,7 +831,7 @@ class BrowserBroker:
     async def _secret_fields(self, sid: str, nodes: list[dict]) -> set[int]:
         candidates = [node["backendDOMNodeId"] for node in nodes
                       if not node.get("ignored") and node.get("backendDOMNodeId")
-                      and _value(node.get("role")) in ("textbox", "searchbox", "combobox")][:100]
+                      and ax_value(node.get("role")) in ("textbox", "searchbox", "combobox")][:100]
 
         async def check(backend: int) -> int | None:
             try:
@@ -1207,7 +879,8 @@ class BrowserBroker:
                         await self._send(sid, "Input.dispatchMouseEvent", {
                             "type": event, "x": x, "y": y, "button": "left", "buttons": 1, "clickCount": 1})
                     navigated = await self._settle(sid, watch)
-                    return await self._observe(target, sid, await self._result(target, navigated=navigated), tainted)
+                    return await self._observe(target, sid, await self._result(target, navigated=navigated), tainted,
+                                              "load" if navigated else "")
             if approved or attempt == CLICK_ATTEMPTS - 1:
                 break
             # Overlays fading in or out and hover effects settle quickly; check the click again from scratch.
@@ -1357,7 +1030,8 @@ class BrowserBroker:
                 watch = self._watch_navigation(sid, target)
                 await self._key(sid, "Enter")
                 navigated = await self._settle(sid, watch)
-            result = await self._observe(target, sid, await self._result(target, navigated=navigated), tainted)
+            result = await self._observe(target, sid, await self._result(target, navigated=navigated), tainted,
+                                         "load" if navigated else "type")
             if field is None:
                 result["_audit"] = {"text": text}
             return result
@@ -1399,7 +1073,8 @@ class BrowserBroker:
             watch = self._watch_navigation(sid, target)
             await self._key(sid, key)
             navigated = await self._settle(sid, watch)
-            return await self._observe(target, sid, await self._result(target, navigated=navigated), tainted)
+            return await self._observe(target, sid, await self._result(target, navigated=navigated), tainted,
+                                              "load" if navigated else "")
 
     async def _scroll(self, direction: str, amount: int, tab: str | None, tainted: bool) -> dict:
         deltas = {"down": (0, 1), "up": (0, -1), "right": (1, 0), "left": (-1, 0)}
@@ -1455,7 +1130,7 @@ class BrowserBroker:
         info = await self._info(target)
         url = info.get("url", "")
         host = page_host(url) or "browser"
-        reason = _squash(str(reason))[:300] or "please take over"
+        reason = squash(str(reason))[:300] or "please take over"
         action = Action("browser.handoff", host, f"Please finish in the CodeRunner browser: {reason}",
                         {"url": url, "tab": self._tab_id(target)}, tainted)
         if self.policy.evaluate(action) is Decision.DENY:

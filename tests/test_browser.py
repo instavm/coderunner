@@ -16,8 +16,9 @@ from unittest import mock
 from coderunner.audit import AuditLog
 from coderunner.browser import BrowserBroker, BrowserError
 from coderunner.browser import launcher
-from coderunner.browser.broker import (CONTAINS_JS, DESCRIBE_JS, SCROLL_JS, SELECT_OPTION_JS, page_changes,
-                                       parse_url, render_ax)
+from coderunner.browser.page import page_changes, render_ax
+from coderunner.browser.scripts import CONTAINS_JS, DESCRIBE_JS, SCROLL_JS, SELECT_OPTION_JS, SETTLE_JS
+from coderunner.browser.urls import parse_url
 from coderunner.browser.cdp import CDPError, CDPPipe
 from coderunner.config import Config
 from coderunner.policy import Policy, current_run
@@ -114,6 +115,8 @@ class FakeBrowser:
             return {"object": {"objectId": f"node:{params['backendNodeId']}"}}
         if method == "Runtime.evaluate":
             return {"result": {"objectId": f"node:{self.focused}"} if self.focused else {"type": "object"}}
+        if method == "Runtime.callFunctionOn" and params["functionDeclaration"] == SETTLE_JS:
+            return {"result": {"value": False}}
         if method == "Runtime.callFunctionOn" and params["functionDeclaration"] == SCROLL_JS:
             return {"result": {"value": {"moved": True, "percent": 20}}}
         if method == "Runtime.callFunctionOn":
@@ -868,6 +871,8 @@ FIXTURE = b"""<!doctype html><html><head><title>Fixture shop</title></head><body
 <div id="out"></div>
 <button type="button" onclick="const b = document.createElement('button'); b.textContent = 'Result ' + (document.querySelectorAll('#more button').length + 1); document.getElementById('more').append(b)">More results</button>
 <div id="more"></div>
+<input type="text" aria-label="Destination" oninput="const v = this.value; setTimeout(() => { document.getElementById('hints').innerHTML = '<button type=button>' + v + ' International Airport</button>'; }, 800)">
+<div id="hints"></div>
 <div style="height: 4000px"></div><p>The end</p>
 </body></html>"""
 
@@ -965,6 +970,9 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
         more = await self.broker.click(refs["More results"])     # the same number still works
         added = [line for line in more["changes"].splitlines() if line.startswith("+ ")]
         self.assertRegex(" ".join(added), r'^\+ \[\d+\] button "Result 2"$')      # only the new one is added
+        # Suggestions that arrive after typing (here 0.8 s later) are part of what typing changed.
+        hinted = await self.broker.type(self.refs()["Destination"], "Delhi")
+        self.assertRegex(hinted["changes"], r'\+ \[\d+\] button "Delhi International Airport"')
         scrolled = await self.broker.scroll("down", 800)
         self.assertTrue(scrolled["scrolled"], scrolled)
         self.assertEqual(scrolled["changes"], "No visible change on the page.")
