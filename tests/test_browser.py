@@ -307,7 +307,7 @@ class RenderTests(unittest.TestCase):
                  ax(4, "region", "INR9,995", parent=2, children=[5], backend=4),
                  ax(5, "StaticText", "9,995", parent=4)]           # only repeats the name
         content, _ = render_ax(nodes)
-        self.assertEqual(content, "SpiceJet INR9,995")
+        self.assertEqual(content.splitlines(), ["SpiceJet", "INR9,995"])
 
     def test_numbers_stay_with_their_elements(self):
         numbers = {"next": 1, "ids": {}}
