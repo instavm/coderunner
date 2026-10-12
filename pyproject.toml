@@ -28,6 +28,7 @@ packages = [
     "coderunner.browser",
     "coderunner.channels",
     "coderunner.connectors",
+    "coderunner.files",
     "coderunner.models",
     "coderunner.sandbox",
 ]
@@ -36,3 +37,4 @@ packages = [
 "coderunner" = ["web/*.html"]
 "coderunner.models" = ["catalog.json", "evidence.json"]
 "coderunner.browser" = ["extension/*.json", "extension/*.js"]
+"coderunner.files" = ["helper.swift"]

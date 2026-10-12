@@ -475,18 +475,68 @@ def cmd_schedule(args, config: Config) -> int:
 
 
 def cmd_files(args, config: Config) -> int:
+    target = " ".join(args.target or [])
+    if args.action == "search":
+        return _find(config, target, args.kind, args.limit, args.json)
     if args.action == "add":
-        _print(_admin(config, "POST", "/api/files", {"add": os.path.abspath(os.path.expanduser(args.target))}))
+        _print(_admin(config, "POST", "/api/files", {"add": os.path.abspath(os.path.expanduser(target))}))
     elif args.action == "remove":
-        _print(_admin(config, "POST", "/api/files", {"remove": os.path.abspath(os.path.expanduser(args.target))}))
+        _print(_admin(config, "POST", "/api/files", {"remove": os.path.abspath(os.path.expanduser(target))}))
     elif args.action == "index":
         _print(_admin(config, "POST", "/api/files", {"budget": 100000}, timeout=86400))
-    elif args.action == "search":
-        from urllib.parse import quote
-        _print(_admin(config, "GET", f"/api/files?q={quote(args.target or '')}"))
     else:
         _print(_admin(config, "GET", "/api/files"))
     return 0
+
+
+def cmd_find(args, config: Config) -> int:
+    return _find(config, " ".join(args.query), args.kind, args.limit, args.json)
+
+
+def _find(config: Config, query: str, kind: str | None, limit: int, as_json: bool) -> int:
+    """Search the shared folders: through the daemon (index and model already loaded), else directly."""
+    from urllib.parse import urlencode
+    if not query.strip():
+        print("Say what to look for, e.g. coderunner find \"boarding pass for the Delhi trip\"")
+        return 2
+    start = time.monotonic()
+    if _daemon_up(config):
+        params = {"q": query, "limit": limit, **({"kind": kind} if kind else {})}
+        found = _admin(config, "GET", f"/api/files?{urlencode(params)}", timeout=60)
+    else:
+        import asyncio
+        found = asyncio.run(_find_here(config, query, kind, limit))
+    if as_json or not isinstance(found, list):
+        _print(found)
+        return 0
+    from .files.extract import clock
+    home = os.path.expanduser("~")
+    for number, item in enumerate(found, 1):
+        path = "~" + item["path"][len(home):] if item["path"].startswith(home + os.sep) else item["path"]
+        where = (f"page {item['page']}" if "page" in item else f"line {item['line']}" if "line" in item
+                 else f"at {clock(item['at'])}" if "at" in item else "")
+        notes = [item.get("kind", ""), where, "in iCloud" if item.get("in_icloud") else "",
+                 "weak match" if item.get("weak") else ""]
+        print(f"{number:2}. {path}  ({', '.join(note for note in notes if note)})")
+        if item.get("snippet"):
+            print(f"    {item['snippet'][:160]}")
+    print("Nothing matched in the shared folders." if not found else "", f"({(time.monotonic() - start) * 1000:.0f} ms)")
+    return 0
+
+
+async def _find_here(config: Config, query: str, kind: str | None, limit: int) -> list[dict]:
+    from .audit import AuditLog
+    from .files import Embedder, FileIndex
+    from .store import Store
+    model = config.get("files.embedding") or config.get("models.embedding")
+    url = config.get("models.embedding_url") or "http://127.0.0.1:11434"
+    embedder = Embedder(url, model) if model else None
+    index = FileIndex(config, Store(), AuditLog(paths.audit_path()), embedder)
+    try:
+        return await index.search(query, kind, limit)
+    finally:
+        if embedder is not None:
+            await embedder.aclose()
 
 
 def cmd_token(args, config: Config) -> int:
@@ -589,10 +639,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--browser", action="append", help="chrome, brave, edge, chromium... (default: all installed)")
     p.set_defaults(func=cmd_browser)
 
+    kinds = ["text", "doc", "image", "audio", "video"]
     p = sub.add_parser("files", help="Folders the assistant may search and read (text, code, images, audio, video)")
     p.add_argument("action", choices=["status", "add", "remove", "index", "search"], nargs="?", default="status")
-    p.add_argument("target", nargs="?", help="folder to add or remove, or a search query")
+    p.add_argument("target", nargs="*", help="folder to add or remove, or what to search for")
+    p.add_argument("--kind", choices=kinds)
+    p.add_argument("--limit", type=int, default=8)
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_files)
+    p = sub.add_parser("find", help="Find files in the shared folders by describing them")
+    p.add_argument("query", nargs="+")
+    p.add_argument("--kind", choices=kinds)
+    p.add_argument("--limit", type=int, default=8)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_find)
 
     p = sub.add_parser("token", help="Print the sandbox API token (or --admin)")
     p.add_argument("--admin", action="store_true")

@@ -24,6 +24,7 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
 | Daemon (`test_daemon.py`) | Real HTTP servers: owner chat, memory recall across conversations, sandbox model proxy, credential separation, scheduled delivery, and the agent driving the real browser where a "Buy now" click waits for an owner approval over the API |
 | Models (`test_models.py`) | Hardware parsing (Apple, NVIDIA, AMD, CPU, WSL2), budgets, KV-cache sizing, picks per memory tier from 8 GB Macs to 512 GB, expert offload on NVIDIA, runtime routing to llama.cpp, cluster flags, GPU-limit notes, licence resolution through base models, resumable verified downloads, smoke-test pass/fail including the wrong-argument case below; timing a served model (streamed and llama.cpp timings), calibration per machine, setup moving on from a model far slower than estimated and deleting its weights, the shareable report; the decision model only where it fits; published retention for Bonsai 2; Ollama version checks and its own checksum-verified copy |
 | Discovery (`test_discover.py`) | Hugging Face listings, configs and file trees from a fake hub: filters, sharded builds, KV and MoE sizes, build choice per machine, known breakages, stale caches; published scores read from eval results, ranking by them (a model scored like Granite 4.2 30B ranks below Qwen3.5-9B), quantization losses, GPU-limit notes |
+| Files (`test_files.py`) | Only shared, non-secret files; iCloud-only files named but not read (read once on the Mac or with `files.cloud_files`); bundles, libraries and code in source checkouts skipped; half-precision vectors and sign codes; embedding batched across files (153 files in at most 12 requests); a new embedding model means indexing again; file events bring changes in first; pausing on a low battery or Low Power Mode; figures matched by words only; passages with lines; ranking on a calibrated corpus (a picture ranks by its own scale, a kind hint, weak results cut, codes lean on words); the first pass finds the closest codes; `coderunner find` output and direct fallback. With the Swift compiler: PDFs by page, OCR of a screenshot, FSEvents within seconds |
 | Memory, scheduler, connectors, channels, voice, service, remote | Unit tests with fakes; see each test file |
 
 ## Manual checks on this branch
@@ -87,15 +88,25 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
   llama.cpp, 18 GB M3 Pro) in the everyday-browser mode (Chrome for Testing with the extension)
   set one-way BLR to DEL on 20 November 2026, sorted by price, and read the three cheapest flights
   (SpiceJet 6:05-9:00 at INR 9,994, Akasa Air 5:00-7:55 at INR 10,363, SpiceJet 21:15-00:10 at
-  INR 10,442) from screenshots, because the result cards keep airline and price out of the
-  accessibility tree. 29 steps in 30.5 minutes, one needless approval prompt (opening a price
+  INR 10,442) from screenshots: the result cards kept the price in a region's name and the old
+  renderer dropped repeated airline names. Both now read as text (the whole results page is 7,671
+  characters). 29 steps in 30.5 minutes, one needless approval prompt (opening a price
   breakdown), nothing booked.
-* Real home folders (Documents, Desktop, Movies): 169,051 indexable files, of which 163,806 were kept
-  only in iCloud; listing one iCloud-only folder had blocked the walk for minutes. With iCloud-only
-  files indexed by name and iCloud-only folders not listed, the walk takes 33 s. Source code in git
-  checkouts was 94,000 of the local files (about 950,000 chunks) and is now left out by default.
-  One file per embedding request managed about 31 files a second, and search over 18,000 vectors
-  took 125-550 ms: both are being reworked.
+* File search eval (`python tests/files_eval.py`, EmbeddingGemma 2 in Ollama): 16 natural-language
+  queries over notes, data, PDFs, screenshots, a picture and a spoken memo among 70 distractors,
+  all answered first (R@1 1.00): a PDF page ("how much is the rent"), a policy number, two
+  screenshots by their OCR text, the memo by its sound, the red picture by its look.
+* Real folders (Documents, Desktop, Movies; 169,051 files, 163,806 of them only in iCloud and
+  indexed by name without downloading): walk plus the first 2,000 files 83 s; 54,000 files in 30
+  minutes, 30 files/s, limited by embedding (32 inputs/s while a chat model shared the GPU and
+  Spotlight was re-indexing). Search over 55,925 vectors in memory: 20 ms median (26 ms p95) once
+  the query is embedded. Embedding a new query takes 27 ms median (44 ms p95) on a quiet machine,
+  so a new search answers in about 50 ms; with a chat model generating it took 241 ms. Database
+  2.7 KB per piece; 445 MB peak memory for the indexing process. iCloud-only names now enter the
+  keyword index at once and are embedded after the files on the Mac.
+* Ollama embeds short texts at 39/s one at a time and 80/s in batches of 64-256 (quiet M3 Pro);
+  more sequence slots (OLLAMA_NUM_PARALLEL 8) were slower (46-63/s). Indexing a large folder faster
+  needs a runtime that embeds many sequences in one pass (llama.cpp's server), not yet tried.
 
 ### Backends, prompt cache and decision models (October 12, same Mac)
 
