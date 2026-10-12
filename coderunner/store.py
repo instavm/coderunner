@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -41,7 +42,8 @@ SCHEMA = [
         path TEXT PRIMARY KEY, kind TEXT, size INTEGER, mtime REAL, indexed REAL, chunks INTEGER,
         error TEXT DEFAULT '')""",
     """CREATE TABLE IF NOT EXISTS file_chunks (
-        id INTEGER PRIMARY KEY, path TEXT, part TEXT, text TEXT, embedding TEXT)""",
+        id INTEGER PRIMARY KEY, path TEXT, part TEXT, text TEXT, embedding BLOB, code BLOB,
+        modality TEXT DEFAULT '', loc REAL)""",
     "CREATE INDEX IF NOT EXISTS file_chunks_path ON file_chunks(path)",
     """CREATE VIRTUAL TABLE IF NOT EXISTS file_chunks_fts USING fts5(
         text, content='file_chunks', content_rowid='id')""",
@@ -53,6 +55,9 @@ SCHEMA = [
 # Columns added after a table was first created; they fail harmlessly once present.
 MIGRATIONS = [
     "ALTER TABLE memories ADD COLUMN source TEXT DEFAULT ''",
+    "ALTER TABLE file_chunks ADD COLUMN code BLOB",
+    "ALTER TABLE file_chunks ADD COLUMN modality TEXT DEFAULT ''",
+    "ALTER TABLE file_chunks ADD COLUMN loc REAL",
 ]
 
 
@@ -83,6 +88,18 @@ class Store:
     def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
             return self._conn.execute(sql, tuple(params))
+
+    @contextlib.contextmanager
+    def transaction(self):
+        """Statements inside run as one transaction: many rows are written for the cost of one commit."""
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                yield self
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            self._conn.execute("COMMIT")
 
     def query(self, sql: str, params: Iterable[Any] = ()) -> list[dict]:
         with self._lock:

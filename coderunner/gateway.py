@@ -296,7 +296,11 @@ def admin_app(svc, daemon) -> Starlette:
         if request.method == "GET":
             query = request.query_params.get("q")
             if query:
-                return JSONResponse(await index.search(query, request.query_params.get("kind") or None))
+                try:
+                    limit = int(request.query_params.get("limit") or 8)
+                except ValueError:
+                    limit = 8
+                return JSONResponse(await index.search(query, request.query_params.get("kind") or None, limit))
             return JSONResponse(index.status())
         body = await request.json()
         try:

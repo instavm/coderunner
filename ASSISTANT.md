@@ -255,13 +255,41 @@ only after the task has read untrusted content. There is no send tool. Calendar 
 ## Your files
 
 `coderunner files add ~/Documents` shares a folder with the assistant. The
-daemon indexes it in the background and keeps it current:
+daemon indexes it in the background and keeps it current, and
+`coderunner find "boarding pass for the Delhi trip"` searches it from the
+terminal by describing what you want.
 
-* Text, code and documents are indexed by meaning and by exact words. PDFs use
-  poppler's `pdftotext`; Word, RTF and Pages use macOS `textutil`.
-* Images, audio and video are indexed by meaning with a multimodal embedding
-  model (`files.embedding`, e.g. EmbeddingGemma 2 in Ollama). Video is indexed
-  as sampled frames plus its sound.
+* One multimodal embedding model (`files.embedding`, EmbeddingGemma 2 in
+  Ollama) places names, text, pictures and sound in one space. Every file is
+  findable by its name; text by passage (with its line); PDFs page by page,
+  scanned pages read with on-device OCR; pictures by what they show and by
+  the text in them (screenshots, photos of documents); audio in overlapping
+  30-second windows; video as frames plus sound. Results point at the page,
+  line or moment that matched.
+* Words are matched too (full-text index), so names, codes and numbers
+  ("HX-55821") are found exactly. Text made mostly of figures (data exports)
+  is matched by words only.
+* Search reads each similarity against its kind for that query (names,
+  passages, pictures, sound), so a photo that matches well is not buried under
+  text that matches a little; asking for a kind ("photo of...", "...in a
+  video") favours it; weak results are cut rather than padded out.
+* Fast: the daemon keeps the model loaded and a compact code of every piece in
+  memory (about 100 bytes each); a search compares the query with all of them,
+  then scores the closest few hundred exactly. Vectors are stored at half
+  precision. Without the daemon, `coderunner find` searches directly.
+* Kept current: on macOS new and changed files are picked up within seconds
+  (file events); elsewhere the folders are walked every `files.scan_interval`.
+  Indexing waits on a battery below `files.min_battery` (30%) and in Low
+  Power Mode. A different embedding model means indexing again.
+* Files kept only in iCloud are indexed by name and never downloaded (set
+  `files.cloud_files` to read them); folders kept only in iCloud are not
+  listed. Source code in git checkouts is left to code tools
+  (`files.code_in_repos`). Spoken words in recordings become searchable text
+  with `files.transcribe` (slow; uses the speech-to-text engine).
+* On macOS, PDF pages, OCR and file events come from a small Swift helper
+  built on first use (Xcode Command Line Tools); without it PDFs need
+  poppler's `pdftotext`, and there is no OCR. Word, RTF and Pages use macOS
+  `textutil`; media use ffmpeg.
 
 The assistant finds files with `files_search`, then uses them with `file_read`,
 `file_view` (images and video frames, for vision models) and `file_listen`
@@ -273,7 +301,8 @@ The assistant finds files with `files_search`, then uses them with `file_read`,
 * File contents are your private data and can contain third-party text, so a
   task that reads files counts as holding private data and as having read
   untrusted content (see the leak rule above).
-* `coderunner files status | index | search "query" | remove <folder>`.
+* `coderunner files status | index | search "query" | remove <folder>`;
+  `coderunner find "query" [--kind image] [--json]`.
 
 ## Remote access
 

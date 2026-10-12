@@ -162,6 +162,9 @@ class Daemon:
         from .voice import Voice
         voice = Voice(self.config)
         svc.voice = voice if voice.available() else None
+        if svc.voice is not None:
+            from .files.extract import untimed
+            svc.files.transcriber = untimed(svc.voice.transcribe)       # used with files.transcribe on
 
         from .connectors import load_connectors
         svc.connectors = load_connectors(self.config)

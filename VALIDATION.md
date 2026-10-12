@@ -24,6 +24,7 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
 | Daemon (`test_daemon.py`) | Real HTTP servers: owner chat, memory recall across conversations, sandbox model proxy, credential separation, scheduled delivery, and the agent driving the real browser where a "Buy now" click waits for an owner approval over the API |
 | Models (`test_models.py`) | Hardware parsing (Apple, NVIDIA, AMD, CPU, WSL2), budgets, KV-cache sizing, picks per memory tier from 8 GB Macs to 512 GB, expert offload on NVIDIA, runtime routing to llama.cpp, cluster flags, GPU-limit notes, licence resolution through base models, resumable verified downloads, smoke-test pass/fail including the wrong-argument case below |
 | Discovery (`test_discover.py`) | Hugging Face listings, configs and file trees from a fake hub: filters, sharded builds, KV and MoE sizes, build choice per machine, known breakages, stale caches; published scores read from eval results, ranking by them (a model scored like Granite 4.2 30B ranks below Qwen3.5-9B), quantization losses, GPU-limit notes |
+| Files (`test_files.py`) | Only shared, non-secret files; iCloud-only files named but not read (read once on the Mac or with `files.cloud_files`); bundles, libraries and code in source checkouts skipped; half-precision vectors and sign codes; embedding batched across files (153 files in at most 12 requests); a new embedding model means indexing again; file events bring changes in first; pausing on a low battery or Low Power Mode; figures matched by words only; passages with lines; ranking on a calibrated corpus (a picture ranks by its own scale, a kind hint, weak results cut, codes lean on words); the first pass finds the closest codes; `coderunner find` output and direct fallback. With the Swift compiler: PDFs by page, OCR of a screenshot, FSEvents within seconds |
 | Memory, scheduler, connectors, channels, voice, service, remote | Unit tests with fakes; see each test file |
 
 ## Manual checks on this branch
@@ -76,6 +77,21 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
   to" expanded, and typing "Delhi" listed DEL Delhi International Airport, Hindon and Noida, with no
   403 and no "Something's not right"; `navigator.webdriver` was false. The suggestions arrive about
   a second after the typing, so the result of the typing step does not include them yet.
+* File search eval (`python tests/files_eval.py`, EmbeddingGemma 2 in Ollama): 16 natural-language
+  queries over notes, data, PDFs, screenshots, a picture and a spoken memo among 70 distractors,
+  all answered first (R@1 1.00): a PDF page ("how much is the rent"), a policy number, two
+  screenshots by their OCR text, the memo by its sound, the red picture by its look.
+* Real folders (Documents, Desktop, Movies; 169,051 files, 163,806 of them only in iCloud and
+  indexed by name without downloading): walk plus the first 2,000 files 83 s; 54,000 files in 30
+  minutes, 30 files/s, limited by embedding (32 inputs/s while a chat model shared the GPU and
+  Spotlight was re-indexing). Search over 55,925 vectors in memory: 20 ms median (26 ms p95) once
+  the query is embedded. Embedding a new query takes 27 ms median (44 ms p95) on a quiet machine,
+  so a new search answers in about 50 ms; with a chat model generating it took 241 ms. Database
+  2.7 KB per piece; 445 MB peak memory for the indexing process. iCloud-only names now enter the
+  keyword index at once and are embedded after the files on the Mac.
+* Ollama embeds short texts at 39/s one at a time and 80/s in batches of 64-256 (quiet M3 Pro);
+  more sequence slots (OLLAMA_NUM_PARALLEL 8) were slower (46-63/s). Indexing a large folder faster
+  needs a runtime that embeds many sequences in one pass (llama.cpp's server), not yet tried.
 
 ## Not yet validated
 
