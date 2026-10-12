@@ -16,7 +16,8 @@ from unittest import mock
 from coderunner.audit import AuditLog
 from coderunner.browser import BrowserBroker, BrowserError
 from coderunner.browser import launcher
-from coderunner.browser.broker import CONTAINS_JS, DESCRIBE_JS, SELECT_OPTION_JS, parse_url, render_ax
+from coderunner.browser.broker import (CONTAINS_JS, DESCRIBE_JS, SCROLL_JS, SELECT_OPTION_JS, page_changes,
+                                       parse_url, render_ax)
 from coderunner.browser.cdp import CDPError, CDPPipe
 from coderunner.config import Config
 from coderunner.policy import Policy, current_run
@@ -113,6 +114,8 @@ class FakeBrowser:
             return {"object": {"objectId": f"node:{params['backendNodeId']}"}}
         if method == "Runtime.evaluate":
             return {"result": {"objectId": f"node:{self.focused}"} if self.focused else {"type": "object"}}
+        if method == "Runtime.callFunctionOn" and params["functionDeclaration"] == SCROLL_JS:
+            return {"result": {"value": {"moved": True, "percent": 20}}}
         if method == "Runtime.callFunctionOn":
             backend = int(params["objectId"].split(":")[1])
             if params["functionDeclaration"] == CONTAINS_JS:
@@ -265,6 +268,27 @@ class RenderTests(unittest.TestCase):
         self.assertTrue(refs[3]["password"])
         self.assertEqual(refs[4]["name"], "Buy now")
 
+    def test_numbers_stay_with_their_elements(self):
+        numbers = {"next": 1, "ids": {}}
+        render_ax(SHOP_AX, "https://shop.example/", numbers=numbers)
+        # A suggestion list opens above the button: old elements keep their numbers, new ones get new numbers.
+        opened = SHOP_AX[:13] + [ax(13, "option", "Rye sourdough", parent=2, backend=140)] + SHOP_AX[13:]
+        opened[1] = ax(2, "generic", parent=1, children=[3, 4, 5, 8, 9, 13, 10, 11, 12], ignored=True, backend=2)
+        content, refs = render_ax(opened, "https://shop.example/", numbers=numbers)
+        self.assertIn('[6] option "Rye sourdough"\n[3] textbox "Password"', content)
+        self.assertEqual({ref: info["backend"] for ref, info in refs.items()},
+                         {1: 108, 2: 109, 6: 140, 3: 110, 4: 111, 5: 112})
+
+    def test_page_changes(self):
+        before = ["# Flights", '[1] button "From"', '[2] combobox "To" value=""', '[3] button "Search"']
+        after = ["# Flights", '[1] button "From"', '[2] combobox "To" value="Del"', '[7] option "Delhi (DEL)"',
+                 '[3] button "Search"']
+        self.assertEqual(page_changes(before, after).splitlines(), [
+            '  [1] button "From"', '- [2] combobox "To" value=""', '+ [2] combobox "To" value="Del"',
+            '+ [7] option "Delhi (DEL)"'])
+        self.assertEqual(page_changes(before, before), "")
+        self.assertIsNone(page_changes(before, ["# Results"] + [f"[{n}] link \"Flight {n}\"" for n in range(9)]))
+
 
 class StubJudge:
     """Stands in for the decision model: in these test pages, these words mark committing steps."""
@@ -321,6 +345,10 @@ class BrokerTestCase(unittest.IsolatedAsyncioTestCase):
 
     def kinds(self):
         return [kind for kind, _ in self.asked]
+
+    def ref(self, name):
+        """An element's number: numbers continue across documents, so a stale one never hits a new element."""
+        return next(n for n, info in self.broker._refs[self.broker._active].items() if info["name"] == name)
 
     async def load_shop(self):
         result = await self.broker.navigate("https://shop.example/")
@@ -396,7 +424,7 @@ class InteractionPolicyTests(BrokerTestCase):
         browser.ax = SHOP_AX[:-1]
         self.assertTrue((await self.broker.snapshot())["changed"])
         short = await self.broker.snapshot(max_chars=100)
-        self.assertIn("truncated", short["content"])
+        self.assertIn("more characters; browser_find", short["content"])
 
     async def test_click_uses_interact_or_sensitive(self):
         browser, _ = await self.load_shop()
@@ -466,9 +494,12 @@ class InteractionPolicyTests(BrokerTestCase):
         browser.focused = 111
         self.assertFalse((await self.broker.press("Enter"))["ok"])
         self.assertEqual(self.kinds(), ["browser.sensitive"])
-        self.assertTrue((await self.broker.scroll("down", 400))["ok"])
-        wheel = browser.sent("Input.dispatchMouseEvent")[-1]
-        self.assertEqual((wheel["type"], wheel["deltaY"]), ("mouseWheel", 400))
+        scrolled = await self.broker.scroll("down", 400)
+        self.assertTrue(scrolled["ok"], scrolled)
+        self.assertEqual((scrolled["scrolled"], scrolled["position"]), (True, "20% of the way down"))
+        script = [c for c in browser.sent("Runtime.callFunctionOn") if c["functionDeclaration"] == SCROLL_JS][-1]
+        self.assertEqual([a["value"] for a in script["arguments"]], [0, 400])
+        self.assertEqual(browser.sent("Input.dispatchMouseEvent")[-1:], [])   # no wheel events: they can hang
 
     async def test_ordinary_clicks_after_untrusted_content_need_no_prompt(self):
         await self.load_shop()
@@ -638,10 +669,10 @@ class DefaultPermissionTests(BrokerTestCase):
         self.assertTrue((await self.broker.navigate("https://shop.example/"))["ok"])
         browser.ax = SHOP_AX
         await self.broker.snapshot()
-        self.assertTrue((await self.broker.click(1, tainted=True))["ok"])
-        self.assertTrue((await self.broker.type(2, "sourdough", tainted=True))["ok"])
+        self.assertTrue((await self.broker.click(self.ref("Read more"), tainted=True))["ok"])
+        self.assertTrue((await self.broker.type(self.ref("Search"), "sourdough", tainted=True))["ok"])
         self.assertEqual(self.asked, [])
-        self.assertFalse((await self.broker.click(4))["ok"])         # "Buy now"
+        self.assertFalse((await self.broker.click(self.ref("Buy now")))["ok"])
         self.assertEqual(self.kinds(), ["browser.sensitive"])
 
     async def test_ordinary_clicks_wait_for_overlays_to_settle(self):
@@ -812,8 +843,8 @@ class MessagingClientTests(BrokerTestCase):
                 browser.ax = SHOP_AX
                 browser.labels = {108: {"tag": "a", "text": "Read more", "submit": ""}}
                 await self.broker.snapshot()
-                self.assertFalse((await self.broker.click(1))["ok"])
-                self.assertFalse((await self.broker.type(2, "hello"))["ok"])
+                self.assertFalse((await self.broker.click(self.ref("Read more")))["ok"])
+                self.assertFalse((await self.broker.type(self.ref("Search"), "hello"))["ok"])
                 self.assertFalse((await self.broker.press("Tab"))["ok"])
                 self.assertEqual(self.kinds(), ["browser.sensitive"] * 3)
 
@@ -835,6 +866,9 @@ FIXTURE = b"""<!doctype html><html><head><title>Fixture shop</title></head><body
 <button type="button" onclick="window.open('http://10.255.255.1/pop')">Popup</button>
 <a href="http://127.0.0.2:PORT/elsewhere">Elsewhere</a>
 <div id="out"></div>
+<button type="button" onclick="const b = document.createElement('button'); b.textContent = 'Result ' + (document.querySelectorAll('#more button').length + 1); document.getElementById('more').append(b)">More results</button>
+<div id="more"></div>
+<div style="height: 4000px"></div><p>The end</p>
 </body></html>"""
 
 
@@ -921,9 +955,20 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(typed["ok"], typed)
         clicked = await self.broker.click(refs["Echo"])
         self.assertTrue(clicked["ok"], clicked)
+        self.assertIn("+ echo rye loaf", clicked["changes"])      # the click returns what it changed
         after = await self.broker.snapshot()
-        self.assertTrue(after["changed"])
+        self.assertFalse(after["changed"])                       # ...so the page holds no news
         self.assertIn("echo rye loaf", after["content"])
+
+        more = await self.broker.click(refs["More results"])
+        self.assertRegex(more["changes"], r'\+ \[\d+\] button "Result 1"')
+        more = await self.broker.click(refs["More results"])     # the same number still works
+        added = [line for line in more["changes"].splitlines() if line.startswith("+ ")]
+        self.assertRegex(" ".join(added), r'^\+ \[\d+\] button "Result 2"$')      # only the new one is added
+        scrolled = await self.broker.scroll("down", 800)
+        self.assertTrue(scrolled["scrolled"], scrolled)
+        self.assertEqual(scrolled["changes"], "No visible change on the page.")
+        self.assertTrue((await self.broker.press("Home"))["ok"])
 
         asked = await self.broker.click(refs["Ask"])            # a confirm() must not hang the click
         self.assertTrue(asked["ok"], asked)

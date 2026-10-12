@@ -61,10 +61,16 @@ class LLM:
         self.model = model
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, headers=headers, trust_env=False)
+        self._always_thinks = False     # the runtime refused a request to answer without reasoning
 
     async def chat(self, messages: list[dict], tools: list[dict] | None = None,
-                   tool_choice: str | dict | None = None, **options: Any) -> dict:
+                   tool_choice: str | dict | None = None, think: bool | None = None, **options: Any) -> dict:
+        """think=False asks a reasoning model to answer directly (None: the model's default)."""
         payload: dict[str, Any] = {"model": self.model, "messages": messages, "stream": False, **options}
+        quiet = think is False and not self._always_thinks
+        if quiet:
+            # Ollama reads reasoning_effort, llama.cpp reads chat_template_kwargs.
+            payload.update(reasoning_effort="none", chat_template_kwargs={"enable_thinking": False})
         if tools:
             payload["tools"] = tools
             if tool_choice:
@@ -73,6 +79,9 @@ class LLM:
             response = await self._client.post("/chat/completions", json=payload)
         except httpx.HTTPError as exc:
             raise LLMError(f"Model runtime at {self.base_url} is unreachable: {exc}") from exc
+        if response.status_code == 400 and quiet:
+            self._always_thinks = True
+            return await self.chat(messages, tools, tool_choice, **options)
         if response.status_code >= 400:
             raise LLMError(f"Model runtime returned {response.status_code}: {response.text[:500]}")
         data = response.json()

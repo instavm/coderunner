@@ -12,6 +12,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from ..browser.broker import KEYS
 from ..policy import Action
 
 if TYPE_CHECKING:
@@ -135,36 +136,48 @@ def browser_tools(svc) -> list[Tool]:
             return f"Error: {value.get('error', 'browser action failed')}"
         return value
 
+    def _text(value: Any) -> Any:
+        """A browser result as plain text: page text inside JSON would escape every quote and line break."""
+        if not isinstance(value, dict):
+            return value
+        lines = [f"{key}: {item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)}"
+                 for key, item in value.items() if key not in ("ok", "content", "changes")]
+        if "changes" in value:
+            lines += ["Changes on the page (+ added, - removed, unmarked lines show where):", value["changes"]]
+        elif "content" in value:
+            lines += ["", value["content"]]
+        return "\n".join(lines)
+
     async def open_(args, ctx):
-        return _result(await b.navigate(args["url"], tainted=ctx.tainted))
+        return _text(_result(await b.navigate(args["url"], tainted=ctx.tainted)))
 
     async def snapshot(args, ctx):
         result = _result(await b.snapshot(tainted=ctx.tainted))
         if isinstance(result, dict) and result.get("changed") is False:
-            result["note"] = "Page unchanged since the last snapshot."
-        return result
+            result["note"] = "Page unchanged since you last saw it."
+        return _text(result)
 
     async def click(args, ctx):
-        return _result(await b.click(int(args["ref"]), tainted=ctx.tainted))
+        return _text(_result(await b.click(int(args["ref"]), tainted=ctx.tainted)))
 
     async def type_(args, ctx):
-        return _result(await b.type(int(args["ref"]), args["text"], submit=bool(args.get("submit")),
-                                    tainted=ctx.tainted))
+        return _text(_result(await b.type(int(args["ref"]), args["text"], submit=bool(args.get("submit")),
+                                          tainted=ctx.tainted)))
 
     async def press(args, ctx):
-        return _result(await b.press(args["key"], tainted=ctx.tainted))
+        return _text(_result(await b.press(args["key"], tainted=ctx.tainted)))
 
     async def find(args, ctx):
-        return _result(await b.find(args["text"], tainted=ctx.tainted))
+        return _text(_result(await b.find(args["text"], tainted=ctx.tainted)))
 
     async def select(args, ctx):
-        return _result(await b.select(int(args["ref"]), args["option"], tainted=ctx.tainted))
+        return _text(_result(await b.select(int(args["ref"]), args["option"], tainted=ctx.tainted)))
 
     async def scroll(args, ctx):
-        return _result(await b.scroll(args.get("direction", "down"), tainted=ctx.tainted))
+        return _text(_result(await b.scroll(args.get("direction", "down"), tainted=ctx.tainted)))
 
     async def back(args, ctx):
-        return _result(await b.back(tainted=ctx.tainted))
+        return _text(_result(await b.back(tainted=ctx.tainted)))
 
     async def tabs(args, ctx):
         return _result(await b.tabs(tainted=ctx.tainted))
@@ -189,22 +202,25 @@ def browser_tools(svc) -> list[Tool]:
 
     tools = [
         Tool("browser_open", "Open a URL in the owner's CodeRunner browser window (a dedicated profile the owner "
-             "can watch).", _params({"url": STR}, ["url"]), open_, True),
-        Tool("browser_snapshot", "Read the current page as text with numbered interactive elements [N].",
+             "can watch). Returns the page as text with numbered elements [N].",
+             _params({"url": STR}, ["url"]), open_, True),
+        Tool("browser_snapshot", "Read the whole current page again as text with numbered elements [N]. Other "
+             "browser actions already return what they changed, so use this only when you need the full page.",
              _params({}), snapshot, True),
-        Tool("browser_click", "Click element [ref] from the latest snapshot.", _params({"ref": INT}, ["ref"]), click,
-             True),
-        Tool("browser_type", "Type text into element [ref]. Never use for passwords or one-time codes; use "
-             "browser_handoff instead.", _params({"ref": INT, "text": STR, "submit": BOOL}, ["ref", "text"]), type_, True),
+        Tool("browser_click", "Click element [ref]. Returns what changed on the page (a new page in full).",
+             _params({"ref": INT}, ["ref"]), click, True),
+        Tool("browser_type", "Type text into element [ref] and return what changed (suggestions often appear). "
+             "Never use for passwords or one-time codes; use browser_handoff instead.",
+             _params({"ref": INT, "text": STR, "submit": BOOL}, ["ref", "text"]), type_, True),
         Tool("browser_find", "Find where the current page mentions some text (the whole page, also beyond what a "
              "snapshot shows) and get those lines with their element refs. Cheaper than reading the whole page.",
              _params({"text": STR}, ["text"]), find, True),
         Tool("browser_select", "Choose an option in a dropdown (<select>) [ref] by its visible text.",
              _params({"ref": INT, "option": STR}, ["ref", "option"]), select, True),
-        Tool("browser_press", "Press a key: Enter, Tab, Escape, ArrowDown, ArrowUp, Backspace, PageDown, PageUp.",
-             _params({"key": STR}, ["key"]), press, True),
-        Tool("browser_scroll", "Scroll the page up or down.", _params({"direction": {"type": "string", "enum": [
-            "up", "down"]}}), scroll, True),
+        Tool("browser_press", f"Press a key: {', '.join(KEYS)}.", _params({"key": STR}, ["key"]), press, True),
+        Tool("browser_scroll", "Scroll the page (or the list in the middle of it) to load more of it. The page "
+             "text already includes what is outside the window.", _params({"direction": {"type": "string", "enum": [
+                 "up", "down"]}}), scroll, True),
         Tool("browser_back", "Go back to the previous page.", _params({}), back, True),
         Tool("browser_tabs", "List open tabs.", _params({}), tabs, True),
         Tool("browser_handoff", "Ask the owner to complete a step themselves in the browser window (log in, "

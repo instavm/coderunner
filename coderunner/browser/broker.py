@@ -28,6 +28,7 @@ import asyncio
 import base64
 import collections
 import contextlib
+import difflib
 import hashlib
 import ipaddress
 import json
@@ -74,8 +75,13 @@ SECRET_AUTOCOMPLETE = frozenset({"current-password", "new-password", "one-time-c
 FRAME_TAGS = frozenset({"iframe", "frame", "object", "embed"})
 KEYS = {  # name -> (windows virtual key code, text)
     "Enter": (13, "\r"), "Tab": (9, ""), "Escape": (27, ""), "ArrowDown": (40, ""), "ArrowUp": (38, ""),
-    "Backspace": (8, ""), "PageDown": (34, ""), "PageUp": (33, ""),
+    "ArrowLeft": (37, ""), "ArrowRight": (39, ""), "Home": (36, ""), "End": (35, ""), "Backspace": (8, ""),
+    "Delete": (46, ""), "PageDown": (34, ""), "PageUp": (33, ""), "Space": (32, " "),
 }
+ACTIVATING_KEYS = frozenset({"Enter", "Space"})   # press the focused control, or submit its form
+PAGE_CHARS = 12000          # page text returned at once; browser_find reaches the rest
+SHOWN_REMOVED = 5           # removed lines listed per change; more are counted
+MOSTLY_NEW = 0.5            # below this similarity an action's result is the whole page, not the changes
 DENIED_PERMISSIONS = ("geolocation", "notifications", "camera", "microphone", "midi", "clipboard-read",
                       "display-capture", "idle-detection", "window-management", "local-fonts",
                       "local-network-access", "payment-handler", "nfc")
@@ -133,6 +139,23 @@ SELECT_ALL_JS = r"""function() {
   try { if (typeof this.select === 'function') { this.select(); return; } } catch (e) {}
   const range = document.createRange(); range.selectNodeContents(this);
   const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+}"""
+# Scrolls whatever scrolls at the middle of the window (a results list, a dialog, or the page) by script:
+# synthetic wheel events wait for the compositor and hang when the window is hidden or busy.
+SCROLL_JS = r"""function(dx, dy) {
+  const scrolls = el => {
+    const style = getComputedStyle(el);
+    return (dy && /(auto|scroll|overlay)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1)
+      || (dx && /(auto|scroll|overlay)/.test(style.overflowX) && el.scrollWidth > el.clientWidth + 1);
+  };
+  let el = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+  while (el && el !== document.body && el !== document.documentElement && !scrolls(el)) el = el.parentElement;
+  if (!el || el === document.body || el === document.documentElement) el = document.scrollingElement || document.documentElement;
+  const before = [el.scrollLeft, el.scrollTop];
+  el.scrollBy({left: dx, top: dy, behavior: 'instant'});
+  const range = Math.max(el.scrollHeight - el.clientHeight, 1);
+  return {moved: el.scrollLeft !== before[0] || el.scrollTop !== before[1],
+          percent: Math.round(100 * el.scrollTop / range)};
 }"""
 
 
@@ -280,6 +303,12 @@ def _squash(text: str) -> str:
     return " ".join(text.split())
 
 
+def _cut(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n… [{len(text) - limit} more characters; browser_find searches all of the page]"
+
+
 def _short_url(url: str, page_url: str) -> str:
     target, page = urllib.parse.urlsplit(url), urllib.parse.urlsplit(page_url)
     if target.scheme in ("http", "https") and (target.scheme, target.netloc) == (page.scheme, page.netloc):
@@ -309,13 +338,19 @@ def _element_line(ref: int, role: str, name: str, node: dict, props: dict, page_
     return line
 
 
-def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = frozenset()) -> tuple[str, dict]:
+def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = frozenset(),
+              numbers: dict | None = None) -> tuple[str, dict]:
     """Compact text for an Accessibility.getFullAXTree result.
 
     Headings become "# name", interactive elements "[N] role "name" ...", and
     other text is joined per block and deduplicated. Returns (text, refs)
     where refs maps N to the element's backendDOMNodeId, role and name.
+
+    numbers ({"next": N, "ids": {backendDOMNodeId: N}}) keeps an element's
+    number across renderings of the same document, so a model can act on a
+    number it saw earlier and changes between renderings stay small.
     """
+    numbers = numbers if numbers is not None else {"next": 1, "ids": {}}
     by_id = {node["nodeId"]: node for node in nodes}
     roots = [node["nodeId"] for node in nodes if node.get("parentId") not in by_id]
     lines: list[str] = []
@@ -373,7 +408,10 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
             flush()
             props = {p.get("name"): _value(p.get("value")) for p in node.get("properties", [])}
             backend = node["backendDOMNodeId"]
-            ref = len(refs) + 1
+            ref = numbers["ids"].get(backend)
+            if ref is None or ref in refs:
+                ref = numbers["ids"][backend] = numbers["next"]
+                numbers["next"] += 1
             is_secret = backend in secret
             refs[ref] = {"backend": backend, "role": role, "name": name, "password": is_secret}
             lines.append(_element_line(ref, role, name, node, props, page_url, is_secret))
@@ -385,6 +423,26 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
             descend(node_id, covered)
     flush()
     return "\n".join(lines), refs
+
+
+def page_changes(before: list[str], after: list[str]) -> str | None:
+    """What changed between two renderings of a page: added lines (+), removed lines (-) and the line above
+    each change for orientation. None when most of the page is new, so the whole page is worth reading."""
+    matcher = difflib.SequenceMatcher(None, before, after, autojunk=False)
+    if matcher.ratio() < MOSTLY_NEW:
+        return None
+    out: list[str] = []
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op == "equal":
+            continue
+        if j1 > 0:
+            out.append("  " + after[j1 - 1])
+        removed = before[i1:i2]
+        out += ["- " + line for line in removed[:SHOWN_REMOVED]]
+        if len(removed) > SHOWN_REMOVED:
+            out.append(f"- … {len(removed) - SHOWN_REMOVED} more lines")
+        out += ["+ " + line for line in after[j1:j2]]
+    return "\n".join(out)
 
 
 # ---- broker ---------------------------------------------------------------
@@ -411,6 +469,8 @@ class BrowserBroker:
         self._active: str | None = None
         self._opened: set[str] = set()            # tabs the broker opened itself
         self._refs: dict[str, dict[int, dict]] = {}
+        self._numbers: dict[str, dict] = {}       # tab -> element numbers kept across renderings (render_ax)
+        self._lines: dict[str, list[str]] = {}    # tab -> the page as the model last saw it, line by line
         self._snapshots: dict[str, str] = {}
         self._shots: dict[str, str] = {}
         self._loads: dict[str, collections.deque] = {}
@@ -466,7 +526,7 @@ class BrowserBroker:
     async def close_tab(self, tab: str, tainted: bool = False) -> dict:
         return await self._run("close_tab", {"tab": tab, "tainted": tainted}, lambda: self._close_tab(tab, tainted))
 
-    async def snapshot(self, tab: str | None = None, max_chars: int = 12000, tainted: bool = False) -> dict:
+    async def snapshot(self, tab: str | None = None, max_chars: int = PAGE_CHARS, tainted: bool = False) -> dict:
         return await self._run("snapshot", {"tab": tab, "tainted": tainted},
                                lambda: self._snapshot(tab, max_chars, tainted))
 
@@ -594,7 +654,7 @@ class BrowserBroker:
         if not target:
             return
         self._forget_session(self._sessions.get(target))
-        for table in (self._refs, self._snapshots, self._shots, self._dialogs, self._dismissed, self._blocked,
+        for table in (self._refs, self._numbers, self._lines, self._snapshots, self._shots, self._dialogs, self._dismissed, self._blocked,
                       self._committed, self._page_targets, self._spawned, self._new_tabs, self._expected):
             table.pop(target, None)
         self._opened.discard(target)
@@ -824,6 +884,9 @@ class BrowserBroker:
         if target and frame.get("id") == target and not frame.get("parentId"):
             self._committed[target] = frame.get("url", "")
             self._refs.pop(target, None)            # element refs belong to the old document
+            self._lines.pop(target, None)
+            if target in self._numbers:             # new numbers continue, so an old one cannot hit a new element
+                self._numbers[target]["ids"] = {}
 
     async def _on_request(self, params: dict, sid: str | None) -> None:
         """Browser-wide guard for every document request, in every tab."""
@@ -924,7 +987,7 @@ class BrowserBroker:
                 loaded = await self._wait_load(sid, result.get("loaderId"))
             finally:
                 self._expected.pop(target, None)
-            return await self._result(target, loaded=loaded)
+            return await self._observe(target, sid, await self._result(target, loaded=loaded), tainted)
 
     # ---- action bodies ------------------------------------------------------
 
@@ -975,7 +1038,7 @@ class BrowserBroker:
                 await self._settle(sid, watch, window=NAV_TIMEOUT)
             finally:
                 self._expected.pop(target, None)
-            return await self._result(target)
+            return await self._observe(target, sid, await self._result(target), tainted)
 
     async def _close_tab(self, tab: str, tainted: bool) -> dict:
         if tab is None:
@@ -995,18 +1058,48 @@ class BrowserBroker:
         await self._allow("browser.read", host, f"Read {url}", tainted)
         sid = await self._session(target)
         async with self._acting(target, sid, tainted):
-            nodes = (await self._send(sid, "Accessibility.getFullAXTree", timeout=60)).get("nodes", [])
-            secret = await self._secret_fields(sid, nodes)
-            content, refs = render_ax(nodes, url, secret)
-            self._refs[target] = refs
+            content = await self._render(target, sid, url)
             result = await self._result(target)
-        digest = hashlib.sha256(f"{result['url']}\n{content}".encode()).hexdigest()
-        result["changed"] = self._snapshots.get(target) != digest
+        result["changed"] = self._seen(target, result["url"], content)
+        result["content"] = _cut(content, max(100, int(max_chars)))
+        return result
+
+    async def _render(self, target: str, sid: str, url: str) -> str:
+        nodes = (await self._send(sid, "Accessibility.getFullAXTree", timeout=60)).get("nodes", [])
+        secret = await self._secret_fields(sid, nodes)
+        content, refs = render_ax(nodes, url, secret, self._numbers.setdefault(target, {"next": 1, "ids": {}}))
+        self._refs[target] = refs
+        return content
+
+    def _seen(self, target: str, url: str, content: str) -> bool:
+        """Record the page as the model now knows it; returns whether it differs from what it saw before."""
+        digest = hashlib.sha256(f"{url}\n{content}".encode()).hexdigest()
+        changed = self._snapshots.get(target) != digest
         self._snapshots[target] = digest
-        limit = max(100, int(max_chars))
-        if len(content) > limit:
-            content = content[:limit] + f"\n… [truncated {len(content) - limit} characters]"
-        result["content"] = content
+        self._lines[target] = content.split("\n")
+        return changed
+
+    async def _observe(self, target: str, sid: str, result: dict, tainted: bool) -> dict:
+        """Add the page after an action to its result: only what changed since the model last read it, or the
+        whole page after a navigation or a large change. Saves the model a step (and re-reading the page)
+        after every click. Left out when reading the page would need the owner's approval."""
+        try:
+            url, host = await self._web_page(target)
+        except BrowserError:
+            return result
+        if self.policy.evaluate(Action("browser.read", host, f"Read {url}", tainted=tainted)) is not Decision.ALLOW:
+            return result
+        before = self._lines.get(target)
+        try:
+            content = await self._render(target, sid, url)
+        except CDPError:
+            return result
+        self._seen(target, url, content)
+        changes = page_changes(before, content.split("\n")) if before is not None else None
+        if changes is None:
+            result["content"] = _cut(content, PAGE_CHARS)
+        else:
+            result["changes"] = _cut(changes, PAGE_CHARS) if changes else "No visible change on the page."
         return result
 
     async def _find(self, text: str, tab: str | None, tainted: bool) -> dict:
@@ -1040,7 +1133,7 @@ class BrowserBroker:
                 choices = ", ".join(json.dumps(o, ensure_ascii=False) for o in outcome.get("options", [])[:30])
                 raise BrowserError(f"[{ref}]: {outcome.get('error', 'could not choose')}"
                                    + (f"; options are {choices}" if choices else ""))
-            result = await self._result(target)
+            result = await self._observe(target, sid, await self._result(target), tainted)
             result["selected"] = outcome["selected"]
             return result
 
@@ -1095,7 +1188,7 @@ class BrowserBroker:
                         await self._send(sid, "Input.dispatchMouseEvent", {
                             "type": event, "x": x, "y": y, "button": "left", "buttons": 1, "clickCount": 1})
                     navigated = await self._settle(sid, watch)
-                    return await self._result(target, navigated=navigated)
+                    return await self._observe(target, sid, await self._result(target, navigated=navigated), tainted)
             if approved or attempt == CLICK_ATTEMPTS - 1:
                 break
             # Overlays fading in or out and hover effects settle quickly; check the click again from scratch.
@@ -1245,7 +1338,7 @@ class BrowserBroker:
                 watch = self._watch_navigation(sid, target)
                 await self._key(sid, "Enter")
                 navigated = await self._settle(sid, watch)
-            result = await self._result(target, navigated=navigated)
+            result = await self._observe(target, sid, await self._result(target, navigated=navigated), tainted)
             if field is None:
                 result["_audit"] = {"text": text}
             return result
@@ -1272,10 +1365,10 @@ class BrowserBroker:
         risky = False
         if focused:
             summary += f' (focus: {focused.get("tag")} {json.dumps(focused.get("text", ""), ensure_ascii=False)})'
-            if key == "Enter":
-                # Enter activates the focused control or submits its form.
+            if key in ACTIVATING_KEYS:
+                # Enter and Space activate the focused control; Enter also submits its form.
                 risky = focused.get("tag") in FRAME_TAGS or focused.get("truncated") or await self._commits(
-                    host, url, "press Enter in", focused.get("tag", ""), focused.get("text", ""),
+                    host, url, f"press {key} in", focused.get("tag", ""), focused.get("text", ""),
                     nearby=f"submit button: {focused['submit']}" if focused.get("submit") else "")
                 if focused.get("submit"):
                     summary += f" which may submit {json.dumps(focused['submit'], ensure_ascii=False)}"
@@ -1287,7 +1380,7 @@ class BrowserBroker:
             watch = self._watch_navigation(sid, target)
             await self._key(sid, key)
             navigated = await self._settle(sid, watch)
-            return await self._result(target, navigated=navigated)
+            return await self._observe(target, sid, await self._result(target, navigated=navigated), tainted)
 
     async def _scroll(self, direction: str, amount: int, tab: str | None, tainted: bool) -> dict:
         deltas = {"down": (0, 1), "up": (0, -1), "right": (1, 0), "left": (-1, 0)}
@@ -1299,14 +1392,16 @@ class BrowserBroker:
         await self._allow("browser.read", host, f"Scroll {direction} on {host}", tainted)
         sid = await self._session(target)
         async with self._acting(target, sid, tainted):
-            metrics = await self._send(sid, "Page.getLayoutMetrics")
-            viewport = metrics.get("cssVisualViewport") or metrics.get("visualViewport") or {}
             dx, dy = deltas[direction]
-            await self._send(sid, "Input.dispatchMouseEvent", {
-                "type": "mouseWheel", "x": viewport.get("clientWidth", 800) / 2,
-                "y": viewport.get("clientHeight", 600) / 2, "deltaX": dx * amount, "deltaY": dy * amount})
-            await asyncio.sleep(0.25)
-            return await self._result(target)
+            moved = await self._send(sid, "Runtime.callFunctionOn", {
+                "functionDeclaration": SCROLL_JS, "executionContextId": await self._world(sid, target),
+                "arguments": [{"value": dx * amount}, {"value": dy * amount}], "returnByValue": True})
+            outcome = (moved.get("result") or {}).get("value") or {}
+            await asyncio.sleep(0.25)               # pages load more content as they scroll
+            result = await self._result(target, scrolled=bool(outcome.get("moved")))
+            if "percent" in outcome:
+                result["position"] = f"{outcome['percent']}% of the way down"
+            return await self._observe(target, sid, result, tainted)
 
     async def _screenshot(self, tab: str | None, full_page: bool, format: str, quality: int, tainted: bool) -> dict:
         format = {"jpg": "jpeg"}.get(str(format).lower(), str(format).lower())

@@ -33,8 +33,9 @@ def render_plan(steps: list[dict]) -> str:
     return "\n".join(f"{i}. [{step.get('status', 'todo')}] {step.get('step', '')}" for i, step in enumerate(steps, 1))
 
 
-PAGE_PREFIX = '<untrusted source="browser_snapshot">'
-DROPPED = "[earlier page snapshot removed to save space; take a new snapshot if you need it]\n</untrusted>"
+PAGE_PREFIX = '<untrusted source="browser_'
+PAGE_CHARS = 1500     # browser results longer than this hold a page, or a large part of one
+DROPPED = "[earlier page text removed to save space; take a new snapshot if you need it]\n</untrusted>"
 PLAN_REMINDER = "[Reminder of your plan, not a new request]\n"
 KEEP_PAGES = 1        # page snapshots left in full after a trim
 MOST_PAGES = 3        # trim once more than this many are in full
@@ -129,10 +130,11 @@ class Agent:
         step would make it re-read everything after that page on every step."""
         pages = [i for i, m in enumerate(messages) if m.get("role") == "tool"
                  and isinstance(m.get("content"), str) and m["content"].startswith(PAGE_PREFIX)
-                 and not m["content"].endswith(DROPPED)]
+                 and len(m["content"]) > PAGE_CHARS and not m["content"].endswith(DROPPED)]
         if len(pages) > most:
             for index in pages[:-keep]:
-                messages[index] = {**messages[index], "content": PAGE_PREFIX + "\n" + DROPPED}
+                opener = messages[index]["content"].split("\n", 1)[0]
+                messages[index] = {**messages[index], "content": opener + "\n" + DROPPED}
 
     async def run(self, ctx: RunContext, text: str, images: list[tuple[str, str]] | None = None) -> str:
         token = current_run.set(ctx)
@@ -152,9 +154,13 @@ class Agent:
                     {"role": "user", "content": user_content}]
         self.svc.audit.write("agent.start", conversation=ctx.conversation, origin=ctx.origin)
         max_steps = int(self.svc.config.get("agent.max_steps", 30))
+        # auto: reason before the first step and after a failed one; routine steps (the next click after
+        # reading what changed) answer directly, which on a laptop saves ~15 s of generation per step.
+        thinking = str(self.svc.config.get("agent.thinking", "auto")).lower()
         final = ""
         nudged = False
-        for _ in range(max_steps):
+        failed = False
+        for step in range(max_steps):
             self._drop_old_images(messages)
             self._drop_old_pages(messages)
             # The plan is repeated at the end of every request so a small model keeps its place in long
@@ -162,8 +168,11 @@ class Agent:
             # unchanged start of a request, and the instructions plus tool list are ~2,600 tokens.
             request = messages + ([{"role": "user", "content": PLAN_REMINDER + render_plan(ctx.plan)}]
                                   if ctx.plan else [])
+            think = None if thinking != "auto" or step == 0 or failed else False
+            if thinking == "off":
+                think = False
             try:
-                reply = await self.llm.chat(request, tools=self.registry.schemas())
+                reply = await self.llm.chat(request, tools=self.registry.schemas(), think=think)
             except LLMError as exc:
                 final = f"I couldn't reach the local model: {exc}"
                 break
@@ -176,9 +185,11 @@ class Agent:
                 final = reply["content"] or "(no response)"
                 break
             messages.append({"role": "assistant", "content": reply["content"], "tool_calls": reply["tool_calls"]})
+            failed = False
             for call in reply["tool_calls"]:
                 function = call.get("function", {})
                 result = await self.registry.invoke(function.get("name", ""), function.get("arguments", "{}"), ctx)
+                failed = failed or result.startswith("Error:") or "\nError:" in result[:200]
                 messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result})
             if ctx.images:
                 parts: list[dict] = [{"type": "text", "text": "Screenshot (untrusted page content):"}]

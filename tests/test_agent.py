@@ -183,7 +183,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         from coderunner.agent.loop import DROPPED
         with FakeOpenAI() as fake:
             svc = Svc()
-            svc.browser = FakeBrowser("A long page")
+            svc.browser = FakeBrowser("A long page\n" + "[1] link \"More\"\n" * 200)
             svc.llm = LLM(fake.base_url, "test")
             svc.registry = build_registry(svc)
             fake.script = [tool_call("browser_snapshot", {}, f"c{i}") for i in range(5)] + [
