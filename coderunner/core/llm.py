@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 
@@ -62,6 +62,9 @@ class LLM:
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, headers=headers, trust_env=False)
         self._always_thinks = False     # the runtime refused a request to answer without reasoning
+        # Restarts a local runtime that crashed or got stuck (a GPU out of memory leaves llama.cpp unable to
+        # compute until it is restarted); returns whether it is serving again. Set by the daemon.
+        self.recover: Callable[[], Awaitable[bool]] | None = None
 
     async def chat(self, messages: list[dict], tools: list[dict] | None = None,
                    tool_choice: str | dict | None = None, think: bool | None = None, **options: Any) -> dict:
@@ -75,10 +78,7 @@ class LLM:
             payload["tools"] = tools
             if tool_choice:
                 payload["tool_choice"] = tool_choice
-        try:
-            response = await self._client.post("/chat/completions", json=payload)
-        except httpx.HTTPError as exc:
-            raise LLMError(f"Model runtime at {self.base_url} is unreachable: {exc}") from exc
+        response = await self._post(payload)
         if response.status_code == 400 and quiet:
             self._always_thinks = True
             return await self.chat(messages, tools, tool_choice, **options)
@@ -97,6 +97,21 @@ class LLM:
             content, tool_calls = parse_text_tool_calls(content, names)
         return {"content": content.strip(), "tool_calls": tool_calls, "usage": data.get("usage", {}),
                 "finish_reason": choice.get("finish_reason")}
+
+    async def _post(self, payload: dict) -> httpx.Response:
+        """One request; when the runtime is down or failing, it is restarted once and the request retried, so
+        a long task keeps its progress."""
+        for attempt in (1, 2):
+            try:
+                response = await self._client.post("/chat/completions", json=payload)
+            except httpx.HTTPError as exc:
+                if attempt == 1 and self.recover is not None and await self.recover():
+                    continue
+                raise LLMError(f"Model runtime at {self.base_url} is unreachable: {exc}") from exc
+            if response.status_code >= 500 and attempt == 1 and self.recover is not None and await self.recover():
+                continue
+            return response
+        return response
 
     async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
         response = await self._client.post("/embeddings", json={"model": model or self.model, "input": texts})

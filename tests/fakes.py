@@ -55,6 +55,8 @@ class FakeOpenAI:
             self.requests.append(body)
             item = self.script.pop(0) if self.script else {"role": "assistant", "content": "done"}
             message = item(body) if callable(item) else item
+            if "_status" in message:            # a runtime failure, e.g. {"_status": 500, "error": "Compute error."}
+                return JSONResponse({"error": {"message": message.get("error", "")}}, status_code=message["_status"])
             if body.get("stream"):
                 async def events():
                     chunk = {"choices": [{"delta": {"content": message.get("content", "")}}]}

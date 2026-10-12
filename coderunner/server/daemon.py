@@ -101,6 +101,18 @@ class Daemon:
         self._stop: asyncio.Event | None = None
         self.svc = self._build()
 
+    async def _restart_model(self) -> bool:
+        """Restart a crashed or stuck local model runtime (one restart at a time)."""
+        lock = self._locks.setdefault("model", asyncio.Lock())
+        async with lock:
+            from ..models import manager
+            self.svc.audit.write("model.restart")
+            try:
+                return await asyncio.to_thread(manager.restart, self.config)
+            except Exception as exc:  # the request then fails with the runtime's own error
+                self.svc.audit.write("model.restart_failed", error=str(exc)[:300])
+                return False
+
     # ---- construction ----------------------------------------------------
 
     def _build(self) -> Services:
@@ -114,6 +126,7 @@ class Daemon:
         from ..models import manager
         endpoint = manager.endpoint(self.config)
         svc.llm = LLM(endpoint.base_url, endpoint.model, endpoint.api_key)
+        svc.llm.recover = self._restart_model
         svc.llm_api_key = endpoint.api_key
         svc.vision = endpoint.vision
         svc.embedding_model = endpoint.embedding_model or ""

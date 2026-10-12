@@ -514,6 +514,16 @@ def endpoint(config) -> Endpoint:
                     vision=bool(config.get("models.vision")), embedding_model=config.get("models.embedding") or "")
 
 
+def restart(config) -> bool:
+    """Restart the configured local runtime (it crashed or cannot compute); False for external endpoints."""
+    rt = choose_runtime(config)
+    if not (rt and rt.name in LOCAL and rt.base_url.rstrip("/") == endpoint(config).base_url):
+        return False
+    rt.stop()
+    rt.start()
+    return rt.running()
+
+
 def ensure_running(config) -> Endpoint:
     """Start the configured local runtime if it is down; external endpoints are left alone."""
     rt = choose_runtime(config)

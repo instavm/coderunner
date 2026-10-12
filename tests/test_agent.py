@@ -148,6 +148,25 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(svc.egress.tainted)
             await svc.llm.aclose()
 
+    async def test_a_failing_runtime_is_restarted_once_and_the_request_retried(self):
+        from coderunner.core.llm import LLMError
+        with FakeOpenAI() as fake:
+            llm = LLM(fake.base_url, "test")
+            restarts = []
+
+            async def recover():
+                restarts.append(True)
+                return True
+            llm.recover = recover
+            fake.script = [{"_status": 500, "error": "Compute error."}, {"role": "assistant", "content": "back"}]
+            self.assertEqual((await llm.chat([{"role": "user", "content": "hi"}]))["content"], "back")
+            self.assertEqual(len(restarts), 1)
+            fake.script = [{"_status": 500, "error": "Compute error."}] * 2      # still failing after a restart
+            with self.assertRaises(LLMError):
+                await llm.chat([{"role": "user", "content": "hi"}])
+            self.assertEqual(len(restarts), 2)
+            await llm.aclose()
+
     async def test_step_limit(self):
         with FakeOpenAI() as fake:
             svc = Svc({"agent": {"max_steps": 3}})
