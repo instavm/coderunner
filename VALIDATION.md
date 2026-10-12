@@ -83,6 +83,13 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
   autocomplete with 403, so no model can finish a flight search there. Qwen3.5-9B with the new
   browser loop took 30 steps in 9 min 47 s (32 minutes before) with no approval prompts, but kept
   retrying the destination field for that reason.
+* booking.com flight search completed end to end by a local model: Ternary Bonsai 2 27B (Prism
+  llama.cpp, 18 GB M3 Pro) in the everyday-browser mode (Chrome for Testing with the extension)
+  set one-way BLR to DEL on 20 November 2026, sorted by price, and read the three cheapest flights
+  (SpiceJet 6:05-9:00 at INR 9,994, Akasa Air 5:00-7:55 at INR 10,363, SpiceJet 21:15-00:10 at
+  INR 10,442) from screenshots, because the result cards keep airline and price out of the
+  accessibility tree. 29 steps in 30.5 minutes, one needless approval prompt (opening a price
+  breakdown), nothing booked.
 * Real home folders (Documents, Desktop, Movies): 169,051 indexable files, of which 163,806 were kept
   only in iCloud; listing one iCloud-only folder had blocked the walk for minutes. With iCloud-only
   files indexed by name and iCloud-only folders not listed, the walk takes 33 s. Source code in git
@@ -145,7 +152,6 @@ measured: they cannot sit beside a 27B or 9B chat model on this Mac.
 * The everyday-browser extension in branded Chrome with the owner's real profile (loaded by hand),
   Brave and Edge, and on Linux; Windows is not supported (no native host registration in the
   registry).
-* A full booking.com flight search completed end to end by a local model.
 * Discovered models on large machines (192-512 GB Macs, multi-GPU, DGX Spark clusters) and the
   on-device ranking among several downloaded candidates.
 * Microsoft Fara1.5-9B (screenshot-based browser specialist) as a second browser driver.
