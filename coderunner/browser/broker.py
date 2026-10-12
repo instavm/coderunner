@@ -78,6 +78,7 @@ SETTLE_START = {"type": 1.5, "load": 1.5}
 SETTLE_START_DEFAULT = 0.6
 SETTLE_QUIET = 0.3
 SETTLE_MOST = 3.0
+BLANK_WAIT = 10.0           # a page with no text yet (a bot check, a script-drawn app) gets this long to show some
 DENIED_PERMISSIONS = ("geolocation", "notifications", "camera", "microphone", "midi", "clipboard-read",
                       "display-capture", "idle-detection", "window-management", "local-fonts",
                       "local-network-access", "payment-handler", "nfc")
@@ -123,6 +124,7 @@ class BrowserBroker:
         self._launched_by: Any = None
         self.decider = decider      # optional decision.ActionCheck: a second opinion on committing steps
         self.origin = "agent"
+        self.blank_wait = BLANK_WAIT
         self._process: Any = None
         self._cdp: CDPPipe | None = None
         self._start_lock = asyncio.Lock()
@@ -783,7 +785,21 @@ class BrowserBroker:
                 "awaitPromise": True, "returnByValue": True}, timeout=SETTLE_MOST + 5)
         try:
             content = await self._render(target, sid, url)
-        except CDPError:
+            deadline = time.monotonic() + self.blank_wait
+            while not content.strip() and time.monotonic() < deadline:
+                # Bot checks redirect to the real page after a few seconds; apps draw theirs late.
+                await asyncio.sleep(0.5)
+                url, now = await self._web_page(target)
+                if now != host:                     # went elsewhere: reading that is a new decision
+                    result.update(url=url, note="The page moved to another site; take a snapshot to read it.")
+                    return result
+                content = await self._render(target, sid, url)
+        except (CDPError, BrowserError):
+            return result
+        info = await self._info(target)
+        result.update(url=info.get("url", url), title=info.get("title", result.get("title", "")))
+        if not content.strip():
+            result["note"] = "The page shows no text yet; it may still be loading. Take a snapshot in a moment."
             return result
         self._seen(target, url, content)
         changes = page_changes(before, content.split("\n")) if before is not None else None

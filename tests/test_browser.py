@@ -325,6 +325,7 @@ class BrokerTestCase(unittest.IsolatedAsyncioTestCase):
         self.launcher = FakeLauncher()
         self.judge = StubJudge()
         self.broker = BrowserBroker(self.config, self.policy, self.audit, launcher=self.launcher, decider=self.judge)
+        self.broker.blank_wait = 0          # fake pages are drawn by the test after navigating
         self.dns = {}
 
         async def resolve(host):
@@ -417,6 +418,21 @@ class NavigationPolicyTests(BrokerTestCase):
 class InteractionPolicyTests(BrokerTestCase):
     browser_config = {"allow": ["shop.example"]}
     rules = [{"kind": "browser.interact", "target": "shop.example", "decision": "allow"}]
+
+    async def test_a_blank_page_gets_time_to_show_text(self):
+        self.broker.blank_wait = 5
+
+        async def draw_later():
+            await asyncio.sleep(0.6)            # a bot check that hands over to the real page
+            self.launcher.browser.ax = SHOP_AX
+        drawing = asyncio.get_running_loop().create_task(draw_later())
+        opened = await self.broker.navigate("https://shop.example/")
+        await drawing
+        self.assertIn('[4] button "Buy now"', opened["content"])
+        self.broker.blank_wait = 0.2
+        self.launcher.browser.ax = []
+        blank = await self.broker.navigate("https://shop.example/empty")
+        self.assertIn("no text yet", blank["note"])
 
     async def test_snapshot_change_detection(self):
         browser, first = await self.load_shop()
