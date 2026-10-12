@@ -11,19 +11,27 @@ from __future__ import annotations
 import math
 
 from . import catalog, evidence, licenses
-from .hardware import GiB, Hardware, cpu_budget
+from .hardware import READ_PER_BANDWIDTH, GiB, Hardware, cpu_budget
 
 GB = 1e9 / GiB                  # decimal GB (artifact sizes) -> GiB (budgets)
 OVERHEAD_GIB = 1.0              # runtime buffers (0.5) + compute graph (0.5)
 GOOD = 0.85
 CONTEXTS = (32768, 16384, 8192)
 MIN_CHAT_PARAMS_B = 4.0         # smaller models produced wrong tool arguments in testing
-MIN_TOK_S = 8.0                 # estimated; slower fits rank below faster ones (agent loops are long)
+MIN_TOK_S = 8.0                 # generation speed below which a model is called slow
 MIN_AGENT_CTX = 16384           # smaller contexts rank below larger ones
-# Chat models are ranked by ability from published benchmarks (evidence.py), then by speed: each doubling
-# above MIN_TOK_S is worth SPEED_WEIGHT of ability, up to FAST_ENOUGH, past which it matters little.
-SPEED_WEIGHT = 0.2
-FAST_ENOUGH = 32.0
+# An agent step reads what changed (a page, a tool result) and writes a short tool call; with the
+# prompt cache, earlier turns are not read again. Its time is what an owner waits for, so it ranks
+# models, not generation speed alone.
+STEP_READ_TOKENS = 2000
+STEP_WRITE_TOKENS = 150
+SLOW_STEP_S = 30.0              # speed counts for nothing at 30 s per step, against below it
+MAX_STEP_S = 90.0               # slower fits rank below faster ones (agent loops are long)
+FAST_STEP_S = 7.5               # faster steps gain little more
+# Chat models are ranked by ability from published benchmarks (evidence.py), then by speed: each halving
+# of the step time below SLOW_STEP_S is worth SPEED_WEIGHT of ability, down to FAST_STEP_S. Quality comes
+# first: a 27B at 98% of its full scores beats a 9B even when its steps take twice as long.
+SPEED_WEIGHT = 0.1
 VISION_BONUS = 0.1
 UNKNOWN_ABILITY = -3.0          # no published scores: after every model that has some
 EMBED_CTX = 8192
@@ -48,9 +56,13 @@ def estimate(entry: dict, hw: Hardware, ctx: int = 32768, runtime: str | None = 
     need = (weights + mmproj) * GB + kv + OVERHEAD_GIB
     fit = "good" if need <= GOOD * hw.budget_gb else "tight" if need <= hw.budget_gb else "no"
     params = max(float(entry.get("params_b") or 0), 1e-6)
-    active_gb = weights * float(entry.get("active_params_b") or params) / params
-    # Bandwidth-bound estimate, scaled by a factor measured for builds whose kernels fall short of it.
-    tok_s = 0.55 * hw.bandwidth_gbs / active_gb * art.get("tok_s_factor", 1.0) if active_gb else 0.0
+    active = float(entry.get("active_params_b") or params)
+    active_gb = weights * active / params
+    # Bandwidth-bound estimate, scaled by a factor measured for builds whose kernels fall short of it,
+    # and by what this machine measured against the estimate (bench.py).
+    tok_s = 0.55 * hw.bandwidth_gbs / active_gb * art.get("tok_s_factor", 1.0) * hw.gen_factor if active_gb else 0.0
+    read_k = hw.read_k or READ_PER_BANDWIDTH.get(hw.gpu, READ_PER_BANDWIDTH["none"]) * hw.bandwidth_gbs
+    read_tok_s = read_k / max(active, 0.1) * art.get("read_factor", 1.0)
     result = {"need_gb": round(need, 2), "fit": fit, "tok_s": round(tok_s, 1), "ctx": ctx}
     if fit == "no" and _can_offload(entry, hw, runtime):
         # llama.cpp --cpu-moe: attention and shared weights (~10%) on the GPU, experts in system RAM.
@@ -60,10 +72,20 @@ def estimate(entry: dict, hw: Hardware, ctx: int = 32768, runtime: str | None = 
         if gpu_need <= hw.budget_gb and ram_need <= ram_budget:
             fit = "good" if gpu_need <= GOOD * hw.budget_gb and ram_need <= GOOD * ram_budget else "tight"
             dense, experts = 0.1 * weights, max(active_gb - 0.1 * weights, 0.5 * active_gb)
-            tok_s = 0.55 / (dense / hw.bandwidth_gbs + experts / hw.ram_bandwidth_gbs)
+            tok_s = 0.55 / (dense / hw.bandwidth_gbs + experts / hw.ram_bandwidth_gbs) * hw.gen_factor
+            read_tok_s /= 2          # experts are copied to the GPU for each batch of prompt tokens
             result = {"need_gb": round(gpu_need, 2), "ram_gb": round(ram_need, 2), "fit": fit,
                       "tok_s": round(tok_s, 1), "ctx": ctx, "offload": True}
+    result["read_tok_s"] = round(read_tok_s, 1)
+    result["step_s"] = round(step_seconds(read_tok_s, tok_s), 1)
     return result
+
+
+def step_seconds(read_tok_s: float, tok_s: float) -> float:
+    """Seconds for one agent step: read what changed, write a tool call."""
+    if read_tok_s <= 0 or tok_s <= 0:
+        return math.inf
+    return STEP_READ_TOKENS / read_tok_s + STEP_WRITE_TOKENS / tok_s
 
 
 def _can_offload(entry: dict, hw: Hardware, runtime: str | None) -> bool:
@@ -107,7 +129,8 @@ def candidate(entry: dict, hw: Hardware, config, role: str = "chat", runtime: st
                        f"{hw.budget_gb:.1f} GB at {est['ctx'] // 1024}K context")
         if est.get("offload"):
             reasons.append(f"experts in system RAM ({est['ram_gb']:.0f} GB)")
-    reasons.append(f"~{est['tok_s']:.0f} tok/s")
+    reasons.append(f"~{est['tok_s']:.0f} tok/s, reads ~{est['read_tok_s']:.0f} tok/s, "
+                   f"~{est['step_s']:.0f} s per agent step{' (measured here)' if hw.measured else ''}")
     if role == "chat":
         reasons.append("vision" if vision else "text only")
     if entry.get("notes"):
@@ -133,13 +156,17 @@ def candidate(entry: dict, hw: Hardware, config, role: str = "chat", runtime: st
 def utility(c: dict) -> float:
     """Benchmark ability, plus what speed and vision are worth to an assistant."""
     ability = UNKNOWN_ABILITY if c.get("ability") is None else c["ability"]
-    speed = SPEED_WEIGHT * math.log2(max(min(c["tok_s"], FAST_ENOUGH), 1.0) / MIN_TOK_S)
+    step = min(max(c.get("step_s", math.inf), FAST_STEP_S), 16 * SLOW_STEP_S)
+    speed = SPEED_WEIGHT * math.log2(SLOW_STEP_S / step)
     return ability + speed + (VISION_BONUS if c.get("vision") else 0.0)
 
 
 def _order(c: dict) -> tuple:
-    return (c["fit"] != "good", c["ctx"] < MIN_AGENT_CTX, c["tok_s"] < MIN_TOK_S, c["license"] != "allow",
-            -utility(c), c["rank"])
+    # Utilities within the same tenth are a tie (the speed estimates are not finer than that); published
+    # benchmark ability breaks it.
+    ability = UNKNOWN_ABILITY if c.get("ability") is None else c["ability"]
+    return (c["fit"] != "good", c["ctx"] < MIN_AGENT_CTX, c.get("step_s", math.inf) > MAX_STEP_S,
+            c["license"] != "allow", -round(utility(c), 1), -ability, c["rank"])
 
 
 def _order_by_rank(c: dict) -> tuple:

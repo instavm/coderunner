@@ -141,6 +141,9 @@ class Runtime:
     def installed(self, entry: dict) -> bool:
         return False
 
+    def remove(self, entry: dict) -> None:
+        """Delete the model's weights (setup does this for models it downloaded and then rejected)."""
+
     def vision(self, entry: dict, model: str | None = None) -> bool:
         return catalog.has_vision(entry, self.name)
 
@@ -149,17 +152,37 @@ class Runtime:
                 "running": self.running()}
 
 
+def parse_version(text: str) -> tuple[int, int, int] | None:
+    import re
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
+    return tuple(int(part) for part in match.groups()) if match else None   # type: ignore[return-value]
+
+
 class OllamaRuntime(Runtime):
+    """Ollama, preferring CodeRunner's own copy (installed when the owner's is too old) over the system one.
+
+    EmbeddingGemma 2 needs Ollama 0.36.0 and decision models (/v1/systemone) 0.35.0. When the installed
+    Ollama is older, macOS gets a pinned release, checked against its published SHA-256, under
+    CODERUNNER_HOME/runtime; the owner's own Ollama app is left alone.
+    """
+
     name = "ollama"
     APP_BINARY = "/Applications/Ollama.app/Contents/Resources/ollama"
+    MIN_VERSION = (0, 36, 0)
+    RELEASE = "0.40.3"
+    BUILDS = {"darwin": ("ollama-darwin.tgz", "a2d1d906a2c8febd9cb18f5c183854d0a6db5dc522940d68b0c0ed048e8dfdea")}
 
     def __init__(self, config=None, host: str = "127.0.0.1:11434"):
         super().__init__(config)
         self.host = host
         self.api = f"http://{host}"
         self.base_url = f"{self.api}/v1"
+        self.managed_dir = paths.home() / "runtime" / f"ollama-{self.RELEASE}"
 
     def binary(self) -> str | None:
+        managed = self.managed_dir / "ollama"
+        if managed.is_file() and os.access(managed, os.X_OK):
+            return str(managed)
         return shutil.which("ollama") or (self.APP_BINARY if os.path.exists(self.APP_BINARY) else None)
 
     def available(self) -> bool:
@@ -167,6 +190,79 @@ class OllamaRuntime(Runtime):
 
     def running(self) -> bool:
         return _ok(f"{self.api}/api/version")
+
+    def version(self) -> tuple[int, int, int] | None:
+        """The running server's version (what answers requests), else the binary's."""
+        try:
+            return parse_version(httpx.get(f"{self.api}/api/version", timeout=2, trust_env=False).json()["version"])
+        except (httpx.HTTPError, ValueError, KeyError):
+            pass
+        binary = self.binary()
+        if not binary:
+            return None
+        try:
+            out = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        # "ollama version is X"; with a server of another version running it adds "client version is Y".
+        found = [parse_version(line) for line in (out.stdout + out.stderr).splitlines() if "client version" in line]
+        return found[0] if found and found[0] else parse_version(out.stdout + out.stderr)
+
+    def outdated(self) -> bool:
+        found = self.version()
+        return found is not None and found < self.MIN_VERSION
+
+    def can_install(self, system: str | None = None) -> bool:
+        return (system or platform.system().lower()) in self.BUILDS
+
+    def install(self, progress: Progress | None = None) -> str:
+        """Download the pinned Ollama release into CODERUNNER_HOME/runtime (macOS)."""
+        import hashlib
+        import tarfile
+        system = platform.system().lower()
+        if system not in self.BUILDS:
+            raise RuntimeError(f"Update Ollama to {'.'.join(map(str, self.MIN_VERSION))} or later. "
+                               f"{install_hint(runtime='ollama')}")
+        asset, sha256 = self.BUILDS[system]
+        url = f"https://github.com/ollama/ollama/releases/download/v{self.RELEASE}/{asset}"
+        self.managed_dir.mkdir(parents=True, exist_ok=True)
+        archive = self.managed_dir / asset
+        if progress:
+            progress(f"downloading Ollama {self.RELEASE}")
+        digest = hashlib.sha256()
+        with httpx.stream("GET", url, follow_redirects=True, timeout=httpx.Timeout(30, read=300)) as response:
+            response.raise_for_status()
+            with open(archive, "wb") as handle:
+                for chunk in response.iter_bytes(1 << 20):
+                    handle.write(chunk)
+                    digest.update(chunk)
+        if digest.hexdigest() != sha256:
+            archive.unlink()
+            raise RuntimeError(f"Ollama {self.RELEASE} ({asset}) does not match its published checksum")
+        with tarfile.open(archive) as tar:
+            tar.extractall(self.managed_dir, filter="data")     # refuses absolute paths, links out, devices
+        archive.unlink()
+        binary = self.managed_dir / "ollama"
+        if not binary.is_file():
+            raise RuntimeError(f"Ollama {self.RELEASE} has no ollama binary")
+        return str(binary)
+
+    def ensure_current(self, progress: Progress | None = None) -> None:
+        """Make sure the Ollama that will serve requests is new enough, installing CodeRunner's copy if needed."""
+        if not self.outdated():
+            return
+        found = ".".join(map(str, self.version() or ()))
+        need = ".".join(map(str, self.MIN_VERSION))
+        if self.running():
+            if not self.stop():
+                raise RuntimeError(
+                    f"Ollama {found} is running (probably the Ollama app), but EmbeddingGemma 2 and decision "
+                    f"models need {need} or later. Update the app (menu bar: Restart to Update) or quit it so "
+                    "CodeRunner can start its own copy, then run setup again.")
+        if self.can_install():
+            self.install(progress)
+        if self.outdated():
+            raise RuntimeError(f"Ollama {found} is older than {need}. {install_hint(runtime='ollama')}")
 
     def _env(self) -> dict:
         return {**os.environ, "OLLAMA_HOST": self.host}
@@ -179,8 +275,8 @@ class OllamaRuntime(Runtime):
         proc = _spawn("ollama", [self.binary(), "serve"], self._env())
         _wait_ready(self.running, proc, timeout, "ollama serve", str(paths.assistant_dir() / "logs" / "ollama.log"))
 
-    def stop(self) -> None:
-        _terminate("ollama", "ollama")
+    def stop(self) -> bool:
+        return _terminate("ollama", "ollama")     # only a server CodeRunner started
 
     def tag(self, entry: dict) -> str:
         return entry["artifacts"]["ollama"]["tag"]
@@ -209,6 +305,13 @@ class OllamaRuntime(Runtime):
             return False
         tag = self.tag(entry)
         return tag in names or f"{tag}:latest" in names
+
+    def remove(self, entry: dict) -> None:
+        for name in (self.model_id(entry), self.tag(entry)):
+            try:
+                httpx.request("DELETE", f"{self.api}/api/delete", json={"model": name}, timeout=30, trust_env=False)
+            except httpx.HTTPError:
+                pass
 
     @staticmethod
     def modelfile(tag: str, ctx: int) -> str:
@@ -294,6 +397,20 @@ class LlamaCppRuntime(Runtime):
         record = self._state().get("models", {}).get(entry["id"]) or {}
         return bool(record.get("model")) and os.path.exists(record["model"])
 
+    def remove(self, entry: dict) -> None:
+        state = self._state()
+        record = state.get("models", {}).pop(entry["id"], None) or {}
+        root = self.root.resolve()
+        for key in ("model", "mmproj"):
+            path = pathlib.Path(record[key]).resolve() if record.get(key) else None
+            if path and root in path.parents:          # only files CodeRunner downloaded
+                for part in sorted(path.parent.glob(path.name.split("-00001-of-")[0] + "*")) \
+                        if "-00001-of-" in path.name else [path]:
+                    part.unlink(missing_ok=True)
+        if (state.get("active") or {}).get("id") == entry["id"]:
+            state.pop("active")
+        self._save(state)
+
     def prepare(self, entry: dict, ctx: int, offload: bool = False) -> str:
         state = self._state()
         record = state.get("models", {}).get(entry["id"])
@@ -311,9 +428,12 @@ class LlamaCppRuntime(Runtime):
         cmd = [self.binary() or "llama-server", "-m", active["model"]]
         if active.get("mmproj"):
             cmd += ["--mmproj", active["mmproj"]]
-        # --cache-ram 0 avoids a prompt-cache bug that leaks state across conversations.
+        # --cache-ram 0 avoids a prompt-cache bug that leaks state across conversations. Two slots over one
+        # shared cache: the step judge gets its own slot instead of evicting the agent's cached conversation.
+        # Measured with Qwen3.5-9B on an M3 Pro: with one slot every step after a judge call re-read the
+        # whole prompt (6 s growing to 19 s per step); with two, steps read only what was new (3.6 s).
         cmd += ["--jinja", "-c", str(active["ctx"]), "--host", "127.0.0.1", "--port", str(self.port),
-                "--cache-ram", "0", "-np", "1", "--alias", active["alias"]]
+                "--cache-ram", "0", "-np", "2", "--kv-unified", "--alias", active["alias"]]
         if active.get("offload"):
             cmd += ["--cpu-moe"]          # experts in system RAM, the rest on the GPU
         peers = [node for node in (self.config.get("models.cluster") or []) if node.get("host")] if self.config else []
@@ -371,6 +491,8 @@ class PrismRuntime(LlamaCppRuntime):
         system = hw.os if hw else platform.system().lower()
         arch = (hw.arch if hw else platform.machine()).lower().replace("amd64", "x86_64").replace("arm64e", "arm64")
         gpu = hw.gpu if hw else ""
+        if (system, arch) == ("linux", "aarch64") and gpu == "nvidia":
+            return None     # the arm64 build has no CUDA: on a DGX Spark it would run on the CPU
         return cls.BUILDS.get((system, arch, gpu)) or cls.BUILDS.get((system, arch, ""))
 
     def binary(self) -> str | None:
@@ -431,12 +553,9 @@ class PrismRuntime(LlamaCppRuntime):
         # run out of output budget). The context cache is kept at 8 bits, as the memory estimate assumes.
         # The weights are locked in memory: memory-mapped, macOS evicts them under pressure and re-reads
         # them from disk, which slowed a 250-token prompt to 0.27 tokens/s on an 18 GB Mac.
-        # Two slots over one shared cache: the step judge gets its own slot instead of evicting the agent's
-        # cached conversation, which would otherwise be re-read (about 70 tokens/s here) after every check.
-        cmd = super().command(active)
-        cmd[cmd.index("-np") + 1] = "2"
-        return cmd + ["--kv-unified", "--chat-template-kwargs", json.dumps({"reasoning_effort": "medium"}),
-                      "-ctk", "q8_0", "-ctv", "q8_0", "-ngl", "99", "--load-mode", "mlock"]
+        # The judge's own slot matters most here: a re-read conversation goes at about 70 tokens/s.
+        return super().command(active) + ["--chat-template-kwargs", json.dumps({"reasoning_effort": "medium"}),
+                                          "-ctk", "q8_0", "-ctv", "q8_0", "-ngl", "99", "--load-mode", "mlock"]
 
     def start(self, timeout: float = 600) -> None:
         if self.running():

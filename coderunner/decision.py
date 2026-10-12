@@ -76,7 +76,9 @@ class DecisionModel:
         """
         chat = config.get("models.chat") or ""
         model = model or config.get("models.decision") or ("" if dedicated_only else chat)
-        base_url = base_url or config.get("models.base_url") or ""
+        # A dedicated decision model is served by Ollama, also when another runtime serves the chat model.
+        dedicated = config.get("models.decision_url") or "" if model != chat else ""
+        base_url = dedicated or base_url or config.get("models.base_url") or ""
         if not model or not base_url:
             return None
         api = config.get("models.decision_api") or ("chat" if model == chat else "systemone")

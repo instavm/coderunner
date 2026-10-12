@@ -14,12 +14,13 @@ import threading
 from typing import Callable
 
 from ..llm import LLM
-from . import catalog, fit, hardware, licenses, smoketest
+from . import bench, catalog, fit, hardware, licenses, smoketest
 from .hub import Hub
 from .runtimes import LlamaCppRuntime, OllamaRuntime, PrismRuntime, Runtime, choose_runtime, install_hint
 
 MAX_FALLBACKS = 2
 WORTH_A_NOTE = 0.2          # utility gain (fit.utility) worth suggesting a change to the machine
+SLOWER_THAN_ESTIMATED = 1.5     # measured step time / estimate past which setup looks at the next model
 LOCAL = ("ollama", "llama.cpp", "prism")
 
 
@@ -98,6 +99,8 @@ class Endpoint:
 
 def _hardware(config, hw: hardware.Hardware | None) -> hardware.Hardware:
     hw = hw or hardware.detect(float(config.get("sandbox.memory_gb") or 1))
+    if not hw.measured:
+        hw = bench.apply(hw, bench.load(hw))      # speeds measured on this machine replace spec-sheet ones
     peers = [node for node in (config.get("models.cluster") or []) if node.get("host")]
     if peers and hw.nodes == 1:
         # Machines pooled over llama.cpp RPC (e.g. several DGX Sparks): each lends most of its memory.
@@ -160,7 +163,7 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
                                      budget_gb=hardware.apple_budget(hw.ram_gb, limit, hw.sandbox_memory_gb))
         bigger = _discovered(config, raised, rt, llama=llama) if runtime is None else []    # builds that now fit
         better = max((c for c in _ranked(raised, config, rt, prism, bigger, llama)
-                      if c["ok"] and c["tok_s"] >= fit.MIN_TOK_S and c["ctx"] >= fit.MIN_AGENT_CTX
+                      if c["ok"] and c["step_s"] <= fit.MAX_STEP_S and c["ctx"] >= fit.MIN_AGENT_CTX
                       and fit.utility(c) > fit.utility(chosen) + WORTH_A_NOTE), key=fit.utility, default=None)
         if better:
             notes.append(f"Raising the GPU memory limit allows {better['id']} ({better['need_gb']:.0f} GB): "
@@ -170,17 +173,21 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
         # Mixture-of-experts models with their experts in system RAM, which only llama.cpp does.
         unserved += [{**c, "missing_runtime": True}
                      for c in fit.recommend(hw, config, "chat", "llama.cpp") if c.get("offload")]
-    missing = max((c for c in unserved if c["tok_s"] >= fit.MIN_TOK_S and c["fit"] != "no"
+    missing = max((c for c in unserved if c["step_s"] <= fit.MAX_STEP_S and c["fit"] != "no"
                    and (chosen is None or fit.utility(c) > fit.utility(chosen) + WORTH_A_NOTE)),
                   key=fit.utility, default=None)
     if missing:
         notes.append(f"{missing['id']} would rank higher but needs {missing['runtime']}: "
                      f"{install_hint(hw, missing['runtime'])}")
     chosen_rt = rt
-    if chosen and chosen.get("runtime") == "prism":
+    if chosen and chosen.get("runtime") == "prism" and prism is not None:      # else Prism is the main runtime
         chosen_rt = prism
     elif chosen and chosen.get("runtime") == "llama.cpp" and llama is not None:
         chosen_rt = llama
+    ollama = art == "ollama" or (chosen_rt is not rt and OllamaRuntime(config).available())
+    embedder = next(iter(fit.recommend(hw, config, "embedding", "ollama")), None) if ollama else None
+    judge = decision_pick(hw, config, chosen["need_gb"] + (embedder or {}).get("need_gb", 0.0)) \
+        if ollama and chosen else None
     return {
         "hardware": hw.to_dict(),
         "runtime": chosen_rt.describe() if chosen_rt else None,
@@ -189,9 +196,10 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
         "rejected": [c for c in candidates if not c["ok"]],
         "license": ({"decision": chosen["license"], "reason": chosen["license_reason"],
                      "link": chosen["license_link"]} if chosen else None),
-        # Embeddings come from Ollama, also when Prism's build serves the chat model.
-        "embedding": next(iter(fit.recommend(hw, config, "embedding", "ollama")), None)
-        if art == "ollama" or (chosen_rt is not rt and OllamaRuntime(config).available()) else None,
+        # Embeddings and the decision model come from Ollama, also when another runtime serves the chat model.
+        "embedding": embedder,
+        # None: no decision model fits beside the chat model, which then judges browser steps itself.
+        "decision": judge,
         "notes": notes,
     }
 
@@ -264,7 +272,9 @@ def _external(config, rt: Runtime, model_id: str | None, progress, smoke) -> dic
 
 def setup(config, model_id: str | None = None, runtime: str | Runtime | None = None, accept_license: bool = False,
           progress: Callable[[str], None] = print, hw: hardware.Hardware | None = None, embedding: bool = True,
-          smoke=smoketest.run, hub: Hub | None = None) -> dict:
+          smoke=smoketest.run, hub: Hub | None = None, measure=None, decision: bool = True) -> dict:
+    """measure times the model once it passes the smoke test (default bench.measure; False skips it);
+    decision also sets up a decision model to judge browser steps when memory allows."""
     hw = _hardware(config, hw)
     rt = _runtime(config, hw, runtime)
     if rt is None:
@@ -273,6 +283,11 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
         return {"ok": False, "error": f"{rt.name} is not available. {install_hint(hw, rt.name)}"}
     if rt.name not in LOCAL:
         return _external(config, rt, model_id, progress, smoke)
+    if hasattr(rt, "ensure_current"):
+        try:
+            rt.ensure_current(progress)       # EmbeddingGemma 2 and decision models need a recent Ollama
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
 
     prism = _prism(config, hw, rt) if runtime is None else None     # only when the runtime is auto-chosen
     llama = _llama(config, rt) if runtime is None else None
@@ -296,7 +311,7 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
 
     attempts = []
     main = rt
-    for cand in queue:
+    for index, cand in enumerate(queue):
         if cand.get("runtime") == "prism" and prism is not None:
             rt = prism
         elif cand.get("runtime") == "llama.cpp" and llama is not None:
@@ -306,20 +321,22 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
         entry = _entry(cand["id"], extra)
         if not cand.get("vision") and "vision" in entry.get("roles", []):
             entry = {**entry, "roles": [r for r in entry["roles"] if r != "vision"]}    # projector does not fit
-        decision, why, link = _license_gate(entry, rt, config, accept_license, hub)
-        if decision == "ask":
+        verdict, why, link = _license_gate(entry, rt, config, accept_license, hub)
+        if verdict == "ask":
             return {"ok": False, "needs_license": {"model": entry["id"], "reason": why, "link": link},
                     "attempts": attempts,
                     "error": f"{entry['id']} needs license acceptance: {why}. Re-run with accept_license=True."}
-        if decision == "block":
+        if verdict == "block":
             attempts.append({"model": entry["id"], "error": why})
             progress(f"skipping {entry['id']}: {why}")
             continue
         progress(f"{entry['id']} via {rt.name}: {'; '.join(cand['reasons'][:3])}")
+        pulled = False
         try:
             if rt.name == "ollama":
                 rt.start()  # the Ollama API does the pulling
             if not rt.installed(entry):
+                pulled = True
                 rt.pull(entry, progress)
             model = rt.prepare(entry, cand["ctx"], offload=True) if cand.get("offload") else \
                 rt.prepare(entry, cand["ctx"])
@@ -330,16 +347,41 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
         except Exception as exc:
             attempts.append({"model": entry["id"], "error": str(exc)})
             progress(f"{entry['id']} failed: {exc}")
+            _discard(rt, entry, pulled, progress)
             continue
         attempts.append({"model": entry["id"], "smoke": result})
         for check in result["checks"]:
             progress(f"  {'pass' if check['passed'] else 'FAIL'} {check['name']}: {check['detail']} ({check['seconds']}s)")
         if not all(c["passed"] for c in result["checks"] if c["name"] != "vision"):
             progress(f"{entry['id']} failed the smoke test")
+            _discard(rt, entry, pulled, progress)
             continue
         if vision and not result["passed"]:
             vision = False
             progress("vision check failed; continuing with text only")
+        speed = _measure(measure, rt, model, progress)
+        if speed:
+            attempts[-1]["speed"] = speed
+            cal = bench.calibration(hw, entry, cand.get("runtime") or _artifact_runtime(rt), speed, cand["ctx"])
+            bench.save(cal)
+            progress(f"measured {speed['read_tok_s']:.0f} tok/s reading, {speed['gen_tok_s']:.1f} tok/s writing: "
+                     f"{speed['step_s']:.0f} s per agent step (estimated {cand['step_s']:.0f} s)")
+            if not model_id and speed["step_s"] > SLOWER_THAN_ESTIMATED * cand["step_s"]:
+                # Slower here than the spec sheet said: rank the remaining candidates again with what was
+                # measured, and move on if one of them is now clearly better.
+                measured = bench.apply(hw, cal)
+                now = fit.candidate(entry, measured, config, "chat", cand.get("runtime"))
+                # This model's own measurement, not the machine factors (which are kept within a range).
+                now.update(tok_s=speed["gen_tok_s"], read_tok_s=speed["read_tok_s"], step_s=speed["step_s"])
+                rest = sorted((fit.candidate(_entry(c["id"], extra), measured, config, "chat", c.get("runtime"))
+                               for c in queue[index + 1:]), key=fit._order)
+                if rest and rest[0]["ok"] and fit._order(rest[0]) < fit._order(now) and (
+                        now["step_s"] > fit.MAX_STEP_S or fit.utility(rest[0]) > fit.utility(now) + WORTH_A_NOTE):
+                    progress(f"{entry['id']} is slower here than estimated; trying {rest[0]['id']}")
+                    attempts[-1]["error"] = "slower on this machine than estimated"
+                    queue[index + 1:] = rest
+                    _discard(rt, entry, pulled, progress)
+                    continue
 
         config.set("models.runtime", rt.name)
         config.set("models.base_url", rt.base_url)
@@ -353,11 +395,113 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
                 embedder.start()
             config.set("models.embedding", _setup_embedding(config, embedder, hw, progress))
             config.set("models.embedding_url", embedder.base_url if embedder is not rt else "")
+        if decision:
+            judge_rt = main if main is not None and main.name == "ollama" else rt
+            _setup_decision(config, judge_rt, rt, hw, cand["need_gb"] + _embedding_need(config, hw), progress)
         config.save()
         return {"ok": True, "runtime": rt.name, "base_url": rt.base_url, "model": model, "entry": entry["id"],
                 "ctx": cand["ctx"], "vision": vision, "embedding": config.get("models.embedding") or "",
                 "smoke": result, "attempts": attempts}
     return {"ok": False, "error": "No model passed the tool-calling smoke test", "attempts": attempts}
+
+
+def _discard(rt: Runtime, entry: dict, pulled: bool, progress) -> None:
+    """Delete the weights of a model this setup downloaded and then did not use."""
+    if pulled:
+        try:
+            rt.remove(entry)
+            progress(f"removed {entry['id']}'s weights")
+        except Exception as exc:
+            progress(f"could not remove {entry['id']}: {exc}")
+
+
+def _measure(measure, rt: Runtime, model: str, progress) -> dict | None:
+    if measure is False:
+        return None
+    measure = measure or bench.measure
+    progress(f"timing {model} on this machine")
+    try:
+        return _run_async(measure(rt.base_url, model, api_key=rt.api_key))
+    except Exception as exc:
+        progress(f"could not time {model}: {exc}")
+        return None
+
+
+def _embedding_need(config, hw) -> float:
+    tag = config.get("models.embedding") or ""
+    for cand in fit.recommend(hw, config, "embedding", "ollama"):
+        if catalog.get(cand["id"])["artifacts"]["ollama"]["tag"] == tag:
+            return cand["need_gb"]
+    return 0.0
+
+
+def decision_pick(hw: hardware.Hardware, config, used_gb: float) -> dict | None:
+    """The most accurate decision model that fits well beside the models already using `used_gb`."""
+    left = dataclasses.replace(hw, budget_gb=max(0.0, hw.budget_gb - used_gb))
+    return next((c for c in fit.recommend(left, config, "decision", "ollama")
+                 if c["fit"] == "good" and c["license"] == "allow"), None)
+
+
+def _setup_decision(config, rt: Runtime | None, chat_rt: Runtime, hw, used_gb: float, progress) -> None:
+    """A dedicated decision model judges browser steps when memory allows; otherwise the chat model does."""
+    for key in ("models.decision", "models.decision_api", "models.decision_url"):
+        config.set(key, "")
+    if rt is None or rt.name != "ollama":
+        return
+    pick = decision_pick(hw, config, used_gb)
+    if pick is None:
+        progress("no decision model fits beside the chat model; the chat model judges browser steps")
+        return
+    entry = catalog.get(pick["id"])
+    tag = entry["artifacts"]["ollama"]["tag"]
+    try:
+        if not rt.installed(entry):
+            rt.pull(entry, progress)
+        from ..decision import COMMIT_CRITERIA, COMMIT_QUESTION, DecisionModel
+
+        async def probe():
+            model = DecisionModel(rt.base_url, tag, api="systemone", timeout=120)
+            try:
+                return await model.probability('Site: example.com\nAction: click link "Next page"',
+                                               COMMIT_QUESTION, COMMIT_CRITERIA, {"commit", "unclear"})
+            finally:
+                await model.aclose()
+        _run_async(probe())
+    except Exception as exc:
+        progress(f"decision model {tag} unavailable ({exc}); the chat model judges browser steps")
+        return
+    config.set("models.decision", tag)
+    config.set("models.decision_api", "systemone")
+    config.set("models.decision_url", rt.base_url if rt is not chat_rt else "")
+    config.set("models.decision_threshold", entry["decision"]["threshold"])
+    progress(f"decision model: {tag} ({entry['decision']['measured']})")
+
+
+def bench_here(config, model: str | None = None, measure=None, hw: hardware.Hardware | None = None) -> dict:
+    """Time the configured model (or `model` on the configured runtime), save the calibration and re-plan."""
+    hw = hw or hardware.detect(float(config.get("sandbox.memory_gb") or 1))
+    ep = ensure_running(config)
+    model = model or ep.model
+    if not model or not ep.base_url:
+        return {"ok": False, "error": "No model is configured yet; run `coderunner setup` first."}
+    measured = _run_async((measure or bench.measure)(ep.base_url, model, api_key=ep.api_key))
+    runtime = config.get("models.runtime") or ""
+    entry_id = model.split(":")[0].removeprefix("coderunner-")
+    entry = next((e for e in catalog.models() if e["id"] == entry_id), None)
+    cal = None
+    if entry is not None:
+        cal = bench.calibration(hw, entry, runtime if runtime in catalog.ARTIFACT else None, measured,
+                                int(config.get("models.context") or 32768))
+        bench.save(cal)
+    planned = plan(config, bench.apply(hw, cal or bench.load(hw)))
+    version = None
+    if runtime == "ollama":
+        found = OllamaRuntime(config).version()
+        version = ".".join(map(str, found)) if found else None
+    picks = [c for c in [planned["model"], *planned["alternatives"]] if c][:5]
+    return {"ok": True, "model": model, "measured": measured, "calibration": cal, "plan": planned,
+            "report": bench.report(bench.apply(hw, cal or bench.load(hw)), cal or bench.load(hw), picks,
+                                   {"name": runtime, "version": version})}
 
 
 def endpoint(config) -> Endpoint:

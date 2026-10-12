@@ -323,6 +323,16 @@ def cmd_models(args, config: Config) -> int:
         from .models import smoketest
         endpoint = manager.endpoint(config)
         _print(asyncio.run(smoketest.run(endpoint.base_url, endpoint.model, vision=endpoint.vision)))
+    elif args.action == "bench":
+        result = manager.bench_here(config, model=args.model)
+        if not result.get("ok"):
+            print(result["error"])
+            return 1
+        if args.report:
+            print(result["report"], end="")
+        else:
+            _print({key: result[key] for key in ("model", "measured", "calibration")} |
+                   {"plan": result["plan"]["model"], "decision": result["plan"]["decision"]})
     return 0
 
 
@@ -533,10 +543,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=50)
     p.set_defaults(func=cmd_audit)
 
-    p = sub.add_parser("models")
-    p.add_argument("action", choices=["plan", "setup", "test", "discover"])
+    p = sub.add_parser("models", help="plan, set up, test, discover, or bench (time the model on this machine)")
+    p.add_argument("action", choices=["plan", "setup", "test", "discover", "bench"])
     p.add_argument("--model"), p.add_argument("--runtime")
     p.add_argument("--accept-license", action="store_true")
+    p.add_argument("--report", action="store_true", help="bench: print a summary to share (no names or paths)")
     p.set_defaults(func=cmd_models)
 
     p = sub.add_parser("secrets", help="Secrets injected at the network boundary, never shown to the sandbox")

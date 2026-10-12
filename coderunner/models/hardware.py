@@ -40,6 +40,10 @@ NVIDIA_BANDWIDTH = {
 # NVIDIA systems whose GPU shares the system's memory (nvidia-smi reports no dedicated VRAM).
 NVIDIA_UNIFIED = ("GB10", "Thor", "Orin")
 DEFAULT_BANDWIDTH = {"apple": 100, "nvidia": 300, "amd": 300, "none": 50}
+# Prompt reading is bound by compute, not bandwidth. Until this machine is measured, reading speed is
+# guessed as (factor x bandwidth) / active parameters in billions. Apple: measured on an M3 Pro, where
+# Qwen3.5-9B and Bonsai 27B both read at about 14.5 x 150 GB/s / params. The others are rough.
+READ_PER_BANDWIDTH = {"apple": 14.5, "nvidia": 60.0, "amd": 30.0, "none": 8.0}
 
 
 @dataclasses.dataclass
@@ -60,6 +64,10 @@ class Hardware:
     unified: bool = False        # GPU shares system memory (Apple silicon, DGX Spark / GB10, Jetson)
     ram_bandwidth_gbs: float = 80.0   # system RAM, for MoE experts kept in RAM (desktop DDR5 dual channel)
     nodes: int = 1               # machines pooled over llama.cpp RPC (models.cluster)
+    # Measured on this machine by `coderunner models bench` (bench.py); spec-sheet estimates until then.
+    gen_factor: float = 1.0      # measured / estimated generation speed
+    read_k: float = 0.0          # prompt reading: tokens/s x billions of active parameters (0: estimate)
+    measured: str = ""           # what the measurement used, e.g. "qwen3.5-9b on ollama, 2026-10-12"
 
     def to_dict(self) -> dict:
         return {k: round(v, 2) if isinstance(v, float) else v for k, v in dataclasses.asdict(self).items()}
