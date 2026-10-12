@@ -20,6 +20,7 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
 | Gateways (`test_gateway.py`) | Sandbox surface exposes only model and fetch; owner surface needs the admin token or a paired cookie; pairing codes are single use and burn after failures; CSRF header and Origin checks; Tailscale owner restriction |
 | Agent (`test_agent.py`) | Tool calls, text-form tool calls from local models, invalid arguments fed back, step limit, untrusted wrapping, injection flagging, taint |
 | Browser (`test_browser.py`) | URL and host rules, policy kinds per action, password and card fields, accessibility snapshots and change detection, plus an end-to-end run against the installed Chrome (headless) including a redirect to a private address being blocked and no leftover processes |
+| Everyday browser (`test_chrome.py`, `test_chrome_e2e.py`) | Extension ID pinned by its key; the native host relays both ways, answers commands too large for the browser and refuses other extensions; the daemon socket is 0600 and refuses a wrong token or origin and a second browser; the broker drives a fake extension through the bridge, says how to connect when it is missing, and stops when it goes away; `browser connect` registers the host for installed browsers only. With Chromium or Chrome for Testing (`CODERUNNER_CHROME_E2E=/path/to/chrome`): the real extension opens the assistant's tab in a CodeRunner group, types, clicks, answers a confirm(), takes a screenshot, puts a page's popup into the group, blocks a link to a private address and a cross-site frame from a blocked host, hides and refuses the owner's other tab (and the Storage domain), lets go of a tab dragged out of the group and of idle tabs (attaching again on the next step), and leaves the browser open on stop. `CODERUNNER_E2E_HEADFUL=1` adds a normal window with no debugging switches (navigator.webdriver is false); `CODERUNNER_E2E_LIVE=1` adds booking.com's destination suggestions |
 | Daemon (`test_daemon.py`) | Real HTTP servers: owner chat, memory recall across conversations, sandbox model proxy, credential separation, scheduled delivery, and the agent driving the real browser where a "Buy now" click waits for an owner approval over the API |
 | Models (`test_models.py`) | Hardware parsing (Apple, NVIDIA, AMD, CPU, WSL2), budgets, KV-cache sizing, picks per memory tier from 8 GB Macs to 512 GB, expert offload on NVIDIA, runtime routing to llama.cpp, cluster flags, GPU-limit notes, licence resolution through base models, resumable verified downloads, smoke-test pass/fail including the wrong-argument case below |
 | Discovery (`test_discover.py`) | Hugging Face listings, configs and file trees from a fake hub: filters, sharded builds, KV and MoE sizes, build choice per machine, known breakages, stale caches; published scores read from eval results, ranking by them (a model scored like Granite 4.2 30B ranks below Qwen3.5-9B), quantization losses, GPU-limit notes |
@@ -70,9 +71,17 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
   MiMo-V2.6-Distill-Qwen-9B, Granite 4.2 8B and Mage-VL besides the catalog's picks. With the
   specialist filter, 22 remain; published scores were read for 25 repos, and every discovered model
   that fits 18 GB scores below Qwen3.5-9B, which stays the pick.
+* Everyday-browser mode with Chrome for Testing 155 in a temporary profile: all of the above pass
+  (three runs). In a normal window with only the extension, booking.com's flight form opened, "Going
+  to" expanded, and typing "Delhi" listed DEL Delhi International Airport, Hindon and Noida, with no
+  403 and no "Something's not right"; `navigator.webdriver` was false. The suggestions arrive about
+  a second after the typing, so the result of the typing step does not include them yet.
 
 ## Not yet validated
 
+* The everyday-browser extension in branded Chrome with the owner's real profile (loaded by hand),
+  Brave and Edge, and on Linux; Windows is not supported (no native host registration in the
+  registry).
 * A full booking.com flight search completed end to end by a local model.
 * Discovered models on large machines (192-512 GB Macs, multi-GPU, DGX Spark clusters) and the
   on-device ranking among several downloaded candidates.

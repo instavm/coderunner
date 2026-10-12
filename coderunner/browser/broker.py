@@ -448,11 +448,13 @@ def page_changes(before: list[str], after: list[str]) -> str | None:
 # ---- broker ---------------------------------------------------------------
 
 class BrowserBroker:
-    def __init__(self, config, policy, audit, launcher=None, decider=None):
+    def __init__(self, config, policy, audit, launcher=None, decider=None, chrome=None):
         self.config = config
         self.policy = policy
         self.audit = audit
-        self.launcher = launcher or default_launcher
+        self.launcher = launcher    # None: chosen by browser.mode each time the browser starts
+        self.chrome = chrome        # extension.ChromeBridge, for browser.mode "chrome"
+        self._launched_by: Any = None
         self.decider = decider      # optional decision.ActionCheck: a second opinion on committing steps
         self.origin = "agent"
         self._process: Any = None
@@ -487,8 +489,23 @@ class BrowserBroker:
         self._dns: dict[str, tuple[float, str | None]] = {}
 
     @property
+    def mode(self) -> str:
+        """dedicated: a browser with the assistant's own profile; chrome: a tab group in the owner's browser."""
+        return "chrome" if self.config.get("browser.mode") == "chrome" else "dedicated"
+
+    @property
     def headless(self) -> bool:
-        return bool(self.config.get("browser.headless", False))
+        return self.mode == "dedicated" and bool(self.config.get("browser.headless", False))
+
+    def _launcher(self):
+        if self.launcher is not None:
+            return self.launcher
+        if self.mode == "chrome":
+            if self.chrome is None:
+                raise BrowserError("browser.mode is chrome, but the extension bridge is not running")
+            from .extension import ExtensionLauncher
+            return ExtensionLauncher(self.chrome)
+        return default_launcher
 
     def running(self) -> bool:
         return (self._process is not None and self._process.poll() is None
@@ -588,14 +605,16 @@ class BrowserBroker:
             if self._process is not None:          # closed by the owner, crashed or lost the pipe
                 await self._shutdown()
                 self.audit.write("browser.restart")
-            executable = self.launcher.find_browser(self.config)
+            launcher = self._launcher()
+            executable = launcher.find_browser(self.config)
             if not executable:
                 raise BrowserError("No Chrome, Brave, Edge or Chromium found. Install one or set browser.executable.")
             profile = paths.assistant_dir() / "browser-profile"
             try:
-                self._process, self._cdp = await self.launcher.launch(executable, profile, self.headless)
+                self._process, self._cdp = await launcher.launch(executable, profile, self.headless)
             except (OSError, CDPError) as exc:
                 raise BrowserError(f"Could not start the browser: {exc}") from None
+            self._launched_by = launcher
             try:
                 await self._prepare(self._cdp)
             except CDPError as exc:              # never run without the hardening in place
@@ -636,8 +655,8 @@ class BrowserBroker:
                 await asyncio.to_thread(process.wait, 5)
         if cdp is not None:
             cdp.close()
-        await asyncio.to_thread(self.launcher.terminate, process)
-        self._process, self._cdp = None, None
+        await asyncio.to_thread((self._launched_by or self.launcher or default_launcher).terminate, process)
+        self._process, self._cdp, self._launched_by = None, None, None
         self._reset()
 
     def _on_closed(self) -> None:
