@@ -87,3 +87,11 @@ SCROLL_JS = r"""function(dx, dy) {
   return {moved: el.scrollLeft !== before[0] || el.scrollTop !== before[1],
           percent: Math.round(100 * el.scrollTop / range)};
 }"""
+# The element at a point and its ancestors, nearest first (through shadow roots), for actions a model
+# places by coordinates on a screenshot.
+ANCESTORS_JS = r"""function() {
+  const out = [];
+  for (let n = this.nodeType === 1 ? this : this.parentElement; n && out.length < 40;
+       n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null) out.push(n);
+  return out;
+}"""

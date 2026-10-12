@@ -17,7 +17,8 @@ from coderunner.core.audit import AuditLog
 from coderunner.browser import BrowserBroker, BrowserError
 from coderunner.browser import launcher
 from coderunner.browser.page import page_changes, render_ax
-from coderunner.browser.scripts import CONTAINS_JS, DESCRIBE_JS, SCROLL_JS, SELECT_OPTION_JS, SETTLE_JS
+from coderunner.browser.scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, SCROLL_JS, SELECT_OPTION_JS,
+                                        SETTLE_JS)
 from coderunner.browser.urls import parse_url
 from coderunner.browser.cdp import CDPError, CDPPipe
 from coderunner.core.config import Config
@@ -41,6 +42,7 @@ class FakeBrowser:
         self.selected = {}
         self.focused = None
         self.hit = None
+        self.parents = {}     # backendNodeId -> parent's, for hit tests that land inside an element
         self.image = b"\xff\xd8 first"
         self.on_move = None   # called when the pointer moves, to let tests change the page
         self.closed = False
@@ -100,7 +102,15 @@ class FakeBrowser:
         if method == "Accessibility.getFullAXTree":
             return {"nodes": self.ax}
         if method == "DOM.describeNode":
-            return {"node": self.nodes.get(params["backendNodeId"], {"nodeName": "BUTTON", "attributes": []})}
+            backend = params.get("backendNodeId") or int(params["objectId"].split(":")[1])
+            return {"node": {**self.nodes.get(backend, {"nodeName": "BUTTON", "attributes": []}), "backendNodeId": backend}}
+        if method == "Runtime.getProperties":
+            chain, node = [], int(params["objectId"].split(":")[1])
+            while node is not None:
+                chain.append(node)
+                node = self.parents.get(node)
+            return {"result": [{"name": str(i), "value": {"objectId": f"node:{b}"}} for i, b in enumerate(chain)]
+                    + [{"name": "length", "value": {"value": len(chain)}}]}
         if method == "DOM.getBoxModel":
             self._box = params["backendNodeId"]
             return {"model": {"border": [10, 20, 110, 20, 110, 40, 10, 40]}}
@@ -121,8 +131,12 @@ class FakeBrowser:
             return {"result": {"value": {"moved": True, "percent": 20}}}
         if method == "Runtime.callFunctionOn":
             backend = int(params["objectId"].split(":")[1])
+            if params["functionDeclaration"] == ANCESTORS_JS:
+                return {"result": {"objectId": f"chain:{backend}"}}
             if params["functionDeclaration"] == CONTAINS_JS:
                 other = int(params["arguments"][0]["objectId"].split(":")[1])
+                while other is not None and other != backend:
+                    other = self.parents.get(other)
                 return {"result": {"value": other == backend}}
             if params["functionDeclaration"] == SELECT_OPTION_JS:
                 choice, options = params["arguments"][0]["value"].lower(), self.options.get(backend)
@@ -545,6 +559,31 @@ class InteractionPolicyTests(BrokerTestCase):
         self.assertFalse((await self.broker.type(2, "1 Main St", submit=True))["ok"])
         self.assertEqual(self.kinds(), ["browser.sensitive"])
         self.assertEqual(len(browser.sent("Input.insertText")), 1)
+
+    async def test_a_point_on_a_screenshot_is_clicked_as_the_element_there(self):
+        browser, _ = await self.load_shop()
+        browser.hit = 111                                   # "Buy now": the judge's say still applies
+        self.assertFalse((await self.broker.click_at(60, 30))["ok"])
+        self.assertEqual(self.kinds(), ["browser.sensitive"])
+        browser.parents = {126: 109, 109: 2, 4: 2, 2: 1}   # the inner text of the search box
+        browser.hit = 126
+        clicked = await self.broker.click_at(60, 30)
+        self.assertTrue(clicked["ok"], clicked)
+        self.assertEqual(browser.sent("DOM.getBoxModel")[-1]["backendNodeId"], 109)
+        browser.hit = 4                                     # a paragraph: nothing to click
+        nothing = await self.broker.click_at(60, 30)
+        self.assertIn("Nothing the assistant can click", nothing["error"])
+        self.assertEqual(self.kinds(), ["browser.sensitive"])
+
+    async def test_typing_goes_to_the_focused_field_with_the_usual_checks(self):
+        browser, _ = await self.load_shop()
+        self.assertIn("No text field has the focus", (await self.broker.type_focused("rye"))["error"])
+        browser.focused = 109
+        typed = await self.broker.type_focused("sourdough")
+        self.assertTrue(typed["ok"], typed)
+        self.assertEqual(browser.sent("Input.insertText")[-1]["text"], "sourdough")
+        browser.focused = 110                               # a password field: never typed
+        self.assertFalse((await self.broker.type_focused("hunter2"))["ok"])
 
     async def test_press(self):
         browser, _ = await self.load_shop()
