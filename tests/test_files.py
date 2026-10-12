@@ -12,15 +12,15 @@ from unittest import mock
 
 import httpx
 
-from coderunner import native
+from coderunner.core import native
 from coderunner.agent import RunContext, build_registry
-from coderunner.audit import AuditLog
-from coderunner.config import Config
+from coderunner.core.audit import AuditLog
+from coderunner.core.config import Config
 from coderunner.files import Embedder, FileAccessError, FileIndex, pack, unpack
 from coderunner.files import power, search
 from coderunner.files.extract import HELPER_SOURCE, passages, wordy
 from coderunner.files.vectors import VectorIndex, code_bytes, signs
-from coderunner.store import Store
+from coderunner.core.store import Store
 from fakes import Svc
 
 CONCEPTS = ["invoice", "dentist", "holiday", "image", "audio"]

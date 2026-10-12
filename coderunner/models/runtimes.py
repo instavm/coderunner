@@ -19,7 +19,7 @@ from typing import Callable
 
 import httpx
 
-from .. import paths
+from ..core import paths
 from . import catalog
 from .hardware import Hardware
 from .hub import Hub

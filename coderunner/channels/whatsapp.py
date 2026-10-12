@@ -38,7 +38,7 @@ import secrets
 import time
 from typing import Any
 
-from ..process import find_binary, run, terminate
+from ..core.process import find_binary, run, terminate
 from .base import IncomingMessage, NO_VOICE, NO_WORDS, PollingChannel, split_text
 
 SEEN_KEY = "whatsapp:seen"

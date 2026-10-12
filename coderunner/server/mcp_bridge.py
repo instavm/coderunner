@@ -11,8 +11,8 @@ from __future__ import annotations
 import asyncio
 import json
 
-from . import paths
-from .config import Config
+from ..core import paths
+from ..core.config import Config
 from .gateway import admin_request
 
 

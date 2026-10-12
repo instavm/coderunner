@@ -15,8 +15,8 @@ import unittest
 import wave
 from unittest import mock
 
-from coderunner import native, process
-from coderunner.config import Config
+from coderunner.core import native, process
+from coderunner.core.config import Config
 from coderunner.voice import Segment, Voice, VoiceUnavailable, find_binary, run
 from coderunner.voice import apple as apple_module
 from coderunner.voice import qwen as qwen_module

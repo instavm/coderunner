@@ -27,7 +27,7 @@ from typing import Any
 
 import httpx
 
-from ..policy import Approval
+from ..safety.policy import Approval
 from .base import (MAX_MEDIA, NO_VOICE, NO_WORDS, IncomingMessage, PollingChannel, numbered_chunks, split_text,
                    utf16_len)
 

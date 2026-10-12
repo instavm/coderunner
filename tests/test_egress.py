@@ -6,12 +6,12 @@ import unittest
 
 import httpx
 
-from coderunner.audit import AuditLog
-from coderunner.config import Config
-from coderunner.egress import EgressDenied, EgressGuard, EgressProxy, fetch
-from coderunner.policy import Policy
-from coderunner.secrets_store import SecretStore
-from coderunner.store import Store
+from coderunner.core.audit import AuditLog
+from coderunner.core.config import Config
+from coderunner.safety.egress import EgressDenied, EgressGuard, EgressProxy, fetch
+from coderunner.safety.policy import Policy
+from coderunner.safety.secrets_store import SecretStore
+from coderunner.core.store import Store
 
 TOKEN = "proxy-token-for-tests-0123456789abcdef"
 

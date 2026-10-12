@@ -19,7 +19,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .. import paths
+from ..core import paths
 
 SHARD = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 

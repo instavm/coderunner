@@ -13,17 +13,17 @@ from types import SimpleNamespace
 
 import httpx
 
-from coderunner.audit import AuditLog
+from coderunner.core.audit import AuditLog
 from coderunner.channels import IncomingMessage, load_channels
 from coderunner.channels.imessage import IMessageChannel, IMessageSendError
 from coderunner.channels.signal import SignalChannel, SignalError
 from coderunner.channels.base import NO_VOICE, PAIRED, split_text, utf16_len
 from coderunner.channels.telegram import TelegramChannel
 from coderunner.channels.whatsapp import WhatsAppChannel, handle_of
-from coderunner.config import Config
-from coderunner.policy import Action, Policy
-from coderunner.secrets_store import SecretStore
-from coderunner.store import Store
+from coderunner.core.config import Config
+from coderunner.safety.policy import Action, Policy
+from coderunner.safety.secrets_store import SecretStore
+from coderunner.core.store import Store
 
 TOKEN = "123456:SECRET-bot_token-value"
 OWNER = "+15550001111"

@@ -26,8 +26,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .audit import AuditLog
-from .config import Config
+from ..core.audit import AuditLog
+from ..core.config import Config
 from .policy import Action, Decision, Policy, _matches
 from .secrets_store import PLACEHOLDER, SecretStore
 

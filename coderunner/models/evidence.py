@@ -20,7 +20,7 @@ import pathlib
 import statistics
 from typing import Callable
 
-from .. import paths
+from ..core import paths
 
 SNAPSHOT = pathlib.Path(__file__).with_name("evidence.json")
 # Official benchmark datasets ("dataset:task") that separate general assistants. Left out: benchmarks

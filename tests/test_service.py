@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from coderunner import service
+from coderunner.server import service
 
 LABEL = "io.instavm.coderunner"
 
@@ -138,14 +138,14 @@ class SystemdTests(ServiceTestCase):
     def test_install_writes_unit_and_enables(self):
         runner = FakeRunner()
         message = self.unit(runner).install()
-        text = (self.root / "systemd" / "coderunner.service").read_text()
+        text = (self.root / "systemd" / "coderunner.server.service").read_text()
         self.assertIn("ExecStart=/usr/bin/python3 -m coderunner daemon\n", text)
         self.assertIn("Restart=on-failure\n", text)
         self.assertIn("RestartSec=2\n", text)
         self.assertIn("WantedBy=default.target\n", text)
         self.assertIn(f"Environment=CODERUNNER_HOME={self.root / 'home'}\n", text)
         self.assertEqual(runner.calls, [["systemctl", "--user", "daemon-reload"],
-                                        ["systemctl", "--user", "enable", "--now", "coderunner.service"]])
+                                        ["systemctl", "--user", "enable", "--now", "coderunner.server.service"]])
         self.assertIn("loginctl enable-linger me", message)
 
     def test_paths_with_spaces_and_percent_are_quoted(self):
@@ -161,15 +161,15 @@ class SystemdTests(ServiceTestCase):
             0, "LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=777\n", "")})
         unit = self.unit(runner)
         info = unit.status()
-        self.assertEqual(runner.calls[-1], ["systemctl", "--user", "show", "coderunner.service",
+        self.assertEqual(runner.calls[-1], ["systemctl", "--user", "show", "coderunner.server.service",
                                             "--property=LoadState,ActiveState,SubState,MainPID"])
         self.assertTrue(info["running"] and info["loaded"])
         self.assertEqual(info["pid"], 777)
         unit.restart()
-        self.assertEqual(runner.calls[-1], ["systemctl", "--user", "restart", "coderunner.service"])
+        self.assertEqual(runner.calls[-1], ["systemctl", "--user", "restart", "coderunner.server.service"])
         unit.install()
         unit.uninstall()
-        self.assertEqual(runner.calls[-2:], [["systemctl", "--user", "disable", "--now", "coderunner.service"],
+        self.assertEqual(runner.calls[-2:], [["systemctl", "--user", "disable", "--now", "coderunner.server.service"],
                                              ["systemctl", "--user", "daemon-reload"]])
         self.assertFalse(unit.path.exists())
 
@@ -187,7 +187,7 @@ class ManagerTests(ServiceTestCase):
                          pathlib.Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist")
         with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.root / "xdg")}):
             self.assertEqual(service.SystemdUnit(runner=FakeRunner()).path,
-                             self.root / "xdg" / "systemd" / "user" / "coderunner.service")
+                             self.root / "xdg" / "systemd" / "user" / "coderunner.server.service")
 
 
 if __name__ == "__main__":

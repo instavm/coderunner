@@ -48,6 +48,26 @@ container images push instavm/coderunner
 
 </details>
 
+## Code layout
+
+The assistant (`coderunner/`) runs on the host; the sandbox server (`server.py`, `auth.py`, `Dockerfile`)
+runs inside the VM. Each package's `__init__.py` lists its modules.
+
+| Package | What it holds |
+| --- | --- |
+| `core` | settings, paths, database, audit log, model client, local tool runner, Swift helper builder |
+| `safety` | policy and approvals, the System One step judge, injection guard, egress proxy, secrets |
+| `server` | the daemon, HTTP APIs and web page, run-at-login, Tailscale access, MCP bridge |
+| `agent` | the tool-calling loop, its tools, memory and scheduled tasks |
+| `models` | hardware detection, published-score ranking, discovery, runtimes, setup and timing |
+| `browser` | the browser broker, page text and changes, URL rules, the tab-group extension |
+| `files` | finding, extracting, embedding and searching the owner's files |
+| `voice` | speech to text (Apple, Qwen3-ASR) and spoken replies |
+| `sandbox` | the VM drivers (Apple container, Docker) and the client for the server inside |
+| `channels`, `connectors` | messaging apps and macOS apps |
+
+Tests run with `PYTHONPATH=.:tests python -m unittest discover -s tests`.
+
 ## Code Style
 
 - Follow PEP 8 for Python code

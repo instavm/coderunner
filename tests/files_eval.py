@@ -93,10 +93,10 @@ def build(folder: pathlib.Path) -> None:
 async def main() -> None:
     tmp = pathlib.Path(tempfile.mkdtemp())
     os.environ["CODERUNNER_HOME"] = str(tmp / "crhome")
-    from coderunner.audit import AuditLog
-    from coderunner.config import Config
+    from coderunner.core.audit import AuditLog
+    from coderunner.core.config import Config
     from coderunner.files import Embedder, FileIndex
-    from coderunner.store import Store
+    from coderunner.core.store import Store
     folder = tmp / "Eval"
     folder.mkdir()
     build(folder)

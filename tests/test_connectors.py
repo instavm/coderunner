@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from datetime import datetime
 
-from coderunner.config import Config
+from coderunner.core.config import Config
 from coderunner.connectors import ConnectorError, all_tools, check, load_connectors, redact
 from coderunner.connectors import macos
 

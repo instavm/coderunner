@@ -2,7 +2,7 @@
 
 It transcribes one set language (the Mac's own unless configured) from those Apple supports; the
 system downloads a language's model the first time it is needed. Results come per phrase with times.
-The helper is built on first use by coderunner.native.
+The helper is built on first use by coderunner.core.native.
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ import pathlib
 import platform
 import sys
 
-from .. import native
-from ..process import run
+from ..core import native
+from ..core.process import run
 from .common import Segment, UnsupportedLanguage, VoiceUnavailable
 
 SOURCE = pathlib.Path(__file__).with_name("apple_speech.swift")

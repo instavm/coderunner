@@ -9,9 +9,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from .. import paths
-from ..llm import LLM, LLMError
-from ..policy import current_run
+from ..core import paths
+from ..core.llm import LLM, LLMError
+from ..safety.policy import current_run
 from .tools import ToolRegistry
 
 SYSTEM = """You are a private assistant running entirely on {owner}'s own computer.

@@ -16,18 +16,18 @@ from typing import Any, Callable
 
 import uvicorn
 
-from . import paths
-from .agent import Agent, RunContext, build_registry
-from .audit import AuditLog
-from .config import Config
-from .egress import EgressGuard, EgressProxy
+from ..core import paths
+from ..agent import Agent, RunContext, build_registry
+from ..core.audit import AuditLog
+from ..core.config import Config
+from ..safety.egress import EgressGuard, EgressProxy
 from .gateway import admin_app, sandbox_app
-from .guard import Guard
-from .llm import LLM
-from .policy import Approval, Policy
-from .sandbox import SandboxClient, driver_for
-from .secrets_store import SecretStore
-from .store import Store
+from ..safety.guard import Guard
+from ..core.llm import LLM
+from ..safety.policy import Approval, Policy
+from ..sandbox import SandboxClient, driver_for
+from ..safety.secrets_store import SecretStore
+from ..core.store import Store
 
 log = logging.getLogger("coderunner")
 
@@ -111,13 +111,13 @@ class Daemon:
                        api_token=paths.api_token, admin_token=paths.admin_token)
         svc.egress = EgressGuard(self.config, svc.policy, audit)
 
-        from .models import manager
+        from ..models import manager
         endpoint = manager.endpoint(self.config)
         svc.llm = LLM(endpoint.base_url, endpoint.model, endpoint.api_key)
         svc.llm_api_key = endpoint.api_key
         svc.vision = endpoint.vision
         svc.embedding_model = endpoint.embedding_model or ""
-        from .decision import ActionCheck, DecisionModel
+        from ..safety.decision import ActionCheck, DecisionModel
         runtime = {"base_url": endpoint.base_url, "api_key": endpoint.api_key}
         # Injection scoring needs a fast dedicated model; the assistant's own model would slow every step.
         svc.guard = Guard(DecisionModel.from_config(self.config, model=self.config.get("models.guard") or "",
@@ -128,14 +128,14 @@ class Daemon:
         url = self.config.get("sandbox.url") or driver.default_url()
         svc.sandbox = SandboxClient(url, paths.api_token())
 
-        from .browser import BrowserBroker
+        from ..browser import BrowserBroker
         if os.name == "posix":
-            from .browser.extension import ChromeBridge
+            from ..browser.extension import ChromeBridge
             svc.chrome = ChromeBridge(audit=audit)
         svc.browser = BrowserBroker(self.config, svc.policy, audit,
                                     decider=ActionCheck.from_config(self.config, audit, **runtime), chrome=svc.chrome)
 
-        from .memory import Memory
+        from ..agent.memory import Memory
         # Embeddings can come from a different runtime than the chat model, e.g. EmbeddingGemma in
         # Ollama beside a chat model served by llama.cpp.
         embedding_url = self.config.get("models.embedding_url") or endpoint.base_url
@@ -144,29 +144,29 @@ class Daemon:
         if svc.embedding_model:
             async def embedder(texts: list[str]) -> list[list[float]]:
                 return await embed_llm.embed(texts, model=svc.embedding_model)
-        from .files import embedding_profile
+        from ..files import embedding_profile
         profile = embedding_profile(svc.embedding_model)
         svc.memory = Memory(store, audit, embedder, query_prefix=profile["query"], doc_prefix=profile["doc"])
 
-        from .files import Embedder, FileIndex
+        from ..files import Embedder, FileIndex
         # Multimodal embeddings (text, images, audio) come from Ollama's native embed API.
         file_model = self.config.get("files.embedding") or svc.embedding_model
         ollama = self.config.get("models.runtime") in ("ollama", "auto") or bool(self.config.get("models.embedding_url"))
         svc.files = FileIndex(self.config, store, audit,
                               Embedder(embedding_url, file_model) if file_model and ollama else None)
 
-        from .scheduler import Scheduler
+        from ..agent.scheduler import Scheduler
         svc.scheduler = Scheduler(store, audit, self._run_schedule, self._deliver_schedule,
                                   tz=self.config.get("owner.timezone") or None)
 
-        from .voice import Voice
+        from ..voice import Voice
         svc.voice = Voice(self.config)      # usable once `coderunner voice setup` has run, no restart needed
         svc.files.transcriber = svc.voice.timed                         # used with files.transcribe on
 
-        from .connectors import load_connectors
+        from ..connectors import load_connectors
         svc.connectors = load_connectors(self.config)
 
-        from .channels import load_channels
+        from ..channels import load_channels
         svc.channels = load_channels(self.config, svc, self._on_channel_message)
 
         svc.registry = build_registry(svc)
@@ -294,7 +294,7 @@ class Daemon:
             with contextlib.suppress(NotImplementedError, RuntimeError):
                 loop.add_signal_handler(sig, stop.set)
 
-        from .models import manager
+        from ..models import manager
         try:
             await asyncio.to_thread(manager.ensure_running, cfg)
         except Exception as exc:

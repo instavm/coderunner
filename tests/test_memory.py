@@ -3,9 +3,9 @@ import pathlib
 import tempfile
 import unittest
 
-from coderunner.audit import AuditLog
-from coderunner.memory import MAX_CHARS, Memory, fts_query
-from coderunner.store import Store
+from coderunner.core.audit import AuditLog
+from coderunner.agent.memory import MAX_CHARS, Memory, fts_query
+from coderunner.core.store import Store
 
 # Fake embedding space: one axis per concept, plus a weak "other" axis so
 # unrelated texts are near-orthogonal but never zero vectors.

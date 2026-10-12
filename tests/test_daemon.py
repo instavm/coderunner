@@ -23,9 +23,9 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
         self.env.stop()
 
     def make_daemon(self, fake: FakeOpenAI):
-        from coderunner.config import Config
-        from coderunner.daemon import Daemon
-        from coderunner import paths
+        from coderunner.core.config import Config
+        from coderunner.server.daemon import Daemon
+        from coderunner.core import paths
         paths.ensure_dirs()
         self.admin_port, self.sandbox_port = free_port(), free_port()
         config = Config({
@@ -41,7 +41,7 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
         return Daemon(config)
 
     async def test_chat_through_owner_api_and_model_through_sandbox_gateway(self):
-        from coderunner import paths
+        from coderunner.core import paths
         with FakeOpenAI() as fake:
             daemon = self.make_daemon(fake)
             self.assertEqual(daemon.svc.llm.model, "fake-model")
@@ -90,9 +90,9 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
     async def test_agent_uses_local_browser_with_owner_approval(self):
         import http.server
         import threading
-        from coderunner import paths
+        from coderunner.core import paths
         from coderunner.browser.launcher import find_browser
-        from coderunner.config import Config
+        from coderunner.core.config import Config
 
         if find_browser(Config()) is None:
             self.skipTest("no Chromium-family browser installed")
@@ -179,7 +179,7 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(daemon.svc.scheduler.get(created["id"])["enabled"])
 
     async def test_missing_sandbox_network_is_audited_once(self):
-        from coderunner.daemon import _bind_error
+        from coderunner.server.daemon import _bind_error
         with FakeOpenAI() as fake:
             daemon = self.make_daemon(fake)
             # TEST-NET-1 is never assigned to a local interface, like a VM bridge that is not up yet.
@@ -192,7 +192,7 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
                 if len(sleeps) == 3:
                     raise asyncio.CancelledError
 
-            with mock.patch("coderunner.daemon.asyncio.sleep", fake_sleep):
+            with mock.patch("coderunner.server.daemon.asyncio.sleep", fake_sleep):
                 with self.assertRaises(asyncio.CancelledError):
                     await daemon._serve_with_retry(None, lambda: "192.0.2.1", free_port(), "sandbox")
             failures = [r for r in daemon.svc.audit.tail(50) if r["event"] == "gateway.bind_failed"]

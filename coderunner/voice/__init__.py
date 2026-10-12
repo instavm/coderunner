@@ -15,7 +15,7 @@ parakeet_model, mlx_whisper, mlx_whisper_model, tts (say|piper|kokoro), say_voic
 piper_model, kokoro, kokoro_voice, timeout. Binary keys take a path when the tool is not on PATH.
 """
 
-from ..process import find_binary, run, terminate
+from ..core.process import find_binary, run, terminate
 from .common import STT_HINT, TTS_HINT, Segment, UnsupportedLanguage, VoiceUnavailable
 from .service import Voice
 

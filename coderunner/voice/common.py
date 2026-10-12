@@ -7,7 +7,7 @@ import pathlib
 import wave
 from typing import Callable
 
-from ..process import run
+from ..core.process import run
 
 STT_HINT = "To set up speech to text, run `coderunner voice setup` on the assistant's computer."
 TTS_HINT = ("Spoken replies need ffmpeg and a text-to-speech engine: macOS `say`, `piper` with "

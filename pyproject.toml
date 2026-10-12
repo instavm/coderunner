@@ -28,14 +28,17 @@ packages = [
     "coderunner.browser",
     "coderunner.channels",
     "coderunner.connectors",
+    "coderunner.core",
     "coderunner.files",
     "coderunner.models",
+    "coderunner.safety",
     "coderunner.sandbox",
+    "coderunner.server",
     "coderunner.voice",
 ]
 
 [tool.setuptools.package-data]
-"coderunner" = ["web/*.html"]
+"coderunner.server" = ["web/*.html"]
 "coderunner.models" = ["catalog.json", "evidence.json"]
 "coderunner.browser" = ["extension/*.json", "extension/*.js"]
 "coderunner.files" = ["helper.swift"]

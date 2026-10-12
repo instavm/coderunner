@@ -17,8 +17,8 @@ import platform
 import sys
 import wave
 
-from .. import paths
-from ..process import run
+from ..core import paths
+from ..core.process import run
 from .common import STT_HINT, Progress, Segment, VoiceUnavailable
 
 # llama.cpp's official build, checked against the SHA-256 GitHub publishes for each asset.

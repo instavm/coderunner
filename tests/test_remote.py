@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from coderunner import remote
+from coderunner.server import remote
 
 TS = "/fake/bin/tailscale"
 HOST = "studio.tail1234.ts.net"

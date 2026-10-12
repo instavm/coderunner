@@ -29,8 +29,8 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from .egress import EgressDenied, fetch
-from .policy import current_run
+from ..safety.egress import EgressDenied, fetch
+from ..safety.policy import current_run
 
 WEB_DIR = pathlib.Path(__file__).parent / "web"
 DEVICE_COOKIE = "cr_device"
@@ -254,7 +254,7 @@ def admin_app(svc, daemon) -> Starlette:
 
     async def voice_message(request: Request):
         """Transcribe a recording from the web page (the client then sends the text as a chat message)."""
-        from .voice import STT_HINT
+        from ..voice import STT_HINT
         voice = getattr(svc, "voice", None)
         if voice is None or not voice.available():
             return JSONResponse({"error": STT_HINT}, status_code=503)
@@ -295,7 +295,7 @@ def admin_app(svc, daemon) -> Starlette:
         reads untrusted content, its sensitive actions need fresh approval, and after it also
         reads private data, sharing that data somewhere new needs approval.
         """
-        from .agent import RunContext
+        from ..agent import RunContext
         body = await request.json()
         client = str(body.get("client", "local"))[:64]
         ctx = RunContext(conversation=f"mcp:{client}", origin=f"mcp:{principal(request)}")

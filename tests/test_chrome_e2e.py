@@ -16,12 +16,12 @@ import threading
 import unittest
 from unittest import mock
 
-from coderunner.audit import AuditLog
+from coderunner.core.audit import AuditLog
 from coderunner.browser import BrowserBroker, extension, launcher
 from coderunner.browser.cdp import CDPError
-from coderunner.config import Config
-from coderunner.policy import Policy
-from coderunner.store import Store
+from coderunner.core.config import Config
+from coderunner.safety.policy import Policy
+from coderunner.core.store import Store
 from test_browser import StubJudge
 
 CHROME = os.environ.get("CODERUNNER_CHROME_E2E", "")

@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from coderunner import paths
-from coderunner.config import Config
+from coderunner.core import paths
+from coderunner.core.config import Config
 from coderunner.models import catalog, discover, evidence, manager
 from test_models import FakeLlama, FakeRuntime, apple, linux, nvidia
 

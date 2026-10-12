@@ -23,7 +23,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from .. import native
+from ..core import native
 from .kinds import DOCS
 
 HELPER_SOURCE = pathlib.Path(__file__).with_name("helper.swift")

@@ -15,13 +15,13 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
-from coderunner.audit import AuditLog
-from coderunner.config import Config
-from coderunner.egress import EgressGuard
-from coderunner.guard import Guard
-from coderunner.policy import Policy
-from coderunner.secrets_store import SecretStore
-from coderunner.store import Store
+from coderunner.core.audit import AuditLog
+from coderunner.core.config import Config
+from coderunner.safety.egress import EgressGuard
+from coderunner.safety.guard import Guard
+from coderunner.safety.policy import Policy
+from coderunner.safety.secrets_store import SecretStore
+from coderunner.core.store import Store
 
 
 def free_port() -> int:
@@ -33,7 +33,7 @@ def free_port() -> int:
 class FakeOpenAI:
     """Replies come from `script`: each item is a message dict or a callable(request_json) -> message dict.
 
-    Requests from the step judge (coderunner.decision) are answered by `judge(state) -> bool` instead,
+    Requests from the step judge (coderunner.safety.decision) are answered by `judge(state) -> bool` instead,
     so they do not consume the script; by default every step is judged ordinary.
     """
 

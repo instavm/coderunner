@@ -8,7 +8,7 @@ import pathlib
 import shutil
 import tempfile
 
-from ..process import find_binary, run
+from ..core.process import find_binary, run
 from . import installed
 from .apple import AppleSpeech
 from .common import STT_HINT, Progress, Segment, VoiceUnavailable, joined, to_wav

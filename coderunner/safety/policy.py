@@ -36,9 +36,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable
 
-from .audit import AuditLog
-from .config import Config
-from .store import Store
+from ..core.audit import AuditLog
+from ..core.config import Config
+from ..core.store import Store
 
 
 class Decision(str, Enum):

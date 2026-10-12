@@ -21,8 +21,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from ..config import Config
-from ..policy import Approval
+from ..core.config import Config
+from ..safety.policy import Approval
 from ..voice import STT_HINT
 
 

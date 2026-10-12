@@ -5,10 +5,10 @@ import unittest
 
 import httpx
 
-from coderunner.audit import AuditLog
-from coderunner.config import Config
-from coderunner.decision import ActionCheck, DecisionModel, describe
-from coderunner.guard import WARNING, Guard
+from coderunner.core.audit import AuditLog
+from coderunner.core.config import Config
+from coderunner.safety.decision import ActionCheck, DecisionModel, describe
+from coderunner.safety.guard import WARNING, Guard
 
 
 class DecisionTestCase(unittest.IsolatedAsyncioTestCase):

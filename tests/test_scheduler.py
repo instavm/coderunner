@@ -5,9 +5,9 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from coderunner.audit import AuditLog
-from coderunner.scheduler import Scheduler, is_one_shot, parse_spec
-from coderunner.store import Store
+from coderunner.core.audit import AuditLog
+from coderunner.agent.scheduler import Scheduler, is_one_shot, parse_spec
+from coderunner.core.store import Store
 
 NY = ZoneInfo("America/New_York")
 FRI = datetime(2026, 10, 9, 10, 0, tzinfo=NY)  # Friday

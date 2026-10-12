@@ -32,7 +32,7 @@ import tempfile
 import time
 from typing import Any, Callable
 
-from .. import paths
+from ..core import paths
 from .cdp import CDPError, CDPPipe
 
 HOST_NAME = "com.coderunner.browser"

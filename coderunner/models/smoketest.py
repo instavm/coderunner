@@ -12,7 +12,7 @@ import struct
 import time
 import zlib
 
-from ..llm import LLM
+from ..core.llm import LLM
 
 TOOLS = [
     {"type": "function", "function": {

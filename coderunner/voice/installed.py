@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pathlib
 
-from .. import paths
-from ..process import find_binary, run
+from ..core import paths
+from ..core.process import find_binary, run
 from .common import Segment, seconds
 
 

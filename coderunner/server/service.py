@@ -25,10 +25,10 @@ import sys
 import time
 from typing import Callable
 
-from . import paths
+from ..core import paths
 
 LABEL = "io.instavm.coderunner"
-UNIT = "coderunner.service"
+UNIT = "coderunner.server.service"
 SERVICE_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess]
@@ -48,7 +48,7 @@ def _python() -> str:
 
 def _package_root() -> str | None:
     """Source checkout to put on PYTHONPATH when coderunner is not installed into site-packages."""
-    root = pathlib.Path(__file__).resolve().parent.parent
+    root = pathlib.Path(__file__).resolve().parents[2]
     return None if root.name in ("site-packages", "dist-packages") else str(root)
 
 

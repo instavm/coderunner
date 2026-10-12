@@ -17,12 +17,12 @@ import unittest
 from unittest import mock
 
 from coderunner import cli
-from coderunner.audit import AuditLog
+from coderunner.core.audit import AuditLog
 from coderunner.browser import BrowserBroker, extension
 from coderunner.browser.chrome_host import FRAME, NATIVE
-from coderunner.config import Config
-from coderunner.policy import Policy
-from coderunner.store import Store
+from coderunner.core.config import Config
+from coderunner.safety.policy import Policy
+from coderunner.core.store import Store
 from test_browser import SHOP_AX, FakeBrowser, StubJudge
 
 HOST = pathlib.Path(extension.__file__).with_name("chrome_host.py")

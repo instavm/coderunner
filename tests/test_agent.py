@@ -2,9 +2,9 @@ import json
 import unittest
 
 from coderunner.agent import Agent, RunContext, build_registry
-from coderunner.decision import DecisionModel
-from coderunner.guard import Guard
-from coderunner.llm import LLM, parse_text_tool_calls
+from coderunner.safety.decision import DecisionModel
+from coderunner.safety.guard import Guard
+from coderunner.core.llm import LLM, parse_text_tool_calls
 from fakes import FakeOpenAI, Svc, tool_call
 
 

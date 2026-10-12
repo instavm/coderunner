@@ -18,7 +18,8 @@ import time
 
 import httpx
 
-from .. import __version__, paths
+from .. import __version__
+from ..core import paths
 from . import catalog, fit
 from .hardware import Hardware
 

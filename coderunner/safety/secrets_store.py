@@ -13,7 +13,7 @@ import os
 import re
 import threading
 
-from . import paths
+from ..core import paths
 
 PLACEHOLDER = re.compile(r"\{\{secret:([A-Za-z0-9_.-]{1,64})\}\}")
 NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")

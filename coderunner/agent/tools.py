@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ..browser.broker import KEYS
-from ..policy import Action
+from ..safety.policy import Action
 
 if TYPE_CHECKING:
     from .loop import RunContext

@@ -7,7 +7,7 @@ import shutil
 import sys
 import tempfile
 
-from ..process import find_binary, run
+from ..core.process import find_binary, run
 from .common import TTS_HINT, VoiceUnavailable, ffmpeg
 
 

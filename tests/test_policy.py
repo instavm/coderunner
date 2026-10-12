@@ -4,10 +4,10 @@ import pathlib
 import unittest
 from types import SimpleNamespace
 
-from coderunner.audit import AuditLog
-from coderunner.config import Config
-from coderunner.policy import Action, Decision, Policy, current_run
-from coderunner.store import Store
+from coderunner.core.audit import AuditLog
+from coderunner.core.config import Config
+from coderunner.safety.policy import Action, Decision, Policy, current_run
+from coderunner.core.store import Store
 
 
 def make_policy(data=None):

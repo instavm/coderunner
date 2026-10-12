@@ -13,8 +13,8 @@ from unittest import mock
 
 import httpx
 
-from coderunner.config import Config
-from coderunner import decision as decision_module
+from coderunner.core.config import Config
+from coderunner.safety import decision as decision_module
 from coderunner.models import bench, catalog, evidence, fit, hardware, licenses, manager, runtimes, smoketest
 from coderunner.models.hub import Hub, HubError
 

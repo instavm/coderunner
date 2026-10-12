@@ -13,9 +13,10 @@ import threading
 import time
 from typing import Any
 
-from . import __version__, paths
-from .config import Config
-from .gateway import admin_request
+from . import __version__
+from .core import paths
+from .core.config import Config
+from .server.gateway import admin_request
 
 
 CHAT_TIMEOUT = 4 * 3600
@@ -88,7 +89,7 @@ def cmd_up(args, config: Config) -> int:
     if _daemon_up(config):
         print("Daemon already running.")
         return 0
-    from . import service
+    from .server import service
     if service.status().get("installed"):
         service.restart()
     else:
@@ -107,7 +108,7 @@ def cmd_up(args, config: Config) -> int:
 
 
 def cmd_down(args, config: Config) -> int:
-    from . import service
+    from .server import service
     info = service.status()
     if args.uninstall and info.get("installed"):
         print(service.uninstall())
@@ -129,7 +130,7 @@ def cmd_down(args, config: Config) -> int:
 
 
 def cmd_daemon(args, config: Config) -> int:
-    from .daemon import main
+    from .server.daemon import main
     main()
     return 0
 
@@ -408,7 +409,7 @@ def cmd_models(args, config: Config) -> int:
 # ---- secrets -----------------------------------------------------------------
 
 def cmd_secrets(args, config: Config) -> int:
-    from .secrets_store import SecretStore
+    from .safety.secrets_store import SecretStore
     store = SecretStore()
     if args.action == "set":
         if not args.host:
@@ -449,7 +450,7 @@ def cmd_channels(args, config: Config) -> int:
                 settings[key] = value
         config.set(f"channels.{args.name}", settings)
         if args.name == "telegram" and not args.no_token:
-            from .secrets_store import SecretStore
+            from .safety.secrets_store import SecretStore
             SecretStore().set("telegram_bot_token", getpass.getpass("Telegram bot token from @BotFather: "))
         config.save()
         print(f"Enabled {args.name}. Restart the daemon (`coderunner up` after `coderunner down`), then run "
@@ -460,8 +461,8 @@ def cmd_channels(args, config: Config) -> int:
         print(f"Disabled {args.name}.")
     elif args.action == "pair":
         from .channels.base import Channel
-        from .store import Store
-        from .audit import AuditLog
+        from .core.store import Store
+        from .core.audit import AuditLog
 
         class _Svc:  # pairing codes only need the shared store
             store = Store()
@@ -496,7 +497,7 @@ def cmd_connectors(args, config: Config) -> int:
 
 
 def cmd_remote(args, config: Config) -> int:
-    from . import remote
+    from .server import remote
     if args.action == "enable":
         url = remote.enable(int(config.get("gateway.admin_port")))
         config.set("remote.provider", "tailscale")
@@ -520,7 +521,7 @@ def cmd_remote(args, config: Config) -> int:
 
 
 def cmd_service(args, config: Config) -> int:
-    from . import service
+    from .server import service
     if args.action == "install":
         _print(service.install())
     elif args.action == "uninstall":
@@ -594,9 +595,9 @@ def _find(config: Config, query: str, kind: str | None, limit: int, as_json: boo
 
 
 async def _find_here(config: Config, query: str, kind: str | None, limit: int) -> list[dict]:
-    from .audit import AuditLog
+    from .core.audit import AuditLog
     from .files import Embedder, FileIndex
-    from .store import Store
+    from .core.store import Store
     model = config.get("files.embedding") or config.get("models.embedding")
     url = config.get("models.embedding_url") or "http://127.0.0.1:11434"
     embedder = Embedder(url, model) if model else None
@@ -636,7 +637,7 @@ def cmd_token(args, config: Config) -> int:
 
 
 def cmd_mcp(args, config: Config) -> int:
-    from .mcp_bridge import main
+    from .server.mcp_bridge import main
     main()
     return 0
 

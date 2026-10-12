@@ -17,7 +17,7 @@ import pathlib
 from dataclasses import dataclass
 from typing import Iterator
 
-from .. import paths
+from ..core import paths
 from .kinds import PROSE, kind_of
 
 SECRET_DIRS = {".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".password-store", "Keychains", ".coderunner"}

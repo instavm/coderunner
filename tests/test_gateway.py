@@ -7,8 +7,8 @@ from unittest import mock
 import httpx
 
 from coderunner.agent import build_registry
-from coderunner.gateway import admin_app, sandbox_app
-from coderunner.llm import LLM
+from coderunner.server.gateway import admin_app, sandbox_app
+from coderunner.core.llm import LLM
 from fakes import FakeOpenAI, Svc
 
 SANDBOX = "sandbox-token-0123456789abcdefghijklmnop"
@@ -100,7 +100,7 @@ class AdminGatewayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(data, b"OggS audio")
             self.assertFalse(os.path.exists(path))
             self.assertEqual((await client.post("/api/voice", content=b"", headers=admin)).status_code, 400)
-            with mock.patch("coderunner.gateway.VOICE_LIMIT", 4):
+            with mock.patch("coderunner.server.gateway.VOICE_LIMIT", 4):
                 self.assertEqual((await client.post("/api/voice", content=b"12345", headers=admin)).status_code, 413)
             self.assertEqual(len(self.svc.voice.seen), 1)
 
@@ -178,7 +178,7 @@ class AdminGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, [False, True, False])
 
     async def test_decide_approval_over_api(self):
-        from coderunner.policy import Action
+        from coderunner.safety.policy import Action
         admin = {"Authorization": "Bearer " + ADMIN}
         task = asyncio.create_task(self.svc.policy.check(Action("channel.send", "telegram:42", "Send hi"), wait=5))
         await asyncio.sleep(0.05)

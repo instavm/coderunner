@@ -25,7 +25,7 @@ import time
 from datetime import date
 from typing import Any, Callable
 
-from .. import paths
+from ..core import paths
 from .hub import Hub, HubError, endpoint
 
 PUBLISHERS = ("Qwen", "google", "deepseek-ai", "zai-org", "mistralai", "microsoft", "nvidia", "ibm-granite",

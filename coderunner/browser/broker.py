@@ -38,14 +38,14 @@ import time
 import urllib.parse
 from typing import Any, Awaitable, Callable
 
-from .. import decision, paths
-from ..policy import Action, Decision, _matches
+from ..safety import decision
+from ..core import paths
+from ..safety.policy import Action, Decision, _matches
 from . import launcher as default_launcher
 from .cdp import CDPError, CDPPipe
 from .errors import BrowserError
 from .page import PAGE_CHARS, ax_value, cut, page_changes, render_ax, squash
-from .scripts import (CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, SCROLL_JS, SELECT_ALL_JS, SELECT_OPTION_JS,
-                      SETTLE_JS)
+from .scripts import CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, SCROLL_JS, SELECT_ALL_JS, SELECT_OPTION_JS, SETTLE_JS
 from .urls import is_local_ip, local_problem, page_host, parse_url, same_site
 
 

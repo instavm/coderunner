@@ -13,16 +13,16 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from coderunner.audit import AuditLog
+from coderunner.core.audit import AuditLog
 from coderunner.browser import BrowserBroker, BrowserError
 from coderunner.browser import launcher
 from coderunner.browser.page import page_changes, render_ax
 from coderunner.browser.scripts import CONTAINS_JS, DESCRIBE_JS, SCROLL_JS, SELECT_OPTION_JS, SETTLE_JS
 from coderunner.browser.urls import parse_url
 from coderunner.browser.cdp import CDPError, CDPPipe
-from coderunner.config import Config
-from coderunner.policy import Policy, current_run
-from coderunner.store import Store
+from coderunner.core.config import Config
+from coderunner.safety.policy import Policy, current_run
+from coderunner.core.store import Store
 
 
 # ---- fakes -----------------------------------------------------------------

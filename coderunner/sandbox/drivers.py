@@ -10,7 +10,7 @@ import shutil
 import subprocess
 from typing import Any
 
-from ..config import Config
+from ..core.config import Config
 
 
 def _run(args: list[str], timeout: float = 60) -> subprocess.CompletedProcess:

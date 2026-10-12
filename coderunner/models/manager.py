@@ -13,7 +13,7 @@ import os
 import threading
 from typing import Callable
 
-from ..llm import LLM
+from ..core.llm import LLM
 from . import bench, catalog, fit, hardware, licenses, smoketest
 from .hub import Hub
 from .runtimes import LlamaCppRuntime, OllamaRuntime, PrismRuntime, Runtime, choose_runtime, install_hint
@@ -457,7 +457,7 @@ def _setup_decision(config, rt: Runtime | None, chat_rt: Runtime, hw, used_gb: f
     try:
         if not rt.installed(entry):
             rt.pull(entry, progress)
-        from ..decision import COMMIT_CRITERIA, COMMIT_QUESTION, DecisionModel
+        from ..safety.decision import COMMIT_CRITERIA, COMMIT_QUESTION, DecisionModel
 
         async def probe():
             model = DecisionModel(rt.base_url, tag, api="systemone", timeout=120)
