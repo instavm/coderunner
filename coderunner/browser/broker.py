@@ -958,7 +958,7 @@ class BrowserBroker:
         icon, say). The page is read again first, so the number is current."""
         if not backend:
             return None
-        await self._render(target, sid, url)
+        await self._render(target, sid, url, whole=True)        # a point may land on a footer link
         numbers = {info["backend"]: ref for ref, info in self._refs.get(target, {}).items()}
         if backend in numbers:
             return numbers[backend]

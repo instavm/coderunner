@@ -575,6 +575,17 @@ class InteractionPolicyTests(BrokerTestCase):
         self.assertIn("Nothing the assistant can click", nothing["error"])
         self.assertEqual(self.kinds(), ["browser.sensitive"])
 
+    async def test_a_point_on_a_footer_link_finds_it(self):
+        browser, _ = await self.load_shop()
+        footer = [ax(13, "contentinfo", parent=2, children=[14], backend=13),
+                  ax(14, "link", "Careers", parent=13, backend=140, url="https://shop.example/careers")]
+        root = dict(SHOP_AX[1], childIds=SHOP_AX[1]["childIds"] + ["13"])
+        browser.ax = [SHOP_AX[0], root] + SHOP_AX[2:] + footer      # the footer is one line in page text
+        browser.hit = 140
+        clicked = await self.broker.click_at(60, 30)
+        self.assertTrue(clicked["ok"], clicked)
+        self.assertEqual(browser.sent("DOM.getBoxModel")[-1]["backendNodeId"], 140)
+
     async def test_typing_goes_to_the_focused_field_with_the_usual_checks(self):
         browser, _ = await self.load_shop()
         self.assertIn("No text field has the focus", (await self.broker.type_focused("rye"))["error"])
