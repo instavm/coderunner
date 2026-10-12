@@ -70,12 +70,25 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
 * Live model discovery found 31 recent models from trusted publishers; on 18 GB it proposed
   MiMo-V2.6-Distill-Qwen-9B, Granite 4.2 8B and Mage-VL besides the catalog's picks. With the
   specialist filter, 22 remain; published scores were read for 25 repos, and every discovered model
-  that fits 18 GB scores below Qwen3.5-9B, which stays the pick.
+  that fits 18 GB scores below Qwen3.5-9B. (Superseded: with Prism's published 98.2% retention,
+  Ternary Bonsai 2 27B ranks above Qwen3.5-9B on 16-24 GB.)
 * Everyday-browser mode with Chrome for Testing 155 in a temporary profile: all of the above pass
   (three runs). In a normal window with only the extension, booking.com's flight form opened, "Going
   to" expanded, and typing "Delhi" listed DEL Delhi International Airport, Hindon and Noida, with no
   403 and no "Something's not right"; `navigator.webdriver` was false. The suggestions arrive about
-  a second after the typing, so the result of the typing step does not include them yet.
+  a second after the typing; the broker now waits for the page to settle (up to 3 s), and a fixture
+  whose suggestions appear 0.8 s after typing shows them in the typing step's result.
+* Dedicated profile on booking.com: Chrome started with `--remote-debugging-pipe` reports
+  `navigator.webdriver` as true, and the site's bot filter (AWS WAF) answers the destination
+  autocomplete with 403, so no model can finish a flight search there. Qwen3.5-9B with the new
+  browser loop took 30 steps in 9 min 47 s (32 minutes before) with no approval prompts, but kept
+  retrying the destination field for that reason.
+* Real home folders (Documents, Desktop, Movies): 169,051 indexable files, of which 163,806 were kept
+  only in iCloud; listing one iCloud-only folder had blocked the walk for minutes. With iCloud-only
+  files indexed by name and iCloud-only folders not listed, the walk takes 33 s. Source code in git
+  checkouts was 94,000 of the local files (about 950,000 chunks) and is now left out by default.
+  One file per embedding request managed about 31 files a second, and search over 18,000 vectors
+  took 125-550 ms: both are being reworked.
 
 ## Not yet validated
 
