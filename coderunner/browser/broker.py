@@ -911,8 +911,10 @@ class BrowserBroker:
                         await self._send(sid, "Input.dispatchMouseEvent", {
                             "type": event, "x": x, "y": y, "button": "left", "buttons": 1, "clickCount": 1})
                     navigated = await self._settle(sid, watch)
-                    return await self._observe(target, sid, await self._result(target, navigated=navigated), tainted,
-                                              "load" if navigated else "")
+                    result = await self._observe(target, sid, await self._result(target, navigated=navigated),
+                                                 tainted, "load" if navigated else "")
+                    result["_audit"] = {"clicked": now["label"]}    # what was under the pointer, as checked
+                    return result
             if approved or attempt == CLICK_ATTEMPTS - 1:
                 break
             # Overlays fading in or out and hover effects settle quickly; check the click again from scratch.
