@@ -29,6 +29,7 @@ packages = [
     "coderunner.channels",
     "coderunner.connectors",
     "coderunner.models",
+    "coderunner.sandbox",
 ]
 
 [tool.setuptools.package-data]
