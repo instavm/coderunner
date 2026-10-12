@@ -336,8 +336,10 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
             if rt.name == "ollama":
                 rt.start()  # the Ollama API does the pulling
             if not rt.installed(entry):
-                pulled = True
                 rt.pull(entry, progress)
+                # Only a finished download is deleted when the model is then rejected: an interrupted one
+                # stays, so running setup again resumes it (7 GB over a flaky connection).
+                pulled = True
             model = rt.prepare(entry, cand["ctx"], offload=True) if cand.get("offload") else \
                 rt.prepare(entry, cand["ctx"])
             rt.start()

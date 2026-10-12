@@ -774,6 +774,17 @@ class ManagerTests(TempHome):
         self.assertTrue(done["ok"], done)
         self.assertEqual((llama.offloaded, main.prepared), (["qwen3.6-35b-a3b"], []))
 
+    def test_an_interrupted_download_is_kept_for_resuming(self):
+        class Flaky(FakeRuntime):
+            def pull(self, entry, progress=None):
+                raise RuntimeError("Download interrupted (received 5345964237 bytes, expected 7206168928)")
+        rt = Flaky()
+        result = manager.setup(self.config(), runtime=rt, hw=apple(18), progress=lambda m: None, embedding=False,
+                               smoke=fake_smoke({}))
+        self.assertFalse(result["ok"])
+        self.assertIn("interrupted", result["attempts"][0]["error"])
+        self.assertEqual(rt.removed, [])            # the partial file stays; running setup again resumes it
+
     def test_setup_falls_back_and_writes_config(self):
         rt, smoke = FakeRuntime(), fake_smoke({"coderunner-qwen3.5-9b": False, "coderunner-qwen3.5-4b:vision": False})
         cfg = self.config()
