@@ -1168,6 +1168,24 @@ class BenchCandidatesTests(TempHome):
         self.assertEqual((prism.removed, ollama.removed), (["bonsai-2-27b-compact"], ["qwen3.5-9b"]))
 
 
+class MeasuredTests(TempHome):
+    def test_a_run_that_paged_counts_until_a_clean_one(self):
+        from coderunner.models import tasks
+        hw = apple(18, "Apple M3 Pro", sandbox=1)
+
+        def run(model, seconds, paging, passed=5):
+            tasks.save({"suite": tasks.SUITE, "date": "2026-10-13", "machine": bench.fingerprint(hw), "model": model,
+                        "runtime": "prism", "runtime_version": "b1", "build": f"{model}-{paging}", "passed": passed,
+                        "total": 5, "seconds": seconds, "paging": paging, "median_request_s": 5.0,
+                        "tasks": [{"name": t.name, "passed": True, "seconds": seconds / 5} for t in tasks.TASKS]})
+        run("bonsai-2-27b-compact", 1113.0, True)
+        found = manager._measured(hw)
+        self.assertEqual(found[("bonsai-2-27b-compact", "prism")]["seconds"], 1113.0)     # not "unmeasured"
+        run("bonsai-2-27b-compact", 900.0, False)
+        run("bonsai-2-27b-compact", 1500.0, True)                     # a later paging run does not replace it
+        self.assertEqual(manager._measured(hw)[("bonsai-2-27b-compact", "prism")]["seconds"], 900.0)
+
+
 class ApacheHub:
     """Answers a repo's licence lookup without the network (tests must not reach Hugging Face)."""
 

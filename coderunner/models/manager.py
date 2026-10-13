@@ -95,13 +95,18 @@ def _discovered(config, hw, rt: Runtime | None, progress: Callable[[str], None] 
 
 def _measured(hw) -> dict[tuple[str, str], dict]:
     """Sample-task results (tasks.py) for this kind of machine, by model and runtime: measured here, else
-    shipped from an identical machine. Runs that paged from disk measured the disk and are left out."""
+    shipped from an identical machine. A run that paged from disk counts only until one that did not: its
+    times are slower than the machine's, but leaving it out made its model count as unmeasured, which ranks
+    on estimates (a compact Bonsai 2 build then beat the measured one on paper after losing to it in the run)."""
     from . import tasks
     machine = bench.fingerprint(hw)
     found: dict[tuple[str, str], dict] = {}
     for record in tasks.shared() + tasks.load():          # this machine's own results win
-        if record.get("machine") == machine and record.get("suite") == tasks.SUITE and not record.get("paging"):
-            found[(record["model"], record["runtime"])] = record
+        if record.get("machine") == machine and record.get("suite") == tasks.SUITE:
+            key = (record["model"], record["runtime"])
+            if record.get("paging") and key in found and not found[key].get("paging"):
+                continue
+            found[key] = record
     return found
 
 
@@ -115,7 +120,8 @@ def _with_measured(c: dict, measured: dict, main: str | None) -> dict:
                   "date": record["date"]}
     c["step_s"] = round(tasks.step_seconds(record), 1)
     c["reasons"].append(f"sample tasks here: {record['passed']} of {record['total']} passed in "
-                        f"{record['seconds'] / 60:.0f} min, {c['step_s']:.0f} s a step ({record['date']})")
+                        f"{record['seconds'] / 60:.0f} min, {c['step_s']:.0f} s a step ({record['date']}"
+                        + (", paging from disk: slower than this machine can be" if record.get("paging") else "") + ")")
     return c
 
 
