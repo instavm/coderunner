@@ -204,21 +204,22 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("Reminder of your plan", str(fake.requests[0]["messages"]))
             await svc.llm.aclose()
 
-    async def test_old_page_snapshots_are_dropped_in_batches(self):
+    async def test_old_pages_are_dropped_only_near_the_context_limit(self):
         from coderunner.agent.loop import DROPPED
         with FakeOpenAI() as fake:
-            svc = Svc()
+            svc = Svc({"models": {"context": 8192}})        # each page is about 1,100 tokens
             svc.browser = FakeBrowser("A long page\n" + "[1] link \"More\"\n" * 200)
             svc.llm = LLM(fake.base_url, "test")
             svc.registry = build_registry(svc)
-            fake.script = [tool_call("browser_snapshot", {}, f"c{i}") for i in range(5)] + [
+            fake.script = [tool_call("browser_snapshot", {}, f"c{i}") for i in range(6)] + [
                 {"role": "assistant", "content": "done"}]
             await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="s1"), "read it")
             seen = [[DROPPED in m["content"] for m in r["messages"] if m["role"] == "tool"] for r in fake.requests]
-            # Pages pile up to three, then the older ones are dropped together (cache-friendly batches).
-            self.assertEqual(seen[3], [False, False, False])
-            self.assertEqual(seen[4], [True, True, True, False])
-            self.assertEqual(seen[5], [True, True, True, False, False])
+            # Pages accumulate untouched (every request extends the last, so the runtime reads only what is
+            # new) until the conversation fills 60% of the context; then all but the last go at once.
+            self.assertEqual(seen[4], [False] * 4)
+            self.assertEqual(seen[5], [True] * 4 + [False])
+            self.assertEqual(seen[6], [True] * 4 + [False, False])
             pages = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
             self.assertIn("A long page", pages[-1])
             await svc.llm.aclose()

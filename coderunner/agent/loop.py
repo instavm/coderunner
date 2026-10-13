@@ -42,8 +42,8 @@ PLAN_REMINDER = "[Reminder of your plan, not a new request]\n"
 OUT_OF_STEPS = ("You have used all the steps for this task. Without calling any tools, write your reply to me now "
                 "from what you have found, and say briefly what is unfinished.")
 REMIND_EVERY = 6      # steps between plan reminders while the plan stays the same
-KEEP_PAGES = 1        # page snapshots left in full after a trim
-MOST_PAGES = 3        # trim once more than this many are in full
+TRIM_AT = 0.6         # old pages are dropped once the conversation fills this share of the model's context
+CHARS_PER_TOKEN = 3.5
 
 
 @dataclass
@@ -128,16 +128,20 @@ class Agent:
             messages[index] = {"role": messages[index]["role"], "content": "[earlier screenshot removed]"}
 
     @staticmethod
-    def _drop_old_pages(messages: list[dict], keep: int = KEEP_PAGES, most: int = MOST_PAGES) -> None:
-        """Old page snapshots fill a small model's context and slow every step, and once the context
-        overflows the runtime cuts the oldest text, instructions first. They are dropped in batches: a
-        runtime's prompt cache only survives up to the first changed message, so trimming one page per
-        step would make it re-read everything after that page on every step."""
+    def _drop_old_pages(messages: list[dict], context: int) -> None:
+        """Old pages are dropped only when the conversation nears the model's context, and then all but the
+        last one at once. Any edit to earlier messages makes the runtime read the conversation again from
+        the start (hybrid models such as Bonsai 2 cannot resume from the middle): with a trim every few
+        pages, booking.com runs spent most of their time re-reading 12,000-20,000 tokens at 60-75 tok/s,
+        four to five minutes each time."""
+        size = sum(len(m["content"]) for m in messages if isinstance(m.get("content"), str)) / CHARS_PER_TOKEN
+        if size < TRIM_AT * context:
+            return
         pages = [i for i, m in enumerate(messages) if m.get("role") == "tool"
                  and isinstance(m.get("content"), str) and m["content"].startswith(PAGE_PREFIX)
                  and len(m["content"]) > BIG_RESULT and not m["content"].endswith(DROPPED)]
-        if len(pages) > most:
-            for index in pages[:-keep]:
+        if len(pages) > 1:
+            for index in pages[:-1]:
                 opener = messages[index]["content"].split("\n", 1)[0]
                 messages[index] = {**messages[index], "content": opener + "\n" + DROPPED}
 
@@ -182,7 +186,7 @@ class Agent:
         since = 0
         for step in range(max_steps):
             self._drop_old_images(messages)
-            self._drop_old_pages(messages)
+            self._drop_old_pages(messages, int(self.svc.config.get("models.context", 32768) or 32768))
             # Each request only extends the one before: hybrid models such as Qwen3.5 can resume only from a
             # cache checkpoint near the end of the previous prompt, so a message that came and went (or an
             # edit to the instructions) means re-reading the whole conversation, ~80 s for 20K tokens on a
