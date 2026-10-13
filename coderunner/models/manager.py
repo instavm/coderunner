@@ -95,16 +95,16 @@ def _discovered(config, hw, rt: Runtime | None, progress: Callable[[str], None] 
 
 def _measured(hw) -> dict[tuple[str, str], dict]:
     """Sample-task results (tasks.py) for this kind of machine, by model and runtime: measured here, else
-    shipped from an identical machine. A run that paged from disk counts only until one that did not: its
-    times are slower than the machine's, but leaving it out made its model count as unmeasured, which ranks
-    on estimates (a compact Bonsai 2 build then beat the measured one on paper after losing to it in the run)."""
+    shipped from an identical machine. A run in which the model slowed down counts only until one in which it
+    did not: its times are slower than the machine's, but leaving it out made its model count as unmeasured,
+    which ranks on estimates (a compact Bonsai 2 build then beat the measured one on paper after losing to it)."""
     from . import tasks
     machine = bench.fingerprint(hw)
     found: dict[tuple[str, str], dict] = {}
     for record in tasks.shared() + tasks.load():          # this machine's own results win
         if record.get("machine") == machine and record.get("suite") == tasks.SUITE:
             key = (record["model"], record["runtime"])
-            if record.get("paging") and key in found and not found[key].get("paging"):
+            if record.get("slowed") and key in found and not found[key].get("slowed"):
                 continue
             found[key] = record
     return found
@@ -121,7 +121,7 @@ def _with_measured(c: dict, measured: dict, main: str | None) -> dict:
     c["step_s"] = round(tasks.step_seconds(record), 1)
     c["reasons"].append(f"sample tasks here: {record['passed']} of {record['total']} passed in "
                         f"{record['seconds'] / 60:.0f} min, {c['step_s']:.0f} s a step ({record['date']}"
-                        + (", paging from disk: slower than this machine can be" if record.get("paging") else "") + ")")
+                        + (", the model slowed down: slower than this machine can be" if record.get("slowed") else "") + ")")
     return c
 
 
@@ -708,7 +708,7 @@ def bench_candidates(config, count: int = 2, progress: Callable[[str], None] = p
             runs.append({"model": cand["id"], "error": done.get("error", "setup failed")})
             continue
         result = _run_async(run_tasks(config, progress=progress))
-        runs.append({"model": cand["id"], **{k: result.get(k) for k in ("passed", "total", "seconds", "paging", "error")}})
+        runs.append({"model": cand["id"], **{k: result.get(k) for k in ("passed", "total", "seconds", "slowed", "error")}})
     after = plan(config, hw)
     best = after["model"]
     if best and best["id"] != entry_id(config):

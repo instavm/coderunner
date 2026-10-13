@@ -118,9 +118,10 @@ declares success. If a model fails the test, the next candidate is tried.
    the two best candidates not measured on this kind of machine yet, one
    model at a time, sets up the best by the measurements and deletes what it
    downloaded for the others. Setup unloads the previous model before it
-   loads another (two at once froze an 18 GB Mac). A run during which a lot
-   of memory was read back from disk (the owner's apps pushed the model out)
-   is kept but marked, and not used to choose: its times measured the disk.
+   loads another (two at once froze an 18 GB Mac). A run in which the model
+   wrote at under half the speed setup measured for it (with the owner's
+   apps open it was waiting for the disk: 0.06 tokens/s against 22) is
+   marked as slowed; it counts until a run that was not slowed replaces it.
 
 * Licences are checked from the model's base repository. Permissive licences
   are used automatically; licences with extra terms need `--accept-license`;

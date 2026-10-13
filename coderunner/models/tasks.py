@@ -17,7 +17,6 @@ import os
 import pathlib
 import re
 import statistics
-import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -25,29 +24,12 @@ from typing import Callable
 
 from ..core import paths
 from . import hardware, sites as fixtures
-from .bench import fingerprint
+from .bench import fingerprint, load as bench_load
 
-PAGED_MB = 1024           # memory read back from disk during a task past which its times are not the model's
+SLOW_SHARE = 0.5         # a task whose model wrote at under this share of its measured speed was slowed down
 SUITE = 2                 # change when tasks change: results of different suites are not compared
 TASK_SECONDS = 900        # a task still running after this counts as failed
 COMMITTING = re.compile(r"\b(pay|book|reserve|purchase|checkout|check out|place order|confirm)", re.I)
-
-
-def paged_in_mb() -> float | None:
-    """Memory read back from disk so far, in MB: swap and evicted file pages, model weights among them. When a
-    lot comes back during a task, the model was waiting for the disk (prompts read at 2.7 instead of 65 tok/s
-    in one run on an 18 GB Mac), so its times are not the machine's. Swap growth alone is no sign: macOS also
-    moves idle apps out while a model loads."""
-    if sys.platform == "darwin":
-        out = hardware._run(["vm_stat"]) or ""
-        size = re.search(r"page size of (\d+) bytes", out)
-        pages = [int(n) for n in re.findall(r"^(?:Pageins|Swapins):\s+(\d+)", out, re.M)]
-        return sum(pages) * int(size.group(1)) / 2 ** 20 if size and len(pages) == 2 else None
-    try:
-        counts = dict(line.split() for line in open("/proc/vmstat"))
-        return (int(counts["pswpin"]) + int(counts["pgmajfault"])) * 4096 / 2 ** 20
-    except (OSError, KeyError, ValueError):
-        return None
 
 
 def target_day(today: datetime.date) -> datetime.date:
@@ -158,9 +140,11 @@ class Meter:
         reply = await self._chat(messages, tools, *args, **kwargs)
         timings, usage = reply.get("timings") or {}, reply.get("usage") or {}
         # llama.cpp says how much of the prompt it read (the rest was kept); Ollama only gives the prompt's size.
+        written, ms = int(timings.get("predicted_n") or 0), float(timings.get("predicted_ms") or 0)
         self.requests.append({"seconds": time.monotonic() - start, "read": int(timings.get("prompt_n") or 0),
                               "prompt": int(usage.get("prompt_tokens") or 0),
-                              "wrote": int(timings.get("predicted_n") or usage.get("completion_tokens") or 0)})
+                              "wrote": written or int(usage.get("completion_tokens") or 0),
+                              "gen_tok_s": written / ms * 1000 if written >= 8 and ms > 0 else None})
         for call in reply.get("tool_calls") or []:
             fn = call.get("function") or {}
             self.steps.append(f"{fn.get('name')}({str(fn.get('arguments') or '')[:100]})")
@@ -172,7 +156,9 @@ class Meter:
                 "read_tokens": sum(r["read"] for r in self.requests) or None,
                 "largest_prompt": max((r["prompt"] for r in self.requests), default=0),
                 "wrote_tokens": sum(r["wrote"] for r in self.requests),
-                "model_s": round(sum(times), 1), "median_request_s": round(statistics.median(times), 1) if times else 0.0}
+                "model_s": round(sum(times), 1), "median_request_s": round(statistics.median(times), 1) if times else 0.0,
+                "gen_tok_s": round(statistics.median(rates), 1) if (rates := [r["gen_tok_s"] for r in self.requests
+                                                                             if r["gen_tok_s"]]) else None}
 
 
 @contextlib.contextmanager
@@ -282,7 +268,6 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                 meter.reset()
                 asked.clear()
                 site.visits.clear()
-                paged = paged_in_mb()
                 for row in svc.store.query("SELECT id FROM memories"):    # each task starts as the first one
                     svc.memory.forget(id=row["id"])
                 start = time.monotonic()
@@ -298,8 +283,7 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                     answer, passed, why = "", False, f"still running after {TASK_SECONDS // 60} min"
                 result = {"name": task.name, "passed": passed, "why": why, "seconds": round(time.monotonic() - start, 1),
                           **meter.summary(), "approvals": [f"{'allowed' if a['allowed'] else 'refused'}: {a['summary']}" for a in asked],
-                          "steps": meter.steps[:40], "answer": answer[:1500],
-                          "paged_in_mb": None if paged is None or paged_in_mb() is None else round(paged_in_mb() - paged)}
+                          "steps": meter.steps[:40], "answer": answer[:1500]}
                 record["tasks"].append(result)
                 progress(f"  {'passed' if passed else 'FAILED'} in {result['seconds']:.0f} s, {result['tool_calls']} tool "
                          f"calls, {result['requests']} model requests ({why})")
@@ -312,8 +296,13 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                 await asyncio.wait_for(serving, 10)
     meter.reset()
     done = record["tasks"]
-    # Paging during a task means its times measured the disk: such a result is kept but not used to choose.
-    record["paging"] = any((t.get("paged_in_mb") or 0) > PAGED_MB for t in done)
+    # A model writing at under half its measured speed was waiting for something else, the disk mostly: on an
+    # 18 GB Mac with the owner's apps open, Qwen3.5-9B wrote 0.06 tokens/s against 22 measured. Such a result is
+    # kept and marked. (Memory read from disk is no sign by itself: a cold browser and memory-mapped weights
+    # read 4.6 GB during a flight task that ran at full speed.)
+    expected = cal["measured"]["gen_tok_s"] if (cal := bench_load(hw)) and cal.get("model") == record["model"] else None
+    record["expected_gen_tok_s"] = expected
+    record["slowed"] = bool(expected) and any(t.get("gen_tok_s") and t["gen_tok_s"] < SLOW_SHARE * expected for t in done)
     record.update(passed=sum(t["passed"] for t in done), total=len(done),
                   seconds=round(sum(t["seconds"] for t in done), 1),
                   median_request_s=round(statistics.median(meter.all), 1) if meter.all else 0.0)
@@ -332,7 +321,7 @@ def step_seconds(record: dict) -> float:
 
 def public(record: dict) -> dict:
     """What can be shared: no answers, steps, approvals or paths."""
-    keep = ("name", "passed", "seconds", "requests", "tool_calls", "median_request_s", "paged_in_mb")
+    keep = ("name", "passed", "seconds", "requests", "tool_calls", "median_request_s", "gen_tok_s")
     return {**{k: v for k, v in record.items() if k != "tasks"},
             "tasks": [{k: t.get(k) for k in keep} for t in record["tasks"]]}
 
@@ -372,6 +361,6 @@ def report(results: list[dict]) -> str:
         per = ", ".join(f"{t['name']} {'ok' if t['passed'] else 'fail'} {t['seconds']:.0f}s/{t['tool_calls']} calls"
                         for t in r["tasks"])
         lines.append(f"| {r['build']} | {r['runtime']} {r['runtime_version']} | {r['passed']}/{r['total']}"
-                     f"{' (paging from disk: times not representative)' if r.get('paging') else ''} | "
+                     f"{' (model slowed to under half its speed: times not representative)' if r.get('slowed') else ''} | "
                      f"{r['seconds'] / 60:.1f} min | {r['median_request_s']:.1f} s | {per} |")
     return "\n".join(lines)

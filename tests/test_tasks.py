@@ -104,6 +104,19 @@ class Checks(unittest.TestCase):
         self.assertFalse(tasks.check_documents("Until March 2030; call 1800 103 4455", self.site)[0])
 
 
+class MeterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generation_speed_from_the_runtime_timings(self):
+        class LLM:
+            async def chat(self, messages, tools=None, **kwargs):
+                return {"content": "", "tool_calls": [], "usage": {"prompt_tokens": 900},
+                        "timings": {"prompt_n": 300, "predicted_n": 44, "predicted_ms": 2000.0}}
+        meter = tasks.Meter(LLM())
+        await meter.llm.chat([])
+        await meter.llm.chat([])
+        summary = meter.summary()
+        self.assertEqual((summary["gen_tok_s"], summary["read_tokens"], summary["largest_prompt"]), (22.0, 600, 900))
+
+
 class Results(unittest.TestCase):
     def test_latest_result_per_machine_and_build(self):
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"CODERUNNER_HOME": home}):
