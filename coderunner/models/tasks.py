@@ -27,20 +27,25 @@ from ..core import paths
 from . import hardware, sites as fixtures
 from .bench import fingerprint
 
-SWAP_MB = 256            # swap growth during a task past which its times are not the model's
+PAGED_MB = 1024           # memory read back from disk during a task past which its times are not the model's
 SUITE = 2                 # change when tasks change: results of different suites are not compared
 TASK_SECONDS = 900        # a task still running after this counts as failed
 COMMITTING = re.compile(r"\b(pay|book|reserve|purchase|checkout|check out|place order|confirm)", re.I)
 
 
-def swap_mb() -> float | None:
-    """Swap in use now, in MB."""
+def paged_in_mb() -> float | None:
+    """Memory read back from disk so far, in MB: swap and evicted file pages, model weights among them. When a
+    lot comes back during a task, the model was waiting for the disk (prompts read at 2.7 instead of 65 tok/s
+    in one run on an 18 GB Mac), so its times are not the machine's. Swap growth alone is no sign: macOS also
+    moves idle apps out while a model loads."""
     if sys.platform == "darwin":
-        found = re.search(r"used = ([\d.]+)M", hardware._run(["sysctl", "-n", "vm.swapusage"]) or "")
-        return float(found.group(1)) if found else None
+        out = hardware._run(["vm_stat"]) or ""
+        size = re.search(r"page size of (\d+) bytes", out)
+        pages = [int(n) for n in re.findall(r"^(?:Pageins|Swapins):\s+(\d+)", out, re.M)]
+        return sum(pages) * int(size.group(1)) / 2 ** 20 if size and len(pages) == 2 else None
     try:
-        info = {k: float(v.split()[0]) for k, v in (line.split(":", 1) for line in open("/proc/meminfo"))}
-        return (info["SwapTotal"] - info["SwapFree"]) / 1024
+        counts = dict(line.split() for line in open("/proc/vmstat"))
+        return (int(counts["pswpin"]) + int(counts["pgmajfault"])) * 4096 / 2 ** 20
     except (OSError, KeyError, ValueError):
         return None
 
@@ -276,7 +281,7 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                 meter.reset()
                 asked.clear()
                 site.visits.clear()
-                swap = swap_mb()
+                paged = paged_in_mb()
                 for row in svc.store.query("SELECT id FROM memories"):    # each task starts as the first one
                     svc.memory.forget(id=row["id"])
                 start = time.monotonic()
@@ -290,7 +295,7 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                 result = {"name": task.name, "passed": passed, "why": why, "seconds": round(time.monotonic() - start, 1),
                           **meter.summary(), "approvals": [f"{'allowed' if a['allowed'] else 'refused'}: {a['summary']}" for a in asked],
                           "steps": meter.steps[:40], "answer": answer[:1500],
-                          "swapped_mb": None if swap is None or swap_mb() is None else round(max(0.0, swap_mb() - swap))}
+                          "paged_in_mb": None if paged is None or paged_in_mb() is None else round(paged_in_mb() - paged)}
                 record["tasks"].append(result)
                 progress(f"  {'passed' if passed else 'FAILED'} in {result['seconds']:.0f} s, {result['tool_calls']} tool "
                          f"calls, {result['requests']} model requests ({why})")
@@ -303,8 +308,8 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                 await asyncio.wait_for(serving, 10)
     meter.reset()
     done = record["tasks"]
-    # Swapping during a task means its times measured the disk: such a result is kept but not used to choose.
-    record["swapping"] = any((t.get("swapped_mb") or 0) > SWAP_MB for t in done)
+    # Paging during a task means its times measured the disk: such a result is kept but not used to choose.
+    record["paging"] = any((t.get("paged_in_mb") or 0) > PAGED_MB for t in done)
     record.update(passed=sum(t["passed"] for t in done), total=len(done),
                   seconds=round(sum(t["seconds"] for t in done), 1),
                   median_request_s=round(statistics.median(meter.all), 1) if meter.all else 0.0)
@@ -341,6 +346,6 @@ def report(results: list[dict]) -> str:
         per = ", ".join(f"{t['name']} {'ok' if t['passed'] else 'fail'} {t['seconds']:.0f}s/{t['tool_calls']} calls"
                         for t in r["tasks"])
         lines.append(f"| {r['build']} | {r['runtime']} {r['runtime_version']} | {r['passed']}/{r['total']}"
-                     f"{' (swapping: times not representative)' if r.get('swapping') else ''} | "
+                     f"{' (paging from disk: times not representative)' if r.get('paging') else ''} | "
                      f"{r['seconds'] / 60:.1f} min | {r['median_request_s']:.1f} s | {per} |")
     return "\n".join(lines)
