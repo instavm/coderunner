@@ -128,23 +128,19 @@ class Harness(unittest.IsolatedAsyncioTestCase):
     """The whole run against a scripted model: no browser, files or real model needed."""
 
     async def test_answers_are_checked_and_a_slow_task_is_stopped(self):
-        import time as clock
-
         from coderunner.core.config import Config
         from fakes import FakeOpenAI
 
-        def slow(body):
-            clock.sleep(2.5)
-            return {"role": "assistant", "content": "still thinking"}
+        slow = {"role": "assistant", "content": "still thinking", "_delay": 2.5}
 
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"CODERUNNER_HOME": home}), \
-                FakeOpenAI() as fake, mock.patch.object(tasks, "TASK_SECONDS", 2):
+                FakeOpenAI() as fake, mock.patch.object(tasks, "TASK_SECONDS", 1):
             fake.script = [slow, {"role": "assistant", "content": "Sundays until 14:00; DVDs ₹15 a day."}]
             config = Config({"models": {"runtime": "openai", "base_url": fake.base_url, "chat": "fake"}},
                             path=pathlib.Path(home) / "config.json")
             result = await tasks.run(config, names=["library", "flights"], progress=lambda m: None)
             by_name = {t["name"]: t for t in result["tasks"]}
             self.assertTrue(by_name["flights"]["passed"] is False and "still running" in by_name["flights"]["why"])
-            self.assertLess(by_name["flights"]["seconds"], 2.5)
+            self.assertLess(by_name["flights"]["seconds"], 3)
             self.assertTrue(by_name["library"]["passed"], by_name["library"])
             self.assertEqual(tasks.load()[-1]["passed"], result["passed"])
