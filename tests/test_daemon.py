@@ -69,7 +69,10 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
                 fake.script = [{"role": "assistant", "content": "Window seat it is."}]
                 await client.post(f"http://127.0.0.1:{self.admin_port}/api/chat", headers=admin,
                                   json={"message": "Book me a window seat preference", "conversation": "c2"})
-                self.assertIn("Sam prefers window seats", fake.requests[-1]["messages"][0]["content"])
+                sent = fake.requests[-1]["messages"]
+                # Recalled memories come after the instructions, which stay the same for every task.
+                self.assertNotIn("Sam prefers window seats", sent[0]["content"])
+                self.assertTrue(any("Sam prefers window seats" in str(m["content"]) for m in sent[1:]))
 
                 # The sandbox can use the model but not the owner API, and the admin token is not a sandbox token.
                 fake.script = [{"role": "assistant", "content": "from sandbox"}]

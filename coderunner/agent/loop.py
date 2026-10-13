@@ -15,7 +15,6 @@ from ..safety.policy import current_run
 from .tools import ToolRegistry
 
 SYSTEM = """You are a private assistant running entirely on {owner}'s own computer.
-Current time: {now}.
 
 How you work:
 - Use tools to act. Use run_python for any arithmetic, dates, data or files; never compute in your head.
@@ -27,8 +26,11 @@ How you work:
 - For a task with several steps, first write a short plan with plan_update, then work through it and keep it current as steps finish or the approach changes.
 - The owner's shared folders are searchable with files_search (text, code, documents, images, audio, video).
 - Save lasting preferences and facts with memory_save. Never store secrets.
-- Be brief: answers may be read on a phone.
-{memories}"""
+- Be brief: answers may be read on a phone."""
+# The instructions and the tool list (~3,000 tokens) stay the same for every task, so the runtime keeps them
+# read: the first request of a task then reads ~25 new tokens instead of all of it (0.9 s instead of 48 s
+# with Bonsai 2 on an 18 GB Mac). The time and recalled memories go in a message of their own after them.
+CONTEXT = "[Background for the request below, not a request itself]\nCurrent time: {now}.{memories}"
 
 
 def render_plan(steps: list[dict]) -> str:
@@ -90,8 +92,10 @@ class Agent:
         self.svc.store.execute("INSERT INTO messages(conversation, role, content, created) VALUES (?, ?, ?, ?)",
                                (conversation, role, json.dumps(content), time.time()))
 
-    async def _system(self, text: str, ctx: RunContext) -> str:
-        owner = self.svc.config.get("owner.name") or "the owner"
+    def _system(self) -> str:
+        return SYSTEM.format(owner=self.svc.config.get("owner.name") or "the owner")
+
+    async def _context(self, text: str, ctx: RunContext) -> str:
         memories = ""
         if self.svc.memory is not None and text:
             try:
@@ -111,7 +115,12 @@ class Agent:
                     block, _ = await self.svc.guard.wrap("memory", "\n".join(f"- {m['text']}" for m in unverified))
                     memories += f"\nUnverified notes (saved after reading untrusted content):\n{block}"
         now = datetime.now().astimezone().strftime("%A %Y-%m-%d %H:%M %Z")
-        return SYSTEM.format(owner=owner, now=now, memories=memories)
+        return CONTEXT.format(now=now, memories=memories)
+
+    async def warm(self) -> None:
+        """Have the runtime read the instructions and tool list once, so the first task does not wait for it."""
+        await self.llm.chat([{"role": "system", "content": self._system()}, {"role": "user", "content": "Ready?"}],
+                            tools=self.registry.schemas(), think=False, max_tokens=1)
 
     def _recall_threshold(self) -> float:
         """Similarity above which a memory is clearly relevant: set in config, or known per embedding model."""
@@ -172,7 +181,8 @@ class Agent:
         if images:
             user_content = [{"type": "text", "text": text}] + [
                 {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}} for mime, data in images]
-        messages = [{"role": "system", "content": await self._system(text, ctx)}, *self._history(ctx.conversation),
+        messages = [{"role": "system", "content": self._system()}, *self._history(ctx.conversation),
+                    {"role": "user", "content": await self._context(text, ctx)},
                     {"role": "user", "content": user_content}]
         self.svc.audit.write("agent.start", conversation=ctx.conversation, origin=ctx.origin)
         max_steps = int(self.svc.config.get("agent.max_steps", 30))

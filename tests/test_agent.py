@@ -62,8 +62,11 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             # History is kept per conversation.
             fake.script = [{"role": "assistant", "content": "ok"}]
             await agent.run(RunContext(conversation="t1"), "thanks")
-            roles = [m["role"] for m in fake.requests[-1]["messages"]]
-            self.assertEqual(roles, ["system", "user", "assistant", "user"])
+            sent = fake.requests[-1]["messages"]
+            # Instructions, the earlier turn, background (time, memories) for this one, and the request.
+            self.assertEqual([m["role"] for m in sent], ["system", "user", "assistant", "user", "user"])
+            self.assertTrue(sent[3]["content"].startswith("[Background for the request below"))
+            self.assertEqual(sent[0]["content"], fake.requests[0]["messages"][0]["content"])   # never changes
             await svc.llm.aclose()
 
     async def test_bad_arguments_are_reported_back(self):

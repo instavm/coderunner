@@ -79,6 +79,7 @@ SETTLE_START = {"type": 1.5, "load": 1.5}
 SETTLE_START_DEFAULT = 0.6
 SETTLE_QUIET = 0.3
 SETTLE_MOST = 3.0
+SETTLE_MOST_LOAD = 8.0      # after a navigation: results pages (flights, shops) fill in for several seconds
 NO_CHANGE = "No visible change on the page."
 BLANK_WAIT = 10.0           # a page with no text yet (a bot check, a script-drawn app) gets this long to show some
 DENIED_PERMISSIONS = ("geolocation", "notifications", "camera", "microphone", "midi", "clipboard-read",
@@ -798,11 +799,12 @@ class BrowserBroker:
             return result
         before = self._lines.get(target)
         start = SETTLE_START.get(action, SETTLE_START_DEFAULT)
+        most = SETTLE_MOST_LOAD if action == "load" else SETTLE_MOST
         with contextlib.suppress(CDPError):
             await self._send(sid, "Runtime.callFunctionOn", {
                 "functionDeclaration": SETTLE_JS, "executionContextId": await self._world(sid, target),
-                "arguments": [{"value": start * 1000}, {"value": SETTLE_QUIET * 1000}, {"value": SETTLE_MOST * 1000}],
-                "awaitPromise": True, "returnByValue": True}, timeout=SETTLE_MOST + 5)
+                "arguments": [{"value": start * 1000}, {"value": SETTLE_QUIET * 1000}, {"value": most * 1000}],
+                "awaitPromise": True, "returnByValue": True}, timeout=most + 5)
         try:
             content = await self._render(target, sid, url)
             deadline = time.monotonic() + self.blank_wait

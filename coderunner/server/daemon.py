@@ -102,6 +102,14 @@ class Daemon:
         self._stop: asyncio.Event | None = None
         self.svc = self._build()
 
+    async def _warm(self) -> None:
+        """Let the model read the instructions and tool list now, not when the first task arrives."""
+        try:
+            await self.svc.agent.warm()
+            self.svc.audit.write("model.warmed")
+        except Exception as exc:  # the first task then reads them itself
+            self.svc.audit.write("model.warm_failed", error=str(exc)[:200])
+
     async def _restart_model(self) -> bool:
         """Restart a crashed or stuck local model runtime (one restart at a time)."""
         lock = self._locks.setdefault("model", asyncio.Lock())
@@ -327,6 +335,7 @@ class Daemon:
             await asyncio.to_thread(manager.ensure_running, cfg)
         except Exception as exc:
             svc.audit.write("models.start_failed", error=str(exc))
+        self._tasks.append(asyncio.create_task(self._warm()))
 
         admin = admin_app(svc, self)
         self._tasks.append(asyncio.create_task(self._serve_with_retry(

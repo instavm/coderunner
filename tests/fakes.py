@@ -52,6 +52,8 @@ class FakeOpenAI:
                 self.judged.append(state)
                 answer = "B" if self.judge(state) else "A"
                 return JSONResponse({"choices": [{"message": {"role": "assistant", "content": answer}}]})
+            if body.get("max_tokens") == 1:      # the daemon warming the model's cache: not part of the script
+                return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
             self.requests.append(body)
             item = self.script.pop(0) if self.script else {"role": "assistant", "content": "done"}
             message = item(body) if callable(item) else item
