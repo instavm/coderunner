@@ -128,6 +128,19 @@ def sandbox_tools(svc) -> list[Tool]:
 
 # ---- browser -------------------------------------------------------------
 
+def _short_address(url: str, longest: int = 40) -> str:
+    """A page address with long parameter values cut: tracking labels ran to 450 characters on booking.com,
+    while the values that hold a search (from=BLR, depart=2026-11-20) are short."""
+    if "?" not in url:
+        return url
+    base, query = url.split("?", 1)
+    parts = []
+    for part in query.split("&"):
+        name, _, value = part.partition("=")
+        parts.append(f"{name}={value[:longest]}…" if len(value) > longest else part)
+    return base + "?" + "&".join(parts)
+
+
 def browser_tools(svc) -> list[Tool]:
     b = svc.browser
 
@@ -143,6 +156,8 @@ def browser_tools(svc) -> list[Tool]:
         hidden = {"ok", "content", "changes"}
         if value.get("navigated") is False:
             hidden |= {"url", "title"}            # still the same page: its long address adds nothing
+        if isinstance(value.get("url"), str):
+            value = {**value, "url": _short_address(value["url"])}
         lines = [f"{key}: {item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)}"
                  for key, item in value.items() if key not in hidden]
         if "changes" in value:

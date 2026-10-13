@@ -259,3 +259,14 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AddressTests(unittest.TestCase):
+    def test_long_parameter_values_are_cut_but_the_search_stays(self):
+        from coderunner.agent.tools import _short_address
+        url = ("https://flights.booking.com/flights/BLR.AIRPORT-DEL.AIRPORT/?type=ONEWAY&depart=2026-11-20"
+               "&sort=CHEAPEST&label=" + "x" * 300)
+        short = _short_address(url)
+        self.assertIn("type=ONEWAY&depart=2026-11-20&sort=CHEAPEST", short)
+        self.assertLess(len(short), 200)
+        self.assertEqual(_short_address("https://example.com/a"), "https://example.com/a")
