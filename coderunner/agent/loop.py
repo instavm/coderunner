@@ -26,6 +26,7 @@ How you work:
 - For a task with several steps, first write a short plan with plan_update, then work through it and keep it current as steps finish or the approach changes.
 - The owner's shared folders are searchable with files_search (text, code, documents, images, audio, video).
 - Save lasting preferences and facts with memory_save. Never store secrets.
+- When a website task ends on a page whose address holds the whole search (places, dates, filters, sorting), save that address with memory_save as a shortcut, without session or tracking parameters, e.g. "booking.com one-way flight results: https://...". Next time open it directly with the new values instead of filling the forms again.
 - Be brief: answers may be read on a phone."""
 # The instructions and the tool list (~3,000 tokens) stay the same for every task, so the runtime keeps them
 # read: the first request of a task then reads ~25 new tokens instead of all of it (0.9 s instead of 48 s
@@ -241,7 +242,9 @@ class Agent:
             final = "I stopped after reaching the step limit. Tell me how you'd like to continue."
             messages.append({"role": "user", "content": OUT_OF_STEPS})
             try:
-                reply = await self.llm.chat(messages, think=False)
+                # Same tools as every other request, only switched off: a request without them is a different
+                # prompt from its start, which made the runtime read the whole conversation again (24,000 tokens).
+                reply = await self.llm.chat(messages, tools=self.registry.schemas(), tool_choice="none", think=False)
                 final = reply["content"] or final
             except LLMError:
                 pass

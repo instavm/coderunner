@@ -180,7 +180,8 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
                 {"role": "assistant", "content": "Found 1 so far; the rest is unfinished."}]
             reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t4"), "loop")
             self.assertEqual(reply, "Found 1 so far; the rest is unfinished.")   # what it found is not lost
-            self.assertNotIn("tools", fake.requests[-1])
+            self.assertEqual(fake.requests[-1]["tool_choice"], "none")    # tools kept, so the prompt prefix holds
+            self.assertEqual(fake.requests[-1]["tools"], fake.requests[0]["tools"])
             fake.script = [tool_call("run_python", {"code": "print(1)"})] * 3 + [{"role": "assistant", "content": ""}]
             reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t5"), "loop")
             self.assertIn("step limit", reply)

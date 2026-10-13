@@ -281,7 +281,8 @@ def memory_tools(svc) -> list[Tool]:
         return f"Forgot {count} memories."
 
     return [
-        Tool("memory_save", "Remember a durable fact or preference the owner told you. Never store secrets.",
+        Tool("memory_save", "Remember a durable fact or preference the owner told you, or a shortcut you found (an "
+             "address that leads straight to a site's results). Never store secrets.",
              _params({"text": STR, "tags": STR}, ["text"]), save),
         Tool("memory_search", "Search what you remember about the owner.", _params({"query": STR, "limit": INT},
                                                                                   ["query"]), search),
