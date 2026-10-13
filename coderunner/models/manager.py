@@ -380,6 +380,8 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
             return {"ok": False, "error": f"{model_id} is not a chat model of at least {fit.MIN_CHAT_PARAMS_B:.0f}B"}
         on = entry.get("runtime") or ("prism" if prism is not None and catalog.artifact(entry, rt.name) is None
                                       and catalog.artifact(entry, "prism") else rt.name)
+        if on == "ollama" and llama is not None and _chat_on_llama(hw) and catalog.artifact(entry, "llama.cpp"):
+            on = "llama.cpp"                    # as the plan does (_chat_on_llama)
         if on == "llama.cpp" and rt.name != "llama.cpp" and llama is None:
             return {"ok": False, "error": f"{model_id} needs llama.cpp. {install_hint(hw, 'llama.cpp')}"}
         cand = fit.candidate(entry, hw, config, "chat", on)

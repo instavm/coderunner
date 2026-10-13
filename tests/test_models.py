@@ -40,6 +40,11 @@ class TempHome(unittest.TestCase):
         timing = mock.patch.object(bench, "measure", no_measure)       # setup times models through bench
         timing.start()
         self.addCleanup(timing.stop)
+        # Chat models on CodeRunner's llama.cpp is Apple silicon's default, and would install llama.cpp from the
+        # network; tests about it turn it on with fake runtimes.
+        llama = mock.patch.object(manager, "_chat_on_llama", return_value=False)
+        llama.start()
+        self.addCleanup(llama.stop)
 
     def config(self, **models):
         # Tests never reach Hugging Face; discovery has its own tests with a fake hub.
@@ -739,6 +744,17 @@ class ManagerTests(TempHome):
         self.assertIn("qwen3.8-27b", [c["id"] for c in result["rejected"]])
         self.assertEqual(result["embedding"]["id"], "embeddinggemma-2")
         self.assertIsNone(manager.plan(self.config(), hw=apple(8, "Apple M1"), runtime=FakeRuntime())["model"])
+
+    def test_a_requested_chat_model_runs_on_llama_cpp_on_apple_silicon(self):
+        ollama, llama = FakeRuntime(), FakeLlama()
+        with mock.patch.object(manager, "_chat_on_llama", return_value=True), \
+                mock.patch.object(manager, "choose_runtime", return_value=ollama), \
+                mock.patch.object(manager, "_llama", return_value=llama), \
+                mock.patch.object(manager, "_prism", return_value=None):
+            done = manager.setup(self.config(), model_id="qwen3.5-9b", hw=apple(18), progress=lambda m: None,
+                                 embedding=False, decision=False, smoke=fake_smoke({}))
+        self.assertTrue(done["ok"], done)
+        self.assertEqual((done["runtime"], llama.pulled, ollama.pulled), ("llama.cpp", ["qwen3.5-9b"], []))
 
     def test_a_build_other_than_the_planned_gguf_is_refused(self):
         # Ollama's plain qwen3.5:9b tag became an MLX build on Apple silicon (16.3 GB loaded on 18 GB).
