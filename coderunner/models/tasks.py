@@ -137,8 +137,9 @@ class Meter:
         start = time.monotonic()
         reply = await self._chat(messages, tools, *args, **kwargs)
         timings, usage = reply.get("timings") or {}, reply.get("usage") or {}
-        self.requests.append({"seconds": time.monotonic() - start,
-                              "read": int(timings.get("prompt_n") or usage.get("prompt_tokens") or 0),
+        # llama.cpp says how much of the prompt it read (the rest was kept); Ollama only gives the prompt's size.
+        self.requests.append({"seconds": time.monotonic() - start, "read": int(timings.get("prompt_n") or 0),
+                              "prompt": int(usage.get("prompt_tokens") or 0),
                               "wrote": int(timings.get("predicted_n") or usage.get("completion_tokens") or 0)})
         for call in reply.get("tool_calls") or []:
             fn = call.get("function") or {}
@@ -148,7 +149,9 @@ class Meter:
     def summary(self) -> dict:
         times = [r["seconds"] for r in self.requests]
         return {"requests": len(times), "tool_calls": len(self.steps),
-                "read_tokens": sum(r["read"] for r in self.requests), "wrote_tokens": sum(r["wrote"] for r in self.requests),
+                "read_tokens": sum(r["read"] for r in self.requests) or None,
+                "largest_prompt": max((r["prompt"] for r in self.requests), default=0),
+                "wrote_tokens": sum(r["wrote"] for r in self.requests),
                 "model_s": round(sum(times), 1), "median_request_s": round(statistics.median(times), 1) if times else 0.0}
 
 
@@ -195,6 +198,15 @@ def served(config) -> dict:
     elif isinstance(rt, OllamaRuntime):
         version = rt.version()
         info["runtime_version"] = ".".join(map(str, version)) if version else ""
+        from . import catalog
+        entry = next((e for e in catalog.models() if rt.model_id(e) == info["model"]), None)
+        if entry is not None and "ollama" in entry.get("artifacts", {}):
+            info.update(model=entry["id"], build=rt.tag(entry))
+        with contextlib.suppress(Exception):
+            import httpx
+            shown = httpx.post(f"{rt.api}/api/show", json={"model": config.get("models.chat")}, timeout=10,
+                               trust_env=False).json()
+            info["build"] += f" {shown['details']['quantization_level']}"
     return info
 
 

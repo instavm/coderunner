@@ -281,6 +281,14 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         denied = await registry.invoke("file_read", {"path": str(self.docs / ".env")}, ctx)
         self.assertIn("never read", denied)
         self.assertNotIn("sk-secret", denied)
+        # "My documents" read as kind doc: the text invoice is still found, with a note saying so.
+        other = await registry.invoke("files_search", {"query": "invoice", "kind": "doc"}, ctx)
+        self.assertIn("invoice-2026.txt", other)
+        self.assertIn("No doc files matched", other)
+        # No query: what is there, not "no matching files".
+        listed = await registry.invoke("files_search", {"query": ""}, ctx)
+        self.assertIn("invoice-2026.txt", listed)
+        self.assertIn("most recently changed", listed)
 
 
 class FindCommandTests(unittest.TestCase):

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import datetime
 import collections
 import pathlib
 import time
@@ -318,6 +319,13 @@ class FileIndex:
 
     async def search(self, query: str, kind: str | None = None, limit: int = 8) -> list[dict]:
         return await self.searcher.search(query, kind, limit)
+
+    def listing(self, kind: str | None = None, limit: int = 20) -> list[dict]:
+        """The most recently changed indexed files, for a search without a query."""
+        rows = self.store.query("SELECT path, kind, size, mtime FROM files WHERE error = '' AND (? IS NULL OR kind = ?) "
+                                "ORDER BY mtime DESC LIMIT ?", (kind, kind, max(1, min(int(limit), 50))))
+        return [{"path": r["path"], "kind": r["kind"], "size": r["size"],
+                 "modified": datetime.datetime.fromtimestamp(r["mtime"]).strftime("%Y-%m-%d")} for r in rows]
 
     def status(self) -> dict:
         rows = self.store.query("SELECT kind, COUNT(*) AS n, SUM(error != '') AS failed FROM files GROUP BY kind")

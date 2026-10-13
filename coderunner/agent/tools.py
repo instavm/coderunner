@@ -350,10 +350,22 @@ def file_tools(svc) -> list[Tool]:
         return path
 
     async def search(args, ctx):
-        found = await files.search(args["query"], args.get("kind") or None, int(args.get("limit", 8)))
+        query, kind, limit = (args.get("query") or "").strip(), args.get("kind") or None, int(args.get("limit", 8))
+        if not query:
+            found = files.listing(kind, limit)
+            if found:
+                ctx.holds("files")
+            return {"note": "No query: the most recently changed files in the shared folders.", "files": found} \
+                if found else "The shared folders have no indexed files" + (f" of kind {kind}." if kind else ".")
+        found = await files.search(query, kind, limit)
+        note = ""
+        if not found and kind:
+            # Owners say "my documents" of notes and text files too, which are kind "text", not "doc".
+            found = await files.search(query, None, limit)
+            note = f"No {kind} files matched; these files of other kinds do."
         if found:
             ctx.holds("files")
-        return found or "No matching files in the shared folders."
+        return ({"note": note, "files": found} if note else found) if found else "No matching files in the shared folders."
 
     async def read(args, ctx):
         path = await open_file(args, ctx, "Read")
@@ -386,8 +398,9 @@ def file_tools(svc) -> list[Tool]:
 
     kinds = {"type": "string", "enum": ["text", "doc", "image", "audio", "video"]}
     return [
-        Tool("files_search", "Search the owner's shared folders by meaning or words: text, code, documents, images, "
-             "audio and video. Returns paths; then use file_read, file_view or file_listen.",
+        Tool("files_search", "Search the owner's shared folders by meaning or words. kind narrows it: text (notes, "
+             "text and code files), doc (PDF, Word, RTF), image, audio or video; leave it out to search everything. "
+             "An empty query lists recent files. Returns paths; then use file_read, file_view or file_listen.",
              _params({"query": STR, "kind": kinds, "limit": INT}, ["query"]), search, untrusted=True),
         Tool("file_read", "Read a text, code or document file (PDF, Word, RTF) from the shared folders.",
              _params({"path": STR, "start_line": INT, "lines": INT}, ["path"]), read, untrusted=True),
