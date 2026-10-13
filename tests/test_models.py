@@ -576,7 +576,7 @@ class RuntimeTests(TempHome):
                 self.assertEqual(rt.prepare(entry, 16384), "coderunner-qwen3.5-4b")
         self.assertEqual(seen["cmd"][1:3], ["create", "coderunner-qwen3.5-4b"])
         self.assertEqual(seen["host"], "127.0.0.1:11434")
-        self.assertEqual(seen["modelfile"], "FROM qwen3.5:4b\nPARAMETER num_ctx 16384\n")
+        self.assertEqual(seen["modelfile"], "FROM qwen3.5:4b-q4_K_M\nPARAMETER num_ctx 16384\n")
         self.assertTrue(pathlib.Path(seen["cmd"][-1]).is_relative_to(self.home))
         self.assertEqual(rt.base_url, "http://127.0.0.1:11434/v1")
 
@@ -708,6 +708,17 @@ class ManagerTests(TempHome):
         self.assertIn("qwen3.8-27b", [c["id"] for c in result["rejected"]])
         self.assertEqual(result["embedding"]["id"], "embeddinggemma-2")
         self.assertIsNone(manager.plan(self.config(), hw=apple(8, "Apple M1"), runtime=FakeRuntime())["model"])
+
+    def test_a_build_other_than_the_planned_gguf_is_refused(self):
+        # Ollama's plain qwen3.5:9b tag became an MLX build on Apple silicon (16.3 GB loaded on 18 GB).
+        rt = FakeRuntime()
+        rt.build_format = lambda entry: "safetensors"
+        result = manager.setup(self.config(), model_id="qwen3.5-9b", runtime=rt, hw=apple(18), progress=lambda m: None,
+                               embedding=False, decision=False, smoke=fake_smoke({}))
+        self.assertFalse(result["ok"])
+        self.assertIn("not the GGUF build", result["attempts"][0]["error"])
+        self.assertEqual(rt.removed, ["qwen3.5-9b"])                 # its download is deleted
+        self.assertTrue(catalog.get("qwen3.5-9b")["artifacts"]["ollama"]["tag"].endswith("-q4_K_M"))
 
     def test_decision_model_only_where_it_fits_beside_the_chat_model(self):
         # tev1 4B judged 66 labelled browser steps with no missed commit; it runs beside the chat and

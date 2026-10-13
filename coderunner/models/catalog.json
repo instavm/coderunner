@@ -27,7 +27,7 @@
       },
       "artifacts": {
         "ollama": {
-          "tag": "qwen3.5:122b-a10b",
+          "tag": "qwen3.5:122b-a10b-q4_K_M",
           "size_gb": 81.37,
           "mmproj_gb": 0
         },
@@ -70,7 +70,7 @@
       },
       "artifacts": {
         "ollama": {
-          "tag": "qwen3.8:27b",
+          "tag": "qwen3.8:27b-q4_K_M",
           "size_gb": 16.81,
           "mmproj_gb": 0.93
         },
@@ -293,7 +293,7 @@
       },
       "artifacts": {
         "ollama": {
-          "tag": "qwen3.6:35b-a3b",
+          "tag": "qwen3.6:35b-a3b-q4_K_M",
           "size_gb": 21.72,
           "mmproj_gb": 0.9
         },
@@ -340,7 +340,7 @@
       },
       "artifacts": {
         "ollama": {
-          "tag": "gemma4:31b",
+          "tag": "gemma4:31b-it-q4_K_M",
           "size_gb": 19.18,
           "mmproj_gb": 1.2
         },
@@ -386,7 +386,7 @@
       },
       "artifacts": {
         "ollama": {
-          "tag": "gemma4:26b",
+          "tag": "gemma4:26b-a4b-it-q4_K_M",
           "size_gb": 17.53,
           "mmproj_gb": 1.19
         },
@@ -429,7 +429,7 @@
       },
       "artifacts": {
         "ollama": {
-          "tag": "qwen3.5:9b",
+          "tag": "qwen3.5:9b-q4_K_M",
           "size_gb": 5.63,
           "mmproj_gb": 0.92
         },
@@ -522,7 +522,7 @@
       },
       "artifacts": {
         "ollama": {
-          "tag": "qwen3.5:4b",
+          "tag": "qwen3.5:4b-q4_K_M",
           "size_gb": 2.65,
           "mmproj_gb": 0.68
         },
@@ -608,7 +608,7 @@
       },
       "artifacts": {
         "ollama": {
-          "tag": "gemma4:e4b",
+          "tag": "gemma4:e4b-it-q4_K_M",
           "size_gb": 5.59,
           "mmproj_gb": 0.99
         },

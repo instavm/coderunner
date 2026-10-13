@@ -404,6 +404,13 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
                 # Only a finished download is deleted when the model is then rejected: an interrupted one
                 # stays, so running setup again resumes it (7 GB over a flaky connection).
                 pulled = True
+            built = rt.build_format(entry)
+            if built not in (None, "gguf"):
+                # Ollama's plain tags became MLX builds on Apple silicon: qwen3.5:9b took 16.3 GB on an 18 GB
+                # Mac, against 8.1 GB planned for its GGUF build. The catalog names GGUF tags; this catches
+                # a tag that changes again.
+                raise RuntimeError(f"{rt.name} serves {entry['id']} as a {built} build, not the GGUF build "
+                                   "its memory was planned for")
             _free_gpu(config, rt)
             model = rt.prepare(entry, cand["ctx"], offload=True) if cand.get("offload") else \
                 rt.prepare(entry, cand["ctx"])

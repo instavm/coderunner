@@ -148,6 +148,10 @@ class Runtime:
     def installed(self, entry: dict) -> bool:
         return False
 
+    def build_format(self, entry: dict) -> str | None:
+        """The format of the build the runtime serves for this entry (gguf...), when it can tell."""
+        return None
+
     def remove(self, entry: dict) -> None:
         """Delete the model's weights (setup does this for models it downloaded and then rejected)."""
 
@@ -322,6 +326,13 @@ class OllamaRuntime(Runtime):
             return False
         tag = self.tag(entry)
         return tag in names or f"{tag}:latest" in names
+
+    def build_format(self, entry: dict) -> str | None:
+        try:
+            shown = httpx.post(f"{self.api}/api/show", json={"model": self.tag(entry)}, timeout=10, trust_env=False)
+            return (shown.json().get("details") or {}).get("format") or None
+        except (httpx.HTTPError, ValueError):
+            return None
 
     def remove(self, entry: dict) -> None:
         for name in (self.model_id(entry), self.tag(entry)):
