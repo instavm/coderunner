@@ -158,6 +158,14 @@ declares success. If a model fails the test, the next candidate is tried.
   own MLX-engine build (`qwen3.5:9b-nvfp4`) ran out of memory on a
   15K-token prompt on 18 GB.
 
+* Models do not sit in memory unused: after `models.idle_unload_minutes`
+  (10) without requests, llama.cpp's servers sleep (`--sleep-idle-seconds`)
+  and CodeRunner's Ollama unloads them (`OLLAMA_KEEP_ALIVE`; the Ollama app
+  does so after 5 minutes). Bonsai 2 27B held 10 GB of an 18 GB Mac and 0.5
+  GB asleep; the next request wakes it in about 4 s and reads the
+  instructions again (37 s for a 27B on an M3 Pro, once per wake). Setup
+  unloads the previous model before it loads another.
+
 * Runtimes per model: Ollama serves families whose tool calls it parses;
   others (GLM-5.x, DeepSeek V4, MiMo, Ling...) run on llama.cpp's own server
   next to it. When llama.cpp is missing, the plan says which better model it

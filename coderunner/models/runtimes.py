@@ -109,6 +109,12 @@ def _throttled(progress: Progress | None, every: float = 2.0) -> Progress:
     return emit
 
 
+def idle_seconds(config) -> int:
+    """How long a model may sit unused before its runtime frees its memory (models.idle_unload_minutes)."""
+    minutes = 10 if config is None else config.get("models.idle_unload_minutes", 10)
+    return max(0, int(float(minutes or 0) * 60))
+
+
 class Runtime:
     name = ""
     base_url = ""
@@ -272,7 +278,11 @@ class OllamaRuntime(Runtime):
             raise RuntimeError(f"Ollama {found} is older than {need}. {install_hint(runtime='ollama')}")
 
     def _env(self) -> dict:
-        return {**os.environ, "OLLAMA_HOST": self.host}
+        env = {**os.environ, "OLLAMA_HOST": self.host}
+        idle = idle_seconds(self.config)
+        if idle:
+            env.setdefault("OLLAMA_KEEP_ALIVE", f"{idle}s")       # models unload after this long unused
+        return env
 
     def start(self, timeout: float = 30) -> None:
         if self.running():
@@ -453,6 +463,11 @@ class LlamaCppRuntime(Runtime):
         # whole prompt (6 s growing to 19 s per step); with two, steps read only what was new (3.6 s).
         cmd += ["--jinja", "-c", str(active["ctx"]), "--host", "127.0.0.1", "--port", str(self.port),
                 "--cache-ram", "0", "-np", "2", "--kv-unified", "--alias", active["alias"]]
+        idle = idle_seconds(self.config)
+        if idle:
+            # The server frees the model's memory when idle and loads it again on the next request: a 27B
+            # held 10 GB of an 18 GB Mac (0.5 GB asleep); waking took 4 s plus re-reading the instructions.
+            cmd += ["--sleep-idle-seconds", str(idle)]
         if active.get("offload"):
             cmd += ["--cpu-moe"]          # experts in system RAM, the rest on the GPU
         peers = [node for node in (self.config.get("models.cluster") or []) if node.get("host")] if self.config else []
@@ -615,8 +630,10 @@ class DriverRuntime(LlamaCppRuntime):
         cmd = [self.binary() or "llama-server", "-m", active["model"]]
         if active.get("mmproj"):
             cmd += ["--mmproj", active["mmproj"]]
+        idle = idle_seconds(self.config)
         return cmd + ["--jinja", "-c", str(active["ctx"]), "--host", "127.0.0.1", "--port", str(self.port),
-                      "-np", "1", "-ngl", "99", "--alias", active["alias"]]
+                      "-np", "1", "-ngl", "99", "--alias", active["alias"]] + (
+                          ["--sleep-idle-seconds", str(idle)] if idle else [])
 
     def start(self, timeout: float = 300) -> None:
         if self.running():

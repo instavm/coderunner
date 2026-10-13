@@ -597,7 +597,7 @@ class RuntimeTests(TempHome):
             cmd = rt.command(rt._state()["active"])
         self.assertEqual(cmd, ["llama-server", "-m", "/m/q.gguf", "--mmproj", "/m/mmproj.gguf", "--jinja", "-c", "32768",
                                "--host", "127.0.0.1", "--port", "8081", "--cache-ram", "0", "-np", "2",
-                               "--kv-unified", "--alias", "coderunner-qwen3.5-9b"])
+                               "--kv-unified", "--alias", "coderunner-qwen3.5-9b", "--sleep-idle-seconds", "600"])
         self.assertTrue(rt.vision(entry))
         self.assertEqual(rt.base_url, "http://127.0.0.1:8081/v1")
         with self.assertRaisesRegex(RuntimeError, "not been downloaded"):
@@ -1132,6 +1132,10 @@ class PrismTests(TempHome):
                      "-np 2", "--kv-unified"):
             self.assertIn(flag, joined)
         self.assertIn(json.dumps({"reasoning_effort": "medium"}), cmd)
+        self.assertIn("--sleep-idle-seconds 600", joined)             # frees the model's memory when unused
+        awake = runtimes.PrismRuntime(self.config(idle_unload_minutes=0), hw=apple(18))
+        self.assertNotIn("--sleep-idle-seconds", awake.command({"model": "/m.gguf", "ctx": 8192, "alias": "b"}))
+        self.assertEqual(runtimes.OllamaRuntime(self.config())._env()["OLLAMA_KEEP_ALIVE"], "600s")
         # Locked weights cannot be reclaimed; with a second model loaded an 18 GB Mac froze. Opt-in only.
         locked = runtimes.PrismRuntime(self.config(lock_weights=True), hw=apple(18))
         self.assertIn("--load-mode mlock", " ".join(locked.command({"model": "/m.gguf", "ctx": 8192,
