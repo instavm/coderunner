@@ -16,6 +16,7 @@ import httpx
 from coderunner.core.config import Config
 from coderunner.safety import decision as decision_module
 from coderunner.models import bench, catalog, evidence, fit, hardware, licenses, manager, runtimes, smoketest
+from coderunner.models import hub as hub_module
 from coderunner.models.hub import Hub, HubError
 
 GiB = 1024 ** 3
@@ -357,7 +358,7 @@ class LicenseTests(TempHome):
         hub = Hub(httpx.Client(transport=hf_transport(routes, calls)), cache_dir=self.home / "cache")
         info = hub.resolve_license("someone/Model-GGUF")
         self.assertEqual((info["spdx"], info["repo"], info["gated"]), ("gemma", "org/Model", False))
-        self.assertEqual(info["link"], "https://huggingface.co/org/Model/blob/main/LICENSE.md")
+        self.assertEqual(info["link"], f"{hub_module.endpoint()}/org/Model/blob/main/LICENSE.md")
         self.assertEqual(licenses.check("someone/Model-GGUF", self.config(), hub)[0], "ask")
         self.assertEqual(licenses.check("mirror/Other", self.config(), hub)[0], "allow")
         decision, reason, _ = licenses.check("mirror/NoLicense", self.config(), hub)
@@ -752,7 +753,7 @@ class ManagerTests(TempHome):
                 mock.patch.object(manager, "_llama", return_value=llama), \
                 mock.patch.object(manager, "_prism", return_value=None):
             done = manager.setup(self.config(), model_id="qwen3.5-9b", hw=apple(18), progress=lambda m: None,
-                                 embedding=False, decision=False, smoke=fake_smoke({}))
+                                 embedding=False, decision=False, smoke=fake_smoke({}), hub=ApacheHub())
         self.assertTrue(done["ok"], done)
         self.assertEqual((done["runtime"], llama.pulled, ollama.pulled), ("llama.cpp", ["qwen3.5-9b"], []))
 
