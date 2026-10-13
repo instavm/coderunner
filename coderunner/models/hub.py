@@ -39,6 +39,9 @@ def token() -> str:
         return ""
 
 
+RESUMES = 20           # times a dropped download carries on from where it stopped
+
+
 class HubError(Exception):
     pass
 
@@ -163,32 +166,43 @@ class Hub:
                     digest.update(block)
                     offset += len(block)
         url = f"{endpoint()}/{repo}/resolve/{revision}/{quote(file)}"
-        headers = {**self._auth(), **({"Range": f"bytes={offset}-"} if offset else {})}
-        last = 0.0
-        try:
-            with self.client.stream("GET", url, headers=headers, timeout=httpx.Timeout(30, read=300)) as response:
-                if response.status_code in (401, 403):
-                    raise HubError(f"{repo} needs access: accept its terms on Hugging Face and set HF_TOKEN")
-                if response.status_code == 416 and offset:
-                    pass  # the partial file is already complete
-                elif response.status_code == 200 and offset:
-                    digest, offset = hashlib.sha256(), 0  # server ignored Range; start over
-                elif response.status_code not in (200, 206):
-                    raise HubError(f"Download of {repo}/{file} failed with {response.status_code}")
-                total = size or offset + int(response.headers.get("content-length") or 0)
-                if response.status_code != 416:
-                    with open(part, "ab" if offset else "wb") as handle:
-                        done = offset
-                        for chunk in response.iter_bytes(1 << 20):
-                            handle.write(chunk)
-                            digest.update(chunk)
-                            done += len(chunk)
-                            if progress and (time.monotonic() - last > 2 or done == total):
-                                last = time.monotonic()
-                                pct = f"{100 * done / total:.0f}% of {total / 1e9:.2f} GB" if total else f"{done / 1e9:.2f} GB"
-                                progress(f"downloading {file}: {pct}")
-        except httpx.HTTPError as exc:
-            raise HubError(f"Download of {repo}/{file} interrupted ({exc}); run again to resume") from exc
+        last, resumes = 0.0, 0
+        while True:
+            headers = {**self._auth(), **({"Range": f"bytes={offset}-"} if offset else {})}
+            before = offset
+            try:
+                with self.client.stream("GET", url, headers=headers, timeout=httpx.Timeout(30, read=300)) as response:
+                    if response.status_code in (401, 403):
+                        raise HubError(f"{repo} needs access: accept its terms on Hugging Face and set HF_TOKEN")
+                    if response.status_code == 416 and offset:
+                        pass  # the partial file is already complete
+                    elif response.status_code == 200 and offset:
+                        digest, offset = hashlib.sha256(), 0  # server ignored Range; start over
+                    elif response.status_code not in (200, 206):
+                        raise HubError(f"Download of {repo}/{file} failed with {response.status_code}")
+                    total = size or offset + int(response.headers.get("content-length") or 0)
+                    if response.status_code != 416:
+                        with open(part, "ab" if offset else "wb") as handle:
+                            done = offset
+                            for chunk in response.iter_bytes(1 << 20):
+                                handle.write(chunk)
+                                digest.update(chunk)
+                                done += len(chunk)
+                                if progress and (time.monotonic() - last > 2 or done == total):
+                                    last = time.monotonic()
+                                    pct = f"{100 * done / total:.0f}% of {total / 1e9:.2f} GB" if total else f"{done / 1e9:.2f} GB"
+                                    progress(f"downloading {file}: {pct}")
+                break
+            except httpx.HTTPError as exc:
+                # Hugging Face's CDN closed connections every 1.4-1.7 GB in testing: carry on from where it stopped
+                # while each attempt gets further.
+                offset = part.stat().st_size if part.exists() else 0
+                resumes += 1
+                if offset <= before or resumes > RESUMES:
+                    raise HubError(f"Download of {repo}/{file} interrupted ({exc}); run again to resume") from exc
+                if progress:
+                    progress(f"downloading {file}: the connection dropped at {offset / 1e9:.2f} GB; resuming")
+                time.sleep(min(30, 2 * resumes))
         if size and part.stat().st_size != size:
             raise HubError(f"{file}: expected {size} bytes, got {part.stat().st_size}; run again to resume")
         if sha256 and digest.hexdigest() != sha256:

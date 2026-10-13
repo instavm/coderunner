@@ -425,6 +425,37 @@ class HubTests(TempHome):
         self.assertFalse(bad.exists())
         self.assertFalse((bad.parent / "bad.gguf.part").exists())
 
+    def test_a_download_carries_on_when_the_connection_drops(self):
+        blob = os.urandom(3_500_000)
+        starts = []
+
+        class Dropping(httpx.SyncByteStream):
+            def __init__(self, data):
+                self.data = data
+
+            def __iter__(self):                 # drops 1.2 MB into every response, as the CDN did
+                yield self.data[:1_200_000]
+                if len(self.data) > 1_200_000:
+                    raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+
+        def resolve(request):
+            start = int(request.headers.get("range", "bytes=0-")[6:-1] or 0)
+            starts.append(start)
+            return httpx.Response(206 if start else 200, stream=Dropping(blob[start:]),
+                                  headers={"content-length": str(len(blob) - start)})
+
+        hub = Hub(httpx.Client(transport=hf_transport({"/org/M/resolve/abc/model.gguf": resolve})), cache_dir=False)
+        dest = self.home / "models" / "model.gguf"
+        messages = []
+        with mock.patch("coderunner.models.hub.time.sleep"):
+            hub.download("org/M", "model.gguf", dest, revision="abc", sha256=hashlib.sha256(blob).hexdigest(),
+                         size=len(blob), progress=messages.append)
+        self.assertEqual(starts[0], 0)
+        self.assertEqual(starts, sorted(set(starts)))                    # each attempt carries on further
+        self.assertGreaterEqual(len(starts), 3)
+        self.assertEqual(dest.read_bytes(), blob)
+        self.assertTrue(any("resuming" in m for m in messages))
+
     def test_auth_errors_explain_hf_token(self):
         routes = {"/api/models/org/Gated": lambda r: httpx.Response(401, json={"error": "gated"})}
         hub = Hub(httpx.Client(transport=hf_transport(routes)), cache_dir=False)
