@@ -166,6 +166,13 @@ declares success. If a model fails the test, the next candidate is tried.
   instructions again (37 s for a 27B on an M3 Pro, once per wake). Setup
   unloads the previous model before it loads another.
 
+* On Apple silicon chat models run on CodeRunner's own llama.cpp server
+  (llama.cpp's official build, pinned and checksum-checked, installed by
+  setup), Ollama keeping the embedding and decision models: Ollama's server
+  keeps up to 8 GB of earlier prompts in memory with no setting for it (2.4
+  GB in one sample-task run on an 18 GB Mac, which then wrote 0.06 tokens/s),
+  and its plain tags became MLX builds that took 16.3 GB for Qwen3.5-9B. On
+  NVIDIA, llama.cpp's official build is CPU-only, so Ollama serves them.
 * Runtimes per model: Ollama serves families whose tool calls it parses;
   others (GLM-5.x, DeepSeek V4, MiMo, Ling...) run on llama.cpp's own server
   next to it. When llama.cpp is missing, the plan says which better model it

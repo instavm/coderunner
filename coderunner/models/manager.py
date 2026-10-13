@@ -51,12 +51,21 @@ def _prism(config, hw: hardware.Hardware, rt: Runtime | None) -> PrismRuntime | 
     return prism if prism.available() else None
 
 
-def _llama(config, rt: Runtime | None) -> Runtime | None:
-    """llama.cpp next to Ollama, for models Ollama cannot serve: tool formats it does not parse, experts in RAM."""
+def _chat_on_llama(hw) -> bool:
+    """On Apple silicon chat models run on CodeRunner's own llama.cpp server, Ollama keeping the embedding and
+    decision models: Ollama's server keeps up to 8 GB of earlier prompts in memory, with no setting for it (2.4
+    GB in one sample-task run on an 18 GB Mac, which then wrote 0.06 tokens/s), where CodeRunner's keeps none
+    and sleeps when idle. Elsewhere llama.cpp's official build runs on the CPU only, so Ollama serves them."""
+    return hw is not None and hw.gpu == "apple" and hw.arch == "arm64"
+
+
+def _llama(config, rt: Runtime | None, hw=None) -> Runtime | None:
+    """llama.cpp next to Ollama, for models Ollama cannot serve (tool formats it does not parse, experts in RAM)
+    and, on Apple silicon, for chat models (setup installs llama.cpp's official build)."""
     if rt is None or rt.name != "ollama":
         return None
     llama = LlamaCppRuntime(config)
-    return llama if llama.available() else None
+    return llama if llama.available() or _chat_on_llama(hw) else None
 
 
 def _discovered(config, hw, rt: Runtime | None, progress: Callable[[str], None] | None = None,
@@ -70,7 +79,11 @@ def _discovered(config, hw, rt: Runtime | None, progress: Callable[[str], None] 
     for model in discover.cached(progress):
         if model["repo"].lower() in known:
             continue                        # curated entry with measured factors wins
-        entry, on = discover.best_build(model, hw, config, rt.name), rt.name
+        entry, on = None, rt.name
+        if rt.name == "ollama" and llama is not None and _chat_on_llama(hw):
+            entry, on = discover.best_build(model, hw, config, "llama.cpp"), "llama.cpp"
+        if entry is None:
+            entry, on = discover.best_build(model, hw, config, rt.name), rt.name
         if entry is None and rt.name == "ollama":
             entry, on = discover.best_build(model, hw, config, "llama.cpp"), "llama.cpp"
         if entry:
@@ -113,7 +126,12 @@ def _ranked(hw, config, rt: Runtime | None, prism: Runtime | None, extra: list[d
     if prism is not None:
         found += fit.recommend(hw, config, "chat", "prism")
     if llama is not None:
-        found += [c for c in fit.recommend(hw, config, "chat", "llama.cpp") if c.get("offload")]
+        on_llama = fit.recommend(hw, config, "chat", "llama.cpp")
+        if _chat_on_llama(hw):
+            moved = {c["id"] for c in on_llama}
+            found = [c for c in found if not (c["ok"] and c["id"] in moved)] + on_llama
+        else:
+            found += [c for c in on_llama if c.get("offload")]
     for entry in extra or []:
         cand = fit.candidate(entry, hw, config, "chat", entry.get("runtime") or _artifact_runtime(rt))
         cand["discovered"] = True
@@ -189,7 +207,7 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
     rt = _main_runtime(config, hw, runtime)
     art = _artifact_runtime(rt)
     prism = _prism(config, hw, rt) if runtime is None else None     # only when the runtime is auto-chosen
-    llama = _llama(config, rt) if runtime is None else None
+    llama = _llama(config, rt, hw) if runtime is None else None
     extra = _discovered(config, hw, rt, llama=llama) if runtime is None else []
     candidates = _ranked(hw, config, rt, prism, extra, llama)
     viable = [c for c in candidates if c["ok"]]
@@ -354,7 +372,7 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
             return {"ok": False, "error": str(exc)}
 
     prism = _prism(config, hw, rt) if runtime is None else None     # only when the runtime is auto-chosen
-    llama = _llama(config, rt) if runtime is None else None
+    llama = _llama(config, rt, hw) if runtime is None else None
     extra = _discovered(config, hw, rt, progress, llama) if runtime is None else []
     if model_id:
         entry = _entry(model_id, extra)

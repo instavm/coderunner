@@ -195,14 +195,18 @@ class DiscoveryTests(unittest.TestCase):
                 result = manager.plan(cfg, hw=studio)
             found = {c["id"]: c for c in [result["model"], *result["alternatives"]]}
             self.assertEqual(found["hf-lab-big-300b-a30b"]["runtime"], "llama.cpp")
-            self.assertEqual(found["hf-lab-agent-27b"]["runtime"], "ollama")
+            # On Apple silicon chat models run on CodeRunner's llama.cpp server; on NVIDIA, Ollama's CUDA build.
+            self.assertEqual(found["hf-lab-agent-27b"]["runtime"], "llama.cpp")
+            self.assertTrue(manager._chat_on_llama(studio))
+            self.assertFalse(manager._chat_on_llama(nvidia(32, name="NVIDIA GeForce RTX 5090")))
             with mock.patch.object(manager, "_llama", return_value=None):
                 result = manager.plan(cfg, hw=studio)
             rejected = {c["id"]: c for c in result["rejected"]}
             self.assertIn("needs llama.cpp", rejected["hf-lab-big-300b-a30b"]["reasons"][0])
             self.assertIn("hf-lab-big-300b-a30b would rank higher but needs llama.cpp", " ".join(result["notes"]))
-            done = manager.setup(cfg, model_id="hf-lab-big-300b-a30b", hw=studio, progress=lambda m: None,
-                                 embedding=False)
+            with mock.patch.object(manager, "_llama", return_value=None):      # no llama.cpp to be had
+                done = manager.setup(cfg, model_id="hf-lab-big-300b-a30b", hw=studio, progress=lambda m: None,
+                                     embedding=False)
             self.assertFalse(done["ok"])
             self.assertIn("brew install llama.cpp", done["error"])
 

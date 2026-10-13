@@ -286,12 +286,15 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                 for row in svc.store.query("SELECT id FROM memories"):    # each task starts as the first one
                     svc.memory.forget(id=row["id"])
                 start = time.monotonic()
+                job = asyncio.create_task(
+                    svc.agent.run(RunContext(conversation=f"bench-{task.name}", origin="bench"), task.prompt(site)))
                 try:
-                    answer = await asyncio.wait_for(
-                        svc.agent.run(RunContext(conversation=f"bench-{task.name}", origin="bench"), task.prompt(site)),
-                        TASK_SECONDS)
+                    # Shielded: cancelling a request to a runtime that is slow to answer took effect only when it
+                    # answered (15 minutes, once), so the limit does not wait for the task to give way.
+                    answer = await asyncio.wait_for(asyncio.shield(job), TASK_SECONDS)
                     passed, why = task.check(answer, site)
                 except asyncio.TimeoutError:
+                    job.cancel()
                     answer, passed, why = "", False, f"still running after {TASK_SECONDS // 60} min"
                 result = {"name": task.name, "passed": passed, "why": why, "seconds": round(time.monotonic() - start, 1),
                           **meter.summary(), "approvals": [f"{'allowed' if a['allowed'] else 'refused'}: {a['summary']}" for a in asked],

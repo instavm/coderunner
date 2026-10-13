@@ -409,6 +409,8 @@ class LlamaCppRuntime(Runtime):
         self.state_path.write_text(json.dumps(state, indent=2))
 
     def pull(self, entry: dict, progress: Progress | None = None) -> None:
+        if not self.binary():
+            self.install(progress)
         art = entry["artifacts"]["gguf"]
         hub = self.hub or Hub()
         commit = hub.model_info(art["repo"]).get("sha") or "main"
