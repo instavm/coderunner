@@ -209,9 +209,13 @@ class FitTests(TempHome):
                         self.assertEqual(picks[0]["id"], expected[ram])
                     self.assertTrue(picks[0]["vision"])
                     self.assertEqual(picks[0]["fit"], "good")
-        # Across runtimes, Bonsai 2 27B (Prism's build) leads on 16-24 GB Macs with the lite sandbox: Prism
-        # measured it at 98.2% of Qwen3.8-27B's scores, far above Qwen3.5-9B, at about twice the step time.
-        for ram, chip in ((16, "Apple M2"), (18, "Apple M3 Pro"), (24, "Apple M4 Pro")):
+        # Across runtimes, Bonsai 2 27B (Prism's build) leads on 18-24 GB Macs with the lite sandbox: Prism
+        # measured it at 98.2% of Qwen3.8-27B's scores, far above Qwen3.5-9B, which outweighs its slower steps
+        # (22 s against 12 s on an M3 Pro). On a 16 GB M2 its steps would take 32 s: the two tie, the faster wins.
+        two = fit.recommend(apple(16, "Apple M2", sandbox=1), cfg)
+        self.assertEqual(two[0]["id"], "qwen3.5-9b")
+        self.assertEqual(round(fit.utility(two[0]), 1), round(fit.utility(two[1]), 1))
+        for ram, chip in ((18, "Apple M3 Pro"), (24, "Apple M4 Pro")):
             with self.subTest(ram=ram):
                 picks = fit.recommend(apple(ram, chip, sandbox=1), cfg)
                 self.assertEqual((picks[0]["id"], picks[0]["vision"]), ("bonsai-2-27b", True))
@@ -653,6 +657,9 @@ class FakeRuntime(runtimes.Runtime):
     def remove(self, entry):
         self.removed.append(entry["id"])
 
+    def unload(self, model):
+        self.unloaded = [*getattr(self, "unloaded", []), model]
+
     def prepare(self, entry, ctx, offload=False):
         self.prepared.append((entry["id"], ctx))
         if offload:
@@ -922,15 +929,15 @@ class BenchTests(TempHome):
         self.assertLessEqual(wild["read_k"], bench.FACTOR_RANGE[1] * spec["read_tok_s"] * entry["params_b"] + 1)
 
     def test_setup_times_the_pick_and_moves_on_when_it_is_far_slower_here(self):
-        # On a 128 GB M4 Max the dense 27B is picked by its scores (~15 s per agent step estimated). If this
-        # machine runs at a sixth of the estimate, a 27B step takes over the 90 s limit: setup moves on to the
+        # On a 128 GB M4 Max the dense 27B is picked by its scores (~10 s per agent step estimated). If this
+        # machine runs at a twelfth of the estimate, a 27B step takes over the 90 s limit: setup moves on to the
         # best remaining candidate under it and deletes the 27B it downloaded.
         cfg, hw = self.config(), apple(128, "Apple M4 Max")
 
-        def sixth(model):
+        def twelfth(model):
             est = fit.candidate(catalog.get(model.removeprefix("coderunner-")), hw, cfg, "chat", "ollama")
-            return est["read_tok_s"] / 6, est["tok_s"] / 6
-        rt, measure = FakeRuntime(), fake_measure(sixth)
+            return est["read_tok_s"] / 12, est["tok_s"] / 12
+        rt, measure = FakeRuntime(), fake_measure(twelfth)
         result = manager.setup(cfg, runtime=rt, hw=hw, progress=lambda m: None, embedding=False, decision=False,
                                smoke=fake_smoke({}), measure=measure)
         self.assertTrue(result["ok"], result)
@@ -1068,6 +1075,39 @@ if __name__ == "__main__":
 class FakePrism(FakeRuntime):
     name = "prism"
     base_url = "http://127.0.0.1:8/v1"
+
+
+class BenchCandidatesTests(TempHome):
+    def test_measures_the_best_candidates_keeps_the_best_and_deletes_the_rest(self):
+        from coderunner.models import tasks
+        ollama, prism, hw = FakeRuntime(), FakePrism(), apple(18, "Apple M3 Pro", sandbox=1)
+        outcomes = {"bonsai-2-27b": (5, 820.0), "bonsai-2-27b-compact": (5, 990.0), "qwen3.5-9b": (3, 410.0)}
+        served = []
+
+        async def run_tasks(config, progress=None):
+            model = manager.entry_id(config)
+            served.append(model)
+            passed, seconds = outcomes[model]
+            record = {"suite": tasks.SUITE, "date": "2026-10-13", "machine": bench.fingerprint(hw), "model": model,
+                      "runtime": config.get("models.runtime"), "runtime_version": "", "build": model,
+                      "passed": passed, "total": 5, "seconds": seconds, "median_request_s": 5.0, "paging": False,
+                      "tasks": [{"name": t.name, "passed": True, "seconds": seconds / 5} for t in tasks.TASKS]}
+            tasks.save(record)
+            return {"ok": True, **record}
+
+        def choose(config, hw=None, name=None):
+            return prism if (name or config.get("models.runtime")) == "prism" else ollama
+        with mock.patch.object(manager, "choose_runtime", side_effect=choose), \
+                mock.patch.object(manager, "_prism", return_value=prism):
+            cfg = self.config()
+            result = manager.bench_candidates(cfg, count=3, hw=hw, progress=lambda m: None, run_tasks=run_tasks,
+                                              smoke=fake_smoke({}), decision=False, embedding=False)
+        self.assertEqual(served, ["bonsai-2-27b", "bonsai-2-27b-compact", "qwen3.5-9b"])
+        # Qwen3.5-9B was quickest but passed fewer tasks; of the two that passed all, the faster one.
+        self.assertEqual(result["model"]["id"], "bonsai-2-27b")
+        self.assertEqual(result["model"]["tasks"]["passed"], 5)
+        self.assertEqual(manager.entry_id(cfg), "bonsai-2-27b")
+        self.assertEqual((prism.removed, ollama.removed), (["bonsai-2-27b-compact"], ["qwen3.5-9b"]))
 
 
 class ApacheHub:

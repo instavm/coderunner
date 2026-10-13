@@ -39,7 +39,7 @@ packages = [
 
 [tool.setuptools.package-data]
 "coderunner.server" = ["web/*.html"]
-"coderunner.models" = ["catalog.json", "evidence.json"]
+"coderunner.models" = ["catalog.json", "evidence.json", "measured.json"]
 "coderunner.browser" = ["extension/*.json", "extension/*.js"]
 "coderunner.files" = ["helper.swift"]
 "coderunner.voice" = ["apple_speech.swift"]

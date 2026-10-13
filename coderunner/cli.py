@@ -402,6 +402,13 @@ def cmd_models(args, config: Config) -> int:
         from .models import smoketest
         endpoint = manager.endpoint(config)
         _print(asyncio.run(smoketest.run(endpoint.base_url, endpoint.model, vision=endpoint.vision)))
+    elif args.action == "bench" and args.tasks and args.candidates:
+        from .models import tasks
+        result = manager.bench_candidates(config, count=args.candidates, progress=print)
+        machine = tasks.fingerprint(tasks.hardware.detect(float(config.get("sandbox.memory_gb") or 1)))
+        print(tasks.report([r for r in tasks.load() if r["machine"] == machine and r["suite"] == tasks.SUITE]))
+        print(f"Assistant model: {(result['model'] or {}).get('id', 'none')}")
+        return 0
     elif args.action == "bench" and args.tasks:
         import asyncio
         from .models import tasks
@@ -715,6 +722,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="bench: run sample tasks end to end (local test sites and documents) with the served model")
     p.add_argument("--only", action="append", help="bench --tasks: run only this task (flights, evening, library, documents, appliance)")
     p.add_argument("--visible", action="store_true", help="bench --tasks: show the browser window")
+    p.add_argument("--candidates", type=int, default=0,
+                   help="bench --tasks: also measure the best N candidates not measured on this machine yet, "
+                        "one at a time, keep the best and delete the others' downloads")
     p.set_defaults(func=cmd_models)
 
     p = sub.add_parser("secrets", help="Secrets injected at the network boundary, never shown to the sandbox")

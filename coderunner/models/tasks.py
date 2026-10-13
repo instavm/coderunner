@@ -109,6 +109,7 @@ class Task:
     what: str                                   # what it stands for, in the report
     prompt: Callable[[fixtures.Sites], str]
     check: Callable[[str, fixtures.Sites], tuple[bool, str]]
+    steps: int                                  # model requests a capable assistant needs, the answer included
     needs_files: bool = False
 
 
@@ -117,24 +118,24 @@ TASKS = [
          lambda s: (f"Find one-way flights from Bengaluru to Delhi on {target_day(s.today):%A %-d %B %Y} for 1 adult, "
                     f"economy, on SkyFare ({s.base}/flights/). Don't book anything. Tell me the three cheapest flights "
                     "with airline, departure time and price."),
-         check_flights),
+         check_flights, 12),
     Task("evening", "a flight search with conditions (direct, leaving after 18:00)",
          lambda s: (f"On SkyFare ({s.base}/flights/), find the cheapest direct flight from Bengaluru to Delhi on "
                     f"{target_day(s.today):%A %-d %B %Y} that leaves after 18:00, for 1 adult in economy. Don't book "
                     "anything. Tell me its airline, flight number, departure time and price."),
-         check_evening),
+         check_evening, 13),
     Task("library", "facts from two pages of a website",
          lambda s: (f"On the Riverside Public Library website ({s.base}/library/), find what time the library closes "
                     "on Sundays and the late fee per day for an overdue DVD."),
-         check_library),
+         check_library, 4),
     Task("documents", "an answer that needs two of the owner's documents",
          lambda s: ("Check my documents: until what date is my dishwasher covered, counting any extended warranty "
                     "I bought? And which number do I call for service?"),
-         check_documents, needs_files=True),
+         check_documents, 4, needs_files=True),
     Task("appliance", "the owner's documents, then the maker's website",
          lambda s: (f"How often should I descale my dishwasher? Find its model in my documents, then check the "
                     f"maker's support site ({s.base}/kelvin/)."),
-         check_appliance, needs_files=True),
+         check_appliance, 6, needs_files=True),
 ]
 
 
@@ -319,8 +320,30 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
 
 # ---- results --------------------------------------------------------------------------------------------
 
+def step_seconds(record: dict) -> float:
+    """A measured run's time per step, in the planner's unit: its seconds over the steps its tasks need, so a
+    model that takes twice the steps of another is slower even when each of its steps is quicker."""
+    steps = {t.name: t.steps for t in TASKS}
+    return record["seconds"] / max(1, sum(steps.get(t["name"], 5) for t in record["tasks"]))
+
+
+def public(record: dict) -> dict:
+    """What can be shared: no answers, steps, approvals or paths."""
+    keep = ("name", "passed", "seconds", "requests", "tool_calls", "median_request_s", "paged_in_mb")
+    return {**{k: v for k, v in record.items() if k != "tasks"},
+            "tasks": [{k: t.get(k) for k in keep} for t in record["tasks"]]}
+
+
 def _path() -> pathlib.Path:
     return paths.assistant_dir() / "models" / "tasks.json"
+
+
+def shared() -> list[dict]:
+    """Results measured on other machines and shipped with CodeRunner (measured.json), anonymous."""
+    try:
+        return json.loads((pathlib.Path(__file__).with_name("measured.json")).read_text())
+    except (OSError, ValueError):
+        return []
 
 
 def load() -> list[dict]:

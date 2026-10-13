@@ -80,6 +80,32 @@ def _discovered(config, hw, rt: Runtime | None, progress: Callable[[str], None] 
     return discover.place(entries, catalog.models())
 
 
+def _measured(hw) -> dict[tuple[str, str], dict]:
+    """Sample-task results (tasks.py) for this kind of machine, by model and runtime: measured here, else
+    shipped from an identical machine. Runs that paged from disk measured the disk and are left out."""
+    from . import tasks
+    machine = bench.fingerprint(hw)
+    found: dict[tuple[str, str], dict] = {}
+    for record in tasks.shared() + tasks.load():          # this machine's own results win
+        if record.get("machine") == machine and record.get("suite") == tasks.SUITE and not record.get("paging"):
+            found[(record["model"], record["runtime"])] = record
+    return found
+
+
+def _with_measured(c: dict, measured: dict, main: str | None) -> dict:
+    record = measured.get((c["id"], c.get("runtime") or main or ""))
+    if record is None:
+        c["reasons"].append("sample tasks not run on this kind of machine yet (coderunner models bench --tasks)")
+        return c
+    from . import tasks
+    c["tasks"] = {"passed": record["passed"], "total": record["total"], "seconds": record["seconds"],
+                  "date": record["date"]}
+    c["step_s"] = round(tasks.step_seconds(record), 1)
+    c["reasons"].append(f"sample tasks here: {record['passed']} of {record['total']} passed in "
+                        f"{record['seconds'] / 60:.0f} min, {c['step_s']:.0f} s a step ({record['date']})")
+    return c
+
+
 def _ranked(hw, config, rt: Runtime | None, prism: Runtime | None, extra: list[dict] | None = None,
             llama: Runtime | None = None) -> list[dict]:
     """Chat candidates for the main runtime, Prism's build and discovered models, best first."""
@@ -96,6 +122,8 @@ def _ranked(hw, config, rt: Runtime | None, prism: Runtime | None, extra: list[d
             cand["reasons"].insert(0, f"needs {cand['runtime']}, which is not installed")
             cand["missing_runtime"] = True
         found.append(cand)
+    measured = _measured(hw)
+    found = [_with_measured(c, measured, rt.name if rt else None) for c in found]
     return sorted((c for c in found if c["ok"]), key=fit._order) + [c for c in found if not c["ok"]]
 
 
@@ -289,6 +317,22 @@ def _external(config, rt: Runtime, model_id: str | None, progress, smoke) -> dic
     return {"ok": True, "runtime": rt.name, "base_url": rt.base_url, "model": model, "smoke": result}
 
 
+def _free_gpu(config, keep: Runtime) -> None:
+    """Unload the model the assistant used so far before another one loads: two models at once froze an 18 GB
+    Mac twice. Ollama keeps its other models (embeddings); a llama.cpp server of another runtime stops (its own
+    runtime restarts it with the new model)."""
+    before, chat = config.get("models.runtime") or "", config.get("models.chat") or ""
+    if before not in LOCAL or not chat:
+        return
+    old = choose_runtime(config, name=before)
+    if old is None or not old.running():
+        return
+    if old.name == "ollama":
+        old.unload(chat)
+    elif old.name != keep.name:
+        old.stop()
+
+
 def setup(config, model_id: str | None = None, runtime: str | Runtime | None = None, accept_license: bool = False,
           progress: Callable[[str], None] = print, hw: hardware.Hardware | None = None, embedding: bool = True,
           smoke=smoketest.run, hub: Hub | None = None, measure=None, decision: bool = True) -> dict:
@@ -360,6 +404,7 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
                 # Only a finished download is deleted when the model is then rejected: an interrupted one
                 # stays, so running setup again resumes it (7 GB over a flaky connection).
                 pulled = True
+            _free_gpu(config, rt)
             model = rt.prepare(entry, cand["ctx"], offload=True) if cand.get("offload") else \
                 rt.prepare(entry, cand["ctx"])
             rt.start()
@@ -597,6 +642,51 @@ def bench_here(config, model: str | None = None, measure=None, hw: hardware.Hard
     return {"ok": True, "model": model, "measured": measured, "calibration": cal, "plan": planned,
             "report": bench.report(bench.apply(hw, cal or bench.load(hw)), cal or bench.load(hw), picks,
                                    {"name": runtime, "version": version})}
+
+
+def bench_candidates(config, count: int = 2, progress: Callable[[str], None] = print,
+                     hw: hardware.Hardware | None = None, run_tasks=None, **setup_options) -> dict:
+    """Bench before use: run the sample tasks (tasks.py) with the best candidates for this machine that have
+    no result for it yet, one model at a time, then set up the best by the measurements and delete what this
+    downloaded for the others."""
+    from . import tasks
+    run_tasks = run_tasks or tasks.run
+    hw = _hardware(config, hw)
+    planned = plan(config, hw)
+    queue = [c for c in [planned["model"], *planned["alternatives"]] if c and not c.get("tasks")][:count]
+    downloaded, runs = [], []
+    for cand in queue:
+        rt = choose_runtime(config, hw, cand.get("runtime") or "auto")
+        entry = _entry(cand["id"], [])
+        fresh = rt is not None and not rt.installed(entry)
+        progress(f"== {cand['id']}")
+        done = setup(config, model_id=cand["id"], hw=hw, progress=progress,
+                     **{"embedding": False, "decision": False, **setup_options})
+        if fresh and done.get("ok"):
+            downloaded.append((done["runtime"], entry))
+        if not done.get("ok"):
+            runs.append({"model": cand["id"], "error": done.get("error", "setup failed")})
+            continue
+        result = _run_async(run_tasks(config, progress=progress))
+        runs.append({"model": cand["id"], **{k: result.get(k) for k in ("passed", "total", "seconds", "paging", "error")}})
+    after = plan(config, hw)
+    best = after["model"]
+    if best and best["id"] != entry_id(config):
+        progress(f"== setting up {best['id']}, the best measured here")
+        final = setup(config, model_id=best["id"], hw=hw, progress=progress, **setup_options)
+        if not final.get("ok"):
+            return {"ok": False, "error": f"{best['id']} could not be set up again: {final.get('error')}",
+                    "runs": runs, "plan": after}
+    for name, entry in downloaded:
+        if not best or entry["id"] != best["id"]:
+            choose_runtime(config, hw, name).remove(entry)
+            progress(f"removed {entry['id']}'s weights")
+    return {"ok": True, "runs": runs, "model": best, "plan": after}
+
+
+def entry_id(config) -> str:
+    """The catalog id of the configured chat model."""
+    return (config.get("models.chat") or "").split(":")[0].removeprefix("coderunner-")
 
 
 def endpoint(config) -> Endpoint:

@@ -65,13 +65,19 @@ images. The same process runs on every machine, from an 8 GB MacBook Air to a
    Terminal-Bench, Toolathlon, SWE-bench, MMMU-Pro, AIME) give each model one
    ability score, fitted across whichever benchmarks it reports, less what
    its quantized build loses. Speed counts next, as the time of one agent
-   step: reading what changed (about 2,000 tokens of page or tool output)
-   and writing a tool call (about 150 tokens). Prompt reading is bound by
-   compute and often takes longer than writing, so generation speed alone
-   misjudges models. Quality comes first: each halving of the step time
-   below 30 s is worth 0.1 of ability (about a tenth of the spread between
-   models), down to 7.5 s; steps over 90 s rank last; utilities within a
-   tenth count as a tie that benchmark scores break. Models with
+   step: reading what changed (about 600 new tokens: the runtime keeps the
+   earlier turns), writing a tool call (about 100 tokens) and carrying it out
+   (about 2.5 s for the browser and the commit judge), as measured in the
+   sample tasks below. Prompt reading is bound by compute and often takes
+   longer than writing, so generation speed alone misjudges models. The
+   balance rule is the same on every machine: a step within 15 s
+   (`models.step_budget_s`) costs nothing; each doubling beyond it costs 0.25
+   of ability, about what separates Qwen3.5-9B from a 27B model at 98% of
+   its scores; steps over 90 s rank last; utilities within a tenth are a tie
+   that the faster model wins. Measured sample-task results replace the
+   estimates: models that passed more tasks on this kind of machine rank
+   first, and a run's seconds over the steps its tasks need replace the
+   estimated step. Models with
    no published scores come last. The scores ship with the catalog and are
    refreshed with discovery each day; `models discover` and `models plan`
    show them. The top candidates are downloaded and tested on the machine
@@ -108,7 +114,13 @@ declares success. If a model fails the test, the next candidate is tried.
    runtime version, in `assistant/models/tasks.json`. Speed per step alone
    misjudges models: on an M3 Pro, Qwen3.5-9B answers in 5 s against 15 s for
    Bonsai 2 27B, but needed twice the steps on the flight search and took
-   longer overall.
+   longer overall. `coderunner models bench --tasks --candidates 2` measures
+   the two best candidates not measured on this kind of machine yet, one
+   model at a time, sets up the best by the measurements and deletes what it
+   downloaded for the others. Setup unloads the previous model before it
+   loads another (two at once froze an 18 GB Mac). A run during which a lot
+   of memory was read back from disk (the owner's apps pushed the model out)
+   is kept but marked, and not used to choose: its times measured the disk.
 
 * Licences are checked from the model's base repository. Permissive licences
   are used automatically; licences with extra terms need `--accept-license`;
@@ -126,13 +138,13 @@ declares success. If a model fails the test, the next candidate is tried.
   bit width: Bonsai 2 27B (1.72 bits per weight) keeps 98.2% of
   Qwen3.8-27B's scores across 14 benchmarks in Prism's measurement (84.78
   against 86.32; a conventional 2-bit IQ2_XXS build keeps 84.1%), so it
-  leads on 16-24 GB Macs, ahead of Qwen3.5-9B. The 1-bit Bonsai 27B is
+  leads on 18 GB Macs and up, ahead of Qwen3.5-9B. The 1-bit Bonsai 27B is
   scored on its own published results (60.5 on MMMU-Pro and 87.1 on AIME
   2026, against 75.8 and 94.1 for Qwen3.6-27B), which keep it below
   Qwen3.5-9B; it stays available (`coderunner models setup --model
   bonsai-27b-1bit`). Speeds measured on an M3 Pro: the 1-bit 27B generates
-  14.6 tok/s and reads prompts at 81 tok/s; Bonsai 2 27B 11 and 68, so its
-  agent steps take about 43 s against 15-20 s for Qwen3.5-9B. Reading the
+  14.6 tok/s and reads prompts at 81 tok/s; Bonsai 2 27B 11-13 and 65-75,
+  so its agent steps take about 20 s against 8-12 s for Qwen3.5-9B. Reading the
   prompt is the slow part on this class of chip, so the agent keeps its
   prompts append-only for the runtime's prompt cache (Qwen3.5 and the
   Bonsai models are hybrid models, whose cache can only resume where the
@@ -174,13 +186,13 @@ declares success. If a model fails the test, the next candidate is tried.
   | Machine | Assistant model |
   | --- | --- |
   | 8 GB Mac | Qwen3.5-4B compact, text only, 8K context |
-  | 16 GB M1 | Qwen3.5-9B (Bonsai 2 steps would take about 100 s) |
-  | 16 GB M2 and newer, 18-24 GB Macs | Bonsai 2 27B (Prism's llama.cpp build) |
-  | 32-128 GB Macs | Qwen3.8-27B |
-  | 12 GB NVIDIA | Bonsai 2 27B (Prism's CUDA build), 16K context |
-  | 24-32 GB NVIDIA | Qwen3.8-27B, 16K context on 24 GB |
+  | 16 GB M1 | Qwen3.5-9B (Bonsai 2 steps would take about 46 s, against 23 s) |
+  | 16 GB M2 and newer | Qwen3.5-9B (32 s against 17 s a step: a tie the faster model wins) |
+  | 18-128 GB Macs | Bonsai 2 27B (Prism's llama.cpp build); on 32 GB and up it ties with Qwen3.8-27B, whose scores it keeps 98.2% of, and its steps are faster |
+  | 12-24 GB NVIDIA | Bonsai 2 27B (Prism's CUDA build), 16K context on 12 GB |
+  | 32 GB NVIDIA | Qwen3.8-27B (steps as fast as Bonsai 2's: its scores break the tie) |
   | DGX Spark | Qwen3.8-27B (Prism has no CUDA build for ARM) |
-  | 256-512 GB Mac Studio | MiMo-V2.6-Flash (llama.cpp; not re-checked after the October 12 ranking change) |
+  | 256-512 GB Mac Studio | MiMo-V2.6-Flash (llama.cpp) |
 
   `coderunner models bench --report` prints what a given machine measures
   and picks; reports from other machines replace these estimates.

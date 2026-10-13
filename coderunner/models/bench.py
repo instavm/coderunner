@@ -167,7 +167,7 @@ def report(hw: Hardware, cal: dict | None, picks: list[dict], runtime: dict | No
                   "| | measured | spec estimate |", "| --- | --- | --- |",
                   f"| prompt reading | {m['read_tok_s']:.0f} tok/s | {e['read_tok_s']:.0f} tok/s |",
                   f"| generation | {m['gen_tok_s']:.1f} tok/s | {e['tok_s']:.1f} tok/s |",
-                  f"| agent step ({fit.STEP_READ_TOKENS} read, {fit.STEP_WRITE_TOKENS} written) | {m['step_s']:.1f} s | {e['step_s']:.1f} s |",
+                  f"| agent step ({fit.STEP_READ_TOKENS} read, {fit.STEP_WRITE_TOKENS} written, {fit.STEP_OVERHEAD_S:.1f} s to act) | {m['step_s']:.1f} s | {e['step_s']:.1f} s |",
                   f"| first token after {m['prompt_tokens']} prompt tokens | {m['first_token_s']:.1f} s | |",
                   "", f"Calibration: generation x{cal['gen_factor']:.2f}, reading {cal['read_k']:.0f} tok/s per billion active parameters."]
     else:

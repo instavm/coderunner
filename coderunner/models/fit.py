@@ -22,16 +22,19 @@ MIN_TOK_S = 8.0                 # generation speed below which a model is called
 MIN_AGENT_CTX = 16384           # smaller contexts rank below larger ones
 # An agent step reads what changed (a page, a tool result) and writes a short tool call; with the
 # prompt cache, earlier turns are not read again. Its time is what an owner waits for, so it ranks
-# models, not generation speed alone.
-STEP_READ_TOKENS = 2000
-STEP_WRITE_TOKENS = 150
-SLOW_STEP_S = 30.0              # speed counts for nothing at 30 s per step, against below it
+# models, not generation speed alone. Measured in the sample tasks (tasks.py) with Bonsai 2 27B on an
+# M3 Pro: 580 new tokens read and 76-136 written per model request, plus 2.6 s for the browser action
+# and the commit judge.
+STEP_READ_TOKENS = 600
+STEP_WRITE_TOKENS = 100
+STEP_OVERHEAD_S = 2.5
 MAX_STEP_S = 90.0               # slower fits rank below faster ones (agent loops are long)
-FAST_STEP_S = 7.5               # faster steps gain little more
-# Chat models are ranked by ability from published benchmarks (evidence.py), then by speed: each halving
-# of the step time below SLOW_STEP_S is worth SPEED_WEIGHT of ability, down to FAST_STEP_S. Quality comes
-# first: a 27B at 98% of its full scores beats a 9B even when its steps take twice as long.
-SPEED_WEIGHT = 0.1
+# The balance rule, the same on every machine: ability from published benchmarks (evidence.py), less what
+# waiting costs. A step within the budget (models.step_budget_s) costs nothing; each doubling beyond it
+# costs SLOW_COST of ability, about what separates Qwen3.5-9B from a 27B model at 98% of its scores. Steps
+# are estimated from the hardware until sample tasks have measured them here (tasks.py, manager._measured).
+STEP_BUDGET_S = 15.0
+SLOW_COST = 0.25
 VISION_BONUS = 0.1
 UNKNOWN_ABILITY = -3.0          # no published scores: after every model that has some
 EMBED_CTX = 8192
@@ -82,10 +85,10 @@ def estimate(entry: dict, hw: Hardware, ctx: int = 32768, runtime: str | None = 
 
 
 def step_seconds(read_tok_s: float, tok_s: float) -> float:
-    """Seconds for one agent step: read what changed, write a tool call."""
+    """Seconds for one agent step: read what changed, write a tool call, carry it out."""
     if read_tok_s <= 0 or tok_s <= 0:
         return math.inf
-    return STEP_READ_TOKENS / read_tok_s + STEP_WRITE_TOKENS / tok_s
+    return STEP_READ_TOKENS / read_tok_s + STEP_WRITE_TOKENS / tok_s + STEP_OVERHEAD_S
 
 
 def _can_offload(entry: dict, hw: Hardware, runtime: str | None) -> bool:
@@ -149,24 +152,32 @@ def candidate(entry: dict, hw: Hardware, config, role: str = "chat", runtime: st
         ability = evidence.ability(entry, bits)
         reasons.append("no published benchmark scores" if ability is None else f"benchmark ability {ability:+.2f}")
     return {"id": entry["id"], "family": entry["family"], "rank": entry["rank"], "params_b": entry["params_b"],
-            "runtime": runtime, "vision": vision, **est, "license": decision, "license_reason": why,
+            "runtime": runtime, "vision": vision, **est, "budget_s": float(config.get("models.step_budget_s") or STEP_BUDGET_S), "license": decision, "license_reason": why,
             "license_link": link, "ok": ok, "ability": ability, "reasons": reasons}
 
 
 def utility(c: dict) -> float:
-    """Benchmark ability, plus what speed and vision are worth to an assistant."""
+    """Benchmark ability, less what slow steps cost, plus what vision is worth to an assistant."""
     ability = UNKNOWN_ABILITY if c.get("ability") is None else c["ability"]
-    step = min(max(c.get("step_s", math.inf), FAST_STEP_S), 16 * SLOW_STEP_S)
-    speed = SPEED_WEIGHT * math.log2(SLOW_STEP_S / step)
-    return ability + speed + (VISION_BONUS if c.get("vision") else 0.0)
+    budget = c.get("budget_s") or STEP_BUDGET_S
+    step = min(c.get("step_s", math.inf), 64 * budget)
+    return ability - SLOW_COST * max(0.0, math.log2(step / budget)) + (VISION_BONUS if c.get("vision") else 0.0)
+
+
+def passed_share(c: dict) -> float:
+    """Share of the sample tasks passed on this machine; a model not measured yet counts as passing them all,
+    so it is measured before a weaker one is chosen over it."""
+    done = c.get("tasks")
+    return done["passed"] / done["total"] if done and done.get("total") else 1.0
 
 
 def _order(c: dict) -> tuple:
-    # Utilities within the same tenth are a tie (the speed estimates are not finer than that); published
-    # benchmark ability breaks it.
+    # Tasks passed come first. Utilities within the same tenth are a tie (estimates are not finer than that),
+    # which the faster model wins: an owner waits for every step.
     ability = UNKNOWN_ABILITY if c.get("ability") is None else c["ability"]
     return (c["fit"] != "good", c["ctx"] < MIN_AGENT_CTX, c.get("step_s", math.inf) > MAX_STEP_S,
-            c["license"] != "allow", -round(utility(c), 1), -ability, c["rank"])
+            c["license"] != "allow", -passed_share(c), -round(utility(c), 1), round(c.get("step_s", math.inf)),
+            -ability, c["rank"])
 
 
 def _order_by_rank(c: dict) -> tuple:
