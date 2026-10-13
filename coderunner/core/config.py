@@ -30,7 +30,8 @@ DEFAULTS: dict[str, Any] = {
         "proxy_port": 8225,
     },
     "models": {
-        "runtime": "auto",           # auto | ollama | llama.cpp | mlx | openai
+        "runtime": "auto",           # auto | ollama | llama.cpp | prism | mlx | openai (setup writes its pick here)
+        "runtime_pinned": False,     # true: the owner chose models.runtime; plans stop comparing other runtimes
         "base_url": "",              # OpenAI-compatible endpoint when runtime is external
         "api_key": "",               # only for external endpoints that need one
         "chat": "",                  # model id served for the assistant

@@ -1155,3 +1155,21 @@ class PrismTests(TempHome):
         # A runtime the owner chose is not second-guessed.
         result = manager.plan(self.config(), hw=apple(18), runtime=FakeRuntime())
         self.assertEqual(result["model"]["id"], "qwen3.5-9b")
+
+    def test_setups_own_runtime_pick_does_not_stop_later_comparisons(self):
+        ollama, prism = FakeRuntime(), FakePrism()
+
+        def choose(config, hw=None, name=None):
+            return prism if (name or config.get("models.runtime")) == "prism" else ollama
+        real_prism = manager._prism
+        with mock.patch.object(manager, "choose_runtime", side_effect=choose), \
+                mock.patch.object(manager, "_prism", side_effect=lambda c, h, rt: real_prism(c, h, rt) and prism):
+            with mock.patch.object(runtimes.PrismRuntime, "available", return_value=True):
+                cfg = self.config(runtime="prism")          # written by an earlier setup
+                ranked = manager.plan(cfg, hw=apple(18, "Apple M3 Pro", sandbox=1))
+                self.assertEqual(ranked["model"]["id"], "bonsai-2-27b")
+                self.assertIn("qwen3.5-9b", [c["id"] for c in ranked["alternatives"]])
+                self.assertTrue(all(c["step_s"] < 1e9 for c in ranked["alternatives"]))
+                cfg.set("models.runtime_pinned", True)        # the owner's own choice
+                pinned = manager.plan(cfg, hw=apple(18, "Apple M3 Pro", sandbox=1))
+                self.assertNotIn("qwen3.5-9b", [c["id"] for c in pinned["alternatives"]])

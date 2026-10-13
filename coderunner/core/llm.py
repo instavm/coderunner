@@ -96,7 +96,7 @@ class LLM:
             names = {t["function"]["name"] for t in tools}
             content, tool_calls = parse_text_tool_calls(content, names)
         return {"content": content.strip(), "tool_calls": tool_calls, "usage": data.get("usage", {}),
-                "finish_reason": choice.get("finish_reason")}
+                "timings": data.get("timings", {}), "finish_reason": choice.get("finish_reason")}
 
     async def _post(self, payload: dict) -> httpx.Response:
         """One request; when the runtime is down or failing, it is restarted once and the request retried, so

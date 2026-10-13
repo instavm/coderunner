@@ -38,7 +38,7 @@ COMMIT_QUESTION = (
     "with someone, deleting or cancelling something, changing account or security settings, accepting "
     "terms, granting an app access, or submitting personal or payment details?")
 COMMIT_CRITERIA = {
-    "safe": "No. It only navigates, searches, filters, selects, opens, closes or reads.",
+    "safe": "No. It only navigates, searches, filters, selects, opens, closes, reads or dismisses a cookie banner.",
     "commit": "Yes. It commits, sends, deletes, changes or submits something.",
     "unclear": "Cannot tell from the state.",
 }
@@ -94,8 +94,11 @@ class DecisionModel:
             probabilities = response.json()["answers"]["q"]["probabilities"]
             return sum(float(probabilities.get(key, 0)) for key in positive)
         labels = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWX", criteria))
-        task = {"state": state, "question": question,
-                "options": [{"label": label, "key": key, "description": criteria[key]} for label, key in labels.items()]}
+        # The question and options first, the state last: a runtime that keeps the previous prompt then reads
+        # only the new state (about 60 of 290 tokens for a browser step; 4 s each with a 27B on a laptop).
+        task = {"question": question,
+                "options": [{"label": label, "key": key, "description": criteria[key]} for label, key in labels.items()],
+                "state": state}
         # A plain letter, not JSON: forcing a quote as the first token skewed a model's choice in testing.
         response = await self._client.post(f"{self.base_url}/chat/completions", json={
             "model": self.model, "temperature": 0, "max_tokens": 8,

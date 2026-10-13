@@ -402,6 +402,15 @@ def cmd_models(args, config: Config) -> int:
         from .models import smoketest
         endpoint = manager.endpoint(config)
         _print(asyncio.run(smoketest.run(endpoint.base_url, endpoint.model, vision=endpoint.vision)))
+    elif args.action == "bench" and args.tasks:
+        import asyncio
+        from .models import tasks
+        result = asyncio.run(tasks.run(config, names=args.only, visible=args.visible))
+        if not result.get("ok"):
+            print(result["error"])
+            return 1
+        print(tasks.report([r for r in tasks.load() if r["machine"] == result["machine"]]))
+        return 0 if result["passed"] == result["total"] else 1
     elif args.action == "bench":
         result = manager.bench_here(config, model=args.model)
         if not result.get("ok"):
@@ -702,6 +711,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model"), p.add_argument("--runtime")
     p.add_argument("--accept-license", action="store_true")
     p.add_argument("--report", action="store_true", help="bench: print a summary to share (no names or paths)")
+    p.add_argument("--tasks", action="store_true",
+                   help="bench: run sample tasks end to end (local test sites and documents) with the served model")
+    p.add_argument("--only", action="append", help="bench --tasks: run only this task (flights, library, documents)")
+    p.add_argument("--visible", action="store_true", help="bench --tasks: show the browser window")
     p.set_defaults(func=cmd_models)
 
     p = sub.add_parser("secrets", help="Secrets injected at the network boundary, never shown to the sandbox")

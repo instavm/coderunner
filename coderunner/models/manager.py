@@ -24,10 +24,28 @@ SLOWER_THAN_ESTIMATED = 1.5     # measured step time / estimate past which setup
 LOCAL = ("ollama", "llama.cpp", "prism")
 
 
+def _pinned(config) -> str | None:
+    """The runtime the owner chose, if any. Setup writes its own pick to models.runtime as well (the daemon
+    serves from it), so a local runtime counts as the owner's choice only with models.runtime_pinned;
+    otherwise plans and setup compare models on every installed runtime again."""
+    name = config.get("models.runtime") or "auto"
+    if name == "auto" or (name in LOCAL and not config.get("models.runtime_pinned")):
+        return None
+    return name
+
+
+def _main_runtime(config, hw, runtime: str | Runtime | None) -> Runtime | None:
+    """The given or pinned runtime, else the one CodeRunner would pick (Ollama, else llama.cpp), else the
+    one setup picked last time."""
+    if runtime is not None:
+        return _runtime(config, hw, runtime)
+    return choose_runtime(config, hw, "auto") or choose_runtime(config, hw)
+
+
 def _prism(config, hw: hardware.Hardware, rt: Runtime | None) -> PrismRuntime | None:
     """Prism ML's llama.cpp build as a second runtime to rank models with, for ternary Bonsai models,
     when this platform has a build and the owner has not pinned another runtime."""
-    if (rt is not None and rt.name == "prism") or (config.get("models.runtime") or "auto") != "auto":
+    if (rt is not None and rt.name == "prism") or _pinned(config) is not None:
         return None
     prism = PrismRuntime(config, hw=hw)
     return prism if prism.available() else None
@@ -139,7 +157,8 @@ def _run_async(coro):
 
 def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | None = None) -> dict:
     hw = _hardware(config, hw)
-    rt = _runtime(config, hw, runtime)
+    runtime = runtime if runtime is not None else _pinned(config)
+    rt = _main_runtime(config, hw, runtime)
     art = _artifact_runtime(rt)
     prism = _prism(config, hw, rt) if runtime is None else None     # only when the runtime is auto-chosen
     llama = _llama(config, rt) if runtime is None else None
@@ -276,7 +295,8 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
     """measure times the model once it passes the smoke test (default bench.measure; False skips it);
     decision also sets up a decision model to judge browser steps when memory allows."""
     hw = _hardware(config, hw)
-    rt = _runtime(config, hw, runtime)
+    runtime = runtime if runtime is not None else _pinned(config)
+    rt = _main_runtime(config, hw, runtime)
     if rt is None:
         return {"ok": False, "error": "No local model runtime is installed. " + install_hint(hw)}
     if not rt.available():
@@ -386,6 +406,7 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
                     continue
 
         config.set("models.runtime", rt.name)
+        config.set("models.runtime_pinned", runtime is not None)     # the owner's choice, kept by later plans
         config.set("models.base_url", rt.base_url)
         config.set("models.chat", model)
         config.set("models.vision", vision)
