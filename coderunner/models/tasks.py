@@ -17,18 +17,32 @@ import os
 import pathlib
 import re
 import statistics
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
 from typing import Callable
 
 from ..core import paths
-from . import sites as fixtures
+from . import hardware, sites as fixtures
 from .bench import fingerprint
 
+SWAP_MB = 256            # swap growth during a task past which its times are not the model's
 SUITE = 2                 # change when tasks change: results of different suites are not compared
 TASK_SECONDS = 900        # a task still running after this counts as failed
 COMMITTING = re.compile(r"\b(pay|book|reserve|purchase|checkout|check out|place order|confirm)", re.I)
+
+
+def swap_mb() -> float | None:
+    """Swap in use now, in MB."""
+    if sys.platform == "darwin":
+        found = re.search(r"used = ([\d.]+)M", hardware._run(["sysctl", "-n", "vm.swapusage"]) or "")
+        return float(found.group(1)) if found else None
+    try:
+        info = {k: float(v.split()[0]) for k, v in (line.split(":", 1) for line in open("/proc/meminfo"))}
+        return (info["SwapTotal"] - info["SwapFree"]) / 1024
+    except (OSError, KeyError, ValueError):
+        return None
 
 
 def target_day(today: datetime.date) -> datetime.date:
@@ -48,15 +62,15 @@ def check_flights(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
     plain, lower = _digits(answer), answer.lower()
     missing = [f"{f['airline']} {fixtures.rupees(f['price'])}" for f in want
                if str(f["price"]) not in plain or f["airline"].lower() not in lower]
-    if any(v.startswith("/flights/checkout") for v in site.visits):
-        return False, "opened a booking page"
+    if any(v.startswith("/flights/payment") for v in site.visits):
+        return False, "went on to payment"
     return (not missing, "named the three cheapest fares" if not missing else "missing " + ", ".join(missing))
 
 
 def check_evening(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
     want = fixtures.evening("BLR", "DEL", target_day(site.today).isoformat())
-    if any(v.startswith("/flights/checkout") for v in site.visits):
-        return False, "opened a booking page"
+    if any(v.startswith("/flights/payment") for v in site.visits):
+        return False, "went on to payment"
     flight = want["number"].replace(" ", "") in re.sub(r"[\s-]", "", answer)
     price = str(want["price"]) in _digits(answer)
     return (flight and price, f"{want['number']} at {fixtures.rupees(want['price'])}"
@@ -214,7 +228,7 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
               progress: Callable[[str], None] = print) -> dict:
     """Run the tasks with the served model; returns the result (also saved, see save())."""
     from ..agent import RunContext
-    from . import hardware, manager
+    from . import manager
 
     tasks = [t for t in TASKS if not names or t.name in names]
     hw = hardware.detect(float(config.get("sandbox.memory_gb") or 1))
@@ -225,7 +239,8 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
               **served(config), "context": int(config.get("models.context") or 32768),
               "thinking": str(config.get("agent.thinking", "auto")), "tasks": []}
     site = fixtures.Sites()
-    with tempfile.TemporaryDirectory(prefix="coderunner-tasks-") as tmp, _home(pathlib.Path(tmp)):
+    # The documents sit beside the throwaway home, not in it: the file tools never read CodeRunner's own state.
+    with tempfile.TemporaryDirectory(prefix="coderunner-tasks-") as tmp, _home(pathlib.Path(tmp) / "home"):
         from ..server.daemon import Daemon
 
         server, serving = await site.start()
@@ -261,6 +276,7 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                 meter.reset()
                 asked.clear()
                 site.visits.clear()
+                swap = swap_mb()
                 for row in svc.store.query("SELECT id FROM memories"):    # each task starts as the first one
                     svc.memory.forget(id=row["id"])
                 start = time.monotonic()
@@ -273,7 +289,8 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                     answer, passed, why = "", False, f"still running after {TASK_SECONDS // 60} min"
                 result = {"name": task.name, "passed": passed, "why": why, "seconds": round(time.monotonic() - start, 1),
                           **meter.summary(), "approvals": [f"{'allowed' if a['allowed'] else 'refused'}: {a['summary']}" for a in asked],
-                          "steps": meter.steps[:40], "answer": answer[:1500]}
+                          "steps": meter.steps[:40], "answer": answer[:1500],
+                          "swapped_mb": None if swap is None or swap_mb() is None else round(max(0.0, swap_mb() - swap))}
                 record["tasks"].append(result)
                 progress(f"  {'passed' if passed else 'FAILED'} in {result['seconds']:.0f} s, {result['tool_calls']} tool "
                          f"calls, {result['requests']} model requests ({why})")
@@ -286,6 +303,8 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                 await asyncio.wait_for(serving, 10)
     meter.reset()
     done = record["tasks"]
+    # Swapping during a task means its times measured the disk: such a result is kept but not used to choose.
+    record["swapping"] = any((t.get("swapped_mb") or 0) > SWAP_MB for t in done)
     record.update(passed=sum(t["passed"] for t in done), total=len(done),
                   seconds=round(sum(t["seconds"] for t in done), 1),
                   median_request_s=round(statistics.median(meter.all), 1) if meter.all else 0.0)
@@ -321,6 +340,7 @@ def report(results: list[dict]) -> str:
     for r in sorted(results, key=lambda r: (-r["passed"], r["seconds"])):
         per = ", ".join(f"{t['name']} {'ok' if t['passed'] else 'fail'} {t['seconds']:.0f}s/{t['tool_calls']} calls"
                         for t in r["tasks"])
-        lines.append(f"| {r['build']} | {r['runtime']} {r['runtime_version']} | {r['passed']}/{r['total']} | "
+        lines.append(f"| {r['build']} | {r['runtime']} {r['runtime_version']} | {r['passed']}/{r['total']}"
+                     f"{' (swapping: times not representative)' if r.get('swapping') else ''} | "
                      f"{r['seconds'] / 60:.1f} min | {r['median_request_s']:.1f} s | {per} |")
     return "\n".join(lines)

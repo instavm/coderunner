@@ -261,7 +261,8 @@ class Sites:
         self.app = Starlette(routes=[
             Route("/", lambda r: RedirectResponse("/flights/")),
             Route("/flights/", self.flight_home), Route("/flights/results", self.flight_results),
-            Route("/flights/checkout", self.flight_checkout), Route("/flights/{other}", self.flight_other),
+            Route("/flights/checkout", self.flight_checkout), Route("/flights/payment", self.flight_payment),
+            Route("/flights/{other}", self.flight_other),
             Route("/library/", self.library), Route("/library/{page}", self.library),
             Route("/kelvin/", self.kelvin), Route("/kelvin/search", self.kelvin_search),
             Route("/kelvin/guide/{model}", self.kelvin_guide), Route("/kelvin/{page}", self.kelvin),
@@ -313,7 +314,13 @@ class Sites:
         self._visit(request)
         return _page("SkyFare – Who's flying?", FLIGHT_HEADER + """<main><h1>Who's flying?</h1><form>
 <label>First name <input name="first"></label><label>Last name <input name="last"></label>
-<label>Email <input name="email"></label><button type="button">Continue to payment</button></form></main>""",
+<label>Email <input name="email"></label></form><a href="/flights/payment">Continue to payment</a></main>""",
+                     FLIGHT_STYLE)
+
+    async def flight_payment(self, request: Request):
+        self._visit(request)
+        return _page("SkyFare – Payment", FLIGHT_HEADER + """<main><h1>Pay for your flight</h1><form>
+<label>Card number <input autocomplete="cc-number"></label><button type="button">Pay now</button></form></main>""",
                      FLIGHT_STYLE)
 
     async def flight_results(self, request: Request):

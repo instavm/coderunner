@@ -90,6 +90,25 @@ declares success. If a model fails the test, the next candidate is tried.
    `coderunner models bench --report` prints a summary to share (hardware,
    runtime, measured and estimated speeds, the plan), with no names, paths
    or tokens.
+5. `coderunner models bench --tasks` measures the served model end to end:
+   the real assistant (instructions, tools, browser, file search, the commit
+   judge) does sample tasks against local stand-ins for what owners ask, in
+   a headless browser and a throwaway home folder, so the owner's browser,
+   memories and files are untouched. The tasks: a flight search with
+   booking.com's hurdles and page sizes (round trip preselected, airports
+   that need a pick from their suggestions, a two-month calendar, results in
+   "best" order behind filters, 15 at a time); the cheapest direct evening
+   flight; two facts from two pages of a library website; a warranty date
+   that needs two of the owner's documents; and a care instruction that
+   needs the appliance's model from the documents, then the maker's support
+   site. Answers are generated from the date and route, so the checker knows
+   them and no model can have learned them. Each result records whether each
+   task passed, its time, model requests and tokens, keyed by machine profile
+   (chip, memory, GPU), model build (file or tag and quantization) and
+   runtime version, in `assistant/models/tasks.json`. Speed per step alone
+   misjudges models: on an M3 Pro, Qwen3.5-9B answers in 5 s against 15 s for
+   Bonsai 2 27B, but needed twice the steps on the flight search and took
+   longer overall.
 
 * Licences are checked from the model's base repository. Permissive licences
   are used automatically; licences with extra terms need `--accept-license`;
@@ -204,8 +223,14 @@ declares success. If a model fails the test, the next candidate is tried.
   taints the task). A judge call on the assistant's own model keeps the
   agent's cached conversation: Ollama keeps llama.cpp's prompt cache, and
   CodeRunner's llama.cpp servers give the judge its own slot (with one slot,
-  every step after a judge call re-read the whole conversation). There are
-  no keyword lists: these judgements come from models.
+  every step after a judge call re-read the whole conversation). The judge's
+  question sits with its instructions and the step comes in a message of its
+  own, so the runtime reads only the step: hybrid models such as Bonsai 2
+  resume only where the last message starts, and a 27B on an M3 Pro took
+  4 s a click re-reading the question, 1.3 s now. `tests/judge_eval.py`
+  measures a judge on 30 labelled browser steps (Bonsai 2 27B: 29 right,
+  the miss a flight result's "Select", which asks the owner). There are no
+  keyword lists: these judgements come from models.
 * EmbeddingGemma 2 needs Ollama 0.36.0 and decision models 0.35.0. When the
   installed Ollama is older, the installer upgrades a Homebrew install, and
   on macOS setup otherwise downloads Ollama 0.40.3 into

@@ -71,8 +71,10 @@ class Checks(unittest.TestCase):
                   f"3. {c['airline']} Rs. {c['price'] // 1000} {c['price'] % 1000:03d}")
         self.assertEqual(tasks.check_flights(answer, self.site)[0], True)
         self.assertEqual(tasks.check_flights(answer.split("\n3.")[0], self.site)[0], False)
-        self.site.visits.append("/flights/checkout?flight=AI2327")
-        self.assertEqual(tasks.check_flights(answer, self.site), (False, "opened a booking page"))
+        self.site.visits.append("/flights/checkout?flight=AI2327")       # who's flying: not booked yet
+        self.assertTrue(tasks.check_flights(answer, self.site)[0])
+        self.site.visits.append("/flights/payment")
+        self.assertEqual(tasks.check_flights(answer, self.site), (False, "went on to payment"))
 
     def test_evening(self):
         want = sites.evening("BLR", "DEL", "2026-11-20")
@@ -120,3 +122,29 @@ class Results(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Harness(unittest.IsolatedAsyncioTestCase):
+    """The whole run against a scripted model: no browser, files or real model needed."""
+
+    async def test_answers_are_checked_and_a_slow_task_is_stopped(self):
+        import time as clock
+
+        from coderunner.core.config import Config
+        from fakes import FakeOpenAI
+
+        def slow(body):
+            clock.sleep(2.5)
+            return {"role": "assistant", "content": "still thinking"}
+
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"CODERUNNER_HOME": home}), \
+                FakeOpenAI() as fake, mock.patch.object(tasks, "TASK_SECONDS", 2):
+            fake.script = [slow, {"role": "assistant", "content": "Sundays until 14:00; DVDs ₹15 a day."}]
+            config = Config({"models": {"runtime": "openai", "base_url": fake.base_url, "chat": "fake"}},
+                            path=pathlib.Path(home) / "config.json")
+            result = await tasks.run(config, names=["library", "flights"], progress=lambda m: None)
+            by_name = {t["name"]: t for t in result["tasks"]}
+            self.assertTrue(by_name["flights"]["passed"] is False and "still running" in by_name["flights"]["why"])
+            self.assertLess(by_name["flights"]["seconds"], 2.5)
+            self.assertTrue(by_name["library"]["passed"], by_name["library"])
+            self.assertEqual(tasks.load()[-1]["passed"], result["passed"])
