@@ -56,6 +56,8 @@ class Flights(unittest.TestCase):
         self.assertIn("Kempegowda", home)
         self.assertIn("10:00–14:00", client.get("/library/visit").text)
         self.assertIn("₹15", client.get("/library/borrowing").text)
+        self.assertIn("DW-412 · Series 4", client.get("/kelvin/search?q=dw412").text)
+        self.assertIn("every 3 months", client.get("/kelvin/guide/dw-412").text)
 
 
 class Checks(unittest.TestCase):
@@ -71,6 +73,21 @@ class Checks(unittest.TestCase):
         self.assertEqual(tasks.check_flights(answer.split("\n3.")[0], self.site)[0], False)
         self.site.visits.append("/flights/checkout?flight=AI2327")
         self.assertEqual(tasks.check_flights(answer, self.site), (False, "opened a booking page"))
+
+    def test_evening(self):
+        want = sites.evening("BLR", "DEL", "2026-11-20")
+        self.assertFalse(want["stops"])
+        self.assertGreater(want["depart"], 18 * 60)
+        self.assertNotIn(want["number"], [f["number"] for f in self.cheapest])
+        answer = f"{want['airline']} {want['number'].replace(' ', '-')} at {sites.clock(want['depart'])}, {sites.rupees(want['price'])}"
+        self.assertTrue(tasks.check_evening(answer, self.site)[0])
+        self.assertFalse(tasks.check_evening(answer.replace(want["number"].split()[1], "0000"), self.site)[0])
+
+    def test_appliance(self):
+        self.assertFalse(tasks.check_appliance("Descale every 3 months.", self.site)[0])     # guessed, not looked up
+        self.site.visits.append("/kelvin/guide/DW-412")
+        self.assertTrue(tasks.check_appliance("Descale every three months (two in hard water).", self.site)[0])
+        self.assertFalse(tasks.check_appliance("Descale every 6 months.", self.site)[0])
 
     def test_library(self):
         self.assertTrue(tasks.check_library("It closes at 2 pm on Sundays; DVDs cost ₹15 a day.", self.site)[0])

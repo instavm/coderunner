@@ -94,17 +94,18 @@ class DecisionModel:
             probabilities = response.json()["answers"]["q"]["probabilities"]
             return sum(float(probabilities.get(key, 0)) for key in positive)
         labels = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWX", criteria))
-        # The question and options first, the state last: a runtime that keeps the previous prompt then reads
-        # only the new state (about 60 of 290 tokens for a browser step; 4 s each with a 27B on a laptop).
+        # The question and options go with the instructions, the state in a message of its own: the runtime
+        # keeps what it read up to the last message, so each browser step reads only its state (hybrid models
+        # such as Bonsai 2 resume only from there). Before, a 27B on a laptop re-read ~250 tokens, 4 s a step.
         task = {"question": question,
-                "options": [{"label": label, "key": key, "description": criteria[key]} for label, key in labels.items()],
-                "state": state}
+                "options": [{"label": label, "key": key, "description": criteria[key]} for label, key in labels.items()]}
         # A plain letter, not JSON: forcing a quote as the first token skewed a model's choice in testing.
         response = await self._client.post(f"{self.base_url}/chat/completions", json={
             "model": self.model, "temperature": 0, "max_tokens": 8,
             # No reasoning: Ollama reads reasoning_effort, llama.cpp reads chat_template_kwargs.
             "reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False},
-            "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": json.dumps(task)}]})
+            "messages": [{"role": "system", "content": f"{SYSTEM}\n{json.dumps(task)}"},
+                         {"role": "user", "content": json.dumps({"state": state})}]})
         response.raise_for_status()
         text = (response.json()["choices"][0]["message"].get("content") or "").strip().strip('"\'*.` ')
         if text[:1] not in labels or (len(text) > 1 and text[1].isalnum()):

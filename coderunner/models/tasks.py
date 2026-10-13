@@ -26,7 +26,7 @@ from ..core import paths
 from . import sites as fixtures
 from .bench import fingerprint
 
-SUITE = 1                 # change when tasks change: results of different suites are not compared
+SUITE = 2                 # change when tasks change: results of different suites are not compared
 TASK_SECONDS = 900        # a task still running after this counts as failed
 COMMITTING = re.compile(r"\b(pay|book|reserve|purchase|checkout|check out|place order|confirm)", re.I)
 
@@ -53,6 +53,16 @@ def check_flights(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
     return (not missing, "named the three cheapest fares" if not missing else "missing " + ", ".join(missing))
 
 
+def check_evening(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
+    want = fixtures.evening("BLR", "DEL", target_day(site.today).isoformat())
+    if any(v.startswith("/flights/checkout") for v in site.visits):
+        return False, "opened a booking page"
+    flight = want["number"].replace(" ", "") in re.sub(r"[\s-]", "", answer)
+    price = str(want["price"]) in _digits(answer)
+    return (flight and price, f"{want['number']} at {fixtures.rupees(want['price'])}"
+            + ("" if flight and price else " not named"))
+
+
 def check_library(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
     closes = re.search(r"\b14[:.]00\b|\b2(?::00)?\s*(?:pm|p\.m\.)", answer, re.I)
     fee = re.search(r"(?<![\d:.])15(?![\d:])", answer)
@@ -65,6 +75,13 @@ def check_documents(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
     phone = "18002661880" in re.sub(r"[\s-]", "", answer)
     missing = [what for what, ok in (("cover until March 2030", until), ("service line 1800 266 1880", phone)) if not ok]
     return (not missing, "both facts" if not missing else "missing " + ", ".join(missing))
+
+
+def check_appliance(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
+    every = re.search(r"\b(3|three)[\s-]*months?\b|\bquarterly\b|\bevery quarter\b", answer, re.I)
+    guide = any(v.lower().startswith("/kelvin/guide/dw-412") for v in site.visits)
+    return (bool(every and guide), "every 3 months, from the DW-412 guide" if every and guide else
+            "did not open the DW-412 guide" if not guide else "missing every 3 months")
 
 
 @dataclass
@@ -82,6 +99,11 @@ TASKS = [
                     f"economy, on SkyFare ({s.base}/flights/). Don't book anything. Tell me the three cheapest flights "
                     "with airline, departure time and price."),
          check_flights),
+    Task("evening", "a flight search with conditions (direct, leaving after 18:00)",
+         lambda s: (f"On SkyFare ({s.base}/flights/), find the cheapest direct flight from Bengaluru to Delhi on "
+                    f"{target_day(s.today):%A %-d %B %Y} that leaves after 18:00, for 1 adult in economy. Don't book "
+                    "anything. Tell me its airline, flight number, departure time and price."),
+         check_evening),
     Task("library", "facts from two pages of a website",
          lambda s: (f"On the Riverside Public Library website ({s.base}/library/), find what time the library closes "
                     "on Sundays and the late fee per day for an overdue DVD."),
@@ -90,6 +112,10 @@ TASKS = [
          lambda s: ("Check my documents: until what date is my dishwasher covered, counting any extended warranty "
                     "I bought? And which number do I call for service?"),
          check_documents, needs_files=True),
+    Task("appliance", "the owner's documents, then the maker's website",
+         lambda s: (f"How often should I descale my dishwasher? Find its model in my documents, then check the "
+                    f"maker's support site ({s.base}/kelvin/)."),
+         check_appliance, needs_files=True),
 ]
 
 
@@ -223,6 +249,8 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                 meter.reset()
                 asked.clear()
                 site.visits.clear()
+                for row in svc.store.query("SELECT id FROM memories"):    # each task starts as the first one
+                    svc.memory.forget(id=row["id"])
                 start = time.monotonic()
                 try:
                     answer = await asyncio.wait_for(
@@ -232,7 +260,8 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                 except asyncio.TimeoutError:
                     answer, passed, why = "", False, f"still running after {TASK_SECONDS // 60} min"
                 result = {"name": task.name, "passed": passed, "why": why, "seconds": round(time.monotonic() - start, 1),
-                          **meter.summary(), "approvals": len(asked), "steps": meter.steps[:40], "answer": answer[:1500]}
+                          **meter.summary(), "approvals": [f"{'allowed' if a['allowed'] else 'refused'}: {a['summary']}" for a in asked],
+                          "steps": meter.steps[:40], "answer": answer[:1500]}
                 record["tasks"].append(result)
                 progress(f"  {'passed' if passed else 'FAILED'} in {result['seconds']:.0f} s, {result['tool_calls']} tool "
                          f"calls, {result['requests']} model requests ({why})")

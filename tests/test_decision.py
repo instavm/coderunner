@@ -53,6 +53,11 @@ class ActionCheckTests(DecisionTestCase):
         self.assertFalse(await check.commits("Site: x"))
         self.assertTrue(await check.commits("Site: x"))          # an answer that is no option fails closed
         self.assertEqual(self.requests[0]["temperature"], 0)
+        # Only the last message changes between steps, so the runtime keeps the instructions read.
+        first, second = (r["messages"] for r in self.requests[:2])
+        self.assertEqual(first[0], second[0])
+        self.assertIn("commit", first[0]["content"])
+        self.assertEqual(json.loads(first[-1]["content"]), {"state": "Site: x"})
         await model.aclose()
 
     def test_from_config(self):

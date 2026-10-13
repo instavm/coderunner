@@ -14,6 +14,7 @@ import html
 import json
 import pathlib
 import random
+import re
 import socket
 from typing import Callable
 
@@ -65,13 +66,23 @@ def flights(origin: str, dest: str, day: str) -> list[dict]:
                     "depart": rnd.randrange(5 * 60, 22 * 60, 5),
                     "minutes": rnd.randrange(290, 600, 5) if stops else rnd.randrange(160, 190, 5),
                     "stops": stops, "price": price})
-    for f, price in zip(rnd.sample(out[4:], 3), sorted(rnd.sample(range(5100, 6700), 3))):
+    cheap = rnd.sample(out[4:], 3)
+    for f, price in zip(cheap, sorted(rnd.sample(range(5100, 6700), 3))):
         f["price"] = price
+        if not f["stops"] and f["depart"] > 18 * 60:      # so the evening question has its own answer
+            f["depart"] = rnd.randrange(6 * 60, 17 * 60, 5)
+    for f in rnd.sample([f for f in out if f not in cheap], 2):      # at least two direct evening flights
+        f.update(stops=0, depart=rnd.randrange(18 * 60 + 5, 21 * 60 + 35, 5), minutes=rnd.randrange(160, 190, 5))
     return out
 
 
 def cheapest(origin: str, dest: str, day: str, n: int = 3) -> list[dict]:
     return sorted(flights(origin, dest, day), key=lambda f: f["price"])[:n]
+
+
+def evening(origin: str, dest: str, day: str) -> dict:
+    """The cheapest direct flight leaving after 18:00."""
+    return min((f for f in flights(origin, dest, day) if not f["stops"] and f["depart"] > 18 * 60), key=lambda f: f["price"])
 
 
 def clock(minutes: int) -> str:
@@ -252,6 +263,8 @@ class Sites:
             Route("/flights/", self.flight_home), Route("/flights/results", self.flight_results),
             Route("/flights/checkout", self.flight_checkout), Route("/flights/{other}", self.flight_other),
             Route("/library/", self.library), Route("/library/{page}", self.library),
+            Route("/kelvin/", self.kelvin), Route("/kelvin/search", self.kelvin_search),
+            Route("/kelvin/guide/{model}", self.kelvin_guide), Route("/kelvin/{page}", self.kelvin),
         ])
 
     @property
@@ -410,6 +423,65 @@ class Sites:
                      "<a href='/library/accessibility'>Accessibility</a> © Riverside Public Library Trust</footer>")
 
 
+    # ---- the appliance maker's support site
+
+    def _kelvin(self, title: str, content: str) -> HTMLResponse:
+        nav = "".join(f'<a href="/kelvin/{key}">{label}</a>' for key, label in KELVIN_NAV)
+        return _page(f"{title} – Kelvin Appliances", f"<header><b>Kelvin Appliances</b> {nav}</header><main>"
+                     f"<form action='/kelvin/search'><label>Search support by model number or product "
+                     f"<input name='q' placeholder='e.g. DW-412'></label><button>Search</button></form>"
+                     f"<h1>{title}</h1>{content}</main><footer><a href='/kelvin/contact'>Contact</a>"
+                     "<a href='/kelvin/register'>Register a product</a><a href='/kelvin/privacy'>Privacy</a></footer>")
+
+    async def kelvin(self, request: Request):
+        self._visit(request)
+        page = request.path_params.get("page", "")
+        if page == "products":
+            return self._kelvin("Products", "".join(
+                f"<p><a href='/kelvin/guide/{model}'>{name} ({model})</a></p>" for model, (name, *_) in KELVIN_GUIDES.items()))
+        if page:
+            return self._kelvin(page.replace("-", " ").capitalize(), "<p>This page is being updated.</p>")
+        return self._kelvin("Support", "<p>Find manuals, care guides and service for your Kelvin appliance.</p>"
+                            "<h2>Popular topics</h2><p><a href='/kelvin/service'>Book a repair visit</a> · "
+                            "<a href='/kelvin/register'>Register your product</a> · <a href='/kelvin/products'>All "
+                            "products and care guides</a> · <a href='/kelvin/warranty'>Warranty terms</a></p>"
+                            "<p>Kelvin Care: 1800 266 1880 (toll free, 8 am to 8 pm, all days)</p>")
+
+    async def kelvin_search(self, request: Request):
+        self._visit(request)
+        q = request.query_params.get("q", "")
+        key = re.sub(r"[\s-]", "", q).lower()
+        found = [(m, g) for m, g in KELVIN_GUIDES.items()
+                 if key and (key in m.replace("-", "").lower() or key in re.sub(r"[\s-]", "", g[0]).lower())]
+        rows = "".join(f"<article><h3><a href='/kelvin/guide/{m}'>{m} · {g[0]}: care and maintenance guide</a></h3>"
+                       f"<p><a href='/kelvin/manuals'>{m} user manual (PDF, 4.2 MB)</a></p></article>" for m, g in found)
+        return self._kelvin(f"Results for “{html.escape(q)}”", rows or "<p>Nothing matches. Check the model number on "
+                            "the label inside the door or on your invoice.</p>")
+
+    async def kelvin_guide(self, request: Request):
+        self._visit(request)
+        model = request.path_params["model"].upper()
+        if model not in KELVIN_GUIDES:
+            return self._kelvin("Guide not found", "<p>We have no care guide for that model.</p>")
+        name, descale, clean = KELVIN_GUIDES[model]
+        return self._kelvin(f"{name} ({model}): care and maintenance", f"""<h2>Care schedule</h2><table>
+<tr><th>What</th><th>How often</th></tr><tr><td>Clean the filter</td><td>{clean}</td></tr>
+<tr><td>Descale (Kelvin DescaleMax or citric acid)</td><td>{descale}</td></tr>
+<tr><td>Wipe the door seal</td><td>every week</td></tr><tr><td>Check the spray arms turn freely</td><td>every month</td></tr>
+</table><h2>Troubleshooting</h2><p><b>Rattling during the eco programme:</b> make sure the lower spray arm clicks into
+place and nothing hangs below the bottom basket.</p><p><b>White film on glasses:</b> top up the rinse aid and descale.</p>
+<p>Still need help? Call Kelvin Care on 1800 266 1880.</p>""")
+
+
+KELVIN_NAV = (("", "Support"), ("products", "Products"), ("service", "Book a repair"), ("register", "Register a product"),
+              ("warranty", "Warranty"))
+KELVIN_GUIDES = {  # model: (name, descaling, filter)
+    "DW-410": ("Series 2 dishwasher", "every 6 months", "every month"),
+    "DW-412": ("Series 4 dishwasher", "every 3 months (every 2 months in hard-water areas)", "every 2 weeks"),
+    "DW-414": ("Series 6 dishwasher", "every 4 months", "every 2 weeks"),
+    "RF-260": ("FrostFree refrigerator 260 L", "not needed", "replace the water filter every 6 months"),
+    "WM-7": ("Front-load washing machine 7 kg", "every 2 months (drum clean programme)", "every 3 months"),
+}
 LIBRARY_NAV = (("", "Home"), ("visit", "Visit us"), ("borrowing", "Borrowing"), ("events", "Events"),
                ("kids", "Kids & teens"), ("elibrary", "eLibrary"), ("support", "Support us"))
 LIBRARY = {
