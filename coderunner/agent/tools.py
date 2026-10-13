@@ -12,6 +12,8 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+import httpx
+
 from ..browser.broker import KEYS
 from ..safety.policy import Action
 
@@ -95,6 +97,10 @@ class ToolRegistry:
 
 # ---- sandbox -------------------------------------------------------------
 
+SANDBOX_DOWN = ("Error: the sandbox is not running, so run_python and run_shell cannot be used now. Do this step "
+                "without them (work out simple dates and sums directly) and tell the owner if the task needs code.")
+
+
 def sandbox_tools(svc) -> list[Tool]:
     async def run_python(args, ctx):
         session = args.get("session") or "main"
@@ -105,8 +111,12 @@ def sandbox_tools(svc) -> list[Tool]:
             # Code that could carry the owner's data, written after untrusted content, must not
             # reuse the egress allow list or standing grants.
             svc.egress.taint()
-        await svc.sandbox.start_session(session)
-        result = await svc.sandbox.execute(args["code"], session_id=session)
+        try:
+            await svc.sandbox.start_session(session)
+            result = await svc.sandbox.execute(args["code"], session_id=session)
+        except (httpx.TransportError, OSError):
+            # A bare connection error had models retry run_python, then run_shell, a step each.
+            return SANDBOX_DOWN
         return (result.get("stdout", "") + (("\n" + result["stderr"]) if result.get("stderr") else "")).strip() \
             or "(no output)"
 

@@ -270,3 +270,17 @@ class AddressTests(unittest.TestCase):
         self.assertIn("type=ONEWAY&depart=2026-11-20&sort=CHEAPEST", short)
         self.assertLess(len(short), 200)
         self.assertEqual(_short_address("https://example.com/a"), "https://example.com/a")
+
+
+class SandboxDownTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_stopped_sandbox_says_so_plainly(self):
+        from coderunner.agent.tools import SANDBOX_DOWN
+        from coderunner.sandbox import SandboxClient
+        from fakes import free_port
+
+        svc = Svc()
+        svc.sandbox = SandboxClient(f"http://127.0.0.1:{free_port()}", "token")
+        registry = build_registry(svc)
+        result = await registry.invoke("run_python", {"code": "print(1)"}, RunContext(conversation="s"))
+        self.assertIn(SANDBOX_DOWN, result)
+        self.assertIn(SANDBOX_DOWN, await registry.invoke("run_shell", {"command": "date"}, RunContext(conversation="s")))
