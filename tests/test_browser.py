@@ -658,6 +658,8 @@ class InteractionPolicyTests(BrokerTestCase):
         browser, _ = await self.load_shop()
         self.assertEqual(browser.sent("Browser.setDownloadBehavior"), [{"behavior": "deny"}])
         self.assertIn({"enabled": True}, browser.sent("Page.setInterceptFileChooserDialog"))
+        # Pages act as if focused: pop-ups ignored clicks whenever the owner worked in another window.
+        self.assertIn({"enabled": True}, browser.sent("Emulation.setFocusEmulationEnabled"))
         self.assertTrue(browser.sent("Fetch.enable"))
         self.assertIn("geolocation", [p["permission"]["name"] for p in browser.sent("Browser.setPermission")])
         self.assertEqual(self.launcher.profile_dir, self.tmp / "assistant" / "browser-profile")

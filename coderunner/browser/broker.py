@@ -412,6 +412,9 @@ class BrowserBroker:
             await self._send(sid, "Page.enable")
             await self._send(sid, "Page.setLifecycleEventsEnabled", {"enabled": True})
             await self._send(sid, "Page.setInterceptFileChooserDialog", {"enabled": True})
+            # The page behaves as if its window had the focus. Otherwise, whenever the owner works in another
+            # window, pop-up widgets ignore clicks: booking.com's destination box opened only with this on.
+            await self._send(sid, "Emulation.setFocusEmulationEnabled", {"enabled": True})
             self._committed.setdefault(target, (await self._info(target)).get("url", ""))
         except CDPError:
             self._forget_session(sid)
