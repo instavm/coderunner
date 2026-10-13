@@ -433,13 +433,21 @@ class LlamaCppRuntime(Runtime):
     def remove(self, entry: dict) -> None:
         state = self._state()
         record = state.get("models", {}).pop(entry["id"], None) or {}
+        # Builds of one model share files (both Bonsai 2 builds use one vision projector): keep those in use.
+        in_use = {other.get(key) for other in state.get("models", {}).values() for key in ("model", "mmproj")}
         root = self.root.resolve()
         for key in ("model", "mmproj"):
-            path = pathlib.Path(record[key]).resolve() if record.get(key) else None
+            path = pathlib.Path(record[key]).resolve() if record.get(key) and record[key] not in in_use else None
             if path and root in path.parents:          # only files CodeRunner downloaded
                 for part in sorted(path.parent.glob(path.name.split("-00001-of-")[0] + "*")) \
                         if "-00001-of-" in path.name else [path]:
                     part.unlink(missing_ok=True)
+        # An interrupted download of this build, kept for a resume that will not come.
+        art = (entry.get("artifacts") or {}).get(catalog.ARTIFACT.get(self.name, "gguf")) or {}
+        name = art.get("file") or art.get("quant")
+        if art.get("repo") and name:
+            for part in (self.root / art["repo"].replace("/", "--")).glob(f"*{name}*.part"):
+                part.unlink(missing_ok=True)
         if (state.get("active") or {}).get("id") == entry["id"]:
             state.pop("active")
         self._save(state)

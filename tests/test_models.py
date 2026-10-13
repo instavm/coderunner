@@ -1175,6 +1175,29 @@ class PrismTests(TempHome):
         self.assertIsNone(rt.binary())
         self.assertEqual(list(rt.bin_dir.glob("*.tar.gz")), [])
 
+    def test_removing_one_build_keeps_the_files_another_uses(self):
+        rt = runtimes.PrismRuntime(self.config(), hw=apple(18))
+        regular, compact = catalog.get("bonsai-2-27b"), catalog.get("bonsai-2-27b-compact")
+        folder = rt.root / regular["artifacts"]["prism"]["repo"].replace("/", "--")
+        folder.mkdir(parents=True)
+        files = {name: folder / name for name in (regular["artifacts"]["prism"]["file"], compact["artifacts"]["prism"]["file"],
+                                                  regular["artifacts"]["prism"]["mmproj"])}
+        for path in files.values():
+            path.write_bytes(b"x")
+        shared = folder / regular["artifacts"]["prism"]["mmproj"]
+        rt._save({"models": {"bonsai-2-27b": {"model": str(folder / regular["artifacts"]["prism"]["file"]), "mmproj": str(shared)},
+                             "bonsai-2-27b-compact": {"model": str(folder / compact["artifacts"]["prism"]["file"]),
+                                                      "mmproj": str(shared)}}})
+        rt.remove(compact)
+        self.assertFalse((folder / compact["artifacts"]["prism"]["file"]).exists())
+        self.assertTrue(shared.exists() and (folder / regular["artifacts"]["prism"]["file"]).exists())
+        # An interrupted download of a build is deleted with it.
+        partial = folder / (compact["artifacts"]["prism"]["file"] + ".part")
+        partial.write_bytes(b"x")
+        rt.remove(compact)
+        self.assertFalse(partial.exists())
+        self.assertTrue(shared.exists())
+
     def test_memory_estimate_counts_the_8_bit_cache(self):
         entry = catalog.get("bonsai-2-27b")
         est = fit.estimate(entry, apple(18), 32768, "prism")

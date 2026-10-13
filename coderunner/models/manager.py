@@ -667,11 +667,18 @@ def bench_candidates(config, count: int = 2, progress: Callable[[str], None] = p
         entry = _entry(cand["id"], [])
         fresh = rt is not None and not rt.installed(entry)
         progress(f"== {cand['id']}")
-        done = setup(config, model_id=cand["id"], hw=hw, progress=progress,
-                     **{"embedding": False, "decision": False, **setup_options})
+        for attempt in (1, 2):
+            done = setup(config, model_id=cand["id"], hw=hw, progress=progress,
+                         **{"embedding": False, "decision": False, **setup_options})
+            cut = any("interrupted" in str(a.get("error", "")) for a in done.get("attempts") or [])
+            if done.get("ok") or not cut or attempt == 2:
+                break
+            progress(f"{cand['id']}: the download was cut off; resuming it")
         if fresh and done.get("ok"):
             downloaded.append((done["runtime"], entry))
         if not done.get("ok"):
+            if fresh and rt is not None:
+                rt.remove(entry)                    # a partial download nobody will resume
             runs.append({"model": cand["id"], "error": done.get("error", "setup failed")})
             continue
         result = _run_async(run_tasks(config, progress=progress))
