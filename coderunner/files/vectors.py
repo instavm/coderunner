@@ -73,6 +73,8 @@ class VectorIndex:
         self.row: dict[int, int] = {}
         self.dead: set[int] = set()
         self.sample: dict[str, list[Sequence[float]]] = {}
+        self._groups: dict[int, list[int]] | None = None     # positions of each modality, rebuilt on change
+        self._grouped = 0
 
     def __len__(self) -> int:
         return len(self.ids) - len(self.dead)
@@ -89,6 +91,7 @@ class VectorIndex:
             fresh.sample[modality] = [unpack(r["embedding"]) for r in picked]
         (self.ids, self.codes, self.modality, self.kind, self.row, self.dead, self.sample) = (
             fresh.ids, fresh.codes, fresh.modality, fresh.kind, fresh.row, fresh.dead, fresh.sample)
+        self._groups = None
         self.loaded = True
 
     def add(self, rows: Iterable[tuple[int, bytes, str, str]]) -> None:
@@ -117,21 +120,36 @@ class VectorIndex:
             self.kind = [self.kind[i] for i in keep]
             self.row = {chunk: i for i, chunk in enumerate(self.ids)}
             self.dead = set()
+            self._groups = None
 
     def nearest(self, query: Sequence[float], count: int, kinds: set[str] | None = None) -> list[int]:
-        """Ids of about `count` pieces whose sign codes are closest to the query's."""
+        """Ids of about `count` pieces of each modality whose sign codes are closest to the query's. Each modality
+        gets its own cut: a question's similarity to pictures and sound runs lower than to text, so one shared cut
+        let almost only text through (two of 30 pictures in the retrieval benchmark never reached exact scoring)."""
         if not self.ids:
             return []
         distances = list(map(int.bit_count, map(signs(query).__xor__, self.codes)))
-        histogram = collections.Counter(distances)
-        wanted = count + len(self.dead) + (count * 4 if kinds else 0)
-        limit, total = 0, 0
-        for limit in sorted(histogram):
-            total += histogram[limit]
-            if total >= wanted:
-                break
-        rows = itertools.compress(range(len(distances)), map(limit.__ge__, distances))
-        return [self.ids[i] for i in rows if self.ids[i] not in self.dead and (not kinds or self.kind[i] in kinds)]
+        wanted = count + (count * 4 if kinds else 0)
+        found: list[int] = []
+        for rows in self._by_modality().values():
+            near = [distances[i] for i in rows]
+            histogram = collections.Counter(near)
+            limit, total = 0, 0
+            for limit in sorted(histogram):
+                total += histogram[limit]
+                if total >= wanted + len(self.dead):
+                    break
+            found += [self.ids[i] for i in itertools.compress(rows, map(limit.__ge__, near))
+                      if self.ids[i] not in self.dead and (not kinds or self.kind[i] in kinds)]
+        return found
+
+    def _by_modality(self) -> dict[int, list[int]]:
+        if self._groups is None or self._grouped != len(self.ids):
+            groups: dict[int, list[int]] = collections.defaultdict(list)
+            for i, modality in enumerate(self.modality):
+                groups[modality].append(i)
+            self._groups, self._grouped = dict(groups), len(self.ids)
+        return self._groups
 
     def calibration(self, query: Sequence[float]) -> tuple[dict[str, float], float]:
         """For this query: each modality's average similarity, and the spread of all similarities."""

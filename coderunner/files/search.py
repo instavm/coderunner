@@ -25,7 +25,11 @@ from .vectors import VectorIndex, dot, unpack
 CANDIDATES = 300            # pieces scored exactly after the first pass
 Z_GATE = 2.0                # standard deviations above its modality's average for a meaning match to count
 MIN_COVERAGE = 0.5          # share of the query's words for a word match to count
-MEANING, WORDS, HINT = 1.0, 2.0, 1.0
+# Measured on 64 plain-language questions over a real Downloads folder (tests/retrieval_eval.py): a word weight of 2
+# let text that shares a few common words outrank the picture or video that matched in meaning (MRR 0.74);
+# 0.5 gives 0.78 (R@1 0.64 -> 0.69). Exact lookups ("HX-55821", a file name) keep a strong word weight.
+MEANING, WORDS, HINT = 1.0, 0.5, 1.0
+LOOKUP_MEANING, LOOKUP_WORDS = 0.5, 4.0
 STRONG = 0.5                # results scoring below this share of the best are cut
 SMALL = 50                  # with fewer pieces than this, similarities cannot be calibrated; rank instead
 SNIPPET = 300
@@ -91,7 +95,7 @@ class Searcher:
             paths = {p for p in paths if p in files and files[p]["kind"] in kinds}
         calibrated = len(self.vectors) >= SMALL
         lookup = is_lookup(query.split())        # "HX-55821" as typed, not split into hx and 55821
-        weight_meaning, weight_words = (0.5, WORDS * 2) if lookup else (MEANING, WORDS)
+        weight_meaning, weight_words = (LOOKUP_MEANING, LOOKUP_WORDS) if lookup else (MEANING, WORDS)
         hints = kind_hints(query)
         scored: dict[str, float] = {}
         for path in paths:
