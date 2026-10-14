@@ -28,7 +28,12 @@ steps add a page title, which describe() accepts; the real steps have none, like
 Measured on an M3 Pro (18 GB), each judge alone (synthetic right, commits missed of 45, false alarms of 55;
 real right of 30; median time a step; energy a step above idle, CPU+GPU+ANE):
   Bonsai 2 27B judging itself (Prism llama.cpp)   94, 0, 6;   29;  1.7 s;   32 J
+  tev1 4B (Ollama, mxfp8, 8.8 GB loaded)          88, 0, 12;  24;  0.59 s;  11 J  (at 0.95 instead of 0.7:
+                                                  0 missed, 6 and 0 false alarms; ROC AUC 0.99 and 1.0)
   tev1 0.8B (Ollama)                              56, 2, 42;  15;  0.10 s;  1.4 J
+  clef-vision 0.8B, Core ML (FluidUse host, GPU)  65, 0, 35;  17;  0.21 s;  2.6 J  (ALL: 0.18 s, 0.9 J, split
+                                                  between Neural Engine and GPU; Neural Engine only: the load grew
+                                                  to 7.5 GB and was killed)
   Laya multilingual 322M, Core ML, 1024 tokens    59, 39, 2;  21;  0.20 s;  1.6 J  (its GPU plan fails, runs on CPU;
                                                   the same answers as Ollama's MLX build: 25 ms, 0.26 J)
   Laya multilingual, Neural Engine, 96 tokens     the judge's question and options take 168 tokens: every step
