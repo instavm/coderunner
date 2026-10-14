@@ -27,7 +27,7 @@ from .hub import Hub
 from .runtimes import Progress, Runtime, _ok, _spawn, _terminate, _wait_ready, idle_seconds
 
 PORT = 8084
-PACKAGES = ["coremltools==9.0", "tokenizers==0.23.3", "numpy>=2,<3"]
+PACKAGES = ["coremltools==9.0", "tokenizers==0.23.3", "numpy>=2,<3", "pillow>=11,<13"]
 SERVER = pathlib.Path(__file__).with_name("coreml_server.py")
 TOLERANCE = 0.10        # Core ML may be this much slower than the GPU build (about run-to-run noise)
 PARITY = 0.97           # mean cosine to the GPU build's vectors below this means a broken build
@@ -117,7 +117,8 @@ class CoreMLRuntime(Runtime):
         get = config.get if config is not None else (lambda key, default=None: default)
         art = self.artifact(entry)
         return [self.python() or sys.executable, "-I", str(SERVER), "--folder", str(self.folder(entry)),
-                "--name", self.model_id(entry), "--port", str(self.port), "--digest", art.get("revision", ""),
+                "--name", self.model_id(entry), "--port", str(self.port),
+                "--digest", art.get("text_weights") or art.get("revision", ""),
                 "--idle", str(idle_seconds(config)),
                 "--media-url", get("models.embedding_media_url") or "", "--media-model", get("models.embedding_media") or ""]
 
@@ -125,6 +126,8 @@ class CoreMLRuntime(Runtime):
         if self.running():
             return
         from . import catalog
+        if supported() and self.env.exists() and not self.python():
+            self.install()                  # the pinned packages changed (pictures need Pillow): bring them up to date
         if not self.available():
             raise RuntimeError("The Core ML runtime is not installed; run `coderunner models setup`")
         entry = catalog.get((self.config.get("models.embedding_entry") if self.config else None) or "embeddinggemma-2")

@@ -661,20 +661,30 @@
         },
         "coreml": {
           "repo": "FluidInference/embeddinggemma-2-coreml",
-          "revision": "70fcf18f32c8cffc173fea982d5652d0bd1de8ea",
+          "revision": "3f978ddf92cac9aa07eb2dcf6eb36cf450f3dba4",
           "files": [
             "config.json",
             "tokenizer.json",
             "embeddings.bf16",
             "EmbeddingGemma2Text.mlpackage/Manifest.json",
             "EmbeddingGemma2Text.mlpackage/Data/com.apple.CoreML/model.mlmodel",
-            "EmbeddingGemma2Text.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+            "EmbeddingGemma2Text.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+            "position_embeddings.f16",
+            "EmbeddingGemma2Vision.mlpackage/Manifest.json",
+            "EmbeddingGemma2Vision.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "EmbeddingGemma2Vision.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+            "EmbeddingGemma2Audio.mlpackage/Manifest.json",
+            "EmbeddingGemma2Audio.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "EmbeddingGemma2Audio.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
           ],
           "modalities": [
-            "text"
+            "text",
+            "image",
+            "audio"
           ],
-          "size_gb": 0.59,
-          "license": "apache-2.0"
+          "size_gb": 1.48,
+          "license": "apache-2.0",
+          "text_weights": "75b97ab036ca"
         }
       },
       "notes": "Text, images and audio in one 768-d space (video as frames plus sound); one model for memory and files",

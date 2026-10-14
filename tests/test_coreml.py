@@ -184,6 +184,108 @@ class ServerTests(unittest.TestCase):
             self.assertLess(answered - asked, 0.3)                    # not the ~1.8 s left of the batch
             self.assertGreater(time.monotonic() - began, 1.9)         # the batch still did all its work
 
+    def media_encoder(self, folder):
+        """An Encoder whose Core ML parts are fakes that record what they are given."""
+        import types
+        import numpy as np
+        config = {"bos_token_id": 2, "eos_token_id": 1, "embed_scale": 1.0, "token_table": {"file": "t", "shape": [300000, 8]},
+                  "vision": {"package": "V.mlpackage", "functions": {"vision_70": {"tokens": 70, "patches": 630}},
+                             "patch_size": 16, "pooling_kernel": 3, "boi_token_id": 255999, "eoi_token_id": 258882,
+                             "position_table": {"file": "p", "shape": [2, 1024, 768]}},
+                  "audio": {"package": "A.mlpackage", "sample_rate": 16000, "window_seconds": 10, "waveform_samples": 160160,
+                            "left_pad_samples": 160, "frames": 1000, "tokens_per_window": 250,
+                            "boa_token_id": 256000, "eoa_token_id": 258883}}
+        (pathlib.Path(folder) / "config.json").write_text(json.dumps(config))
+        for package in ("V.mlpackage", "A.mlpackage"):
+            (pathlib.Path(folder) / package).mkdir()
+        encoder = srv.Encoder(pathlib.Path(folder))
+        encoder.positions = np.zeros((2, 1024, 768), dtype=np.float16)
+        encoder.calls, encoder.sequences = [], []
+
+        class Fake:
+            def __init__(self, name):
+                self.name = name
+
+            def predict(self, inputs):
+                encoder.calls.append((self.name, inputs))
+                if self.name == "vision":
+                    return {"image_tokens": np.ones((1, 70, 8), dtype=np.float16)}
+                return {"audio_tokens": np.ones((1, 250, 8), dtype=np.float16)}
+        encoder._encoder = lambda name, function=None: Fake(name)
+        encoder._load = lambda: setattr(encoder, "tokenizer", object())
+        encoder._rows = lambda ids: np.zeros((len(ids), 8), dtype=np.float32)
+
+        def sequence(x):
+            encoder.sequences.append(len(x))
+            return [1.0] + [0.0] * 7
+        encoder._sequence = sequence
+        return encoder
+
+    def test_pictures_are_cut_into_patches_and_pooled_as_the_card_says(self):
+        import io as bytes_io
+        import tempfile
+        from PIL import Image
+        self.assertEqual(srv.fit(1280, 720, 630 * 256, 48), (528, 288))       # 16:9 within 630 patches of 16 px
+        for width, height in ((1280, 720), (300, 2000), (50, 50)):
+            w, h = srv.fit(width, height, 630 * 256, 48)
+            self.assertTrue(w % 48 == 0 and h % 48 == 0 and (w // 16) * (h // 16) <= 630)
+        with tempfile.TemporaryDirectory() as folder:
+            encoder = self.media_encoder(folder)
+            picture = bytes_io.BytesIO()
+            Image.new("RGB", (1280, 720), (255, 0, 0)).save(picture, "JPEG")
+            vector = encoder.image(picture.getvalue())
+            self.assertEqual(len(vector), 8)
+            name, inputs = encoder.calls[-1]
+            count = (528 // 16) * (288 // 16)                                  # 33 x 18 patches
+            self.assertEqual(name, "vision")
+            self.assertEqual(int(inputs["valid"].sum()), count)
+            self.assertEqual(inputs["patches"].shape, (1, 630, 768))
+            self.assertAlmostEqual(float(inputs["patches"][0, 0, 0]), 1.0, places=2)     # red, scaled to 0..1
+            self.assertEqual(float(inputs["positions"][0, count, 0]), -1)                # padding
+            self.assertEqual(tuple(inputs["positions"][0, 33, :]), (0, 1))               # second row starts at x 0
+            pool = inputs["pool"].astype(float)
+            self.assertTrue(all(abs(pool[:, i].sum() - 1 / 9) < 1e-3 for i in range(count)))
+            self.assertEqual(encoder.sequences[-1], (33 // 3) * (18 // 3) + 4)          # 66 tokens + 4 special
+
+    def test_sound_goes_through_the_audio_encoder_ten_seconds_at_a_time(self):
+        import io as bytes_io
+        import tempfile
+        import wave
+        with tempfile.TemporaryDirectory() as folder:
+            encoder = self.media_encoder(folder)
+            sound = bytes_io.BytesIO()
+            with wave.open(sound, "wb") as out:
+                out.setnchannels(1)
+                out.setsampwidth(2)
+                out.setframerate(16000)
+                out.writeframes(b"\x00\x01" * 16000 * 25)                     # 25 s
+            encoder.audio(sound.getvalue())
+            windows = [inputs for name, inputs in encoder.calls if name == "audio"]
+            self.assertEqual(len(windows), 3)                                   # 10 + 10 + 5 s
+            self.assertEqual(int(windows[-1]["frame_mask"].sum()), (160 + 80000 - 321) // 160 + 1)
+            self.assertEqual(encoder.sequences, [504, 129])                     # 500 tokens, then the last 5 s
+            with self.assertRaises(ValueError):                                # 44.1 kHz stereo is refused
+                stereo = bytes_io.BytesIO()
+                with wave.open(stereo, "wb") as out:
+                    out.setnchannels(2)
+                    out.setsampwidth(2)
+                    out.setframerate(44100)
+                    out.writeframes(b"\x00" * 400)
+                encoder.audio(stereo.getvalue())
+
+    def test_the_server_embeds_media_itself_when_the_build_has_encoders(self):
+        import base64 as b64
+        encoder = FakeEncoder()
+        encoder.media = lambda: {"vision", "audio"}
+        encoder.image = lambda data: [7.0] + [0.0] * 767
+        encoder.audio = lambda data: [8.0] + [0.0] * 767
+        with Served(srv.Service(encoder, "m", "rev", "http://127.0.0.1:9", "embeddinggemma-2")) as server:
+            out = server.post("/api/embed", {"model": "m", "input": ["ab", {"image": b64.b64encode(b"x").decode()},
+                                                                      {"audio": b64.b64encode(b"y").decode()}]})
+            self.assertEqual([v[0] for v in out["embeddings"]], [2.0, 7.0, 8.0])   # nothing went to Ollama (port 9)
+            self.assertEqual(server.post("/api/show", {})["capabilities"], ["audio", "embedding", "vision"])
+            self.assertEqual(server.get("/api/tags")["models"][0]["digest"], "rev+audio-vision")
+
     def test_the_model_is_released_when_idle(self):
         encoder = FakeEncoder()
         service = srv.Service(encoder, "m", idle=0.1)
