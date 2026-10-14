@@ -32,6 +32,8 @@ PARALLEL_READS = 4          # files converted at once
 NAME_BATCH = 512            # names of iCloud-only files embedded per pass, once the rest is done
 FINGERPRINT = "files.fingerprint"
 PAUSE_CHECK = 60.0
+MEDIA = ("image", "audio", "video")    # embedded on the GPU, text on the Neural Engine (Core ML): on battery these
+                                       # wait for the charger, 12 W against 5 W while indexing ~/Downloads
 
 
 class FileIndex:
@@ -47,6 +49,7 @@ class FileIndex:
         self.vectors = VectorIndex(store)
         self.searcher = Searcher(store, self.vectors, embedder)
         self._queue: collections.deque[Found] = collections.deque()
+        self._waiting: dict[str, Found] = {}      # pictures, sound and video held back while on battery
         self._files = 0
         self._lock = asyncio.Lock()
         self._fingerprint_checked = False
@@ -83,9 +86,19 @@ class FileIndex:
         async with self._lock:
             await self._check_model()
             removed = 0
-            if not self._queue:
+            hold = await self._media_waits()
+            if self._waiting and not hold:
+                self._queue.extend(self._waiting.values())
+                self._waiting.clear()
+            if not self._queue and not (hold and self._waiting):     # no walk of every folder while media waits
                 removed = await self._scan()
-            batch = [self._queue.popleft() for _ in range(min(budget, len(self._queue)))]
+            batch: list[Found] = []
+            while self._queue and len(batch) < budget:
+                found = self._queue.popleft()
+                if hold and kind_of(found.path) in MEDIA:
+                    self._waiting[str(found.path)] = found
+                else:
+                    batch.append(found)
             done, failed = await self._index(batch)
             waiting = False
             if not self._queue and await self._embed_names(max(NAME_BATCH, budget - len(batch))):
@@ -96,6 +109,12 @@ class FileIndex:
             if done or failed or removed:
                 self.audit.write("files.indexed", **result)
             return result
+
+    async def _media_waits(self) -> bool:
+        """Whether pictures, sound and video wait for the charger (files.media_on_battery turns this off)."""
+        if self.embedder is None or not self.config.get("files.media", True) or self.config.get("files.media_on_battery", False):
+            return False
+        return await power.on_battery()
 
     async def _check_model(self) -> None:
         """Vectors from other weights, or in an older format, cannot be compared with new ones: index again."""
@@ -294,7 +313,7 @@ class FileIndex:
                     continue
                 self.wake.clear()
                 interval = float(self.config.get("files.scan_interval", 600) or 600)
-                if self.paused:
+                if self.paused or self._waiting:      # also notice the charger soon, for the media that waits
                     interval = PAUSE_CHECK
                 elif self.watching:
                     interval *= 6          # events bring changes in; the walk only catches what they miss
@@ -333,4 +352,5 @@ class FileIndex:
                 "by_kind": {r["kind"]: {"files": r["n"], "failed": r["failed"] or 0} for r in rows},
                 "chunks": (self.store.one("SELECT COUNT(*) AS n FROM file_chunks") or {}).get("n", 0),
                 "in_memory": len(self.vectors), "queued": len(self._queue), "watching": self.watching,
-                "paused": self.paused, "cloud_only_skipped": self.cloud_only}
+                "paused": self.paused, "cloud_only_skipped": self.cloud_only,
+                "waiting_for_power": len(self._waiting)}

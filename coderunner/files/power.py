@@ -56,3 +56,7 @@ async def pause_reason(config) -> str:
     if on_battery and percent is not None and percent < minimum:
         return f"on battery at {percent}% (below {minimum}%)"
     return ""
+
+
+async def on_battery() -> bool:
+    return (await state())[0]

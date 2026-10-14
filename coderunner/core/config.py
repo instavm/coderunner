@@ -57,6 +57,7 @@ DEFAULTS: dict[str, Any] = {
         "roots": [],                 # folders the owner shares with the assistant (coderunner files add)
         "embedding": "",             # multimodal embedding model; empty: models.embedding
         "media": True,               # also index images, audio and video when the model supports them
+        "media_on_battery": False,   # false: on battery those wait for the charger (GPU work); text goes on
         "max_file_mb": 200,
         "scan_interval": 600,        # seconds between checks for new or changed files
     },

@@ -60,6 +60,9 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         self.home = self.tmp / "crhome"
         self.env = mock.patch.dict(os.environ, {"CODERUNNER_HOME": str(self.home)})
         self.env.start()
+        charging = mock.patch.object(power, "state", mock.AsyncMock(return_value=(False, 100, False)))
+        charging.start()                # on the charger unless a test says otherwise (media waits on battery)
+        self.addCleanup(charging.stop)
         self.docs = self.tmp / "Documents"
         (self.docs / "taxes").mkdir(parents=True)
         (self.docs / "taxes" / "invoice-2026.txt").write_text("Invoice 2026-41\nTotal due: 420 USD\n")
@@ -283,6 +286,27 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         parts = [r["part"] for r in self.store.query("SELECT part FROM file_chunks WHERE path LIKE '%screen recording.mp4'")]
         self.assertTrue(any(part.startswith("frame at") for part in parts), parts)
         self.assertFalse(any(part.startswith("sound at") for part in parts), parts)
+        await embedder.aclose()
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is needed for media")
+    async def test_on_battery_media_waits_for_the_charger_and_text_goes_on(self):
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=red:s=64x64",
+                        "-frames:v", "1", str(self.docs / "red.png")], check=True)
+        embedder, seen, _ = self.embedder(("embedding", "vision", "audio"))
+        index = self.index(embedder)
+        with mock.patch.object(power, "state", mock.AsyncMock(return_value=(True, 80, False))):
+            await index.index_once()
+            self.assertFalse(any(isinstance(item, dict) for item in seen))        # nothing for the GPU
+            self.assertIsNone(self.store.one("SELECT 1 AS x FROM files WHERE path LIKE '%red.png'"))
+            self.assertTrue(self.store.one("SELECT 1 AS x FROM files WHERE path LIKE '%notes.md'"))
+            self.assertEqual(index.status()["waiting_for_power"], 1)
+            scans = mock.AsyncMock(return_value=0)
+            with mock.patch.object(index, "_scan", scans):
+                await index.index_once()
+            scans.assert_not_called()                     # no walk of every folder while media waits
+        await index.index_once()                          # the charger is back
+        self.assertTrue(any(isinstance(item, dict) and "image" in item for item in seen))
+        self.assertEqual(index.status()["waiting_for_power"], 0)
         await embedder.aclose()
 
     async def test_tools_mark_the_task_as_holding_private_untrusted_data(self):
