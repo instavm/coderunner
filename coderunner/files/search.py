@@ -125,11 +125,14 @@ class Searcher:
             self.vectors.load()
         if not len(self.vectors):
             return {}
-        vector = await self.embedder.query(query)
-        chunks = self.vectors.nearest(vector, CANDIDATES, kinds)
-        # Code passages are compared with the question as the model's code retrieval prompt puts it.
+        # Code passages are compared with the question as the model's code retrieval prompt puts it; both
+        # forms of the question go in one request.
         code_prefix = getattr(self.embedder, "code_prefix", "")
-        code = await self.embedder.query(query, code_prefix) if code_prefix else None
+        if code_prefix:
+            vector, code = await self.embedder.queries(query, [self.embedder.query_prefix, code_prefix])
+        else:
+            vector, code = await self.embedder.query(query), None
+        chunks = self.vectors.nearest(vector, CANDIDATES, kinds)
         if code is not None:
             chunks = list(dict.fromkeys([*chunks, *self.vectors.nearest(code, CANDIDATES, kinds)]))
         if not chunks:

@@ -55,8 +55,9 @@ class Encoder:
         self.folder = pathlib.Path(folder)
         self.config = json.loads((self.folder / "config.json").read_text())
         self.units = units
-        self.lock = threading.Lock()                # one request at a time on the model, a text at a time
-        self.turns = threading.Condition()
+        self.lock = threading.Lock()                # loading and releasing the model
+        self.turns = threading.Condition()          # whose turn on the model, a text at a time
+        self.busy = False
         self.urgent = 0                             # searches waiting: indexing yields to them between texts
         self.models: dict[int, object] = {}
         self.tokenizer = self.table = None
@@ -113,15 +114,22 @@ class Encoder:
         try:
             vectors = []
             for text in texts:
-                if not urgent:
+                # The turn is taken under one condition: indexing waiting for the model checks for searches
+                # again each time it wakes, so a search waits for at most the passage in progress.
+                with self.turns:
+                    self.turns.wait_for(lambda: not self.busy and (urgent or self.urgent == 0))
+                    self.busy = True
+                try:
+                    with self.lock:
+                        self._load()
+                        bos, eos = self.config["bos_token_id"], self.config["eos_token_id"]
+                        ids = self.tokenizer.encode(text, add_special_tokens=False).ids
+                        parts = windows(ids, bos, eos)
+                        vectors.append(combine([self._window(p) for p in parts], [len(p) for p in parts]))
+                finally:
                     with self.turns:
-                        self.turns.wait_for(lambda: self.urgent == 0)
-                with self.lock:
-                    self._load()
-                    bos, eos = self.config["bos_token_id"], self.config["eos_token_id"]
-                    ids = self.tokenizer.encode(text, add_special_tokens=False).ids
-                    parts = windows(ids, bos, eos)
-                    vectors.append(combine([self._window(p) for p in parts], [len(p) for p in parts]))
+                        self.busy = False
+                        self.turns.notify_all()
             return vectors
         finally:
             if urgent:

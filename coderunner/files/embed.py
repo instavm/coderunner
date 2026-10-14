@@ -87,15 +87,21 @@ class Embedder:
         return [vector for done in await asyncio.gather(*map(send, batches)) for vector in done]
 
     async def query(self, text: str, prefix: str | None = None) -> list[float]:
-        prompt = (self.query_prefix if prefix is None else prefix) + text
-        if prompt in self._queries:
+        [vector] = await self.queries(text, [self.query_prefix if prefix is None else prefix])
+        return vector
+
+    async def queries(self, text: str, prefixes: list[str]) -> list[list[float]]:
+        """The question under each prompt, asked in one request: one wait on a busy model instead of one each."""
+        prompts = [prefix + text for prefix in prefixes]
+        missing = [prompt for prompt in prompts if prompt not in self._queries]
+        if missing:
+            for prompt, vector in zip(missing, await self._request(missing)):
+                self._queries[prompt] = vector
+        for prompt in prompts:
             self._queries.move_to_end(prompt)
-            return self._queries[prompt]
-        [vector] = await self._request([prompt])
-        self._queries[prompt] = vector
         while len(self._queries) > QUERY_CACHE:
             self._queries.popitem(last=False)
-        return vector
+        return [self._queries[prompt] for prompt in prompts]
 
     async def warm(self) -> None:
         """Load the model now, so the first search does not wait for it."""
