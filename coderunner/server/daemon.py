@@ -173,11 +173,14 @@ class Daemon:
         svc.memory = Memory(store, audit, embedder, query_prefix=profile["query"], doc_prefix=profile["doc"])
 
         from ..files import Embedder, FileIndex
+        from ..models.runtimes import idle_seconds
         # Multimodal embeddings (text, images, audio) come from Ollama's native embed API.
         file_model = self.config.get("files.embedding") or svc.embedding_model
         ollama = self.config.get("models.runtime") in ("ollama", "auto") or bool(self.config.get("models.embedding_url"))
+        # Ollama frees the model after the idle time like every runtime; a negative time (idle unload off) keeps it.
         svc.files = FileIndex(self.config, store, audit,
-                              Embedder(embedding_url, file_model) if file_model and ollama else None)
+                              Embedder(embedding_url, file_model, keep_alive=f"{idle_seconds(self.config) or -60}s")
+                              if file_model and ollama else None)
 
         from ..agent.scheduler import Scheduler
         svc.scheduler = Scheduler(store, audit, self._run_schedule, self._deliver_schedule,

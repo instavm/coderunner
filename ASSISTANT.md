@@ -236,7 +236,31 @@ declares success. If a model fails the test, the next candidate is tried.
 
 * Embeddings for memory and files: EmbeddingGemma 2 (text, images and audio
   in one space) through Ollama, also when the assistant model runs elsewhere
-  (`models.embedding_url`).
+  (`models.embedding_url`). On Apple silicon (macOS 15+) its text encoder
+  runs on the Neural Engine through Core ML instead (FluidInference's
+  build, served by CodeRunner on 127.0.0.1:8084 in an environment of its
+  own); pictures and sound still go to the build in Ollama, whose vectors
+  share the space. Measured on an M3 Pro over 821 passages of CodeRunner's
+  own files:
+
+  | | Ollama (GPU) | Core ML (Neural Engine) |
+  | --- | --- | --- |
+  | Time | 53.3 s | 40.3 s |
+  | GPU busy | 76% | 1% |
+  | Power above idle | 8.8 W | 3.6 W |
+  | Energy per passage | 570 mJ | 178 mJ |
+  | Right file first, of 20 questions | 12 | 12 |
+
+  A bigger Mac's GPU may be the faster one, so setup times both on the
+  machine and keeps Core ML unless it is more than 10% slower or its vectors
+  disagree (mean cosine under 0.97); then the GPU build does everything and
+  the Core ML download is removed. `coderunner models bench --embedding`
+  measures again; `models.embedding_runtime` (`auto`, `coreml`, `gpu`)
+  overrides it. The Core ML encoder reads at most 512 tokens, so longer
+  text is read in windows whose vectors are averaged. The first use compiles
+  each length for the Neural Engine (13-23 s each, once); after
+  `models.idle_unload_minutes` the model is released and comes back in about
+  a second.
 * Fast "System 1" models share the runtime: an embedding model for memory
   search, and a decision model (`models.decision`, served through Ollama's
   decision API) that judges whether a browser step commits something and
@@ -427,8 +451,9 @@ terminal by describing what you want.
   passages, pictures, sound), so a photo that matches well is not buried under
   text that matches a little; asking for a kind ("photo of...", "...in a
   video") favours it; weak results are cut rather than padded out.
-* Fast: the daemon keeps the model loaded and a compact code of every piece in
-  memory (about 100 bytes each); a search compares the query with all of them,
+* Fast: the daemon keeps a compact code of every piece in memory (about 100
+  bytes each) and the model loads on demand (it is freed after
+  `models.idle_unload_minutes`); a search compares the query with all of them,
   then scores the closest few hundred exactly. Vectors are stored at half
   precision. Without the daemon, `coderunner find` searches directly.
 * Kept current: on macOS new and changed files are picked up within seconds

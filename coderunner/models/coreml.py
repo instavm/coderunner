@@ -76,7 +76,8 @@ class CoreMLRuntime(Runtime):
         shutil.rmtree(self.env, ignore_errors=True)
         for cmd in ([sys.executable, "-m", "venv", str(self.env)],
                     [str(self.env / "bin" / "python"), "-m", "pip", "install", "-q", "--disable-pip-version-check",
-                     *PACKAGES]):
+                     "--retries", "10", "--timeout", "60", *PACKAGES]):      # a timed-out index read looks like
+                                                                                # "no versions found"
             done = subprocess.run(cmd, capture_output=True, text=True)
             if done.returncode:
                 shutil.rmtree(self.env, ignore_errors=True)
