@@ -218,9 +218,11 @@ class BrowserBroker:
     async def close_tab(self, tab: str, tainted: bool = False) -> dict:
         return await self._run("close_tab", {"tab": tab, "tainted": tainted}, lambda: self._close_tab(tab, tainted))
 
-    async def snapshot(self, tab: str | None = None, max_chars: int = PAGE_CHARS, tainted: bool = False) -> dict:
-        return await self._run("snapshot", {"tab": tab, "tainted": tainted},
-                               lambda: self._snapshot(tab, max_chars, tainted))
+    async def snapshot(self, tab: str | None = None, max_chars: int = PAGE_CHARS, tainted: bool = False,
+                       start: str = "") -> dict:
+        """The page as text; with start, from the first line mentioning it, to read past the cut of a long page."""
+        return await self._run("snapshot", {"tab": tab, "tainted": tainted, "start": str(start)[:100]},
+                               lambda: self._snapshot(tab, max_chars, tainted, start=str(start or "")))
 
     async def click(self, ref: int, tab: str | None = None, tainted: bool = False) -> dict:
         return await self._run("click", {"ref": ref, "tab": tab, "tainted": tainted},
@@ -809,7 +811,8 @@ class BrowserBroker:
         self._forget_target(target)
         return {"ok": True, "closed": str(tab)}
 
-    async def _snapshot(self, tab: str | None, max_chars: int, tainted: bool, whole: bool = False) -> dict:
+    async def _snapshot(self, tab: str | None, max_chars: int, tainted: bool, whole: bool = False,
+                        start: str = "") -> dict:
         target = await self._target(tab)
         url, host = await self._web_page(target)
         await self._allow("browser.read", host, f"Read {url}", tainted)
@@ -819,6 +822,14 @@ class BrowserBroker:
             result = await self._result(target)
         if not whole:                   # a search through the whole page is not the page as the model reads it
             result["changed"] = self._seen(target, result["url"], content)
+        if start.strip():
+            lines = content.split("\n")
+            wanted = start.strip().lower()
+            first = next((i for i, line in enumerate(lines) if wanted in line.lower()), None)
+            if first is None:
+                raise BrowserError(f"Nothing on this page mentions {start!r}; browser_find searches with fewer words")
+            content = (f"… [{first} lines above left out]\n" if first else "") + "\n".join(lines[first:])
+            result["changed"] = True
         result["content"] = cut(content, max(100, int(max_chars)))
         return result
 

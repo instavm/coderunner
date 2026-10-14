@@ -39,7 +39,9 @@ def squash(text: str) -> str:
 def cut(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
-    return text[:limit] + f"\n… [{len(text) - limit} more characters; browser_find searches all of the page]"
+    return text[:limit] + (f"\n… [{len(text) - limit} more characters: browser_snapshot with start=<text on a later "
+                           f"line> reads on from there and browser_find searches all of the page; scrolling does not "
+                           f"change this text]")
 
 
 def short_url(url: str, page_url: str) -> str:

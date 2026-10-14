@@ -510,7 +510,7 @@ class InteractionPolicyTests(BrokerTestCase):
         browser.ax = SHOP_AX[:-1]
         self.assertTrue((await self.broker.snapshot())["changed"])
         short = await self.broker.snapshot(max_chars=100)
-        self.assertIn("more characters; browser_find", short["content"])
+        self.assertIn("more characters: browser_snapshot with start=", short["content"])
 
     async def test_click_uses_interact_or_sensitive(self):
         browser, _ = await self.load_shop()
@@ -904,6 +904,23 @@ class DefaultPermissionTests(BrokerTestCase):
         self.assertIn("₹1,450", found["content"])
         self.assertIn("+₹208 taxes", found["content"])
         self.assertNotIn("Other text 10", found["content"])
+
+    async def test_a_long_page_is_read_from_a_line_past_its_cut(self):
+        browser, _ = await self.load_shop()
+        lines = [f"Filter option number {n} with a long description" for n in range(400)] + [
+            "1,240 properties found", "Shree Hari Guest House", "Scored 8.3", "₹1,450"]
+        browser.ax = [ax(1, "RootWebArea", "Results", children=[100 + k for k in range(len(lines))], backend=1)]
+        for k, line in enumerate(lines):
+            browser.ax += [ax(100 + k, "paragraph", parent=1, children=[5000 + k], backend=1000 + k),
+                           ax(5000 + k, "StaticText", line, parent=100 + k)]
+        whole = await self.broker.snapshot()
+        self.assertNotIn("Shree Hari", whole["content"])
+        self.assertIn("start=<text on a later line>", whole["content"])
+        later = await self.broker.snapshot(start="properties found")
+        self.assertTrue(later["ok"], later)
+        self.assertTrue(later["content"].startswith("… [400 lines above left out]"))
+        self.assertIn("₹1,450", later["content"])
+        self.assertIn("Nothing on this page mentions", (await self.broker.snapshot(start="submarine"))["error"])
 
     async def test_select_chooses_an_option_of_a_dropdown(self):
         browser, _ = await self.load_shop()

@@ -180,7 +180,8 @@ def browser_tools(svc) -> list[Tool]:
         return _text(_result(await b.navigate(args["url"], tainted=ctx.tainted)))
 
     async def snapshot(args, ctx):
-        result = _result(await b.snapshot(tainted=ctx.tainted))
+        start = str(args.get("start") or "").strip()
+        result = _result(await b.snapshot(tainted=ctx.tainted, **({"start": start} if start else {})))
         if isinstance(result, dict) and result.get("changed") is False:
             result["note"] = "Page unchanged since you last saw it."
         return _text(result)
@@ -237,8 +238,10 @@ def browser_tools(svc) -> list[Tool]:
              "owner can watch. Returns the page as text with numbered elements [N].",
              _params({"url": STR}, ["url"]), open_, True),
         Tool("browser_snapshot", "Read the whole current page again as text with numbered elements [N]. Other "
-             "browser actions already return what they changed, so use this only when you need the full page.",
-             _params({}), snapshot, True),
+             "browser actions already return what they changed, so use this only when you need the full page. A long "
+             "page is cut: start=<text> reads it from the first line mentioning that text (a heading, \"properties "
+             "found\", a result's name), which is how to see results further down.",
+             _params({"start": STR}), snapshot, True),
         Tool("browser_click", "Click element [ref]. Returns what changed on the page (a new page in full).",
              _params({"ref": INT}, ["ref"]), click, True),
         Tool("browser_type", "Type text into element [ref] (it focuses the field: no click first) and return what "
@@ -254,8 +257,9 @@ def browser_tools(svc) -> list[Tool]:
              "value, as in many date and number fields) by its visible text.",
              _params({"ref": INT, "option": STR}, ["ref", "option"]), select, True),
         Tool("browser_press", f"Press a key: {', '.join(KEYS)}.", _params({"key": STR}, ["key"]), press, True),
-        Tool("browser_scroll", "Scroll the page (or the list in the middle of it) to load more of it. The page "
-             "text already includes what is outside the window.", _params({"direction": {"type": "string", "enum": [
+        Tool("browser_scroll", "Scroll the page (or the list in the middle of it) only to make it load more (lists "
+             "that grow as you scroll). The page text already includes what is outside the window, up to its cut; "
+             "read past the cut with browser_snapshot start=<text>.", _params({"direction": {"type": "string", "enum": [
                  "up", "down"]}}), scroll, True),
         Tool("browser_back", "Go back to the previous page.", _params({}), back, True),
         Tool("browser_tabs", "List open tabs.", _params({}), tabs, True),
