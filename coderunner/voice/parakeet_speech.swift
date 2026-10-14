@@ -43,15 +43,16 @@ func phrases(_ result: ASRResult) {
     }
     var text = "", start = tokens[0].startTime, end = start
     for token in tokens {
-        let newWord = token.token.hasPrefix(" ")
-        if !text.isEmpty && newWord && (token.startTime - end > pause || token.startTime - start > longestPhrase) {
+        // A character the vocabulary lacks ("&" in "Q&A") comes as <unk>: it keeps the words apart.
+        let piece = token.token.replacingOccurrences(of: "<unk>", with: " ")
+        if !text.isEmpty && piece.hasPrefix(" ") && (token.startTime - end > pause || token.startTime - start > longestPhrase) {
             emit(start, end, text)
             text = ""
         }
         if text.isEmpty { start = token.startTime }
-        text += token.token
+        text += piece
         end = token.endTime
-        if let last = token.token.last, ".?!".contains(last) {
+        if let last = piece.last, ".?!".contains(last) {
             emit(start, end, text)
             text = ""
         }
