@@ -19,6 +19,7 @@ import math
 import pathlib
 import re
 import shutil
+import sys
 import tempfile
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -37,6 +38,7 @@ WINDOW_STEP = 25           # windows overlap by 5 s, so a phrase on a boundary i
 MAX_WINDOWS = 40           # the first 20 minutes of a recording
 MAX_FRAMES = 24
 FRAME_EVERY = 10           # seconds between video frames, at least
+SILENCE_DB = -60.0          # sound windows quieter than this (RMS) are not embedded
 NATIVE_IMAGES = {".png", ".jpg", ".jpeg", ".webp"}   # sent to the embedding model unchanged
 NATIVE_IMAGE_BYTES = 20 * 1024 * 1024
 WORDY = 0.35               # share of letters below which text is data, matched by keywords only
@@ -66,6 +68,27 @@ def clock(seconds: float) -> str:
     seconds = int(seconds)
     return f"{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}" if seconds >= 3600 \
         else f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def audible(wav: bytes, floor_db: float = SILENCE_DB) -> bool:
+    """Whether 16-bit WAV sound is louder than floor_db (RMS, dBFS). A video's empty track embedded as a sound
+    window outranked every real one for 17% of questions in a check against Google's reference model."""
+    import array
+    import io
+    import wave
+    try:
+        with wave.open(io.BytesIO(wav)) as sound:
+            if sound.getsampwidth() != 2:
+                return True
+            samples = array.array("h", sound.readframes(sound.getnframes()))
+    except (wave.Error, EOFError):
+        return True
+    if sys.byteorder == "big":
+        samples.byteswap()
+    if not samples:
+        return False
+    rms = math.sqrt(math.sumprod(samples, samples) / len(samples))
+    return rms > 32768 * 10 ** (floor_db / 20)
 
 
 def wordy(text: str) -> bool:
@@ -184,11 +207,15 @@ class Media:
                 argv = [self.ffmpeg, "-loglevel", "error", "-y"]
                 if at is not None:
                     argv += ["-ss", f"{at:.2f}"]
+                # -q:v 2: ffmpeg's default JPEG quality moved a frame's embedding by as much as 0.07 in cosine
+                # (0.928 to the original at worst); at 2 it stays within 0.014.
                 argv += ["-i", str(path), "-frames:v", "1", "-vf",
-                         f"scale='min({size},iw)':'min({size},ih)':force_original_aspect_ratio=decrease", str(out)]
+                         f"scale='min({size},iw)':'min({size},ih)':force_original_aspect_ratio=decrease",
+                         "-q:v", "2", str(out)]
                 await self._run(*argv)
             elif self.sips:
-                await self._run(self.sips, "-s", "format", "jpeg", "-Z", str(size), str(path), "--out", str(out))
+                await self._run(self.sips, "-s", "format", "jpeg", "-s", "formatOptions", "best", "-Z", str(size),
+                                str(path), "--out", str(out))
             else:
                 raise RuntimeError("install ffmpeg to read images and video")
             return out.read_bytes()
@@ -300,7 +327,7 @@ class Extractor:
             for i in range(windows):
                 start = i * WINDOW_STEP
                 sound = await self.media.sound(path, start, WINDOW)
-                if len(sound) > 1000:
+                if len(sound) > 1000 and audible(sound):      # a silent track outranked real sound
                     found.append(Piece(f"sound at {clock(start)}", path.name,
                                        {"audio": base64.b64encode(sound).decode()}, "audio", start))
         if self.transcriber is not None:

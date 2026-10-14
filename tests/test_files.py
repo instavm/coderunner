@@ -309,6 +309,21 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(index.status()["waiting_for_power"], 0)
         await embedder.aclose()
 
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is needed for media")
+    async def test_a_silent_track_is_not_embedded_as_sound(self):
+        # A video's empty audio track embedded as sound windows outranked real sound in retrieval.
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=12:size=160x120:rate=5",
+                        "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-shortest", "-pix_fmt", "yuv420p",
+                        str(self.docs / "quiet clip.mp4")], check=True)
+        embedder, seen, _ = self.embedder(("embedding", "vision", "audio"))
+        await self.index(embedder).index_once()
+        parts = [r["part"] for r in self.store.query("SELECT part FROM file_chunks WHERE path LIKE '%quiet clip.mp4'")]
+        self.assertTrue(any(part.startswith("frame at") for part in parts), parts)
+        self.assertFalse(any(part.startswith("sound at") for part in parts), parts)
+        from coderunner.files.extract import audible
+        self.assertFalse(audible(b"RIFF....not a wav") is False)          # unreadable sound is kept, not dropped
+        await embedder.aclose()
+
     async def test_tools_mark_the_task_as_holding_private_untrusted_data(self):
         svc = Svc()
         svc.files = self.index()
