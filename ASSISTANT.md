@@ -257,10 +257,10 @@ declares success. If a model fails the test, the next candidate is tried.
   the Core ML download is removed. `coderunner models bench --embedding`
   measures again; `models.embedding_runtime` (`auto`, `coreml`, `gpu`)
   overrides it. The Core ML encoder reads at most 512 tokens, so longer
-  text is read in windows whose vectors are averaged. The first use compiles
-  each length for the Neural Engine (13-23 s each, once); after
-  `models.idle_unload_minutes` the model is released and comes back in about
-  a second.
+  text is read in windows whose vectors are averaged. Setup compiles the
+  three lengths it uses for the Neural Engine (about 85 s on an M3 Pro, once;
+  Core ML keeps the result); after a restart, or after
+  `models.idle_unload_minutes` releases the model, it is back in 1-1.5 s.
 * Fast "System 1" models share the runtime: an embedding model for memory
   search, and a decision model (`models.decision`, served through Ollama's
   decision API) that judges whether a browser step commits something and
