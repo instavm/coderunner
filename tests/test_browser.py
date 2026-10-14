@@ -555,6 +555,37 @@ class InteractionPolicyTests(BrokerTestCase):
         self.assertFalse((await self.broker.type(2, "hunter2"))["ok"])
         self.assertEqual(browser.sent("Input.insertText"), [])
 
+    async def test_typing_picks_the_suggestion_that_matches(self):
+        browser, _ = await self.load_shop()
+        handle = browser.handle
+        suggestions = [ax(40, "listbox", "Going to suggestions", parent=2, children=[41, 42], backend=140),
+                       ax(41, "option", "New Delhi Railway Station", parent=40, backend=141),
+                       ax(42, "option", "Delhi (DEL) · Indira Gandhi International", parent=40, backend=142)]
+
+        def typed(method, params, sid):
+            if method == "Input.insertText":
+                browser.ax = SHOP_AX[:1] + [dict(SHOP_AX[1], childIds=SHOP_AX[1]["childIds"] + ["40"])] \
+                    + SHOP_AX[2:] + suggestions
+            return handle(method, params, sid)
+        browser.handle = typed
+        result = await self.broker.type(2, "delhi", pick=True)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["picked"], "Delhi (DEL) · Indira Gandhi International")    # starts with it
+        self.assertEqual(self.asked, [])
+        clicks = [e for e in self.audit.tail() if e["event"] == "browser.click"]
+        self.assertEqual(clicks[-1]["ref"], self.ref("Delhi (DEL) · Indira Gandhi International"))
+        # The model's view covers the typing too: the suggestions it never saw are part of the change.
+        self.assertIn("Delhi (DEL)", result.get("changes", "") + result.get("content", ""))
+
+    async def test_typing_without_suggestions_or_with_submit_picks_nothing(self):
+        browser, _ = await self.load_shop()
+        result = await self.broker.type(2, "rye bread", pick=True)
+        self.assertTrue(result["ok"], result)
+        self.assertNotIn("picked", result)
+        result = await self.broker.type(2, "rye", submit=True, pick=True)
+        self.assertNotIn("picked", result)
+        self.assertEqual([e for e in self.audit.tail() if e["event"] == "browser.click"], [])
+
     async def test_type_and_submit(self):
         browser, _ = await self.load_shop()
         result = await self.broker.type(2, "sourdough", submit=True)

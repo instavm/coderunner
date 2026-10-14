@@ -190,7 +190,7 @@ def browser_tools(svc) -> list[Tool]:
 
     async def type_(args, ctx):
         return _text(_result(await b.type(int(args["ref"]), args["text"], submit=bool(args.get("submit")),
-                                          tainted=ctx.tainted)))
+                                          pick=args.get("pick", True) is not False, tainted=ctx.tainted)))
 
     async def press(args, ctx):
         return _text(_result(await b.press(args["key"], tainted=ctx.tainted)))
@@ -241,9 +241,11 @@ def browser_tools(svc) -> list[Tool]:
              _params({}), snapshot, True),
         Tool("browser_click", "Click element [ref]. Returns what changed on the page (a new page in full).",
              _params({"ref": INT}, ["ref"]), click, True),
-        Tool("browser_type", "Type text into element [ref] and return what changed (suggestions often appear). "
-             "Never use for passwords or one-time codes; use browser_handoff instead.",
-             _params({"ref": INT, "text": STR, "submit": BOOL}, ["ref", "text"]), type_, True),
+        Tool("browser_type", "Type text into element [ref] and return what changed. When suggestions appear (as "
+             "in place and airport fields), the one matching your text is picked for you and named in the result; "
+             "pick=false keeps only the typed text. Never use for passwords or one-time codes; use "
+             "browser_handoff instead.",
+             _params({"ref": INT, "text": STR, "submit": BOOL, "pick": BOOL}, ["ref", "text"]), type_, True),
         Tool("browser_find", "Find where the current page mentions some text (the whole page, also beyond what a "
              "snapshot shows) and get those lines with their element refs. Cheaper than reading the whole page.",
              _params({"text": STR}, ["text"]), find, True),

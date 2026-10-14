@@ -85,6 +85,25 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("unknown tool", tool_messages[1])
             await svc.llm.aclose()
 
+    async def test_several_calls_in_one_reply_run_in_order_and_stop_at_a_failure(self):
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.sandbox = FakeSandbox()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            batch = tool_call("run_python", {"code": "print(1)"}, "a")
+            batch["tool_calls"] += [tool_call("nope", {}, "b")["tool_calls"][0],
+                                    tool_call("run_python", {"code": "print(2)"}, "c")["tool_calls"][0]]
+            fake.script = [batch, {"role": "assistant", "content": "done"}]
+            reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-batch"), "go")
+            self.assertEqual(reply, "done")
+            self.assertEqual(fake.requests[0].get("parallel_tool_calls"), True)
+            tools = {m["tool_call_id"]: m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"}
+            self.assertIn("unknown tool", tools["b"])
+            self.assertTrue(tools["c"].startswith("Skipped: an earlier step in this reply failed"))
+            self.assertEqual(len(svc.sandbox.calls), 1)             # the third call never ran
+            await svc.llm.aclose()
+
     async def test_untrusted_content_is_wrapped_and_taints(self):
         with FakeOpenAI() as fake:
             svc = Svc()

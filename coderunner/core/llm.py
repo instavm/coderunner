@@ -76,6 +76,7 @@ class LLM:
             payload.update(reasoning_effort="none", chat_template_kwargs={"enable_thinking": False})
         if tools:
             payload["tools"] = tools
+            payload["parallel_tool_calls"] = True        # several steps in one reply: llama.cpp parses only one without
             if tool_choice:
                 payload["tool_choice"] = tool_choice
         response = await self._post(payload)

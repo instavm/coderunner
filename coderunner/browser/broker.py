@@ -81,6 +81,7 @@ SETTLE_QUIET = 0.3
 SETTLE_MOST = 3.0
 SETTLE_MOST_LOAD = 8.0      # after a navigation: results pages (flights, shops) fill in for several seconds
 NO_CHANGE = "No visible change on the page."
+SUGGESTION_WAIT = 1.5       # seconds more for suggestions that are fetched as you type
 BLANK_WAIT = 10.0           # a page with no text yet (a bot check, a script-drawn app) gets this long to show some
 DENIED_PERMISSIONS = ("geolocation", "notifications", "camera", "microphone", "midi", "clipboard-read",
                       "display-capture", "idle-detection", "window-management", "local-fonts",
@@ -224,10 +225,56 @@ class BrowserBroker:
                                lambda: self._click(ref, tab, tainted))
 
     async def type(self, ref: int, text: str, submit: bool = False, tab: str | None = None,
-                   tainted: bool = False, clear: bool = True) -> dict:
-        return await self._run("type", {"ref": ref, "chars": len(str(text)), "submit": submit, "tab": tab,
-                                        "tainted": tainted},
-                               lambda: self._type(ref, text, submit, tab, tainted, clear))
+                   tainted: bool = False, clear: bool = True, pick: bool = False) -> dict:
+        """Type into [ref]. With pick, a suggestion that appears for the text (an option containing it) is
+        clicked too, through the usual checks: one step where a model needed two, typing and then choosing."""
+        target, seen = None, None
+        if pick and not submit:
+            with contextlib.suppress(BrowserError, CDPError):
+                target = await self._target(tab)
+                seen = list(self._lines.get(target) or [])
+        result = await self._run("type", {"ref": ref, "chars": len(str(text)), "submit": submit, "tab": tab,
+                                          "tainted": tainted},
+                                 lambda: self._type(ref, text, submit, tab, tainted, clear))
+        if target is None or result.get("ok") is False:
+            return result
+        option = await self._suggestion(target, str(text), tainted)
+        if option is None:
+            return result
+        picked = await self.click(option[0], tab=tab, tainted=tainted)
+        if picked.get("ok") is False:
+            result["note"] = f"Could not pick the suggestion {option[1]!r}: {picked.get('error')}"
+            return result
+        picked["picked"] = option[1]
+        lines = self._lines.get(target)
+        if seen and lines and "content" not in picked:
+            changes = page_changes(seen, lines)    # since the model last read the page, the typing included
+            if changes is not None:
+                picked["changes"] = cut(changes, PAGE_CHARS) if changes else NO_CHANGE
+        return picked
+
+    async def _suggestion(self, target: str, text: str, tainted: bool) -> tuple[int, str] | None:
+        """The suggestion offered for what was just typed: an option whose name contains the text, one that
+        starts with it first. Waits a moment for suggestions fetched as you type."""
+        wanted = squash(text).lower()
+        if not wanted:
+            return None
+        deadline = time.monotonic() + SUGGESTION_WAIT
+        while True:
+            options = [(ref, element["name"]) for ref, element in self._refs.get(target, {}).items()
+                       if element.get("role") == "option" and wanted in squash(element.get("name", "")).lower()]
+            if options:
+                return min(options, key=lambda option: not squash(option[1]).lower().startswith(wanted))
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(0.5)
+            try:
+                url, _ = await self._web_page(target)
+                sid = await self._session(target)
+                async with self._acting(target, sid, tainted):
+                    await self._render(target, sid, url)        # new refs; the model's view stays as it was
+            except (BrowserError, CDPError):
+                return None
 
     async def click_at(self, x: float, y: float, tab: str | None = None, tainted: bool = False) -> dict:
         """Click what is at viewport point (x, y) of a screenshot: the element there is found first and clicked
