@@ -18,8 +18,14 @@ KINDS = ("text", "doc", "image", "audio", "video")
 
 # How each embedding model family wants queries and documents phrased, and the similarity above which a
 # memory is clearly relevant to a task (measured on labelled examples; scales differ between models).
+# Source code in a programming language: EmbeddingGemma 2 is trained to match it to questions asked with its
+# code retrieval prompt (Google's model card), so code passages are searched with that one.
+CODE = {".py", ".ipynb", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".h",
+        ".cc", ".cpp", ".hpp", ".m", ".mm", ".cs", ".rb", ".php", ".pl", ".lua", ".r", ".jl", ".scala", ".dart",
+        ".sh", ".bash", ".zsh", ".fish", ".ps1", ".sql", ".graphql", ".proto", ".vue", ".svelte", ".zig", ".nim"}
 PROFILES = {
-    "embeddinggemma": {"query": "task: search result | query: ", "doc": "title: {title} | text: ", "recall": 0.62},
+    "embeddinggemma": {"query": "task: search result | query: ", "doc": "title: {title} | text: ", "recall": 0.62,
+                       "code": "task: code retrieval | query: "},
     "": {"query": "", "doc": "", "recall": 0.5},
 }
 
@@ -35,3 +41,7 @@ def kind_of(path: pathlib.Path) -> str | None:
         if suffix in suffixes:
             return kind
     return None
+
+
+def is_code(path: str | pathlib.Path) -> bool:
+    return pathlib.Path(path).suffix.lower() in CODE

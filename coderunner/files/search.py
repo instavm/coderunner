@@ -19,6 +19,7 @@ import re
 from typing import Any
 
 from .extract import NAME_ONLY
+from .kinds import is_code
 from .vectors import VectorIndex, dot, unpack
 
 CANDIDATES = 300            # pieces scored exactly after the first pass
@@ -122,15 +123,26 @@ class Searcher:
             return {}
         vector = await self.embedder.query(query)
         chunks = self.vectors.nearest(vector, CANDIDATES, kinds)
+        # Code passages are compared with the question as the model's code retrieval prompt puts it.
+        code_prefix = getattr(self.embedder, "code_prefix", "")
+        code = await self.embedder.query(query, code_prefix) if code_prefix else None
+        if code is not None:
+            chunks = list(dict.fromkeys([*chunks, *self.vectors.nearest(code, CANDIDATES, kinds)]))
         if not chunks:
             return {}
-        means, spread = self.vectors.calibration(vector)
+        calibrations = {"text": self.vectors.calibration(vector)}
+        if code is not None:
+            calibrations["code"] = self.vectors.calibration(code)
         best: dict[str, tuple[float, int]] = {}
         for row in self._rows("SELECT id, path, embedding, modality FROM file_chunks WHERE id IN ({})", chunks):
             stored = unpack(row["embedding"])
             if len(stored) != len(vector):
                 continue
-            z = (dot(vector, stored) - means.get(row["modality"] or "text", 0.0)) / spread
+            modality = row["modality"] or "text"
+            as_code = code is not None and modality == "text" and is_code(row["path"])
+            asked = code if as_code else vector
+            means, spread = calibrations["code" if as_code else "text"]
+            z = (dot(asked, stored) - means.get(modality, 0.0)) / spread
             if z > best.get(row["path"], (float("-inf"), 0))[0]:
                 best[row["path"]] = (z, row["id"])
         return best

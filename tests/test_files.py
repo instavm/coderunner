@@ -196,7 +196,11 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(isinstance(item, str) and item.startswith("title: notes.md | text: ") for item in seen))
         found = await index.search("when is my dentist")
         self.assertEqual(pathlib.Path(found[0]["path"]).name, "notes.md")
-        self.assertTrue(seen[-1].startswith("task: search result | query: "))
+        # The question goes once as a search and once as Google's code retrieval prompt, for code passages.
+        self.assertEqual(seen[-2:], ["task: search result | query: when is my dentist",
+                                     "task: code retrieval | query: when is my dentist"])
+        from coderunner.files.kinds import is_code
+        self.assertTrue(is_code("tools/build.rs") and is_code("App.SWIFT") and not is_code("notes.md"))
         await embedder.aclose()
 
     async def test_many_files_are_embedded_in_few_requests(self):
@@ -265,6 +269,21 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(isinstance(item, dict) for item in seen))
         await embedder.aclose()
         await text_only.aclose()
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg is needed for media")
+    async def test_a_video_without_sound_is_indexed_by_its_frames(self):
+        # Screen recordings have no audio track; asking for their sound failed the whole file.
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=25:size=160x120:rate=5",
+                        "-pix_fmt", "yuv420p", str(self.docs / "screen recording.mp4")], check=True)
+        embedder, seen, _ = self.embedder(("embedding", "vision", "audio"))
+        index = self.index(embedder)
+        await index.index_once()
+        row = self.store.one("SELECT error FROM files WHERE path LIKE '%screen recording.mp4'")
+        self.assertFalse(row["error"])
+        parts = [r["part"] for r in self.store.query("SELECT part FROM file_chunks WHERE path LIKE '%screen recording.mp4'")]
+        self.assertTrue(any(part.startswith("frame at") for part in parts), parts)
+        self.assertFalse(any(part.startswith("sound at") for part in parts), parts)
+        await embedder.aclose()
 
     async def test_tools_mark_the_task_as_holding_private_untrusted_data(self):
         svc = Svc()

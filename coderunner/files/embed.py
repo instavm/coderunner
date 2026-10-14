@@ -41,6 +41,7 @@ class Embedder:
         profile = embedding_profile(model)
         self.query_prefix = profile["query"]
         self.doc_prefix = profile["doc"]
+        self.code_prefix = profile.get("code", "")      # questions about code, against code passages
 
     async def capabilities(self) -> set[str]:
         if self._capabilities is None:
@@ -85,12 +86,13 @@ class Embedder:
                 return await self._request(batch)
         return [vector for done in await asyncio.gather(*map(send, batches)) for vector in done]
 
-    async def query(self, text: str) -> list[float]:
-        if text in self._queries:
-            self._queries.move_to_end(text)
-            return self._queries[text]
-        [vector] = await self._request([self.query_prefix + text])
-        self._queries[text] = vector
+    async def query(self, text: str, prefix: str | None = None) -> list[float]:
+        prompt = (self.query_prefix if prefix is None else prefix) + text
+        if prompt in self._queries:
+            self._queries.move_to_end(prompt)
+            return self._queries[prompt]
+        [vector] = await self._request([prompt])
+        self._queries[prompt] = vector
         while len(self._queries) > QUERY_CACHE:
             self._queries.popitem(last=False)
         return vector

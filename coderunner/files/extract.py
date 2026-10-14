@@ -203,6 +203,14 @@ class Media:
         except ValueError:
             return 0.0
 
+    async def streams(self, path: pathlib.Path) -> set[str]:
+        """What a recording holds ("video", "audio"): screen recordings have no sound, some .mp4 no picture."""
+        if not self.ffprobe:
+            return {"video", "audio"}
+        out = await self._run(self.ffprobe, "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0",
+                              str(path))
+        return {line.strip() for line in out.decode().split() if line.strip()}
+
     async def sound(self, path: pathlib.Path, start: float, seconds: float) -> bytes:
         """16 kHz mono WAV of part of an audio or video file."""
         if not self.ffmpeg:
@@ -281,12 +289,13 @@ class Extractor:
         if not (self.media_on and self.media.ffmpeg):
             return found
         length = await self.media.duration(path)
-        if kind == "video" and "vision" in self.capabilities:
+        streams = await self.media.streams(path)
+        if kind == "video" and "vision" in self.capabilities and "video" in streams:
             count = min(MAX_FRAMES, max(1, int(length // max(FRAME_EVERY, length / MAX_FRAMES)))) if length else 1
             for at in [length * (i + 0.5) / count for i in range(count)]:
                 frame = base64.b64encode(await self.media.image(path, at=at, size=1024)).decode()
                 found.append(Piece(f"frame at {clock(at)}", path.name, {"image": frame}, "image", at))
-        if "audio" in self.capabilities:
+        if "audio" in self.capabilities and "audio" in streams:
             windows = max(1, min(MAX_WINDOWS, math.ceil(max(length - WINDOW, 0) / WINDOW_STEP) + 1)) if length else 1
             for i in range(windows):
                 start = i * WINDOW_STEP
