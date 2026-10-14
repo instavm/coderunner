@@ -112,7 +112,11 @@ class FileIndex:
 
     async def _media_waits(self) -> bool:
         """Whether pictures, sound and video wait for the charger (files.media_on_battery turns this off)."""
-        if self.embedder is None or not self.config.get("files.media", True) or self.config.get("files.media_on_battery", False):
+        if self.embedder is None or not self.config.get("files.media", True):
+            return False
+        if self.config.get("files.media_waits", False):     # the owner holds them back (e.g. to keep the GPU idle)
+            return True
+        if self.config.get("files.media_on_battery", False):
             return False
         return await power.on_battery()
 
