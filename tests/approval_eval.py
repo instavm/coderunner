@@ -32,6 +32,8 @@ real right of 30; median time a step; energy a step above idle, CPU+GPU+ANE):
                                                   0 missed, 6 and 0 false alarms; ROC AUC 0.99 and 1.0)
   clef-flash 9B Q4_K_M (llama.cpp /v1/systemone) 97, 2, 1;   29;  1.3 s;   26 J  (misses at p 0.65-0.70: OAuth
                                                   "Authorize", Netflix "Finish Cancellation", real "Connect")
+  clef-flash 9B, Core ML 8-bit (FluidUse, GPU)    98, 1, 1;   29;  2.7 s;   57 J  (8 GB; 76-81 s to load; the
+                                                  same misses near 0.65; slower and costlier than the GGUF)
   tev1 0.8B (Ollama)                              56, 2, 42;  15;  0.10 s;  1.4 J
   clef-vision 0.8B, Core ML (FluidUse host, GPU)  65, 0, 35;  17;  0.21 s;  2.6 J  (ALL: 0.18 s, 0.9 J, split
                                                   between Neural Engine and GPU; Neural Engine only: the load grew
