@@ -186,7 +186,6 @@ class ServerTests(unittest.TestCase):
 
     def media_encoder(self, folder):
         """An Encoder whose Core ML parts are fakes that record what they are given."""
-        import types
         import numpy as np
         config = {"bos_token_id": 2, "eos_token_id": 1, "embed_scale": 1.0, "token_table": {"file": "t", "shape": [300000, 8]},
                   "vision": {"package": "V.mlpackage", "functions": {"vision_70": {"tokens": 70, "patches": 630}},
