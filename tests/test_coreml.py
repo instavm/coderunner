@@ -1,4 +1,5 @@
 import json
+import pathlib
 import threading
 import time
 import unittest
@@ -134,6 +135,28 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, 400)
             self.assertEqual(server.post("/api/show", {})["capabilities"], ["embedding"])
             self.assertEqual(len(server.post("/api/embed", {"model": "m", "input": ["hi"]})["embeddings"]), 1)
+
+    def test_first_use_compiles_the_package_where_coremltools_accepts_it(self):
+        import sys
+        import tempfile
+        import types
+        compiled = []
+
+        def compile_model(source, destination):
+            if not destination.endswith(".mlmodelc"):        # coremltools' own rule
+                raise Exception('"destination_path" parameter must have ".mlmodelc" file extension.')
+            pathlib.Path(destination).mkdir(parents=True)
+            compiled.append(destination)
+        fake = types.SimpleNamespace(utils=types.SimpleNamespace(compile_model=compile_model))
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(sys.modules, {"coremltools": fake}):
+            (pathlib.Path(folder) / "config.json").write_text("{}")
+            encoder = srv.Encoder(pathlib.Path(folder))
+            path = encoder._compiled()
+            self.assertEqual(path, pathlib.Path(folder) / srv.COMPILED)
+            self.assertTrue(path.is_dir())
+            self.assertFalse((pathlib.Path(folder) / "compiling").exists())
+            self.assertEqual(encoder._compiled(), path)
+            self.assertEqual(len(compiled), 1)                     # compiled once, then reused
 
     def test_the_model_is_released_when_idle(self):
         encoder = FakeEncoder()
@@ -293,6 +316,8 @@ class SetupTests(TempHome):
         self.assertEqual(manager.setup_coreml_embedding(self.cfg, self.hw, progress=notes.append, rt=broken,
                                                         measure=self.measure(20.0, 10.0)), "gpu")
         self.assertIn("download cut", notes[-1])
+        self.assertEqual((self.cfg.get("models.embedding_media"), self.cfg.get("models.embedding_url")),
+                         ("", "http://127.0.0.1:11434/v1"))
         self.assertEqual(self.cfg.get("models.embedding"), "embeddinggemma-2")
         with mock.patch.object(coreml, "supported", return_value=False):
             self.assertEqual(manager.setup_coreml_embedding(self.cfg, self.hw, progress=lambda m: None,

@@ -18,9 +18,11 @@ import gc
 import json
 import math
 import pathlib
+import shutil
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -62,9 +64,11 @@ class Encoder:
         import coremltools as ct
         path = self.folder / COMPILED
         if not path.exists():
-            staging = self.folder / (COMPILED + ".part")
-            ct.utils.compile_model(str(self.folder / PACKAGE), str(staging))
-            staging.rename(path)
+            staging = self.folder / "compiling"           # coremltools wants the name to end in .mlmodelc
+            shutil.rmtree(staging, ignore_errors=True)
+            ct.utils.compile_model(str(self.folder / PACKAGE), str(staging / COMPILED))
+            (staging / COMPILED).rename(path)
+            shutil.rmtree(staging, ignore_errors=True)
         return path
 
     def _model(self, size: int):
@@ -222,6 +226,7 @@ def handler(service: Service):
                 self._send(502, {"error": f"media model: {exc}"})
                 return
             except Exception as exc:  # a Core ML failure: report it rather than drop the connection
+                traceback.print_exc()
                 self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
                 return
             if self.path == "/api/embed":

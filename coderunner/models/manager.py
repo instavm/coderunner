@@ -364,6 +364,10 @@ def setup_coreml_embedding(config, hw: hardware.Hardware | None = None, progress
     except Exception as exc:
         progress(f"Core ML embeddings unavailable, keeping the GPU build: {exc}")
         rt.stop()
+        config.set("models.embedding", media)
+        config.set("models.embedding_url", media_url)
+        config.set("models.embedding_media", "")
+        config.set("models.embedding_media_url", "")
         return "gpu"
     progress(f"embeddings: {why}")
     if pick == "coreml":
