@@ -258,6 +258,13 @@ class SetupTests(TempHome):
         supported = mock.patch.object(coreml, "supported", return_value=True)
         supported.start()
         self.addCleanup(supported.stop)
+        self.warmed = []
+
+        async def warm(url, model):
+            self.warmed.append((url, model))
+        warming = mock.patch.object(coreml, "warm", warm)
+        warming.start()
+        self.addCleanup(warming.stop)
         self.hw = apple(18, "Apple M3 Pro", sandbox=1)
         self.cfg = self.config()
         self.cfg.set("models.embedding", "embeddinggemma-2")             # what Ollama's setup leaves
@@ -283,6 +290,7 @@ class SetupTests(TempHome):
         self.assertEqual((self.cfg.get("models.embedding_media"), self.cfg.get("models.embedding_media_url")),
                          ("embeddinggemma-2", "http://127.0.0.1:11434/v1"))
         self.assertTrue(rt.up)
+        self.assertEqual(self.warmed, [(rt.base_url, "coderunner-embeddinggemma-2")])   # compiled during setup
         self.assertEqual(coreml.load(self.hw)["coreml_per_s"], 20.4)
         # Setting up again keeps the measurement and the media model.
         again = manager.setup_coreml_embedding(self.cfg, self.hw, progress=lambda m: None, rt=FakeCoreML(self.cfg),

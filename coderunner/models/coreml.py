@@ -148,6 +148,16 @@ def passages(count: int = SAMPLE, prefix: str = "title: {title} | text: ") -> li
     return found
 
 
+async def warm(url: str, model: str) -> None:
+    """Compile each of the server's lengths for the Neural Engine now, during setup, not on the first search."""
+    from ..files.embed import Embedder
+    embedder = Embedder(url, model, keep_alive="5m")
+    try:
+        await embedder.embed(["word " * 20, "word " * 150, "word " * 400])
+    finally:
+        await embedder.aclose()
+
+
 async def compare(coreml_url: str, coreml_model: str, gpu_url: str, gpu_model: str, count: int = SAMPLE) -> dict:
     """Time the Core ML build against the GPU build on the same passages, after one untimed pass each (the first
     Core ML pass compiles for the Neural Engine), and check their vectors agree."""

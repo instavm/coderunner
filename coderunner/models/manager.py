@@ -325,7 +325,7 @@ def _setup_embedding(config, rt: Runtime, hw, progress) -> str:
 
 
 def setup_coreml_embedding(config, hw: hardware.Hardware | None = None, progress: Callable[[str], None] = print,
-                           remeasure: bool = False, rt=None, measure=None) -> str:
+                           remeasure: bool = False, rt=None, measure=None, warm=None) -> str:
     """On Apple silicon the embedding model's text encoder runs on the Neural Engine (coreml.py) unless this
     machine's GPU measured faster; pictures and sound stay with its build in Ollama, which the Core ML server
     passes them on to. `models.embedding_runtime` (auto | coreml | gpu) overrides the measurement.
@@ -355,6 +355,8 @@ def setup_coreml_embedding(config, hw: hardware.Hardware | None = None, progress
         config.set("models.embedding_media_url", media_url)
         rt.stop()                                   # started again with the media model it passes pictures to
         rt.start()
+        progress("preparing the embedding model for the Neural Engine (once, about a minute)")
+        _run_async((warm or coreml.warm)(rt.base_url, rt.model_id(entry)))
         if wanted == "auto" and media and record is None:
             progress("timing embeddings on the Neural Engine against the GPU")
             record = coreml.save(hw, _run_async((measure or coreml.compare)(rt.base_url, rt.model_id(entry),

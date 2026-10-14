@@ -27,7 +27,9 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-SIZES = (32, 48, 64, 128, 256, 512)
+# Three of the build's lengths (it has 32-512): each is compiled for the Neural Engine on first use, 15-33 s on
+# an M3 Pro, so fewer means a shorter wait once; padding a 10-token query to 64 costs a millisecond or two.
+SIZES = (64, 256, 512)
 WINDOW = SIZES[-1] - 2
 PACKAGE = "EmbeddingGemma2Text.mlpackage"
 COMPILED = "EmbeddingGemma2Text.mlmodelc"
@@ -74,8 +76,8 @@ class Encoder:
     def _model(self, size: int):
         if size not in self.models:
             import coremltools as ct
-            # The first load of each function compiles it for the Neural Engine (13-23 s on an M3 Pro); Core ML
-            # caches that, so later loads take about a second.
+            # The first load of each function compiles it for the Neural Engine; Core ML caches that, so later
+            # loads take about a second.
             self.models[size] = ct.models.CompiledMLModel(str(self._compiled()), function_name=f"embed_{size}",
                                                           compute_units=getattr(ct.ComputeUnit, self.units))
         return self.models[size]
