@@ -347,7 +347,8 @@ def load() -> list[dict]:
 
 def save(record: dict) -> None:
     """Keep the latest result per machine, model build and runtime version."""
-    key = lambda r: (json.dumps(r["machine"], sort_keys=True), r["build"], r["runtime"], r["runtime_version"], r["suite"])
+    def key(r: dict) -> tuple:
+        return json.dumps(r["machine"], sort_keys=True), r["build"], r["runtime"], r["runtime_version"], r["suite"]
     results = [r for r in load() if key(r) != key(record)] + [record]
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
