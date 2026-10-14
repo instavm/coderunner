@@ -63,6 +63,8 @@ MESSAGING_HOSTS = ("web.telegram.org", "*.web.telegram.org", "web.whatsapp.com",
                    "*.discordapp.com", "slack.com", "*.slack.com")
 FIND_SCAN_CHARS = 400_000   # browser_find reads the whole page, not just the first snapshot screenful
 FIND_LIMIT = 40             # matching lines returned
+FIND_AFTER = 8              # lines shown after each of the first matches: a result card's price, rating
+FIND_DETAILED = 5           # and room follow its name (booking.com: 4-8 lines below)
 CLICK_ATTEMPTS = 3          # clicks nobody approved are re-checked when the page moves under them
 CLICK_SETTLE = 0.4          # seconds to let overlays and hover effects settle before re-checking
 SECRET_AUTOCOMPLETE = frozenset({"current-password", "new-password", "one-time-code"})
@@ -888,10 +890,16 @@ class BrowserBroker:
         hits = [i for i, line in enumerate(lines)
                 if whole in line.lower() or (words and all(word in line.lower() for word in words))]
         shown: list[int] = []
-        for i in hits[:FIND_LIMIT]:
-            shown += [j for j in range(max(0, i - 1), min(len(lines), i + 2)) if j not in shown]
+        for n, i in enumerate(hits[:FIND_LIMIT]):
+            after = FIND_AFTER if n < FIND_DETAILED else 1
+            shown += [j for j in range(max(0, i - 1), min(len(lines), i + 1 + after)) if j not in shown]
+        parts: list[str] = []
+        for k, j in enumerate(shown):
+            if k and j != shown[k - 1] + 1:
+                parts.append("…")                    # the passages are apart on the page
+            parts.append(lines[j])
         result["matches"] = len(hits)
-        result["content"] = "\n".join(lines[j] for j in shown) or f"Nothing on this page mentions {text!r}."
+        result["content"] = "\n".join(parts) or f"Nothing on this page mentions {text!r}."
         return result
 
     async def _select(self, ref: int, option: str, tab: str | None, tainted: bool) -> dict:

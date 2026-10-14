@@ -890,6 +890,21 @@ class DefaultPermissionTests(BrokerTestCase):
         self.assertIn("Nothing on this page", (await self.broker.find("submarine"))["content"])
         self.assertTrue((await self.broker.click(1))["ok"])           # refs from find are usable
 
+    async def test_find_shows_what_follows_a_match_like_a_result_cards_price(self):
+        browser, _ = await self.load_shop()
+        card = ["Shree Hari Guest House", "Scored 8.3", "Very good", "Economy Double Room", "1 double bed",
+                "2 nights, 2 adults", "₹1,450", "+₹208 taxes and charges", "See availability"]
+        others = [f"Other text {n}" for n in range(30)]
+        lines = others + card
+        browser.ax = [ax(1, "RootWebArea", "Results", children=[100 + k for k in range(len(lines))], backend=1)]
+        for k, line in enumerate(lines):           # one paragraph a line, as a results page renders
+            browser.ax += [ax(100 + k, "paragraph", parent=1, children=[500 + k], backend=1000 + k),
+                           ax(500 + k, "StaticText", line, parent=100 + k)]
+        found = await self.broker.find("Shree Hari")
+        self.assertIn("₹1,450", found["content"])
+        self.assertIn("+₹208 taxes", found["content"])
+        self.assertNotIn("Other text 10", found["content"])
+
     async def test_select_chooses_an_option_of_a_dropdown(self):
         browser, _ = await self.load_shop()
         browser.options[109] = ["Economy", "Premium economy", "Business"]
