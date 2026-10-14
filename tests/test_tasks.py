@@ -153,7 +153,8 @@ class Harness(unittest.IsolatedAsyncioTestCase):
                             path=pathlib.Path(home) / "config.json")
             result = await tasks.run(config, names=["library", "flights"], progress=lambda m: None)
             by_name = {t["name"]: t for t in result["tasks"]}
-            self.assertTrue(by_name["flights"]["passed"] is False and "still running" in by_name["flights"]["why"])
+            self.assertTrue(by_name["flights"]["passed"] is False and "still running" in by_name["flights"]["why"],
+                            by_name)
             self.assertLess(by_name["flights"]["seconds"], 3)
             self.assertTrue(by_name["library"]["passed"], by_name["library"])
             self.assertEqual(tasks.load()[-1]["passed"], result["passed"])
