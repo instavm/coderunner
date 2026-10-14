@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # an M3 Pro, so fewer means a shorter wait once; padding a 10-token query to 64 costs a millisecond or two.
 SIZES = (64, 256, 512)
 WINDOW = SIZES[-1] - 2
+URGENT_TEXTS = 2
 PACKAGE = "EmbeddingGemma2Text.mlpackage"
 COMPILED = "EmbeddingGemma2Text.mlmodelc"
 
@@ -54,7 +55,9 @@ class Encoder:
         self.folder = pathlib.Path(folder)
         self.config = json.loads((self.folder / "config.json").read_text())
         self.units = units
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()                # one request at a time on the model, a text at a time
+        self.turns = threading.Condition()
+        self.urgent = 0                             # searches waiting: indexing yields to them between texts
         self.models: dict[int, object] = {}
         self.tokenizer = self.table = None
 
@@ -101,16 +104,30 @@ class Encoder:
         out = self._model(size).predict({"inputs_embeds": x, "attention_mask": mask})["embedding"]
         return [float(v) for v in out.reshape(-1)]
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        with self.lock:
-            self._load()
-            bos, eos = self.config["bos_token_id"], self.config["eos_token_id"]
+    def embed(self, texts: list[str], urgent: bool = False) -> list[list[float]]:
+        """Vectors for texts. An urgent request (a search) goes before the next text of any other: indexing a
+        batch of 64 passages holds the model for ~3 s, which a search used to wait out in full."""
+        if urgent:
+            with self.turns:
+                self.urgent += 1
+        try:
             vectors = []
             for text in texts:
-                ids = self.tokenizer.encode(text, add_special_tokens=False).ids
-                parts = windows(ids, bos, eos)
-                vectors.append(combine([self._window(p) for p in parts], [len(p) for p in parts]))
+                if not urgent:
+                    with self.turns:
+                        self.turns.wait_for(lambda: self.urgent == 0)
+                with self.lock:
+                    self._load()
+                    bos, eos = self.config["bos_token_id"], self.config["eos_token_id"]
+                    ids = self.tokenizer.encode(text, add_special_tokens=False).ids
+                    parts = windows(ids, bos, eos)
+                    vectors.append(combine([self._window(p) for p in parts], [len(p) for p in parts]))
             return vectors
+        finally:
+            if urgent:
+                with self.turns:
+                    self.urgent -= 1
+                    self.turns.notify_all()
 
     def release(self) -> None:
         with self.lock:
@@ -141,7 +158,9 @@ class Service:
         if media and not (self.media_url and self.media_model):
             raise ValueError("pictures and sound need the embedding model in Ollama, which is not configured")
         out: list = [None] * len(inputs)
-        for (i, _), vector in zip(texts, self.encoder.embed([t for _, t in texts]) if texts else []):
+        # A request of one or two texts is a search or a memory lookup, someone waiting; a batch is indexing.
+        urgent = 0 < len(texts) <= URGENT_TEXTS
+        for (i, _), vector in zip(texts, self.encoder.embed([t for _, t in texts], urgent=urgent) if texts else []):
             out[i] = vector
         if media:
             body = {"model": self.media_model, "input": [m for _, m in media]}

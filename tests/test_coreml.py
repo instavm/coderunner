@@ -25,7 +25,7 @@ class FakeEncoder:
     def __init__(self):
         self.loaded, self.released, self.seen = False, 0, []
 
-    def embed(self, texts):
+    def embed(self, texts, urgent=False):
         self.loaded = True
         self.seen.append(list(texts))
         return [[float(len(t)), 1.0] + [0.0] * 766 for t in texts]
@@ -157,6 +157,32 @@ class ServerTests(unittest.TestCase):
             self.assertFalse((pathlib.Path(folder) / "compiling").exists())
             self.assertEqual(encoder._compiled(), path)
             self.assertEqual(len(compiled), 1)                     # compiled once, then reused
+
+    def test_a_search_goes_before_the_rest_of_an_indexing_batch(self):
+        import tempfile
+        import types
+        with tempfile.TemporaryDirectory() as folder:
+            (pathlib.Path(folder) / "config.json").write_text('{"bos_token_id": 2, "eos_token_id": 1}')
+            encoder = srv.Encoder(pathlib.Path(folder))
+
+            def load():
+                encoder.tokenizer = types.SimpleNamespace(encode=lambda text, add_special_tokens=False:
+                                                          types.SimpleNamespace(ids=[5, 6]))
+
+            def window(ids):
+                time.sleep(0.05)                 # one passage on the model
+                return [1.0, 0.0]
+            encoder._load, encoder._window = load, window
+            batch = threading.Thread(target=encoder.embed, args=(["passage"] * 40,))
+            began = time.monotonic()
+            batch.start()
+            time.sleep(0.2)
+            asked = time.monotonic()
+            encoder.embed(["task: search result | query: rent"], urgent=True)
+            answered = time.monotonic()
+            batch.join()
+            self.assertLess(answered - asked, 0.3)                    # not the ~1.8 s left of the batch
+            self.assertGreater(time.monotonic() - began, 1.9)         # the batch still did all its work
 
     def test_the_model_is_released_when_idle(self):
         encoder = FakeEncoder()
