@@ -45,6 +45,7 @@ class FakeBrowser:
         self.parents = {}     # backendNodeId -> parent's, for hit tests that land inside an element
         self.image = b"\xff\xd8 first"
         self.on_move = None   # called when the pointer moves, to let tests change the page
+        self.scroll = (0, 0)  # how far the page is scrolled (page coordinates of the window's corner)
         self.closed = False
         self._box = None
         self._loader = 0
@@ -115,7 +116,8 @@ class FakeBrowser:
             self._box = params["backendNodeId"]
             return {"model": {"border": [10, 20, 110, 20, 110, 40, 10, 40]}}
         if method == "Page.getLayoutMetrics":
-            return {"cssVisualViewport": {"clientWidth": 1280, "clientHeight": 900},
+            return {"cssVisualViewport": {"clientWidth": 1280, "clientHeight": 900, "pageX": self.scroll[0],
+                                          "pageY": self.scroll[1], "scale": 1},
                     "cssContentSize": {"width": 1280, "height": 3000}}
         if method == "DOM.getNodeForLocation":
             return {"backendNodeId": self.hit or self._box, "frameId": target}
@@ -554,6 +556,16 @@ class InteractionPolicyTests(BrokerTestCase):
         browser.nodes[109] = PASSWORD_NODE
         self.assertFalse((await self.broker.type(2, "hunter2"))["ok"])
         self.assertEqual(browser.sent("Input.insertText"), [])
+
+    async def test_a_scrolled_page_is_hit_tested_where_the_click_lands(self):
+        browser, _ = await self.load_shop()
+        browser.scroll = (0, 5550)              # a results page's "Show more", reached by scrolling
+        result = await self.broker.click(self.ref("Read more"))
+        self.assertTrue(result["ok"], result)
+        hit = browser.sent("DOM.getNodeForLocation")[-1]
+        self.assertEqual((hit["x"], hit["y"]), (60, 30 + 5550))     # page coordinates for Chrome's hit test
+        press = [p for p in browser.sent("Input.dispatchMouseEvent") if p["type"] == "mousePressed"][-1]
+        self.assertEqual((press["x"], press["y"]), (60, 30))        # window coordinates for the mouse
 
     async def test_typing_picks_the_suggestion_that_matches(self):
         browser, _ = await self.load_shop()

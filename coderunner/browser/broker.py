@@ -990,8 +990,7 @@ class BrowserBroker:
         sid = await self._session(target)
         async with self._acting(target, sid, tainted):
             try:
-                hit = await self._send(sid, "DOM.getNodeForLocation", {
-                    "x": int(x), "y": int(y), "includeUserAgentShadowDOM": True, "ignorePointerEventsNone": True})
+                hit = await self._node_at(sid, x, y)
             except CDPError:
                 raise BrowserError(f"Nothing is at ({x:.0f}, {y:.0f}); take a new screenshot") from None
             if hit.get("frameId") not in (None, target):
@@ -1053,8 +1052,7 @@ class BrowserBroker:
     async def _probe(self, sid: str, target: str, element: dict, x: float, y: float) -> dict:
         """What a click at (x, y) would hit, described in full for the approval."""
         backend = element["backend"]
-        hit = await self._send(sid, "DOM.getNodeForLocation", {
-            "x": int(x), "y": int(y), "includeUserAgentShadowDOM": True, "ignorePointerEventsNone": True})
+        hit = await self._node_at(sid, x, y)
         own = await self._describe(sid, target, backend) or {}
         name, text = element["name"], own.get("text", "")
         label = f'{element["role"]} {json.dumps(name or text, ensure_ascii=False)}'
@@ -1071,6 +1069,17 @@ class BrowserBroker:
         return {"hit": "element" if cover is None else hit.get("backendNodeId"), "frame": hit.get("frameId"),
                 "label": label, "kind": "browser.sensitive" if risky else "browser.interact",
                 "text": text, "name": name, "role": element["role"]}
+
+    async def _node_at(self, sid: str, x: float, y: float) -> dict:
+        """The node under window point (x, y), where a mouse event there lands. Chrome's hit test takes page
+        coordinates, so the scroll offset is added: without it every element reached by scrolling (a results
+        page's "Show more") was tested at a point above it, found nothing and could not be clicked."""
+        metrics = await self._send(sid, "Page.getLayoutMetrics")
+        viewport = metrics.get("cssVisualViewport") or {}
+        scale = viewport.get("scale") or 1
+        return await self._send(sid, "DOM.getNodeForLocation", {
+            "x": int(x / scale + viewport.get("pageX", 0)), "y": int(y / scale + viewport.get("pageY", 0)),
+            "includeUserAgentShadowDOM": True, "ignorePointerEventsNone": True})
 
     async def _center(self, sid: str, backend: int) -> tuple[float, float]:
         try:
