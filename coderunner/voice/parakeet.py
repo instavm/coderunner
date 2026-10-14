@@ -218,6 +218,8 @@ class ParakeetSpeech:
             for old in target.parent.glob(f"{NAME}-*"):
                 if old != target:
                     old.unlink(missing_ok=True)
+                    # Core ML's compiled copy of the model for that helper (about 40 MB)
+                    shutil.rmtree(pathlib.Path.home() / "Library" / "Caches" / old.name, ignore_errors=True)
             return target
         finally:
             shutil.rmtree(work, ignore_errors=True)
