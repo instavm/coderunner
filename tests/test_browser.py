@@ -17,7 +17,7 @@ from coderunner.core.audit import AuditLog
 from coderunner.browser import BrowserBroker, BrowserError
 from coderunner.browser import launcher
 from coderunner.browser.page import page_changes, render_ax
-from coderunner.browser.scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, SCROLL_JS, SELECT_OPTION_JS,
+from coderunner.browser.scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, OPTIONS_JS, SCROLL_JS, SELECT_OPTION_JS,
                                         SETTLE_JS)
 from coderunner.browser.urls import parse_url
 from coderunner.browser.cdp import CDPError, CDPPipe
@@ -140,6 +140,8 @@ class FakeBrowser:
                 while other is not None and other != backend:
                     other = self.parents.get(other)
                 return {"result": {"value": other == backend}}
+            if params["functionDeclaration"] == OPTIONS_JS:
+                return {"result": {"value": self.options.get(backend)}}
             if params["functionDeclaration"] == SELECT_OPTION_JS:
                 choice, options = params["arguments"][0]["value"].lower(), self.options.get(backend)
                 if options is None:
@@ -899,6 +901,24 @@ class DefaultPermissionTests(BrokerTestCase):
         self.assertIn('options are "Economy", "Premium economy", "Business"', missing["error"])
         self.assertIn("not a dropdown", (await self.broker.select(1, "x"))["error"])
         self.assertEqual(self.asked, [])
+
+    async def test_a_click_on_a_dropdown_points_to_select(self):
+        browser, _ = await self.load_shop()
+        browser.options[109] = ["20, Friday", "21, Saturday", "22, Sunday"]
+        result = await self.broker.click(2)
+        self.assertFalse(result["ok"])
+        self.assertIn("is a dropdown list: choose with browser_select", result["error"])
+        self.assertIn('"22, Sunday"', result["error"])
+        self.assertEqual([p for p in browser.sent("Input.dispatchMouseEvent") if p["type"] == "mousePressed"], [])
+
+    async def test_a_click_that_reaches_a_covering_element_says_so(self):
+        browser, _ = await self.load_shop()
+        browser.hit = 111                      # "Buy now" lies over the link at the point of the click
+        browser.labels[111] = {"tag": "label", "text": "Rooms and occupancy", "submit": ""}
+        self.answers["browser.sensitive"] = True
+        result = await self.broker.click(self.ref("Read more"))
+        self.assertTrue(result["ok"], result)
+        self.assertIn("covered by label", result.get("note", ""))
 
     async def test_private_data_needs_approval_before_it_reaches_a_site(self):
         browser, _ = await self.load_shop()

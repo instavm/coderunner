@@ -45,6 +45,12 @@ SELECT_OPTION_JS = r"""function(choice) {
   return {ok: true, selected: label(match)};
 }"""
 
+OPTIONS_JS = r"""function() {
+  return this && this.tagName === 'SELECT'
+    ? Array.from(this.options).filter(o => !o.disabled).slice(0, 60).map(o => (o.label || o.text || '').trim())
+    : null;
+}"""
+
 SELECT_ALL_JS = r"""function() {
   try { if (typeof this.select === 'function') { this.select(); return; } } catch (e) {}
   const range = document.createRange(); range.selectNodeContents(this);

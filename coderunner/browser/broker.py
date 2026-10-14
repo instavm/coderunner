@@ -45,8 +45,8 @@ from . import launcher as default_launcher
 from .cdp import CDPError, CDPPipe
 from .errors import BrowserError
 from .page import PAGE_CHARS, ax_value, cut, page_changes, render_ax, squash
-from .scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, SCROLL_JS, SELECT_ALL_JS, SELECT_OPTION_JS,
-                      SETTLE_JS)
+from .scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, OPTIONS_JS, SCROLL_JS, SELECT_ALL_JS,
+                      SELECT_OPTION_JS, SETTLE_JS)
 from .urls import is_local_ip, local_problem, page_host, parse_url, same_site
 
 
@@ -942,6 +942,15 @@ class BrowserBroker:
         read = self._read_urls.get(target, "")      # the page as the model last saw it
         element = self._ref(target, ref)
         sid = await self._session(target)
+        async with self._acting(target, sid, tainted):
+            options = await self._call(sid, await self._object(sid, element["backend"], await self._world(sid, target)),
+                                       OPTIONS_JS)
+        if options is not None:
+            # A native dropdown opens a menu outside the page that cannot be used, and sites often lay their own
+            # control over it (booking.com's dates sit under "Rooms and occupancy"): choosing is the way.
+            shown = ", ".join(json.dumps(option, ensure_ascii=False) for option in options[:12])
+            raise BrowserError(f"[{ref}] is a dropdown list: choose with browser_select"
+                               + (f"; its options include {shown}" if shown else ""))
         for attempt in range(CLICK_ATTEMPTS):
             async with self._acting(target, sid, tainted):
                 plan = await self._click_plan(sid, target, element)
@@ -971,9 +980,10 @@ class BrowserBroker:
                     result = await self._observe(target, sid, await self._result(target, navigated=navigated),
                                                  tainted, "load" if navigated else "")
                     result["_audit"] = {"clicked": now["label"]}    # what was under the pointer, as checked
-                    if result.get("changes") == NO_CHANGE:
+                    if result.get("changes") == NO_CHANGE or now["hit"] != "element":
                         # Say what the click landed on: covered by a banner or an overlay, or a page that has
-                        # moved on (a late redirect) explains a click that did nothing better than a retry.
+                        # moved on (a late redirect) explains a click that did nothing better than a retry. A
+                        # click that reached a covering element did something, but not to [ref].
                         result["note"] = f"The click landed on {now['label']}."
                         if read and result.get("url") and result["url"].split("#")[0] != read.split("#")[0]:
                             result["note"] += " The page's address changed since you read it; take a new snapshot."

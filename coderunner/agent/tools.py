@@ -250,7 +250,8 @@ def browser_tools(svc) -> list[Tool]:
         Tool("browser_find", "Find where the current page mentions some text (the whole page, also beyond what a "
              "snapshot shows) and get those lines with their element refs. Cheaper than reading the whole page.",
              _params({"text": STR}, ["text"]), find, True),
-        Tool("browser_select", "Choose an option in a dropdown (<select>) [ref] by its visible text.",
+        Tool("browser_select", "Choose an option in a dropdown list [ref] (a <select>, shown as a combobox with a "
+             "value, as in many date and number fields) by its visible text.",
              _params({"ref": INT, "option": STR}, ["ref", "option"]), select, True),
         Tool("browser_press", f"Press a key: {', '.join(KEYS)}.", _params({"key": STR}, ["key"]), press, True),
         Tool("browser_scroll", "Scroll the page (or the list in the middle of it) to load more of it. The page "
