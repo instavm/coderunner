@@ -34,6 +34,10 @@ func prepare(_ wanted: String) async throws -> SpeechTranscriber {
     guard SpeechTranscriber.isAvailable else { fail("speech transcription is not available on this Mac", 3) }
     guard let locale = await pickLocale(wanted) else { fail("no on-device speech model for \(wanted)", 3) }
     let transcriber = SpeechTranscriber(locale: locale, preset: .transcription)
+    // Listed locales can still have no model for this Mac (Hindi: installation reports "Not Installing").
+    if await AssetInventory.status(forModules: [transcriber]) == .unsupported {
+        fail("no on-device speech model for \(wanted) on this Mac", 3)
+    }
     if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
         try await request.downloadAndInstall()
     }
