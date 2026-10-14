@@ -59,6 +59,12 @@ func pdf(_ path: String, maxPages: Int, readScans: Bool) {
         emit(["error": "cannot open the PDF (damaged or password protected)"])
         return
     }
+    // Bank and tax statements are often locked with a password: their pages render blank and read as nothing,
+    // which looked like an empty document. Say so; the file stays findable by its name.
+    if document.isLocked && !document.unlock(withPassword: "") {
+        emit(["error": "the PDF is password protected; only its name is searchable"])
+        return
+    }
     var pages: [String] = []
     for index in 0..<min(document.pageCount, maxPages) {
         autoreleasepool {
