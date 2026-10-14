@@ -25,7 +25,7 @@ from .embed import Embedder
 from .extract import NAME_ONLY, Extractor, Media, Piece, Transcriber
 from .kinds import kind_of
 from .search import Searcher
-from .vectors import FORMAT, VectorIndex, code_bytes, pack
+from .vectors import FORMAT, VectorIndex, code_bytes, pack, unit_mean
 
 GROUP = 32                  # files per embedding round
 PARALLEL_READS = 4          # files converted at once
@@ -220,8 +220,13 @@ class FileIndex:
                                    "VALUES (?, ?, ?, ?, ?, ?, ?)", (str(found.path), kind, found.stat.st_size,
                                                                     found.stat.st_mtime, time.time(), len(pieces),
                                                                     error))
-                for piece in pieces:
-                    vector = next(stream, None) if piece.embed is not None else None
+                vectors_of = [next(stream, None) if piece.embed is not None else None for piece in pieces]
+                for i, piece in enumerate(pieces):
+                    if piece.average_of:
+                        # A derived piece (the whole video): the mean of the file's pieces it names, normalized.
+                        parts = [v for p, v in zip(pieces, vectors_of) if v and p.part.startswith(piece.average_of)]
+                        vectors_of[i] = unit_mean(parts) if parts else None
+                for piece, vector in zip(pieces, vectors_of):
                     code = code_bytes(vector) if vector else None
                     row = self.store.execute(
                         "INSERT INTO file_chunks(path, part, text, embedding, code, modality, loc) "

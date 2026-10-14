@@ -286,6 +286,15 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         parts = [r["part"] for r in self.store.query("SELECT part FROM file_chunks WHERE path LIKE '%screen recording.mp4'")]
         self.assertTrue(any(part.startswith("frame at") for part in parts), parts)
         self.assertFalse(any(part.startswith("sound at") for part in parts), parts)
+        # A frame a second (25 s), and the whole video as the mean of its frames.
+        self.assertEqual(sum(part.startswith("frame at") for part in parts), 25)
+        rows = self.store.query("SELECT part, embedding FROM file_chunks WHERE path LIKE '%screen recording.mp4' "
+                                "AND modality = 'image'")
+        frames = [unpack(r["embedding"]) for r in rows if r["part"].startswith("frame at")]
+        whole = next(unpack(r["embedding"]) for r in rows if r["part"] == "the whole video")
+        total = [sum(column) for column in zip(*frames)]
+        norm = sum(x * x for x in total) ** 0.5
+        self.assertTrue(all(abs(a - b / norm) < 2e-3 for a, b in zip(whole, total)))
         await embedder.aclose()
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is needed for media")

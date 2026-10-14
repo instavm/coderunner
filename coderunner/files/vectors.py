@@ -56,6 +56,13 @@ def signs(vector: Sequence[float]) -> int:
     return code
 
 
+def unit_mean(vectors: list[Sequence[float]]) -> list[float]:
+    """The mean of vectors, scaled to unit length."""
+    total = [sum(column) for column in zip(*vectors)]
+    norm = sum(x * x for x in total) ** 0.5 or 1.0
+    return [x / norm for x in total]
+
+
 def code_bytes(vector: Sequence[float]) -> bytes:
     return signs(vector).to_bytes((len(vector) + 7) // 8, "little")
 

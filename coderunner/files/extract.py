@@ -36,8 +36,9 @@ MAX_PAGES = 1000
 WINDOW = 30                # seconds of sound per embedding
 WINDOW_STEP = 25           # windows overlap by 5 s, so a phrase on a boundary is in one of them
 MAX_WINDOWS = 40           # the first 20 minutes of a recording
-MAX_FRAMES = 24
-FRAME_EVERY = 10           # seconds between video frames, at least
+MAX_FRAMES = 32            # a frame a second, thinned evenly to this many, as EmbeddingGemma 2 reads video natively;
+                           # with one averaged "whole video" piece, 14 of 14 questions found their video against 13
+                           # with 24 frames 10 s apart (and margins +0.108 against +0.089), checked against Google's model
 SILENCE_DB = -60.0          # sound windows quieter than this (RMS) are not embedded
 NATIVE_IMAGES = {".png", ".jpg", ".jpeg", ".webp"}   # sent to the embedding model unchanged
 NATIVE_IMAGE_BYTES = 20 * 1024 * 1024
@@ -62,6 +63,7 @@ class Piece:
     embed: Any              # what the embedding model reads (text, {"image": b64}, {"audio": b64}); None: keywords only
     modality: str           # "name", "text", "image" or "audio": scores are compared within each
     loc: float | None = None   # page number or second, to open the file at the match
+    average_of: str | None = None  # instead of being embedded: the mean of the file's pieces whose part starts so
 
 
 def clock(seconds: float) -> str:
@@ -230,6 +232,20 @@ class Media:
         except ValueError:
             return 0.0
 
+    async def frames(self, path: pathlib.Path, count: int, length: float, size: int = 1024) -> list[tuple[float, bytes]]:
+        """`count` frames spread evenly over a video, as JPEGs no larger than size pixels, in one ffmpeg run."""
+        if count <= 1 or not length:
+            return [(length / 2, await self.image(path, at=length / 2, size=size))]
+        with tempfile.TemporaryDirectory() as tmp:
+            step = length / count
+            await self._run(self.ffmpeg, "-loglevel", "error", "-y", "-i", str(path), "-vf",
+                            f"fps=1/{step:.4f}:start_time={step / 2:.4f}:round=down,"     # default rounding drops the last
+                            f"scale='min({size},iw)':'min({size},ih)':force_original_aspect_ratio=decrease",
+                            "-frames:v", str(count), "-q:v", "2", str(pathlib.Path(tmp) / "frame%03d.jpg"),
+                            timeout=600)
+            files = sorted(pathlib.Path(tmp).glob("frame*.jpg"))
+            return [(step * (i + 0.5), f.read_bytes()) for i, f in enumerate(files)]
+
     async def streams(self, path: pathlib.Path) -> set[str]:
         """What a recording holds ("video", "audio"): screen recordings have no sound, some .mp4 no picture."""
         if not self.ffprobe:
@@ -318,10 +334,12 @@ class Extractor:
         length = await self.media.duration(path)
         streams = await self.media.streams(path)
         if kind == "video" and "vision" in self.capabilities and "video" in streams:
-            count = min(MAX_FRAMES, max(1, int(length // max(FRAME_EVERY, length / MAX_FRAMES)))) if length else 1
-            for at in [length * (i + 0.5) / count for i in range(count)]:
-                frame = base64.b64encode(await self.media.image(path, at=at, size=1024)).decode()
-                found.append(Piece(f"frame at {clock(at)}", path.name, {"image": frame}, "image", at))
+            count = min(MAX_FRAMES, max(1, int(length))) if length else 1
+            for at, frame in await self.media.frames(path, count, length):
+                found.append(Piece(f"frame at {clock(at)}", path.name, {"image": base64.b64encode(frame).decode()},
+                                   "image", at))
+            if sum(piece.part.startswith("frame at") for piece in found) > 1:
+                found.append(Piece("the whole video", path.name, None, "image", average_of="frame at"))
         if "audio" in self.capabilities and "audio" in streams:
             windows = max(1, min(MAX_WINDOWS, math.ceil(max(length - WINDOW, 0) / WINDOW_STEP) + 1)) if length else 1
             for i in range(windows):
