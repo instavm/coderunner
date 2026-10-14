@@ -241,7 +241,8 @@ def browser_tools(svc) -> list[Tool]:
              _params({}), snapshot, True),
         Tool("browser_click", "Click element [ref]. Returns what changed on the page (a new page in full).",
              _params({"ref": INT}, ["ref"]), click, True),
-        Tool("browser_type", "Type text into element [ref] and return what changed. When suggestions appear (as "
+        Tool("browser_type", "Type text into element [ref] (it focuses the field: no click first) and return what "
+             "changed. When suggestions appear (as "
              "in place and airport fields), the one matching your text is picked for you and named in the result; "
              "pick=false keeps only the typed text. Never use for passwords or one-time codes; use "
              "browser_handoff instead.",
