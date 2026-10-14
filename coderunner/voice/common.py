@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import pathlib
 import wave
 from typing import Callable
@@ -31,6 +32,17 @@ class Segment:
     start: float
     end: float
     text: str
+
+
+def phrases(output: str) -> list[Segment]:
+    """Segments from a Swift helper's output: one JSON line per phrase, {"start", "end", "text"}."""
+    found = []
+    for line in output.splitlines():
+        if line.strip():
+            item = json.loads(line)
+            found.append(Segment(round(float(item["start"]), 2), round(float(item["end"]), 2),
+                                 " ".join(item["text"].split())))
+    return found
 
 
 def joined(segments: list[Segment]) -> str:

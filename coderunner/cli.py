@@ -781,10 +781,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_find)
 
-    p = sub.add_parser("voice", help="On-device speech to text: Apple's on macOS 26, else Qwen3-ASR on llama.cpp")
+    p = sub.add_parser("voice", help="On-device speech to text: Parakeet on the Neural Engine, Apple speech, else "
+                                     "Qwen3-ASR on llama.cpp")
     p.add_argument("action", choices=["status", "setup", "transcribe"], nargs="?", default="status")
     p.add_argument("file", nargs="?", help="audio file to transcribe")
-    p.add_argument("--engine", choices=["apple", "qwen3-asr"], help="set up only this engine")
+    p.add_argument("--engine", choices=["parakeet-coreml", "apple", "qwen3-asr"], help="set up only this engine")
     p.add_argument("--language", help='spoken language, e.g. "en-IN" or "hi"; "auto" follows the system')
     p.set_defaults(func=cmd_voice)
 

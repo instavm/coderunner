@@ -19,7 +19,10 @@ from coderunner.core import native, process
 from coderunner.core.config import Config
 from coderunner.voice import Segment, Voice, VoiceUnavailable, find_binary, run
 from coderunner.voice import apple as apple_module
+from coderunner.voice import parakeet as parakeet_module
 from coderunner.voice import qwen as qwen_module
+from coderunner.voice import service as service_module
+from coderunner.voice.parakeet import ParakeetSpeech
 from coderunner.voice.qwen import QwenASR, asr_transcript, cut_points
 
 FFMPEG = shutil.which("ffmpeg") or next(
@@ -54,6 +57,25 @@ if sys.argv[1] == "transcribe":
         print(json.dumps({"start": 0, "end": 0.5, "text": f"Apple heard {w.getframerate()} Hz,"}))
         print(json.dumps({"start": 0.5, "end": 1.0, "text": " twice."}))
 '''
+# Parakeet's helper: `transcribe <wav> <model folder> <language>` or `prepare <model folder>`.
+FAKE_PARAKEET = r'''
+import json, pathlib, sys, wave
+with pathlib.Path(__file__).with_name("parakeet.log").open("a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+assert pathlib.Path(sys.argv[-1 if sys.argv[1] == "prepare" else 3], "Encoder.mlmodelc/weights/weight.bin").is_file()
+if sys.argv[1] == "transcribe":
+    with wave.open(sys.argv[2]) as w:
+        print(json.dumps({"start": 0.24, "end": 0.6000000000000001, "text": f"Parakeet heard {w.getframerate()} Hz."}))
+        print(json.dumps({"start": 0.7, "end": 1.0, "text": " Twice. "}))
+'''
+FAKE_SAY = r'''
+import sys, wave
+args = sys.argv[1:]
+assert "--data-format=LEI16@16000" in args
+with wave.open(args[args.index("-o") + 1], "wb") as w:
+    w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b"\0\0" * 16000)
+'''
+REAL_PARAKEET_POSSIBLE = ParakeetSpeech.possible
 FAKE_LLAMA = r'''
 import pathlib, sys, wave
 args = sys.argv[1:]
@@ -94,11 +116,14 @@ class VoiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.work.mkdir()
         self.models = self.dir / "home" / "assistant" / "models"
         self.models.mkdir(parents=True)
-        # Only our fake tools are visible, whatever is installed on this machine, and Apple speech is off
-        # unless a test turns it on.
+        # Only our fake tools are visible, whatever is installed on this machine, and Apple speech and
+        # Parakeet are off unless a test turns them on.
         for patcher in (mock.patch.dict(os.environ, {"PATH": str(self.bin), "CODERUNNER_HOME": str(self.dir / "home")}),
                         mock.patch.object(process, "EXTRA_PATHS", []),
-                        mock.patch.object(apple_module, "macos_major", lambda: 0)):
+                        mock.patch.object(apple_module, "macos_major", lambda: 0),
+                        mock.patch.object(ParakeetSpeech, "possible", staticmethod(lambda: False)),
+                        mock.patch.object(parakeet_module, "mac_language", lambda: "en"),
+                        mock.patch.object(service_module, "_machine", lambda: {"chip": "Apple M3 Pro"})):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -124,6 +149,23 @@ class VoiceTestCase(unittest.IsolatedAsyncioTestCase):
         helper.write_text(f"#!{sys.executable}\n{body}")
         helper.chmod(0o755)
         self.macos_26()
+        return helper
+
+    def apple_silicon(self):
+        patcher = mock.patch.object(ParakeetSpeech, "possible", staticmethod(lambda: True))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def parakeet(self, body=FAKE_PARAKEET):
+        """Parakeet's helper and model files, as `coderunner voice setup` leaves them, on an Apple silicon Mac."""
+        helper = parakeet_module.helper_path()
+        helper.parent.mkdir(parents=True, exist_ok=True)
+        helper.write_text(f"#!{sys.executable}\n{body}")
+        helper.chmod(0o755)
+        for name, _ in parakeet_module.MODEL["files"]:
+            (ParakeetSpeech.model_dir() / name).parent.mkdir(parents=True, exist_ok=True)
+            (ParakeetSpeech.model_dir() / name).write_bytes(b"coreml")
+        self.apple_silicon()
         return helper
 
     def llama(self, body=FAKE_LLAMA):
@@ -169,6 +211,49 @@ class EngineDetectionTests(VoiceTestCase):
         self.assertEqual(names(self.voice(stt="qwen3-asr")), ["qwen3-asr"])
         self.assertEqual(self.voice(stt="nonsense").engines(), [])
         self.assertEqual(voice.status()["engines"], names(voice))
+
+    def test_parakeet_comes_first_on_apple_silicon(self):
+        names = lambda voice: [engine.name for engine in voice.engines()]  # noqa: E731
+        voice = self.voice()
+        self.qwen(voice)
+        self.apple(voice)
+        self.assertEqual(names(voice), ["apple", "qwen3-asr"])
+        self.parakeet()
+        self.assertEqual(names(voice), ["parakeet-coreml", "apple", "qwen3-asr"])
+        self.assertEqual(names(self.voice(stt="parakeet-coreml")), ["parakeet-coreml"])
+        (ParakeetSpeech.model_dir() / "parakeet_vocab.json").unlink()     # a setup that did not finish
+        self.assertEqual(names(voice), ["apple", "qwen3-asr"])
+
+    def test_parakeet_follows_apple_where_setup_measured_it_slower(self):
+        names = lambda voice: [engine.name for engine in voice.engines()]  # noqa: E731
+        voice = self.voice()
+        self.apple(voice)
+        self.parakeet()
+        check = service_module._check_path()
+        check.parent.mkdir(parents=True, exist_ok=True)
+        check.write_text(json.dumps({"machine": {"chip": "Apple M3 Pro"}, "parakeet_first": False}))
+        self.assertEqual(names(voice), ["apple", "parakeet-coreml"])
+        # Measured on another machine (a copied CodeRunner folder): the measured default holds.
+        check.write_text(json.dumps({"machine": {"chip": "Apple M4 Max"}, "parakeet_first": False}))
+        self.assertEqual(names(voice), ["parakeet-coreml", "apple"])
+
+    def test_parakeet_needs_apple_silicon_and_macos_15(self):
+        from types import SimpleNamespace
+        for system, machine, major, expected in (("darwin", "arm64", 15, True), ("darwin", "arm64", 14, False),
+                                                 ("darwin", "x86_64", 26, False), ("linux", "aarch64", 0, False)):
+            with mock.patch.object(parakeet_module, "sys", SimpleNamespace(platform=system)), \
+                    mock.patch.object(parakeet_module, "platform", SimpleNamespace(machine=lambda: machine)), \
+                    mock.patch.object(parakeet_module, "macos_major", lambda: major):
+                self.assertEqual(REAL_PARAKEET_POSSIBLE(), expected, (system, machine, major))
+
+    def test_parakeet_languages(self):
+        for language, code, serves in (("en-IN", "en", True), ("de_DE", "de", True), ("pt-BR", "pt", True),
+                                       ("auto", "en", True), ("hi", "hi", False), ("ja-JP", "ja", False)):
+            parakeet = ParakeetSpeech(language)
+            self.assertEqual((parakeet.code(), parakeet.serves()), (code, serves), language)
+        with mock.patch.object(parakeet_module, "mac_language", lambda: "hi"):
+            self.assertFalse(ParakeetSpeech("auto").serves())
+        self.assertEqual(len(parakeet_module.LANGUAGES), 25)
 
     def test_apple_needs_macos_26_and_a_way_to_build(self):
         voice = self.voice()
@@ -255,6 +340,41 @@ class TranscribeTests(VoiceTestCase):
         self.assertEqual((logged[0], logged[2]), ("transcribe", "en-IN"))
         self.assertEqual(list(self.work.iterdir()), [])
 
+    async def test_parakeet_gives_timed_phrases(self):
+        voice = self.voice(language="en-IN")
+        helper = self.parakeet()
+        apple = self.apple(voice)
+        note = self.dir / "note.wav"
+        write_tone(note)
+        self.assertEqual(await voice.segments(note), [Segment(0.24, 0.6, "Parakeet heard 16000 Hz."),
+                                                      Segment(0.7, 1.0, "Twice.")])
+        logged = (helper.parent / "parakeet.log").read_text().split()
+        self.assertEqual((logged[0], logged[2], logged[3]), ("transcribe", str(ParakeetSpeech.model_dir()), "en"))
+        self.assertFalse(apple.with_suffix(".log").exists())
+        self.assertEqual(list(self.work.iterdir()), [])
+
+    async def test_languages_parakeet_lacks_go_to_apple_then_qwen(self):
+        voice = self.voice(language="hi")
+        helper = self.parakeet()
+        self.apple(voice)
+        self.qwen(voice)
+        note = self.dir / "note.wav"
+        write_tone(note)
+        self.assertEqual(await voice.transcribe(note), "Qwen heard 16000 Hz on 1 channel.")
+        self.assertFalse((helper.parent / "parakeet.log").exists())      # not even started for Hindi
+        with self.assertRaisesRegex(RuntimeError, "Parakeet does not transcribe hi"):
+            await self.voice(language="hi", stt="parakeet-coreml").transcribe(note)
+
+    async def test_failing_parakeet_hands_over_to_apple(self):
+        voice = self.voice()
+        self.parakeet(FAKE_FAILING)
+        self.apple(voice)
+        note = self.dir / "note.wav"
+        write_tone(note)
+        self.assertEqual(await voice.transcribe(note), "Apple heard 16000 Hz, twice.")
+        with self.assertRaisesRegex(RuntimeError, "parakeet failed.*model exploded"):
+            await self.voice(stt="parakeet-coreml").transcribe(note)
+
     async def test_timed_pieces_for_the_file_index(self):
         voice = self.voice()
         self.assertEqual(await voice.timed(self.dir / "absent.wav"), [])     # not set up: nothing, no error
@@ -340,14 +460,37 @@ class FakeStream:
 
 
 class FakeHub:
-    def __init__(self):
-        self.calls = []
+    def __init__(self, license="cc-by-4.0"):
+        self.calls, self.revisions, self.license = [], [], license
 
-    def download(self, repo, file, dest, sha256=None, progress=None):
+    def download(self, repo, file, dest, sha256=None, progress=None, revision="main"):
         self.calls.append((repo, file, sha256))
+        self.revisions.append(revision)
         pathlib.Path(dest).parent.mkdir(parents=True, exist_ok=True)
         pathlib.Path(dest).write_bytes(b"gguf")
         return pathlib.Path(dest)
+
+    def resolve_license(self, repo):
+        return {"spdx": self.license, "name": None, "link": f"https://huggingface.co/{repo}", "repo": repo,
+                "gated": False}
+
+
+# SwiftPM building the Parakeet helper: checks the package it is given and leaves the helper where SwiftPM would.
+FAKE_SWIFT_BUILD = r'''
+import pathlib, shutil, sys
+args = sys.argv[1:]
+pathlib.Path(__file__).with_name("swift.log").write_text(" ".join(args))
+package = pathlib.Path(args[args.index("--package-path") + 1])
+assert '"FluidAudio-0.17.5/Sources/FluidAudio"' in (package / "Package.swift").read_text()
+assert (package / "FluidAudio-0.17.5" / "Sources" / "FluidAudio").is_dir()
+assert "coderunner-parakeet transcribe" in (package / "Helper" / "main.swift").read_text()
+out = pathlib.Path(args[args.index("--scratch-path") + 1]) / "release" / "coderunner-parakeet"
+out.parent.mkdir(parents=True)
+shutil.copy(pathlib.Path(__file__).with_name("parakeet-fake"), out)
+'''
+FLUIDAUDIO_TARBALL = {"FluidAudio-0.17.5/Sources/FluidAudio/ASR.swift": "",
+                      "FluidAudio-0.17.5/Sources/FastClusterWrapper/fastcluster.cpp": "",
+                      "FluidAudio-0.17.5/Sources/MachTaskSelfWrapper/mach.c": ""}
 
 
 FAKE_SWIFTC = r'''
@@ -398,6 +541,78 @@ class SetupTests(VoiceTestCase):
             self.assertEqual(hub.calls, [(spec["repo"], name, sha) for name, sha in spec["files"]])
             self.assertEqual((result["engines"], len(installs)), (["apple", "qwen3-asr"], 1))
             self.assertEqual(result["ok"], bool(FFMPEG))
+
+    def fluidaudio(self, archive):
+        """FluidAudio's release served by a fake GitHub, with its pinned checksum."""
+        for patcher in (mock.patch.dict(parakeet_module.FLUIDAUDIO, {"sha256": hashlib.sha256(archive).hexdigest()}),
+                        mock.patch("httpx.stream", lambda *args, **kwargs: FakeStream(archive))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    async def test_setup_builds_parakeet_and_times_it_against_apple(self):
+        hub = FakeHub()
+        self.tool("parakeet-fake", FAKE_PARAKEET)
+        self.tool("swift", FAKE_SWIFT_BUILD)
+        self.tool("say", FAKE_SAY)
+        self.fluidaudio(tarball(FLUIDAUDIO_TARBALL))
+        voice = self.voice()
+        self.apple(voice)
+        self.apple_silicon()
+        result = await voice.setup(hub=hub)
+        self.assertEqual((result["parakeet-coreml"], result["apple"]), ("ready", "ready"))
+        # Model files at the pinned revision, each with its pinned checksum; nothing for Qwen3-ASR.
+        model = parakeet_module.MODEL
+        self.assertEqual(hub.calls, [(model["repo"], name, sha) for name, sha in model["files"]])
+        self.assertEqual(set(hub.revisions), {model["revision"]})
+        self.assertNotIn("qwen3-asr", result)
+        swift = (self.bin / "swift.log").read_text().split()
+        self.assertEqual(swift[:6], ["build", "-c", "release", "--product", "coderunner-parakeet", "--package-path"])
+        # Only the helper is kept; it was loaded once before the first message.
+        helper = parakeet_module.helper_path()
+        self.assertEqual(sorted(p.name for p in helper.parent.iterdir() if "parakeet" in p.name),
+                         [helper.name, "parakeet.log"])
+        self.assertEqual((helper.parent / "parakeet.log").read_text().splitlines()[0],
+                         f"prepare {ParakeetSpeech.model_dir()}")
+        check = result["speed_check"]
+        self.assertEqual(check["parakeet-coreml"]["text"], "Parakeet heard 16000 Hz. Twice.")
+        self.assertIn("seconds", check["apple"])
+        self.assertTrue(check["parakeet_first"])
+        self.assertEqual(json.loads(service_module._check_path().read_text()), check)
+        self.assertEqual(result["engines"], ["parakeet-coreml", "apple"])
+        # Noticeably slower than Apple speech on this machine: Apple speech goes first.
+        with mock.patch.object(service_module, "NOTICEABLE_S", -1.0):
+            self.assertFalse((await voice.compare(lambda message: None))["parakeet_first"])
+        self.assertEqual([engine.name for engine in voice.engines()], ["apple", "parakeet-coreml"])
+        self.assertEqual(list(self.work.iterdir()), [])
+
+    async def test_setup_leaves_parakeet_out_for_languages_it_lacks(self):
+        hub = FakeHub()
+        self.apple_silicon()
+        with mock.patch.object(QwenASR, "install_llama", lambda qwen, progress=None: self.llama()):
+            result = await self.voice(language="hi").setup(hub=hub)
+        self.assertNotIn("parakeet-coreml", result)
+        self.assertEqual({repo for repo, _, _ in hub.calls}, {qwen_module.MODELS[self.voice().qwen.model]["repo"]})
+        self.assertEqual(result["engines"], ["qwen3-asr"])
+
+    async def test_parakeet_licence_is_checked_before_downloading(self):
+        hub = FakeHub(license="cc-by-nc-4.0")
+        voice = self.voice()
+        self.apple(voice)
+        self.apple_silicon()
+        result = await voice.setup(hub=hub)
+        self.assertRegex(result["parakeet-coreml"], "licence.*commercial")
+        self.assertEqual((hub.calls, result["engines"]), ([], ["apple"]))
+
+    def test_fluidaudio_is_checked_before_building(self):
+        self.tool("swift", "import sys\nsys.exit(9)")
+        self.fluidaudio(tarball(FLUIDAUDIO_TARBALL))
+        with mock.patch.dict(parakeet_module.FLUIDAUDIO, {"sha256": "0" * 64}):
+            with self.assertRaisesRegex(RuntimeError, "checksum"):
+                ParakeetSpeech().build(lambda message: None)
+        self.assertEqual(list(parakeet_module.helper_path().parent.iterdir()), [])
+        (self.bin / "swift").unlink()
+        with self.assertRaisesRegex(VoiceUnavailable, "command line tools"):
+            ParakeetSpeech().build(lambda message: None)
 
     @unittest.skipUnless(sys.platform == "darwin", "Swift helpers are built on macOS")
     async def test_apple_helper_is_built_once_and_a_failure_is_remembered(self):

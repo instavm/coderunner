@@ -7,14 +7,13 @@ The helper is built on first use by coderunner.core.native.
 
 from __future__ import annotations
 
-import json
 import pathlib
 import platform
 import sys
 
 from ..core import native
 from ..core.process import run
-from .common import Segment, UnsupportedLanguage, VoiceUnavailable
+from .common import Segment, UnsupportedLanguage, VoiceUnavailable, phrases
 
 SOURCE = pathlib.Path(__file__).with_name("apple_speech.swift")
 NAME = "coderunner-speech"
@@ -67,10 +66,4 @@ class AppleSpeech:
         await self._call("prepare", self.language, timeout=1800)
 
     async def segments(self, wav: pathlib.Path, work: pathlib.Path) -> list[Segment]:
-        out = await self._call("transcribe", str(wav), self.language, timeout=self.timeout)
-        found = []
-        for line in out.splitlines():
-            if line.strip():
-                item = json.loads(line)
-                found.append(Segment(float(item["start"]), float(item["end"]), " ".join(item["text"].split())))
-        return found
+        return phrases(await self._call("transcribe", str(wav), self.language, timeout=self.timeout))
