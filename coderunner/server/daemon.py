@@ -44,6 +44,7 @@ class Services:
     llm: LLM | None = None
     llm_api_key: str = ""
     embedding_model: str = ""
+    embedding_url: str = ""          # where embeddings are served, when not by the chat model's runtime
     vision: bool = False
     guard: Guard = field(default_factory=Guard)
     egress: EgressGuard | None = None
@@ -162,6 +163,7 @@ class Daemon:
         # Ollama beside a chat model served by llama.cpp.
         embedding_url = self.config.get("models.embedding_url") or endpoint.base_url
         embed_llm = svc.llm if embedding_url == endpoint.base_url else LLM(embedding_url, svc.embedding_model)
+        svc.embedding_url = "" if embedding_url == endpoint.base_url else embedding_url.rstrip("/")
         embedder = None
         if svc.embedding_model:
             async def embedder(texts: list[str]) -> list[list[float]]:

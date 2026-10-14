@@ -76,6 +76,8 @@ def sandbox_app(svc) -> Starlette:
     upstream = httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10), trust_env=False)
 
     def _target(path: str) -> str:
+        if path == "/embeddings" and getattr(svc, "embedding_url", ""):
+            return f"{svc.embedding_url}{path}"      # e.g. the Core ML server, beside a chat model on llama.cpp
         return f"{svc.llm.base_url}{path}"
 
     def _headers() -> dict:

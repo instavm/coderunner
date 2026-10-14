@@ -658,6 +658,23 @@
           "tag": "embeddinggemma-2",
           "size_gb": 1.33,
           "mmproj_gb": 0
+        },
+        "coreml": {
+          "repo": "FluidInference/embeddinggemma-2-coreml",
+          "revision": "70fcf18f32c8cffc173fea982d5652d0bd1de8ea",
+          "files": [
+            "config.json",
+            "tokenizer.json",
+            "embeddings.bf16",
+            "EmbeddingGemma2Text.mlpackage/Manifest.json",
+            "EmbeddingGemma2Text.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "EmbeddingGemma2Text.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+          ],
+          "modalities": [
+            "text"
+          ],
+          "size_gb": 0.59,
+          "license": "apache-2.0"
         }
       },
       "notes": "Text, images and audio in one 768-d space (video as frames plus sound); one model for memory and files",

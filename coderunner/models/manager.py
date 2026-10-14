@@ -324,6 +324,62 @@ def _setup_embedding(config, rt: Runtime, hw, progress) -> str:
     return ""
 
 
+def setup_coreml_embedding(config, hw: hardware.Hardware | None = None, progress: Callable[[str], None] = print,
+                           remeasure: bool = False, rt=None, measure=None) -> str:
+    """On Apple silicon the embedding model's text encoder runs on the Neural Engine (coreml.py) unless this
+    machine's GPU measured faster; pictures and sound stay with its build in Ollama, which the Core ML server
+    passes them on to. `models.embedding_runtime` (auto | coreml | gpu) overrides the measurement.
+    Returns the runtime that embeds text: "coreml" or "gpu"."""
+    from . import coreml
+    wanted = config.get("models.embedding_runtime") or "auto"
+    media, media_url = config.get("models.embedding_media") or "", config.get("models.embedding_media_url") or ""
+    rt = rt or coreml.CoreMLRuntime(config)
+    if (config.get("models.embedding_url") or "").rstrip("/") != rt.base_url:     # a fresh setup: Ollama's build
+        media = config.get("models.embedding") or ""
+        media_url = config.get("models.embedding_url") or config.get("models.base_url") or ""
+    entry = next((e for e in catalog.by_role("embedding") if rt.artifact(e)
+                  and (not media or (e["artifacts"].get("ollama") or {}).get("tag") == media.split(":")[0])), None)
+    if wanted == "gpu" or not coreml.supported() or entry is None or licenses.check(entry, config)[0] != "allow":
+        return "gpu"
+    hw = _hardware(config, hw)
+    record = None if remeasure else coreml.load(hw)
+    if wanted == "auto" and media and record and coreml.choice(record)[0] == "gpu":
+        progress(f"embeddings stay on the GPU: {coreml.choice(record)[1]}")
+        return "gpu"
+    try:
+        if not rt.installed(entry):
+            rt.pull(entry, progress)
+        elif not rt.available():
+            rt.install(progress)
+        config.set("models.embedding_media", media)
+        config.set("models.embedding_media_url", media_url)
+        rt.stop()                                   # started again with the media model it passes pictures to
+        rt.start()
+        if wanted == "auto" and media and record is None:
+            progress("timing embeddings on the Neural Engine against the GPU")
+            record = coreml.save(hw, _run_async((measure or coreml.compare)(rt.base_url, rt.model_id(entry),
+                                                                               media_url, media)))
+        pick, why = coreml.choice(record) if wanted == "auto" and record else \
+            ("coreml", "set by models.embedding_runtime" if wanted == "coreml" else "no GPU build to compare with")
+    except Exception as exc:
+        progress(f"Core ML embeddings unavailable, keeping the GPU build: {exc}")
+        rt.stop()
+        return "gpu"
+    progress(f"embeddings: {why}")
+    if pick == "coreml":
+        config.set("models.embedding", rt.model_id(entry))
+        config.set("models.embedding_url", rt.base_url)
+        return "coreml"
+    rt.stop()
+    rt.remove(entry)                                # the GPU build does everything here: free the disk
+    progress(f"removed the Core ML build of {entry['id']}")
+    config.set("models.embedding", media)
+    config.set("models.embedding_url", media_url)
+    config.set("models.embedding_media", "")
+    config.set("models.embedding_media_url", "")
+    return "gpu"
+
+
 def _external(config, rt: Runtime, model_id: str | None, progress, smoke) -> dict:
     model = model_id or config.get("models.chat") or ""
     if not model:
@@ -496,6 +552,7 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
                 embedder.start()
             config.set("models.embedding", _setup_embedding(config, embedder, hw, progress))
             config.set("models.embedding_url", embedder.base_url if embedder is not rt else "")
+            setup_coreml_embedding(config, hw, progress)
         if decision:
             judge_rt = main if main is not None and main.name == "ollama" else rt
             _setup_decision(config, judge_rt, rt, hw, cand["need_gb"] + _embedding_need(config, hw), progress)
@@ -529,7 +586,7 @@ def _measure(measure, rt: Runtime, model: str, progress) -> dict | None:
 
 
 def _embedding_need(config, hw) -> float:
-    tag = config.get("models.embedding") or ""
+    tag = config.get("models.embedding_media") or config.get("models.embedding") or ""
     for cand in fit.recommend(hw, config, "embedding", "ollama"):
         if catalog.get(cand["id"])["artifacts"]["ollama"]["tag"] == tag:
             return cand["need_gb"]
@@ -755,4 +812,8 @@ def ensure_running(config) -> Endpoint:
     ep = endpoint(config)
     if rt and rt.name in LOCAL and rt.base_url.rstrip("/") == ep.base_url and not rt.running():
         rt.start()
+    from .coreml import CoreMLRuntime
+    embedder = CoreMLRuntime(config)
+    if (config.get("models.embedding_url") or "").rstrip("/") == embedder.base_url and not embedder.running():
+        embedder.start()            # it loads the model on the first request and releases it when idle
     return ep

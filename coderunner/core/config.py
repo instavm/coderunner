@@ -38,6 +38,9 @@ DEFAULTS: dict[str, Any] = {
         "vision": False,             # set by `coderunner setup` after the image check passes
         "embedding": "",             # optional embedding model id for memory
         "embedding_url": "",         # Ollama endpoint for embeddings when the chat model runs elsewhere
+        "embedding_runtime": "auto", # auto: text on the Neural Engine (Core ML) unless this Mac's GPU measured faster; coreml | gpu
+        "embedding_media": "",       # with Core ML: the Ollama build that embeds pictures and sound (setup sets it)
+        "embedding_media_url": "",
         "discover": True,            # also consider recent models found on Hugging Face (verified on device)
         "guard": "",                 # decision model screening untrusted text; empty: models.decision
         "decision": "",              # decision model judging committing browser steps; empty: the chat model

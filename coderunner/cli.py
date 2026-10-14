@@ -402,6 +402,16 @@ def cmd_models(args, config: Config) -> int:
         from .models import smoketest
         endpoint = manager.endpoint(config)
         _print(asyncio.run(smoketest.run(endpoint.base_url, endpoint.model, vision=endpoint.vision)))
+    elif args.action == "bench" and args.embedding:
+        from .models import coreml
+        used = manager.setup_coreml_embedding(config, progress=print, remeasure=True)
+        config.save()
+        record = coreml.load(manager._hardware(config, None))
+        if record:
+            print(f"Neural Engine {record['coreml_per_s']} passages/s, GPU {record['gpu_per_s']} passages/s, "
+                  f"vectors agree at cosine {record['cosine']}")
+        print(f"Text embeddings: {'Core ML (Neural Engine)' if used == 'coreml' else 'GPU'}")
+        return 0
     elif args.action == "bench" and args.tasks and args.candidates:
         from .models import tasks
         result = manager.bench_candidates(config, count=args.candidates, progress=print)
@@ -722,6 +732,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="bench: run sample tasks end to end (local test sites and documents) with the served model")
     p.add_argument("--only", action="append", help="bench --tasks: run only this task (flights, evening, library, documents, appliance)")
     p.add_argument("--visible", action="store_true", help="bench --tasks: show the browser window")
+    p.add_argument("--embedding", action="store_true",
+                   help="bench: time text embeddings on the Neural Engine (Core ML) against the GPU and use the faster")
     p.add_argument("--candidates", type=int, default=0,
                    help="bench --tasks: also measure the best N candidates not measured on this machine yet, "
                         "one at a time, keep the best and delete the others' downloads")

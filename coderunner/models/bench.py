@@ -81,7 +81,7 @@ async def measure(base_url: str, model: str, api_key: str = "", timeout: float =
     async with httpx.AsyncClient(timeout=timeout, headers=headers, trust_env=False, transport=transport) as client:
         base_url = base_url.rstrip("/")
         await _stream(client, base_url, model, [{"role": "user", "content": "Say hi."}], 4)   # load the weights
-        seed = int(time.time() * 1000)
+        seed = time.time_ns()          # a new page every run, so no prompt cache helps; distinct even for runs ms apart
         run = await _stream(client, base_url, model, [
             {"role": "system", "content": f"Session {seed}. You help the owner book travel."},
             {"role": "user", "content": page(seed) + "\n\nSummarize these flights in detail, cheapest first."}],
