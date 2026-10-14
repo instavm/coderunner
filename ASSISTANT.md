@@ -402,16 +402,71 @@ needs a public webhook.
 Speech is turned into text on this computer. `coderunner setup` (or `coderunner
 voice setup` later) prepares it:
 
+* Macs with Apple silicon and macOS 15 or later, for 25 European languages
+  (English, German, French, Spanish, Italian, Portuguese, Dutch, Polish,
+  Russian, Ukrainian and others): Parakeet Ultra on the Neural Engine, in
+  FluidInference's Core ML build (Moondream's post-training of NVIDIA's
+  Parakeet TDT 0.6B v3, CC-BY-4.0). Of the Core ML speech models it scores
+  best on the Open ASR Leaderboard's English sets (5.80% average WER;
+  Parakeet TDT v3 6.26%, Parakeet Unified 6.27%, the latter under NVIDIA's
+  Open Model License). Setup downloads FluidAudio's pinned source release
+  (Apache-2.0), checks it, builds a 10 MB helper with the Xcode command line
+  tools (about a minute and a half) and keeps only the helper; then the model
+  (631 MB, each file checksummed). Core ML compiles the model for the Neural
+  Engine once during setup (about 20 s; again after a macOS update). After
+  that each recording is one short process that loads the model in about
+  0.1 s, so nothing stays in memory between messages and the GPU stays free
+  for the chat model.
 * macOS 26 and later: Apple's on-device speech model (SpeechAnalyzer), through
   a small helper built with the Xcode command line tools. Nothing to download
   for languages macOS already has; it transcribes one set language
   (`--language en-IN`, otherwise the Mac's own) from 30 that Apple supports.
-* Everywhere else, and for languages Apple lacks (Hindi, for example):
+* Everywhere else, and for languages neither has (Hindi, for example):
   Qwen3-ASR on llama.cpp's official build, both downloaded and checksummed into
   the CodeRunner folder (1.7B, about 2.5 GB; 0.6B, about 1 GB, on 8 GB
   machines). It detects the language itself. Of the open speech models
   llama.cpp runs, it scores best on the Open ASR Leaderboard (5.75% average
-  English WER; Whisper large v3 7.84%).
+  English WER; Whisper large v3 7.84%). Setup downloads it only when neither
+  engine above serves the configured language.
+
+Engines are tried in that order (`voice.stt: auto`; `voice.stt:
+parakeet-coreml`, `apple` or `qwen3-asr` picks one); one that lacks the
+language or fails hands over to the next. Voice setup also times Parakeet and
+Apple speech on one sentence spoken by `say` and saves the result with the
+machine's profile in `models/speech.json`: on a machine where Parakeet took
+more than 0.5 s longer, Apple speech goes first. A bigger GPU speeds up only
+Qwen3-ASR, which comes last for the languages Parakeet knows (see below), so
+it does not change the order.
+
+Measured on an M3 Pro (18 GB, macOS 26.5), one process per recording as
+CodeRunner runs it: 50 LibriSpeech test-clean and 50 test-other utterances,
+40 segments of an Earnings-22 call (accented, conversational), the same call
+as one 4-minute recording, 15 FLEURS German and 10 FLEURS Hindi sentences.
+WER after lowercasing and removing punctuation and fillers (numbers as
+written, so "1855" against "eighteen fifty five" counts as three errors).
+Energy is CPU, GPU and Neural Engine power above idle (macmon), per minute of
+audio.
+
+| | Parakeet Ultra, Core ML | Apple speech | Qwen3-ASR 1.7B, llama.cpp |
+| --- | --- | --- | --- |
+| WER test-clean / test-other | 1.87% / 2.84% | 1.95% / 4.07% | 1.06% / 2.96% |
+| WER Earnings-22 segments / 4-minute recording | 8.33% / 7.44% | 11.16% / 11.61% | 8.48% / 5.51% |
+| WER German / Hindi | 2.98% / no | 3.31% / no | 3.64% / 12.84% |
+| WER, all short recordings (3,012 words) | 3.69% | 4.71% | 3.49% |
+| time per second of audio | 0.026 s | 0.033 s | 0.22 s |
+| 4-minute recording | 1.1 s | 3.8 s | 29.8 s |
+| text of a 3-10 s voice message after | 0.18 s | 0.19 s | 1.37 s |
+| energy per minute of audio | 9 J | 10 J | 121 J |
+| runs on | Neural Engine | Neural Engine and CPU | GPU (5 W) |
+
+Parakeet is more accurate than Apple speech (1.0 points fewer errors over all
+short recordings; 95% bootstrap interval 0.2 to 1.9) at the same speed.
+Against Qwen3-ASR the difference over all short recordings is within noise
+(+0.2 points, interval -0.5 to +1.0): Qwen3-ASR was better on clean read
+English (+0.8 points, interval +0.2 to +1.6) and on the one long recording,
+the two were level on the rest, and Parakeet takes an eighth of the time and
+a thirteenth of the energy, without loading a second model on the GPU next to
+the chat model.
 
 Talk to the assistant with the 🎤 button in the web page (it can read replies
 aloud with the browser's on-device voices) or `coderunner chat --voice`
