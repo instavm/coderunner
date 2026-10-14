@@ -33,9 +33,12 @@ CONTAINS_JS = "function(other) { for (let n = other; n; n = n.parentNode || n.ho
 # Choose an option of a native <select>, whose popup is drawn by the OS where mouse events cannot reach it.
 SELECT_OPTION_JS = r"""function(choice) {
   if (!this || this.tagName !== 'SELECT') return {ok: false, error: 'not a dropdown (<select>); click it instead'};
-  const want = String(choice).trim().toLowerCase();
+  // Sites pad option text with runs of non-breaking spaces ("1 \u00a0 \u00a0 (₹\u00a01,242)"), which a model
+  // cannot type back: all whitespace counts as one space on both sides.
+  const norm = t => String(t || '').replace(/\s+/g, ' ').trim();
+  const want = norm(choice).toLowerCase();
   const options = Array.from(this.options).filter(o => !o.disabled);
-  const label = o => (o.label || o.text || '').trim();
+  const label = o => norm(o.label || o.text);
   const match = options.find(o => label(o).toLowerCase() === want) || options.find(o => o.value.toLowerCase() === want)
     || options.find(o => label(o).toLowerCase().includes(want));
   if (!match) return {ok: false, error: 'no such option', options: options.slice(0, 60).map(label)};
@@ -47,7 +50,7 @@ SELECT_OPTION_JS = r"""function(choice) {
 
 OPTIONS_JS = r"""function() {
   return this && this.tagName === 'SELECT'
-    ? Array.from(this.options).filter(o => !o.disabled).slice(0, 60).map(o => (o.label || o.text || '').trim())
+    ? Array.from(this.options).filter(o => !o.disabled).slice(0, 60).map(o => (o.label || o.text || '').replace(/\s+/g, ' ').trim())
     : null;
 }"""
 
