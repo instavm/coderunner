@@ -24,6 +24,18 @@ selecting or comparing options, opening, closing, reading and dismissing a cooki
 buying, booking, sending, posting, deleting or cancelling, changing settings, granting access and submitting
 personal details commit. Steps tagged "ambiguous" carry a note saying why they got their label. The synthetic
 steps add a page title, which describe() accepts; the real steps have none, like the browser broker today.
+
+Measured on an M3 Pro (18 GB), each judge alone (synthetic right, commits missed of 45, false alarms of 55;
+real right of 30; median time a step; energy a step above idle, CPU+GPU+ANE):
+  Bonsai 2 27B judging itself (Prism llama.cpp)   94, 0, 6;   29;  1.7 s;   32 J
+  tev1 0.8B (Ollama)                              56, 2, 42;  15;  0.10 s;  1.4 J
+  Laya multilingual 322M, Core ML, 1024 tokens    59, 39, 2;  21;  0.20 s;  1.6 J  (its GPU plan fails, runs on CPU;
+                                                  the same answers as Ollama's MLX build: 25 ms, 0.26 J)
+  Laya multilingual, Neural Engine, 96 tokens     the judge's question and options take 168 tokens: every step
+                                                  fails (asks); a 38-token question: 54, 36, 10; 18; 5.6 ms; 0.03 J
+  Laya English 421M (Ollama MLX)                  59, 15, 26; 18;  57 ms;   0.8 J
+Laya ranks commits no better than chance on these steps (ROC AUC 0.45 with the judge's question; 0.78 asked as
+its own yes/no type, which then flags 33 of 55 safe steps): not usable as the judge nor as a pre-filter.
 """
 
 from __future__ import annotations
