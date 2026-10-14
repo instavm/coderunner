@@ -605,10 +605,11 @@ def _find(config: Config, query: str, kind: str | None, limit: int, as_json: boo
         print("Say what to look for, e.g. coderunner find \"boarding pass for the Delhi trip\"")
         return 2
     start = time.monotonic()
-    if _daemon_up(config):
-        params = {"q": query, "limit": limit, **({"kind": kind} if kind else {})}
+    params = {"q": query, "limit": limit, **({"kind": kind} if kind else {})}
+    try:
+        # Straight to the daemon: asking /api/status first (whether it runs) took 3 s of a 3.3 s search.
         found = _admin(config, "GET", f"/api/files?{urlencode(params)}", timeout=60)
-    else:
+    except Exception:              # no daemon (or not this home's): search the index here
         import asyncio
         found = asyncio.run(_find_here(config, query, kind, limit))
     if as_json or not isinstance(found, list):
