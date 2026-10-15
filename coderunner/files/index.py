@@ -36,6 +36,15 @@ MEDIA = ("image", "audio", "video")    # embedded on the GPU, text on the Neural
                                        # wait for the charger, 12 W against 5 W while indexing ~/Downloads
 
 
+def text_part(fingerprint: str | None) -> str | None:
+    """The part of an index fingerprint that text vectors depend on: the model, its text weights and the format.
+    None when the fingerprint does not name its parts (every change then means indexing everything again)."""
+    if not fingerprint or "|media:" not in fingerprint:
+        return None
+    model_and_text, _, rest = fingerprint.partition("|media:")
+    return model_and_text + "/" + rest.rpartition("/")[2]
+
+
 class FileIndex:
     def __init__(self, config, store, audit, embedder: Embedder | None = None, media: Media | None = None,
                  transcriber: Transcriber | None = None):
@@ -131,10 +140,18 @@ class FileIndex:
         stored = self.store.get_kv(FINGERPRINT)
         if stored != fingerprint:
             if self.store.one("SELECT 1 AS x FROM files LIMIT 1"):
-                self.audit.write("files.reindex", previous=stored, now=fingerprint)
+                media_only = text_part(stored) is not None and text_part(stored) == text_part(fingerprint)
+                self.audit.write("files.reindex", previous=stored, now=fingerprint, media_only=media_only)
                 with self.store.transaction():
-                    self.store.execute("DELETE FROM file_chunks")
-                    self.store.execute("DELETE FROM files")
+                    if media_only:
+                        # Same text weights: only pictures, sound and video are embedded anew.
+                        kinds = ", ".join("?" for _ in MEDIA)
+                        self.store.execute(f"DELETE FROM file_chunks WHERE path IN (SELECT path FROM files "
+                                           f"WHERE kind IN ({kinds}))", MEDIA)
+                        self.store.execute(f"DELETE FROM files WHERE kind IN ({kinds})", MEDIA)
+                    else:
+                        self.store.execute("DELETE FROM file_chunks")
+                        self.store.execute("DELETE FROM files")
                 self._queue.clear()
                 self.vectors.loaded = False
             self.store.set_kv(FINGERPRINT, fingerprint)

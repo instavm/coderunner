@@ -34,7 +34,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 SIZES = (64, 256, 512)
 WINDOW = SIZES[-1] - 2
 URGENT_TEXTS = 2
-VISION_TOKENS = 70        # the image encoder's budget that runs entirely on the Neural Engine (140, 280 need more)
+VISION_TOKENS = 280       # the model's default budget: on 64 questions over ~/Downloads as good as Ollama's build on
+                          # the GPU (MRR 0.76 both); 70 lost text-heavy screens. ~0.5 s a picture, Neural Engine.
 AUDIO_TOKENS = 500        # 20 s of sound (25 tokens a second) per embedding, with 4 special tokens within 512
 PACKAGE = "EmbeddingGemma2Text.mlpackage"
 COMPILED = "EmbeddingGemma2Text.mlmodelc"
@@ -319,19 +320,20 @@ class Service:
         return media() if callable(media) else set()
 
     def tags(self) -> dict:
-        """The model with a digest for the text weights and the media model's, so an index notices either change."""
-        digest = self.digest
+        """The model with a digest naming the text weights and where media is embedded ("text:<id>|media:<id>"), so
+        an index re-embeds only pictures and sound when only their encoder changes."""
+        media = ""
         if self.own_media():
-            digest = f"{digest}+{'-'.join(sorted(self.own_media()))}"
+            media = "coreml-" + "-".join(sorted(self.own_media()))
         elif self.media_url and self.media_model:
             try:
                 with urllib.request.urlopen(f"{self.media_url}/api/tags", timeout=5) as response:
                     models = json.load(response).get("models", [])
                 wanted = {self.media_model, f"{self.media_model}:latest"}
-                media = next((m.get("digest", "") for m in models if m.get("name") in wanted or m.get("model") in wanted), "")
-                digest = f"{digest}+{media[:12]}" if media else digest
+                media = next((m.get("digest", "") for m in models if m.get("name") in wanted or m.get("model") in wanted), "")[:12]
             except (OSError, ValueError):
-                pass
+                media = ""
+        digest = f"text:{self.digest}|media:{media or 'none'}"
         return {"models": [{"name": self.name, "model": self.name, "digest": digest}]}
 
     def capabilities(self) -> list[str]:

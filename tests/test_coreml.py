@@ -125,7 +125,7 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(openai["data"][1]["embedding"][0], 2.0)
             self.assertEqual(server.post("/api/show", {"model": "x"})["capabilities"], ["audio", "embedding", "vision"])
             # A change of either the text weights or Ollama's build changes the digest the file index keeps.
-            self.assertEqual(server.get("/api/tags")["models"][0]["digest"], "70fcf18+abcdef012345")
+            self.assertEqual(server.get("/api/tags")["models"][0]["digest"], "text:70fcf18|media:abcdef012345")
             self.assertTrue(server.get("/health")["loaded"])
 
     def test_pictures_without_ollama_are_refused_and_text_still_works(self):
@@ -232,7 +232,7 @@ class ServerTests(unittest.TestCase):
             encoder = self.media_encoder(folder)
             picture = bytes_io.BytesIO()
             Image.new("RGB", (1280, 720), (255, 0, 0)).save(picture, "JPEG")
-            vector = encoder.image(picture.getvalue())
+            vector = encoder.image(picture.getvalue(), 70)
             self.assertEqual(len(vector), 8)
             name, inputs = encoder.calls[-1]
             count = (528 // 16) * (288 // 16)                                  # 33 x 18 patches
@@ -283,7 +283,7 @@ class ServerTests(unittest.TestCase):
                                                                       {"audio": b64.b64encode(b"y").decode()}]})
             self.assertEqual([v[0] for v in out["embeddings"]], [2.0, 7.0, 8.0])   # nothing went to Ollama (port 9)
             self.assertEqual(server.post("/api/show", {})["capabilities"], ["audio", "embedding", "vision"])
-            self.assertEqual(server.get("/api/tags")["models"][0]["digest"], "rev+audio-vision")
+            self.assertEqual(server.get("/api/tags")["models"][0]["digest"], "text:rev|media:coreml-audio-vision")
 
     def test_the_model_is_released_when_idle(self):
         encoder = FakeEncoder()

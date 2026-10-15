@@ -63,7 +63,8 @@ class Embedder:
                            if m.get("name") in wanted or m.get("model") in wanted), "")
         except (httpx.HTTPError, ValueError):
             digest = ""
-        return f"{self.model}@{digest[:12]}" if digest else self.model
+        # A digest in parts ("text:...|media:...", CodeRunner's Core ML server) is kept whole: the index compares them.
+        return f"{self.model}@{digest if '|' in digest else digest[:12]}" if digest else self.model
 
     async def _request(self, inputs: list[Any]) -> list[list[float]]:
         response = await self._client.post(f"{self.base_url}/api/embed", json={

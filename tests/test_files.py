@@ -229,6 +229,30 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         await embedder.aclose()
         await other.aclose()
 
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is needed for media")
+    async def test_a_new_media_encoder_re_embeds_only_media(self):
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=red:s=64x64",
+                        "-frames:v", "1", str(self.docs / "red.png")], check=True)
+        before, _, _ = self.embedder(("embedding", "vision"), digest="text:75b97ab036ca|media:969600645b52")
+        index = self.index(before)
+        await index.index_once()
+        text_ids = {r["id"] for r in self.store.query("SELECT id FROM file_chunks c JOIN files f ON f.path = c.path "
+                                                      "WHERE f.kind = 'text'")}
+        after, seen, _ = self.embedder(("embedding", "vision"), digest="text:75b97ab036ca|media:coreml-audio-vision")
+        index = self.index(after)
+        result = await index.index_once()
+        self.assertEqual(result["indexed"], 1)                                # the picture, nothing else
+        self.assertTrue(any(isinstance(item, dict) and "image" in item for item in seen))
+        self.assertFalse(any(isinstance(item, str) and "Dentist" in item for item in seen))
+        kept = {r["id"] for r in self.store.query("SELECT id FROM file_chunks c JOIN files f ON f.path = c.path "
+                                                  "WHERE f.kind = 'text'")}
+        self.assertEqual(kept, text_ids)                                      # text vectors untouched
+        other, _, _ = self.embedder(("embedding", "vision"), digest="text:ffffffffffff|media:coreml-audio-vision")
+        index = self.index(other)
+        self.assertEqual((await index.index_once())["indexed"], 4)            # new text weights: everything
+        for embedder in (before, after, other):
+            await embedder.aclose()
+
     async def test_file_events_bring_changes_in_first(self):
         index = self.index()
         await index.index_once()
