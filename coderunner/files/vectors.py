@@ -93,8 +93,10 @@ class VectorIndex:
                                 "ON f.path = c.path WHERE c.code IS NOT NULL")
         fresh.add((r["id"], r["code"], r["modality"], r["kind"]) for r in rows)
         for modality in MODALITIES:
+            # Spread over the index by a hash of the id rather than drawn at random: a random draw moved close
+            # results past each other from one start to the next (4 of 64 benchmark questions).
             picked = self.store.query("SELECT embedding FROM file_chunks WHERE modality = ? AND code IS NOT NULL "
-                                      "ORDER BY random() LIMIT ?", (modality, SAMPLE))
+                                      "ORDER BY (id * 2654435761) % 4294967296 LIMIT ?", (modality, SAMPLE))
             fresh.sample[modality] = [unpack(r["embedding"]) for r in picked]
         (self.ids, self.codes, self.modality, self.kind, self.row, self.dead, self.sample) = (
             fresh.ids, fresh.codes, fresh.modality, fresh.kind, fresh.row, fresh.dead, fresh.sample)
