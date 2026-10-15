@@ -104,7 +104,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(svc.sandbox.calls), 1)             # the third call never ran
             await svc.llm.aclose()
 
-    async def test_a_step_that_just_failed_is_not_sent_again(self):
+    async def test_a_step_that_failed_twice_is_not_sent_again(self):
         with FakeOpenAI() as fake:
             svc = Svc()
             svc.sandbox = FakeSandbox()
@@ -112,16 +112,18 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             svc.registry = build_registry(svc)
             again = tool_call("nope", {"option": "1 (x)", "ref": 4})
             again["tool_calls"][0]["function"]["arguments"] = '{"ref": 4,  "option": "1 (x)"}'     # same call, respaced
-            fake.script = [tool_call("nope", {"ref": 4, "option": "1 (x)"}), again,
+            fake.script = [tool_call("nope", {"ref": 4, "option": "1 (x)"}),
+                           again,                                                   # one retry runs (a timeout can pass)
+                           tool_call("nope", {"ref": 4, "option": "1 (x)"}),          # the third is refused
                            tool_call("run_python", {"code": "print(1)"}),          # something worked: try again
                            tool_call("nope", {"ref": 4, "option": "1 (x)"}), {"role": "assistant", "content": "done"}]
             await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-repeat"), "go")
             tools = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
             self.assertIn("unknown tool", tools[0])
-            self.assertTrue(tools[1].startswith("Error: this exact step just failed and nothing has changed"))
-            self.assertIn("unknown tool 'nope'", tools[1])
-            self.assertIn("unknown tool", tools[3])
-            self.assertNotIn("this exact step", tools[3])
+            self.assertIn("unknown tool", tools[1])
+            self.assertTrue(tools[2].startswith("Error: this exact step has failed twice in a row"))
+            self.assertNotIn("nope", tools[2])                 # its error (possibly page text) is not echoed
+            self.assertIn("unknown tool", tools[4])
             await svc.llm.aclose()
 
     async def test_a_run_of_scrolls_points_at_find(self):
