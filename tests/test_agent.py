@@ -104,6 +104,46 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(svc.sandbox.calls), 1)             # the third call never ran
             await svc.llm.aclose()
 
+    async def test_a_step_that_just_failed_is_not_sent_again(self):
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.sandbox = FakeSandbox()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            again = tool_call("nope", {"option": "1 (x)", "ref": 4})
+            again["tool_calls"][0]["function"]["arguments"] = '{"ref": 4,  "option": "1 (x)"}'     # same call, respaced
+            fake.script = [tool_call("nope", {"ref": 4, "option": "1 (x)"}), again,
+                           tool_call("run_python", {"code": "print(1)"}),          # something worked: try again
+                           tool_call("nope", {"ref": 4, "option": "1 (x)"}), {"role": "assistant", "content": "done"}]
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-repeat"), "go")
+            tools = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
+            self.assertIn("unknown tool", tools[0])
+            self.assertTrue(tools[1].startswith("Error: this exact step just failed and nothing has changed"))
+            self.assertIn("unknown tool 'nope'", tools[1])
+            self.assertIn("unknown tool", tools[3])
+            self.assertNotIn("this exact step", tools[3])
+            await svc.llm.aclose()
+
+    async def test_a_run_of_scrolls_points_at_find(self):
+        class Scrolling(FakeBrowser):
+            async def scroll(self, direction="down", amount=600, tab=None, tainted=False):
+                return {"ok": True, "url": "https://example.com", "content": "Results 1-10"}
+
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.browser = Scrolling("")
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            fake.script = [tool_call("browser_scroll", {"direction": "down"}), tool_call("browser_scroll", {"direction": "up"}),
+                           tool_call("browser_scroll", {"direction": "down"}), tool_call("browser_snapshot", {}),
+                           tool_call("browser_scroll", {"direction": "down"}), {"role": "assistant", "content": "done"}]
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-scroll"), "find the prices")
+            tools = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
+            self.assertEqual(["scrolls in a row" in t for t in tools], [False, False, True, False, False])
+            self.assertTrue(tools[2].endswith('browser_snapshot start=<text> reads from there.'))
+            self.assertTrue(tools[2].startswith('<untrusted source="browser_scroll">'))
+            await svc.llm.aclose()
+
     async def test_untrusted_content_is_wrapped_and_taints(self):
         with FakeOpenAI() as fake:
             svc = Svc()

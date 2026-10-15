@@ -36,6 +36,28 @@ CONTEXT = "[Background for the request below, not a request itself]\nCurrent tim
 
 
 SKIPPED = "Skipped: an earlier step in this reply failed. Look at the page again before going on."
+# Loops seen in real browser runs: the same failing call sent again and again (a dropdown option spelled the
+# same wrong way four times), and scrolling up and down a long results page hunting for prices that one
+# browser_find would have found (14 scrolls in one hotel search).
+REPEATED = ("Error: this exact step just failed and nothing has changed since, so it would fail again: {error}\n"
+            "Try a different step.")
+SCROLLS_BEFORE_HINT = 3
+SCROLL_HINT = ("\nNote: {count} scrolls in a row. To find something on this page, browser_find with words you "
+               "expect in it (a name, \"₹\", \"Price\") is quicker; browser_snapshot start=<text> reads from there.")
+
+
+def error_of(result: str) -> str:
+    line = next((line for line in result.splitlines() if "Error:" in line), result)
+    return line.split("Error:", 1)[-1].strip()[:300]
+
+
+def call_key(name: str, arguments: Any) -> tuple[str, str]:
+    """The same call however its arguments were spaced or ordered."""
+    try:
+        parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+        return name, json.dumps(parsed, sort_keys=True, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return name, str(arguments)
 
 
 def render_plan(steps: list[dict]) -> str:
@@ -199,6 +221,8 @@ class Agent:
         failed = False
         reminded: list[dict] = []
         since = 0
+        just_failed: dict[tuple[str, str], str] = {}        # calls that failed since the last step that worked
+        scrolls = 0
         for step in range(max_steps):
             self._drop_old_images(messages)
             self._drop_old_pages(messages, int(self.svc.config.get("models.context", 32768) or 32768))
@@ -231,12 +255,23 @@ class Agent:
             failed = False
             for call in reply["tool_calls"]:
                 function = call.get("function", {})
+                name, arguments = function.get("name", ""), function.get("arguments", "{}")
+                key = call_key(name, arguments)
                 if failed:
                     # Later calls were planned on a page the failed step may have changed: the model looks again.
                     result = SKIPPED
+                elif key in just_failed:
+                    result, failed = REPEATED.format(error=just_failed[key]), True
                 else:
-                    result = await self.registry.invoke(function.get("name", ""), function.get("arguments", "{}"), ctx)
+                    result = await self.registry.invoke(name, arguments, ctx)
                     failed = result.startswith("Error:") or "\nError:" in result[:200]
+                    if failed:
+                        just_failed[key] = error_of(result)
+                    else:
+                        just_failed.clear()
+                    scrolls = scrolls + 1 if name == "browser_scroll" else 0
+                    if scrolls >= SCROLLS_BEFORE_HINT and not failed:
+                        result += SCROLL_HINT.format(count=scrolls)
                 messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result})
             if ctx.images:
                 parts: list[dict] = [{"type": "text", "text": "Screenshot (untrusted page content):"}]
