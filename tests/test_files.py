@@ -282,6 +282,15 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         await index.index_once()
         self.assertEqual(pathlib.Path((await index.search("Goa"))[0]["path"]).name, "trip.md")
 
+    async def test_a_file_queued_twice_is_indexed_once(self):
+        index = self.index()
+        await index._scan()                                      # the walk queues every file
+        await index.changed({str(self.docs / "notes.md")})       # and an event queues one of them again
+        result = await index.index_once()
+        self.assertEqual((result["indexed"], result["failed"]), (3, 0))
+        self.assertEqual(self.store.one("SELECT COUNT(*) AS n FROM files WHERE path LIKE '%notes.md'")["n"], 1)
+        self.assertFalse(any(e["event"] == "files.index_error" for e in self.audit.tail()))
+
     async def test_indexing_waits_on_a_low_battery(self):
         with mock.patch.object(power, "state", mock.AsyncMock(return_value=(True, 12, False))):
             self.assertIn("12%", await power.pause_reason(self.config))

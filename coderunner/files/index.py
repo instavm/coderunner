@@ -190,6 +190,12 @@ class FileIndex:
                          transcriber=self.transcriber if self.config.get("files.transcribe", False) else None)
 
     async def _index(self, batch: list[Found]) -> tuple[int, int]:
+        # A file queued twice (a file event ahead of the walk that also found it) is read once: written twice it
+        # broke the batch's transaction and lost the work on every file in it.
+        unique: dict[str, Found] = {}
+        for found in batch:
+            unique.setdefault(str(found.path), found)
+        batch = list(unique.values())
         if not batch:
             return 0, 0
         extractor = await self._extractor()
