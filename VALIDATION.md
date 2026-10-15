@@ -97,6 +97,26 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
   queries over notes, data, PDFs, screenshots, a picture and a spoken memo among 70 distractors,
   all answered first (R@1 1.00): a PDF page ("how much is the rent"), a policy number, two
   screenshots by their OCR text, the memo by its sound, the red picture by its look.
+* Retrieval on a real Downloads folder (`python tests/retrieval_eval.py`, bench kept outside the
+  repo: 64 plain-language questions naming no person, number or company, answers stored as hashes
+  of their paths). Index: ~28,000 of the owner's files plus cloned projects, 332,000 pieces;
+  EmbeddingGemma 2 on the Neural Engine for text, pictures and sound.
+
+  | Kind | Questions | Right first | In top 5 | MRR |
+  | --- | --- | --- | --- | --- |
+  | Documents | 16 | 0.75 | 1.00 | 0.86 |
+  | Videos | 10 | 0.90 | 1.00 | 0.93 |
+  | Screenshots | 11 | 0.55 | 0.82 | 0.63 |
+  | Photos | 8 | 0.50 | 0.75 | 0.62 |
+  | Code | 7 | 0.29 | 0.86 | 0.55 |
+  | Notes | 6 | 0.67 | 0.67 | 0.69 |
+  | Pictures | 5 | 0.60 | 1.00 | 0.80 |
+  | All (with 1 scanned document) | 64 | 0.62 | 0.89 | 0.74 |
+
+  The same with pictures and sound in Ollama on the GPU: MRR 0.76. Misses are mostly near-twins
+  (two tickets or statements of one kind, several notes about one subject). Exact copies of a file
+  count once (they took a place above the right answer in 3 questions). A search takes 249 ms
+  (median) while indexing runs; reading word matches before ranking them had taken 3.2 s.
 * Real folders (Documents, Desktop, Movies; 169,051 files, 163,806 of them only in iCloud and
   indexed by name without downloading): walk plus the first 2,000 files 83 s; 54,000 files in 30
   minutes, 30 files/s, limited by embedding (32 inputs/s while a chat model shared the GPU and
