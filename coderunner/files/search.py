@@ -221,9 +221,13 @@ class Searcher:
         if not words:
             return {}
         expression = " OR ".join(f'"{w}"' for w in words[:16])
-        rows = self.store.query("SELECT c.id, c.path, c.text FROM file_chunks_fts JOIN file_chunks c "
-                                "ON c.id = file_chunks_fts.rowid WHERE file_chunks_fts MATCH ? "
-                                "ORDER BY bm25(file_chunks_fts) LIMIT 400", (expression,))
+        # Ranked inside the full-text index, then only the best pieces read: joined in one query SQLite read the
+        # piece behind every match first (6 s for a question whose words matched 130,000 pieces, 0.2 s so).
+        ranked = [r["id"] for r in self.store.query(
+            "SELECT rowid AS id FROM file_chunks_fts WHERE file_chunks_fts MATCH ? "
+            "ORDER BY bm25(file_chunks_fts) LIMIT 400", (expression,))]
+        pieces = {r["id"]: r for r in self._rows("SELECT id, path, text FROM file_chunks WHERE id IN ({})", ranked)}
+        rows = [pieces[i] for i in ranked if i in pieces]
         held: dict[str, set[str]] = {}
         first: dict[str, int] = {}
         wanted = set(words)
