@@ -158,7 +158,7 @@ def sandbox_tools(svc) -> list[Tool]:
         if result.get("timed_out"):
             notes.append(f"stopped after {timeout} s; the shell lives on (for long work use background=true)")
         if result.get("restarted"):
-            notes.append("the shell ended; the next command starts a new one in the home folder")
+            notes.append("the shell ended; the next command starts a new one in the same directory, without its variables")
         if result.get("omitted"):
             notes.append(f"{result['omitted']} bytes of output left out in the middle")
         return f"{_fit(result.get('output', ''), limit)}\n[{'; '.join(notes)}]".strip()

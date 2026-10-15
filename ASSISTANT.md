@@ -35,8 +35,11 @@ coderunner chat       # talk to it; approvals are asked right in the terminal
 * **Host daemon** (`coderunner daemon`, installed as a login service) owns
   everything trusted. It is the only process holding the admin token, owner
   secrets, the browser and connector access.
-* **Sandbox VM** (Apple `container` on macOS, Docker elsewhere) runs code the
-  assistant writes. It can call the local model and an allow-listed fetch
+* **Sandbox VM** (Apple `container` on macOS, Docker elsewhere) is the
+  assistant's own Linux computer (Debian, as root): `run_shell` is a bash that
+  keeps its directory, variables and functions between commands, anything it
+  installs stays, and servers or long builds run as background jobs whose
+  output it reads with `shell_job`. It can call the local model and an allow-listed fetch
   through the gateway with the sandbox token; it cannot approve anything,
   drive the browser, read memories or reach connectors.
 * **Models** run on the host so they get the GPU (Apple's VM framework does not
@@ -217,12 +220,17 @@ declares success. If a model fails the test, the next candidate is tried.
   scores below Qwen3.5-9B on MMLU-Pro (77.6 against 82.5) and far below
   Qwen3.8-27B on Terminal-Bench 2.1 (29 against 73).
 
-* The sandbox runs the lite profile with the assistant: code runs as plain
-  processes in a work folder per session (files persist, variables do not),
-  with no Jupyter server and no browser inside the VM, which is capped at 1 GB
-  and used about 170 MB in testing. The assistant browses with your own
-  browser on the host. `./install.sh --profile full` keeps Jupyter kernels and
-  the headless browser for MCP clients that use them.
+* The sandbox runs the lite profile with the assistant: a persistent bash per
+  session (`run_shell`; a command past its timeout is stopped, not the shell),
+  detached jobs for servers and long work, and `run_python` for quick scripts,
+  with no Jupyter server and no browser inside the VM, which gets 2 GB and 4
+  CPUs (`./install.sh --memory 4g --cpus 8` for more; `sandbox.memory_gb`
+  tells model selection what it takes). The image keeps its build tools,
+  Java, ffmpeg, Node and Playwright browsers, so most work needs no install.
+  Apple's container service is started with the sandbox when it is stopped
+  (as after a restart). The assistant browses with your own browser on the
+  host. `./install.sh --profile full` adds Jupyter kernels and the headless
+  browser for MCP clients that use them.
 
 * The browser is read as text from Chrome's accessibility tree over CDP, with
   numbered elements that keep their numbers while the page changes (new pages

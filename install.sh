@@ -306,6 +306,24 @@ desired_config() {
     printf '%s' "$config"
 }
 
+# The builder VM kept ~13 GB of disk and 2 GB of memory after building the image; on an 18 GB Mac with a
+# full disk the build itself failed while loading the result.
+BUILD_SPACE_GB=20
+
+check_build_space() {
+    local free_gb
+    free_gb=$(df -g "$SCRIPT_DIR" | awk 'NR == 2 {print $4}')
+    if [ -n "$free_gb" ] && [ "$free_gb" -lt "$BUILD_SPACE_GB" ]; then
+        echo "❌ Building the sandbox image needs about $BUILD_SPACE_GB GB free; $free_gb GB is free."
+        exit 1
+    fi
+}
+
+remove_builder() {
+    container builder stop >/dev/null 2>&1 || true
+    container builder delete >/dev/null 2>&1 || true
+}
+
 # ---------------------------------------------------------------- macOS ----
 
 install_sandbox_macos() {
@@ -481,14 +499,17 @@ print(networks[0]["network"] if networks else "default")
 
     if [ "$BUILD_IMAGE" = "1" ]; then
         IMAGE="${IMAGE:-coderunner-local:latest}"
+        check_build_space
         echo "Building the sandbox image $IMAGE from $SCRIPT_DIR (this takes a while)..."
         # After an install or upgrade the builder image is downloaded on first use; inside
         # `container build` that download can outlast the API timeout, so start the builder first.
         container builder start >/dev/null 2>&1 || true
         if ! container build -t "$IMAGE" "$SCRIPT_DIR"; then
+            remove_builder
             echo "❌ Image build failed."
             exit 1
         fi
+        remove_builder
     else
         IMAGE="${IMAGE:-instavm/coderunner:$SANDBOX_TAG}"
         echo "Pulling the image: $IMAGE"
@@ -499,8 +520,10 @@ print(networks[0]["network"] if networks else "default")
             fi
             echo "The $SANDBOX_TAG sandbox image is not published yet; building it from this checkout instead."
             IMAGE="coderunner-local:latest"
+            check_build_space
             container builder start >/dev/null 2>&1 || true
-            container build -t "$IMAGE" "$SCRIPT_DIR" || { echo "❌ Image build failed."; exit 1; }
+            container build -t "$IMAGE" "$SCRIPT_DIR" || { remove_builder; echo "❌ Image build failed."; exit 1; }
+            remove_builder
         fi
     fi
 
