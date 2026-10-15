@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import os
 import re
+import threading
 from typing import Any
 
 from .discover import in_cloud_only
@@ -81,6 +82,7 @@ class Searcher:
         self.vectors = vectors
         self.embedder = embedder
         self._fingerprints: dict[tuple, bytes] = {}
+        self._fingerprint_lock = threading.Lock()
 
     async def search(self, query: str, kind: str | None = None, limit: int = 8) -> list[dict]:
         query = (query or "").strip()
@@ -129,16 +131,18 @@ class Searcher:
         Downloads folder, copies took a place above the right answer in 4."""
         kept: list[str] = []
         copies: dict[str, list[str]] = {}
-        for path in ranked:
-            if len(kept) >= limit:
-                break
+        sizes: set = set()
+        for path in ranked:                    # past the limit only to find copies of what was kept
             size = files.get(path, {}).get("size")
+            if len(kept) >= limit and size not in sizes:
+                continue
             twin = next((k for k in kept if size and files.get(k, {}).get("size") == size
                          and self._identical(k, path)), None)
             if twin:
                 copies.setdefault(twin, []).append(path)
-            else:
+            elif len(kept) < limit:
                 kept.append(path)
+                sizes.add(size)
         return kept, copies
 
     def _identical(self, a: str, b: str) -> bool:
@@ -151,20 +155,27 @@ class Searcher:
             stat = os.stat(path)
             if in_cloud_only(stat):
                 return None
-            key = (path, stat.st_mtime_ns, stat.st_size)
-            if key not in self._fingerprints:
-                with open(path, "rb") as handle:
-                    if stat.st_size <= 3 * COPY_SAMPLE:
-                        sample = handle.read()
-                    else:
-                        sample = b""
-                        for start in (0, (stat.st_size - COPY_SAMPLE) // 2, stat.st_size - COPY_SAMPLE):
-                            handle.seek(start)
-                            sample += handle.read(COPY_SAMPLE)
-                self._fingerprints[key] = stat.st_size.to_bytes(8, "little") + hashlib.sha256(sample).digest()
+            # A file replaced with other bytes of the same size keeps its mtime after cp -p or an unzip; its
+            # inode or change time does not.
+            key = (path, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+            with self._fingerprint_lock:
+                known = self._fingerprints.get(key)
+            if known is not None:
+                return known
+            with open(path, "rb") as handle:
+                if stat.st_size <= 3 * COPY_SAMPLE:
+                    sample = handle.read()
+                else:
+                    sample = b""
+                    for start in (0, (stat.st_size - COPY_SAMPLE) // 2, stat.st_size - COPY_SAMPLE):
+                        handle.seek(start)
+                        sample += handle.read(COPY_SAMPLE)
+            fingerprint = stat.st_size.to_bytes(8, "little") + hashlib.sha256(sample).digest()
+            with self._fingerprint_lock:              # searches run this in threads of their own
+                self._fingerprints[key] = fingerprint
                 while len(self._fingerprints) > 4096:
                     self._fingerprints.pop(next(iter(self._fingerprints)))
-            return self._fingerprints[key]
+            return fingerprint
         except OSError:
             return None
 

@@ -204,6 +204,9 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({pathlib.Path(p).name for p in [copied["path"], *copied["copies"]]},
                          {"invoice-2026.txt", "invoice-2026 (1).txt"})
         self.assertEqual(pathlib.Path(next(r for r in found if r is not copied)["path"]).name, "invoice-2027.txt")
+        # A copy ranked below the last place still names itself under the result it duplicates.
+        [first] = await index.search("Invoice 2026-41", limit=1)
+        self.assertEqual(len(first.get("copies", [])), 1)
         # A copy only iCloud holds is not read to compare it (that would download it).
         index.searcher._fingerprints.clear()
         with mock.patch("coderunner.files.search.in_cloud_only", lambda stat: True):
