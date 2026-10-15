@@ -4,6 +4,7 @@ import asyncio
 import os
 import pathlib
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -59,6 +60,17 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
                 status = (await client.get(f"http://127.0.0.1:{self.admin_port}/api/status", headers=admin)).json()
                 self.assertEqual(status["model"]["model"], "fake-model")
                 self.assertIn("memory_save", status["tools"])
+
+                # Whether the daemon runs is answered at once, even while the sandbox is slow to say if it is up.
+                async def slow_health():
+                    await asyncio.sleep(10)
+                    return False
+                daemon.svc.sandbox.health = slow_health
+                from coderunner import cli
+                began = time.monotonic()
+                from coderunner.core.config import Config
+                self.assertTrue(await asyncio.to_thread(cli._daemon_up, Config.load()))
+                self.assertLess(time.monotonic() - began, 2)
 
                 # The owner asks something that needs memory; a saved fact comes back in later prompts.
                 fake.script = [tool_call("memory_save", {"text": "Sam prefers window seats"}),

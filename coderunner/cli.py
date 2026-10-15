@@ -30,7 +30,10 @@ def _admin(config: Config, method: str, path: str, body: Any = None, timeout: fl
 
 def _daemon_up(config: Config) -> bool:
     try:
-        _admin(config, "GET", "/api/status", timeout=5)
+        # A request this home's token must sign, answered without waiting on anything: /api/status asks the
+        # sandbox for its health, 3 s when the VM is not up, and while the daemon was starting that passed the
+        # timeout, so `coderunner chat` said the daemon was not running.
+        _admin(config, "GET", "/api/approvals", timeout=5)
         return True
     except Exception:
         return False
