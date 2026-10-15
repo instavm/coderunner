@@ -473,6 +473,15 @@ class NavigationPolicyTests(BrokerTestCase):
         await self.broker.open("https://shop.example/")
         self.assertEqual(len(browser.sent("Emulation.setDeviceMetricsOverride")), 2)          # not after
 
+    async def test_a_link_copied_as_a_path_opens_on_the_same_site(self):
+        self.answers["browser.navigate"] = True
+        await self.load_shop()
+        opened = await self.broker.open("/pdf/fees.pdf")
+        self.assertTrue(opened["ok"], opened)
+        self.assertEqual(opened["url"], "https://shop.example/pdf/fees.pdf")
+        moved = await self.broker.navigate("/help?q=returns")
+        self.assertEqual(moved["url"], "https://shop.example/help?q=returns")
+
     async def test_open_and_tabs(self):
         self.answers["browser.navigate"] = True
         opened = await self.broker.open("https://shop.example/")

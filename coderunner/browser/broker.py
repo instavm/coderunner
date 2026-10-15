@@ -789,8 +789,18 @@ class BrowserBroker:
                          "title": info.get("title", "") if visible else "", "active": target == self._active})
         return {"ok": True, "tabs": tabs}
 
+    def _absolute(self, url: str, target: str | None) -> str:
+        """A link copied from a page as a path ("/pdf/fees.pdf") is read against that page's address: it was
+        refused as having no host, and the model went on guessing whole addresses instead."""
+        url = str(url or "").strip()
+        if url.startswith("/") and not url.startswith("//"):
+            base = self._committed.get(target or "", "")
+            if base.startswith(("http://", "https://")):
+                return urllib.parse.urljoin(base, url)
+        return url
+
     async def _open(self, url: str, tainted: bool) -> dict:
-        url, host = await self._vet(url)
+        url, host = await self._vet(self._absolute(url, self._active))
         await self._allow("browser.navigate", host, f"Open {url} in a new tab", tainted, url=url, chosen=True)
         cdp = await self._ensure()
         target = (await cdp.send("Target.createTarget", {"url": "about:blank"}))["targetId"]
@@ -799,6 +809,8 @@ class BrowserBroker:
         return await self._goto(target, url, host, tainted)
 
     async def _navigate(self, url: str, tab: str | None, tainted: bool) -> dict:
+        if str(url or "").strip().startswith("/"):
+            url = self._absolute(url, await self._target(tab))
         url, host = await self._vet(url)
         # chosen: the model wrote this URL, so it could carry data out (see Policy._leak_destination).
         await self._allow("browser.navigate", host, f"Open {url}", tainted, url=url, chosen=True)
