@@ -192,6 +192,23 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(index.remove_root(str(self.docs)), 2)
         self.assertEqual(await index.search("dentist"), [])
 
+    async def test_copies_of_a_file_count_once(self):
+        original = self.docs / "taxes" / "invoice-2026.txt"
+        (self.docs / "invoice-2026 (1).txt").write_bytes(original.read_bytes())
+        (self.docs / "invoice-2027.txt").write_text("Invoice 2026-42\nTotal due: 420 USD\n")   # same size, other bytes
+        index = self.index()
+        await index.index_once()
+        found = await index.search("Total due")
+        self.assertEqual(len(found), 2)
+        copied = next(r for r in found if "copies" in r)
+        self.assertEqual({pathlib.Path(p).name for p in [copied["path"], *copied["copies"]]},
+                         {"invoice-2026.txt", "invoice-2026 (1).txt"})
+        self.assertEqual(pathlib.Path(next(r for r in found if r is not copied)["path"]).name, "invoice-2027.txt")
+        # A copy only iCloud holds is not read to compare it (that would download it).
+        index.searcher._fingerprints.clear()
+        with mock.patch("coderunner.files.search.in_cloud_only", lambda stat: True):
+            self.assertEqual(len(await index.search("Total due")), 3)
+
     async def test_meaning_search_with_embeddings(self):
         embedder, seen, _ = self.embedder()
         index = self.index(embedder)
@@ -455,6 +472,16 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
                 return query_vector
         vectors = VectorIndex(self.store)
         return await search.Searcher(self.store, vectors, Fixed()).search(query, kind)
+
+    async def test_the_calibration_sample_is_the_same_on_every_load(self):
+        from coderunner.files.vectors import SAMPLE
+        for n in range(SAMPLE + 100):
+            self.add(f"/docs/{n}.txt", "text", "from line 1", f"note {n}", self.noise(), "text")
+        first, second = VectorIndex(self.store), VectorIndex(self.store)
+        first.load()
+        second.load()
+        self.assertEqual(len(first.sample["text"]), SAMPLE)
+        self.assertEqual([list(v) for v in first.sample["text"]], [list(v) for v in second.sample["text"]])
 
     async def test_pictures_rank_by_their_own_scale_and_weak_matches_are_cut(self):
         for n in range(80):

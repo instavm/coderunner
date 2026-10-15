@@ -624,6 +624,9 @@ def _find(config: Config, query: str, kind: str | None, limit: int, as_json: boo
         notes = [item.get("kind", ""), where, "in iCloud" if item.get("in_icloud") else "",
                  "weak match" if item.get("weak") else ""]
         print(f"{number:2}. {path}  ({', '.join(note for note in notes if note)})")
+        if item.get("copies"):
+            print("    same file at " + ", ".join("~" + p[len(home):] if p.startswith(home + os.sep) else p
+                                                for p in item["copies"]))
         if item.get("snippet"):
             print(f"    {item['snippet'][:160]}")
     print("Nothing matched in the shared folders." if not found else "", f"({(time.monotonic() - start) * 1000:.0f} ms)")

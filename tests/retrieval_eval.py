@@ -73,8 +73,9 @@ async def main() -> int:
         began = time.perf_counter()
         found = await index.search(item["query"], limit=args.limit)
         seconds = time.perf_counter() - began
-        ids = [anonymous(r["path"], root) for r in found]
-        rank = next((i + 1 for i, h in enumerate(ids) if h in item["targets"]), None)
+        # A result stands for its exact copies too ("same file at ...").
+        ids = [{anonymous(p, root) for p in [r["path"], *r.get("copies", [])]} for r in found]
+        rank = next((i + 1 for i, h in enumerate(ids) if h & set(item["targets"])), None)
         row = {"id": item["id"], "kind": item["kind"], "rank": rank, "ms": round(seconds * 1000),
                "first_kind": found[0]["kind"] if found else None}
         rows.append(row)
