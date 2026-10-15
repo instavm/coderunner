@@ -386,7 +386,9 @@ against about 43 s for Bonsai 2 27B reading the page as text.
 The driver acts through the same broker as the assistant: a point on the screenshot is turned into the
 element under it, which is then clicked with the usual checks, so policy, the step judge, approvals and
 the password and card rules all apply; a point with nothing actionable under it is refused. The driver
-also stops before irreversible steps on its own and asks.
+also stops before irreversible steps on its own and asks. It sees pages as it was trained to: laid out
+at 1440 x 900 (one screenshot pixel per CSS pixel, also on a Retina screen) while it works, with only its
+three most recent screenshots kept, under its own system prompt word for word.
 
 Where the driver and the assistant's model do not both fit in memory, they take turns: the assistant's
 model is unloaded while the driver works (the step judge asks the driver meanwhile) and loaded again

@@ -1,6 +1,7 @@
 """The browser driver: Fara1.5's format, the step loop over the broker's checked actions, taking turns with
 the assistant's model, and picking a driver per machine."""
 
+import contextlib
 import dataclasses
 import json
 import unittest
@@ -25,10 +26,22 @@ class FakeBroker:
     def __init__(self):
         self.calls = []
         self.fail = {}
+        self.viewports = []      # the page size each screenshot was taken at
 
     async def screenshot(self, **kw):
+        self.viewports.append(self.viewport)
         return {"ok": True, "mime": "image/png", "data_b64": "iVBORw0KGgo=", "url": "https://shop.example/",
                 "viewport": [1440, 900]}
+
+    viewport = None
+
+    @contextlib.asynccontextmanager
+    async def fixed_viewport(self, width, height):
+        self.viewport = (width, height)
+        try:
+            yield
+        finally:
+            self.viewport = None
 
     def __getattr__(self, name):
         async def action(*args, **kw):
@@ -67,6 +80,7 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
             ctx = RunContext(conversation="d1")
             report = await driver.run("Find the cheapest flight.", ctx)
             await driver.llm.aclose()
+            self.viewports = svc.browser.viewports + [svc.browser.viewport]
             return report, svc.browser.calls, fake.requests, ctx
 
     async def test_steps_become_checked_broker_actions(self):
@@ -84,6 +98,9 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertTrue(report.startswith("SpiceJet at INR 9,995"))
         self.assertIn("Noted on the way: SpiceJet is cheapest", report)
+        # Every screenshot at the page size of its training, and the window's own size again after.
+        self.assertEqual(set(self.viewports[:-1]), {fara.VIEWPORT})
+        self.assertIsNone(self.viewports[-1])
         self.assertEqual(calls[0], ("click_at", (720.0, 450.0)))        # 1000-space point on a 1440x900 page
         self.assertEqual(calls[1], ("type_focused", ("Delhi",)))
         self.assertEqual(calls[2], ("press", ("Enter",)))

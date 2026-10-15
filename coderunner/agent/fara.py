@@ -15,6 +15,7 @@ import re
 DISPLAY = 1000
 NEXT = "Here is the next screenshot. Think about what to do next."
 KEEP_SCREENSHOTS = 3            # the most recent screenshots kept in the conversation, as in training
+VIEWPORT = (1440, 900)          # the page size most of its training screenshots had (model card)
 
 IDENTITY = """\
 You are Fara, a computer use agent (CUA) specialized for web browsers. \

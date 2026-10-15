@@ -43,7 +43,9 @@ class Driver:
         self.svc.audit.write("driver.start", model=self.llm.model, goal=goal[:300], origin=ctx.origin)
         if self.swap is None and self.runtime is not None:
             await asyncio.to_thread(self.runtime.start)
-        async with (self.swap or contextlib.nullcontext()):
+        fixed = getattr(self.svc.browser, "fixed_viewport", None)
+        async with (self.swap or contextlib.nullcontext()), (fixed(*fara.VIEWPORT) if fixed
+                                                             else contextlib.nullcontext()):
             report = await self._run(goal, ctx)
         self.svc.audit.write("driver.finish", model=self.llm.model, report=report[:300], origin=ctx.origin)
         return report

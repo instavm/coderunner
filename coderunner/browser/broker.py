@@ -137,6 +137,7 @@ class BrowserBroker:
         self._tab_counter = 0
         self._tab_ids: dict[str, str] = {}        # targetId -> short tab id shown to the model
         self._tab_targets: dict[str, str] = {}    # short tab id -> targetId
+        self._viewport: tuple[int, int] | None = None   # a fixed page size while a screenshot model works
         self._reset()
 
     def _reset(self) -> None:
@@ -466,6 +467,8 @@ class BrowserBroker:
             # The page behaves as if its window had the focus. Otherwise, whenever the owner works in another
             # window, pop-up widgets ignore clicks: booking.com's destination box opened only with this on.
             await self._send(sid, "Emulation.setFocusEmulationEnabled", {"enabled": True})
+            if self._viewport:
+                await self._fix_viewport(sid)
             self._committed.setdefault(target, (await self._info(target)).get("url", ""))
         except CDPError:
             self._forget_session(sid)
@@ -473,6 +476,28 @@ class BrowserBroker:
                 await self._cdp.send("Target.detachFromTarget", {"sessionId": sid})
             raise
         return sid
+
+    @contextlib.asynccontextmanager
+    async def fixed_viewport(self, width: int, height: int):
+        """Pages laid out at width x height CSS pixels, one screenshot pixel each, while a model trained on
+        screenshots of that size works (Fara1.5: 1440 x 900, instead of a Retina window of another shape);
+        tabs opened meanwhile get it too, and every page has the window's own size again after."""
+        self._viewport = (width, height)
+        try:
+            for sid in list(self._sessions.values()):
+                with contextlib.suppress(CDPError, BrowserError):
+                    await self._fix_viewport(sid)
+            yield
+        finally:
+            self._viewport = None
+            for sid in list(self._sessions.values()):
+                with contextlib.suppress(CDPError, BrowserError):
+                    await self._send(sid, "Emulation.clearDeviceMetricsOverride")
+
+    async def _fix_viewport(self, sid: str) -> None:
+        width, height = self._viewport or (0, 0)
+        await self._send(sid, "Emulation.setDeviceMetricsOverride",
+                         {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": False})
 
     async def _send(self, sid: str, method: str, params: dict | None = None, timeout: float = 30.0) -> dict:
         if self._cdp is None:

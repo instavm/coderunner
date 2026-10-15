@@ -460,6 +460,19 @@ class NavigationPolicyTests(BrokerTestCase):
         events = [entry["event"] for entry in self.audit.tail()]
         self.assertIn("browser.navigate", events)
 
+    async def test_a_fixed_viewport_covers_every_tab_and_is_undone(self):
+        self.answers["browser.navigate"] = True
+        browser, _ = await self.load_shop()
+        async with self.broker.fixed_viewport(1440, 900):
+            size = {"width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": False}
+            self.assertEqual(browser.sent("Emulation.setDeviceMetricsOverride"), [size])       # the open tab
+            opened = await self.broker.open("https://shop.example/")
+            self.assertTrue(opened["ok"], opened)
+            self.assertEqual(browser.sent("Emulation.setDeviceMetricsOverride"), [size, size])  # and a new one
+        self.assertEqual(len(browser.sent("Emulation.clearDeviceMetricsOverride")), 2)
+        await self.broker.open("https://shop.example/")
+        self.assertEqual(len(browser.sent("Emulation.setDeviceMetricsOverride")), 2)          # not after
+
     async def test_open_and_tabs(self):
         self.answers["browser.navigate"] = True
         opened = await self.broker.open("https://shop.example/")
