@@ -32,8 +32,8 @@ PARALLEL_READS = 4          # files converted at once
 NAME_BATCH = 512            # names of iCloud-only files embedded per pass, once the rest is done
 FINGERPRINT = "files.fingerprint"
 PAUSE_CHECK = 60.0
-MEDIA = ("image", "audio", "video")    # embedded on the GPU, text on the Neural Engine (Core ML): on battery these
-                                       # wait for the charger, 12 W against 5 W while indexing ~/Downloads
+MEDIA = ("image", "audio", "video")    # the heavy part (0.5 s a picture, 30 ms a passage): on battery these wait
+                                       # for the charger
 
 
 def text_part(fingerprint: str | None) -> str | None:
@@ -43,6 +43,13 @@ def text_part(fingerprint: str | None) -> str | None:
         return None
     model_and_text, _, rest = fingerprint.partition("|media:")
     return model_and_text + "/" + rest.rpartition("/")[2]
+
+
+def priority(found: Found) -> tuple[bool, bool, bool]:
+    """Indexing order: what is on this Mac first; the owner's own notes and documents (quick) before pictures,
+    sound and video (hours for a big folder), and git checkouts, mostly other people's code, last. In a real
+    Downloads folder, 4,765 exported notes were queued behind 146,000 files of cloned projects."""
+    return found.remote, found.in_repo, kind_of(found.path) in MEDIA
 
 
 class FileIndex:
@@ -175,7 +182,7 @@ class FileIndex:
             return changed, seen
 
         changed, seen = await asyncio.to_thread(walk)
-        self._queue.extend(sorted(changed, key=lambda found: found.remote))     # what is on this Mac first
+        self._queue.extend(sorted(changed, key=priority))
         self._files = len(seen)
         gone = [p for p in known if p not in seen]
         self._drop(gone)

@@ -51,6 +51,7 @@ class Found:
     path: pathlib.Path
     stat: os.stat_result
     remote: bool            # only iCloud holds the content: index the name, never download it
+    in_repo: bool = False   # inside a git checkout: mostly other people's code and docs
 
 
 class Folders:
@@ -171,4 +172,4 @@ class Folders:
             return None
         remote = not self.config.get("files.cloud_files", False) and in_cloud_only(stat)
         self.cloud_only += remote
-        return Found(path, stat, remote)
+        return Found(path, stat, remote, in_repo)
