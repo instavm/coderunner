@@ -68,18 +68,8 @@ RUN pip install -r requirements.txt
 RUN python -m bash_kernel.install
 
 
-# Copy the application code (server.py)
-COPY ./server.py /app/server.py
-COPY ./auth.py /app/auth.py
-
-# Create application/jupyter directories
-RUN mkdir -p /app/uploads /app/jupyter_runtime
-
-# Copy skills directory structure into the container
-# Public skills are baked into the image
-# User skills directory is created as mount point for user-added skills
-COPY ./skills/public /app/uploads/skills/public
-RUN mkdir -p /app/uploads/skills/user
+# Create application/jupyter directories (the user skills directory is a mount point for user-added skills)
+RUN mkdir -p /app/uploads /app/jupyter_runtime /app/uploads/skills/user
 
 # # Generate SSH host keys
 # RUN ssh-keygen -A
@@ -107,6 +97,13 @@ RUN apt-get update && apt-get install -y nodejs
 ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 RUN npm install playwright@1.53.0 -g
 RUN npx playwright@1.53.0 install
+
+# The application code last, so a change to it rebuilds only these small layers.
+COPY ./server.py /app/server.py
+COPY ./auth.py /app/auth.py
+COPY ./shell_session.py /app/shell_session.py
+# Public skills are baked into the image
+COPY ./skills/public /app/uploads/skills/public
 
 # Copy the entrypoint script into the image
 COPY entrypoint.sh /entrypoint.sh

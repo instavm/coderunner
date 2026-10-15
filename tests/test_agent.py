@@ -20,6 +20,34 @@ class FakeSandbox:
         return {"stdout": str(eval(code.replace("print", ""))) if code.startswith("print") else "", "stderr": ""}
 
 
+class FakeShellSandbox(FakeSandbox):
+    """The sandbox's shell API: a shell per session that remembers its directory."""
+
+    def __init__(self, supported=True):
+        super().__init__()
+        self.supported, self.cwd, self.shell_calls = supported, "/root", []
+
+    async def shell(self, command, session_id="main", timeout=120, background=False):
+        from coderunner.sandbox.client import ShellUnsupported
+        if not self.supported:
+            raise ShellUnsupported()
+        self.shell_calls.append((command, session_id, timeout, background))
+        if background:
+            return {"job": "ab12cd34", "running": True, "output": "", "cwd": self.cwd}
+        if command.startswith("cd "):
+            self.cwd = command[3:]
+            return {"output": "", "exit_code": 0, "cwd": self.cwd}
+        if command == "slow":
+            return {"output": "partial", "exit_code": 143, "cwd": self.cwd, "timed_out": True}
+        return {"output": "x" * 50000 + "THE END", "exit_code": 2, "cwd": self.cwd, "omitted": 0}
+
+    async def job(self, job, stop=False, tail=20000):
+        if job != "ab12cd34":
+            return {"error": f"No job {job}."}
+        return {"job": job, "command": "python3 -m http.server", "running": not stop, "exit_code": None if not stop
+                else -15, "output": "Serving HTTP on 0.0.0.0 port 8000", "log": "/tmp/j/log", "log_bytes": 33}
+
+
 class FakeBrowser:
     def __init__(self, page_text):
         self.page_text = page_text
@@ -144,6 +172,44 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(["scrolls in a row" in t for t in tools], [False, False, True, False, False])
             self.assertTrue(tools[2].endswith('browser_snapshot start=<text> reads from there.'))
             self.assertTrue(tools[2].startswith('<untrusted source="browser_scroll">'))
+            await svc.llm.aclose()
+
+    async def test_the_shell_keeps_state_reports_exit_and_keeps_the_end_of_long_output(self):
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.sandbox = FakeShellSandbox()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            fake.script = [tool_call("run_shell", {"command": "cd /srv/app"}),
+                           tool_call("run_shell", {"command": "make", "timeout": 99999}),
+                           tool_call("run_shell", {"command": "slow", "timeout": 5}),
+                           tool_call("run_shell", {"command": "python3 -m http.server", "background": True}),
+                           tool_call("shell_job", {"job": "ab12cd34"}),
+                           tool_call("shell_job", {"job": "nope"}),
+                           {"role": "assistant", "content": "done"}]
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-shell"), "build it")
+            tools = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
+            self.assertIn("cwd /srv/app", tools[0])
+            self.assertIn("exit code 2", tools[1])
+            self.assertIn("THE END", tools[1])                       # the end of a long output is kept
+            self.assertIn("characters left out", tools[1])
+            self.assertEqual(svc.sandbox.shell_calls[1][2], 3600)   # timeouts are capped
+            self.assertIn("stopped after 5 s; the shell lives on", tools[2])
+            self.assertIn("Started job ab12cd34", tools[3])
+            self.assertIn("running", tools[4])
+            self.assertIn("Serving HTTP", tools[4])
+            self.assertIn("No job nope", tools[5])
+            await svc.llm.aclose()
+
+    async def test_an_older_sandbox_image_runs_shell_commands_through_python(self):
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.sandbox = FakeShellSandbox(supported=False)
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            fake.script = [tool_call("run_shell", {"command": "uname -a"}), {"role": "assistant", "content": "ok"}]
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-old"), "which kernel?")
+            self.assertTrue(svc.sandbox.calls and "subprocess.run('uname -a'" in svc.sandbox.calls[0][0])
             await svc.llm.aclose()
 
     async def test_untrusted_content_is_wrapped_and_taints(self):

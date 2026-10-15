@@ -32,6 +32,7 @@ import socket
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from auth import BearerAuthentication
+import shell_session
 # --- CONFIGURATION & SETUP ---
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -83,6 +84,7 @@ RETRY_BACKOFF_BASE = 2  # exponential backoff base
 PROFILE = os.environ.get("CODERUNNER_PROFILE", "full").strip().lower()
 LITE = PROFILE == "lite"
 EXEC_TIMEOUT = int(os.environ.get("CODERUNNER_EXEC_TIMEOUT", "600"))
+SHELLS = shell_session.Shells()       # one persistent bash per session, and the jobs started from them
 WORK_DIR = pathlib.Path(os.environ.get("CODERUNNER_WORK_DIR", "/app/uploads/work"))
 OUTPUT_LIMIT = 2_000_000
 LITE_NO_BROWSER = ("Error: this sandbox runs the lite profile without a browser; the assistant uses the owner's "
@@ -677,6 +679,37 @@ async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
         raise e
 
 # --- MCP TOOLS ---
+@mcp.tool()
+async def run_shell(command: str, session_id: Optional[str] = None, timeout: int = shell_session.DEFAULT_TIMEOUT,
+                    background: bool = False) -> str:
+    """
+    Runs a bash command in this Linux VM (Debian, as root), in a shell that keeps its working directory,
+    variables and functions between calls of the same session, like a terminal. Anything can be installed
+    (apt-get, pip, npm) and stays installed. With background=true the command keeps running detached (a server,
+    a long build) and its job id is returned; read its output with shell_job.
+
+    Args:
+        command: The bash command or script.
+        session_id: Optional name of the shell to use (default "main").
+        timeout: Seconds before a foreground command is stopped (the shell itself lives on), at most 3600.
+        background: Run detached as a job instead of waiting for it.
+    """
+    session = session_id or "main"
+    if background:
+        return json.dumps(await SHELLS.start_job(session, command))
+    result = await SHELLS.run(session, command, timeout)
+    return json.dumps(result.__dict__)
+
+
+@mcp.tool()
+async def shell_job(job: str, stop: bool = False) -> str:
+    """Status and latest output of a job started by run_shell with background=true; stop=true stops it."""
+    try:
+        return json.dumps(SHELLS.stop_job(job) if stop else SHELLS.job(job))
+    except KeyError:
+        return json.dumps({"error": f"no job {job}"})
+
+
 @mcp.tool()
 async def execute_python_code(
     command: str,
@@ -1290,8 +1323,50 @@ async def api_stop_session(request: Request):
         return JSONResponse({"error": str(exc)}, status_code=404)
 
 
+async def api_shell(request: Request):
+    """Run a command in a session's persistent bash, or start it as a job.
+
+    Request: {"command": "...", "session_id": "main", "timeout": 120, "background": false}
+    Response: {"output", "exit_code", "cwd", "timed_out", "omitted", "restarted"}, or the job for background.
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    command = body.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return JSONResponse({"error": "Missing command."}, status_code=400)
+    session = str(body.get("session_id") or "main")
+    if body.get("background"):
+        return JSONResponse(await SHELLS.start_job(session, command))
+    result = await SHELLS.run(session, command, float(body.get("timeout") or shell_session.DEFAULT_TIMEOUT))
+    return JSONResponse(result.__dict__)
+
+
+async def api_shell_jobs(request: Request):
+    return JSONResponse({"jobs": SHELLS.list_jobs()})
+
+
+async def api_shell_job(request: Request):
+    job = request.path_params["job"]
+    try:
+        if request.method == "DELETE":
+            return JSONResponse(SHELLS.stop_job(job))
+        return JSONResponse(SHELLS.job(job, tail=int(request.query_params.get("tail", 20000))))
+    except KeyError:
+        return JSONResponse({"error": f"No job {job}."}, status_code=404)
+
+
+async def api_shell_session(request: Request):
+    return JSONResponse({"reset": await SHELLS.reset(request.path_params["session"])})
+
+
 # Add routes to the Starlette app
 app.add_route("/health", api_health, methods=["GET"])
+app.add_route("/v1/shell", api_shell, methods=["POST"])
+app.add_route("/v1/shell/jobs", api_shell_jobs, methods=["GET"])
+app.add_route("/v1/shell/jobs/{job}", api_shell_job, methods=["GET", "DELETE"])
+app.add_route("/v1/shell/sessions/{session}", api_shell_session, methods=["DELETE"])
 app.add_route("/execute", api_execute, methods=["POST"])
 app.add_route("/v1/sessions/session", api_start_session, methods=["POST"])
 app.add_route("/v1/sessions/session", api_get_session, methods=["GET"])

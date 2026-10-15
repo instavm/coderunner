@@ -16,6 +16,7 @@ import httpx
 
 from ..browser.broker import KEYS
 from ..safety.policy import Action
+from ..sandbox.client import ShellUnsupported
 
 if TYPE_CHECKING:
     from .loop import RunContext
@@ -101,16 +102,30 @@ SANDBOX_DOWN = ("Error: the sandbox is not running, so run_python and run_shell 
                 "without them (work out simple dates and sums directly) and tell the owner if the task needs code.")
 
 
+def _fit(text: str, limit: int) -> str:
+    """Long command output keeps its start and, above all, its end, where errors and results are."""
+    if len(text) <= limit:
+        return text
+    head = limit // 6
+    tail = limit - head - 120
+    return f"{text[:head]}\n…[{len(text) - head - tail} characters left out]…\n{text[-tail:]}"
+
+
 def sandbox_tools(svc) -> list[Tool]:
-    async def run_python(args, ctx):
-        session = args.get("session") or "main"
-        if not await svc.policy.check(Action("sandbox.exec", session, f"Run in the sandbox:\n{args['code']}",
-                                             tainted=ctx.content_tainted), origin=ctx.origin):
-            return "Error: the owner did not approve running this code."
+    async def approved(what: str, session: str, ctx) -> bool:
+        if not await svc.policy.check(Action("sandbox.exec", session, what, tainted=ctx.content_tainted),
+                                      origin=ctx.origin):
+            return False
         if ctx.content_tainted and ctx.private_sources and svc.egress is not None:
             # Code that could carry the owner's data, written after untrusted content, must not
             # reuse the egress allow list or standing grants.
             svc.egress.taint()
+        return True
+
+    async def run_python(args, ctx):
+        session = args.get("session") or "main"
+        if not await approved(f"Run in the sandbox:\n{args['code']}", session, ctx):
+            return "Error: the owner did not approve running this code."
         try:
             await svc.sandbox.start_session(session)
             result = await svc.sandbox.execute(args["code"], session_id=session)
@@ -121,18 +136,57 @@ def sandbox_tools(svc) -> list[Tool]:
             or "(no output)"
 
     async def run_shell(args, ctx):
-        code = ("import subprocess\n"
-                f"r = subprocess.run({args['command']!r}, shell=True, capture_output=True, text=True, timeout=600)\n"
-                "print(r.stdout[-20000:]); print(r.stderr[-5000:]); print('exit code', r.returncode)")
-        return await run_python({"code": code, "session": "shell"}, ctx)
+        command, session = args["command"], args.get("session") or "main"
+        timeout = max(1, min(int(args.get("timeout") or 120), 3600))
+        if not await approved(f"Run in the sandbox shell:\n{command}", session, ctx):
+            return "Error: the owner did not approve running this command."
+        try:
+            result = await svc.sandbox.shell(command, session, timeout, bool(args.get("background")))
+        except ShellUnsupported:
+            # An image from before the shell API: one-off commands through Python, as before.
+            code = ("import subprocess\n"
+                    f"r = subprocess.run({command!r}, shell=True, capture_output=True, text=True, timeout=600)\n"
+                    "print(r.stdout[-20000:]); print(r.stderr[-5000:]); print('exit code', r.returncode)")
+            return await run_python({"code": code, "session": "shell"}, ctx)
+        except (httpx.TransportError, OSError):
+            return SANDBOX_DOWN
+        limit = int(svc.config.get("agent.tool_output_chars", 12000)) - 400
+        if "job" in result:
+            return (f"Started job {result['job']} in {result.get('cwd', '')}; it keeps running on its own. "
+                    f"See its output with shell_job.\n{_fit(result.get('output', ''), limit)}").strip()
+        notes = [f"exit code {result.get('exit_code')}", f"cwd {result.get('cwd', '')}"]
+        if result.get("timed_out"):
+            notes.append(f"stopped after {timeout} s; the shell lives on (for long work use background=true)")
+        if result.get("restarted"):
+            notes.append("the shell ended; the next command starts a new one in the home folder")
+        if result.get("omitted"):
+            notes.append(f"{result['omitted']} bytes of output left out in the middle")
+        return f"{_fit(result.get('output', ''), limit)}\n[{'; '.join(notes)}]".strip()
+
+    async def shell_job(args, ctx):
+        try:
+            found = await svc.sandbox.job(str(args["job"]), stop=bool(args.get("stop")))
+        except (httpx.TransportError, OSError):
+            return SANDBOX_DOWN
+        if "error" in found:
+            return f"Error: {found['error']}"
+        state = "running" if found.get("running") else f"finished, exit code {found.get('exit_code')}"
+        limit = int(svc.config.get("agent.tool_output_chars", 12000)) - 400
+        return (f"Job {found['job']} ({state}): {found.get('command', '')[:200]}\n"
+                f"{_fit(found.get('output', ''), limit)}\n[log {found.get('log')}, {found.get('log_bytes')} bytes]")
 
     return [
-        Tool("run_python", "Run a complete Python script in the isolated sandbox VM. Files in the session's folder "
-             "persist between runs; variables may not, so save results to files. Use this for any calculation, data "
-             "processing, file work or package installs. Print what you need to see.",
+        Tool("run_shell", "Run a bash command in your own Linux VM (Debian, as root; not the owner's computer). "
+             "The shell keeps its directory, variables and functions between calls, like a terminal, and anything "
+             "you install (apt-get, pip, npm) stays. For a server or long job set background=true and check it "
+             "with shell_job. timeout (seconds, default 120) stops a foreground command, not the shell.",
+             _params({"command": STR, "session": STR, "timeout": INT, "background": {"type": "boolean"}},
+                     ["command"]), run_shell, sandbox_output=True),
+        Tool("shell_job", "Status and latest output of a background job from run_shell; stop=true stops it.",
+             _params({"job": STR, "stop": {"type": "boolean"}}, ["job"]), shell_job, sandbox_output=True),
+        Tool("run_python", "Run a complete Python script in the sandbox VM (for quick calculations and data work; "
+             "run_shell can do anything else). Files persist; variables may not, so save results to files.",
              _params({"code": STR, "session": STR}, ["code"]), run_python, sandbox_output=True),
-        Tool("run_shell", "Run a shell command inside the isolated sandbox VM (not on the owner's computer).",
-             _params({"command": STR}, ["command"]), run_shell, sandbox_output=True),
     ]
 
 

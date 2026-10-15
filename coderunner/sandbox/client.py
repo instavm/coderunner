@@ -7,8 +7,17 @@ from typing import Any
 import httpx
 
 
+EXEC_TIMEOUT = 600          # the sandbox's own limit for a run (CODERUNNER_EXEC_TIMEOUT in the image)
+
+
+class ShellUnsupported(Exception):
+    """The sandbox image predates the shell API."""
+
+
 class SandboxClient:
-    def __init__(self, base_url: str, token: str, timeout: float = 330):
+    # Waits a little longer than a run may take: at 330 s, a run the sandbox allowed 600 s for ended in a read
+    # timeout, which the assistant reported as the sandbox not running.
+    def __init__(self, base_url: str, token: str, timeout: float = EXEC_TIMEOUT + 30):
         self.base_url = base_url.rstrip("/")
         self._client = httpx.AsyncClient(
             base_url=self.base_url, timeout=timeout, trust_env=False,
@@ -30,6 +39,27 @@ class SandboxClient:
         if response.status_code >= 400 and "stderr" not in data:
             data = {"stdout": "", "stderr": data.get("error", response.text)}
         return data
+
+    async def shell(self, command: str, session_id: str = "main", timeout: float = 120,
+                    background: bool = False) -> dict:
+        """A command in the session's persistent bash (or started as a job)."""
+        response = await self._client.post("/v1/shell", json={
+            "command": command, "session_id": session_id, "timeout": timeout, "background": background},
+            timeout=timeout + 30)
+        if response.status_code == 404:
+            raise ShellUnsupported()
+        response.raise_for_status()
+        return response.json()
+
+    async def job(self, job: str, stop: bool = False, tail: int = 20000) -> dict:
+        if stop:
+            response = await self._client.request("DELETE", f"/v1/shell/jobs/{job}")
+        else:
+            response = await self._client.get(f"/v1/shell/jobs/{job}", params={"tail": tail})
+        if response.status_code == 404:
+            return {"error": response.json().get("error", f"No job {job}.")}
+        response.raise_for_status()
+        return response.json()
 
     async def start_session(self, session_id: str | None = None) -> dict:
         response = await self._client.post("/v1/sessions/session", json={"session_id": session_id} if session_id else {})

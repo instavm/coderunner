@@ -23,7 +23,7 @@ install_container_tool() {
     rm -f "$CONTAINER_INSTALLER"
 }
 
-CPUS="${CODERUNNER_CPUS:-8}"
+CPUS="${CODERUNNER_CPUS:-4}"
 MEMORY="${CODERUNNER_MEMORY:-}"
 PROFILE="${CODERUNNER_PROFILE:-auto}"
 MOUNT_SPECS=()
@@ -43,8 +43,8 @@ usage() {
 Usage: ./install.sh [options]
 
 Options:
-  --cpus N                  CPU count (default: 8)
-  --memory SIZE             Memory limit, e.g. 1g or 8192m (default: 1g lite, 4g full)
+  --cpus N                  CPU count (default: 4)
+  --memory SIZE             Memory limit, e.g. 2g or 8192m (default: 2g lite, 4g full)
   --profile lite|full       lite: code runs as plain processes, no Jupyter or browser in the
                             sandbox (the assistant uses your own browser), about 1 GB.
                             full: Jupyter kernels and a headless browser for MCP clients.
@@ -135,7 +135,8 @@ if [ "$PROFILE" != "lite" ] && [ "$PROFILE" != "full" ]; then
     exit 2
 fi
 if [ -z "$MEMORY" ]; then
-    if [ "$PROFILE" = "lite" ]; then MEMORY=1g; else MEMORY=4g; fi
+    # lite: the assistant's general Linux VM (a shell first); 2 GB leaves room for builds and small servers.
+    if [ "$PROFILE" = "lite" ]; then MEMORY=2g; else MEMORY=4g; fi
 fi
 if ! [[ "$MEMORY" =~ ^[1-9][0-9]*([KkMmGgTtPp][Bb]?)?$ ]]; then
     echo "Error: memory must be a positive size such as 4g or 8192m." >&2
