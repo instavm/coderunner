@@ -152,6 +152,24 @@ def uninstall(roots: dict[str, pathlib.Path] | None = None) -> list[str]:
     return removed
 
 
+def refresh() -> bool:
+    """Bring an installed copy of the extension and host up to this version of CodeRunner, so a fix reaches
+    the browser without installing again; Chrome reads an unpacked extension's files when its worker next
+    starts. Nothing happens unless the extension was installed. Returns whether files were replaced."""
+    base = chrome_dir()
+    extension, host = base / "extension", base / "host.py"
+    if not extension.is_dir():
+        return False
+    source = {p.relative_to(EXTENSION_SOURCE): p.read_bytes() for p in EXTENSION_SOURCE.rglob("*") if p.is_file()}
+    copy = {p.relative_to(extension): p.read_bytes() for p in extension.rglob("*") if p.is_file()}
+    stale = source != copy or not host.exists() or host.read_bytes() != HOST_SOURCE.read_bytes()
+    if stale:
+        shutil.rmtree(extension)
+        shutil.copytree(EXTENSION_SOURCE, extension)
+        shutil.copyfile(HOST_SOURCE, host)
+    return stale
+
+
 def installed(roots: dict[str, pathlib.Path] | None = None) -> dict[str, bool]:
     return {name: (root / "NativeMessagingHosts" / f"{HOST_NAME}.json").exists()
             for name, root in (roots if roots is not None else browser_roots()).items() if root.is_dir()}

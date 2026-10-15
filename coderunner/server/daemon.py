@@ -153,8 +153,13 @@ class Daemon:
 
         from ..browser import BrowserBroker
         if os.name == "posix":
-            from ..browser.extension import ChromeBridge
+            from ..browser.extension import ChromeBridge, refresh
             svc.chrome = ChromeBridge(audit=audit)
+            try:
+                if refresh():
+                    audit.write("browser.extension_updated")
+            except OSError as exc:
+                audit.write("browser.extension_update_failed", error=str(exc)[:200])
         svc.browser = BrowserBroker(self.config, svc.policy, audit,
                                     decider=ActionCheck.from_config(self.config, audit, **runtime), chrome=svc.chrome)
 
