@@ -86,10 +86,21 @@ class AppleDriver(Driver):
     def status(self) -> str:
         info = self._inspect()
         if info is None:
-            return "missing"
-        return str(info.get("status", "unknown"))
+            # With Apple's container service stopped (as after the Mac restarts) nothing can be inspected:
+            # the sandbox then looked missing, and `coderunner up` told the owner to run the installer.
+            return "missing" if self._service_running() else "service-stopped"
+        status = info.get("status", "unknown")
+        # container 1.5 reports {"state": "running", "networks": [...]}, earlier versions a plain string.
+        return str(status.get("state", "unknown") if isinstance(status, dict) else status)
+
+    def _service_running(self) -> bool:
+        return _run(["container", "system", "status"], timeout=20).returncode == 0
 
     def start(self) -> bool:
+        if not self._service_running() and _run(
+                ["container", "system", "start", "--disable-kernel-install", "--timeout", "60"],
+                timeout=90).returncode != 0:
+            return False
         return _run(["container", "start", self.container], timeout=180).returncode == 0
 
     def stop(self) -> bool:
