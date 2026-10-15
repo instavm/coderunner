@@ -23,7 +23,7 @@ from . import power
 from .discover import Folders, Found
 from .embed import Embedder
 from .extract import NAME_ONLY, Extractor, Media, Piece, Transcriber
-from .kinds import kind_of
+from .kinds import is_code, kind_of
 from .search import Searcher
 from .vectors import FORMAT, VectorIndex, code_bytes, pack, unit_mean
 
@@ -45,11 +45,11 @@ def text_part(fingerprint: str | None) -> str | None:
     return model_and_text + "/" + rest.rpartition("/")[2]
 
 
-def priority(found: Found) -> tuple[bool, bool, bool]:
-    """Indexing order: what is on this Mac first; the owner's own notes and documents (quick) before pictures,
-    sound and video (hours for a big folder), and git checkouts, mostly other people's code, last. In a real
+def priority(found: Found) -> tuple[bool, bool, bool, bool]:
+    """Indexing order: what is on this Mac first; notes and documents (quick) before pictures, sound and video
+    (hours for a big folder), then source code, and git checkouts, mostly other people's code, last. In a real
     Downloads folder, 4,765 exported notes were queued behind 146,000 files of cloned projects."""
-    return found.remote, found.in_repo, kind_of(found.path) in MEDIA
+    return found.remote, found.in_repo, is_code(found.path), kind_of(found.path) in MEDIA
 
 
 class FileIndex:

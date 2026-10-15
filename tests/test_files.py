@@ -282,7 +282,7 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         await index.index_once()
         self.assertEqual(pathlib.Path((await index.search("Goa"))[0]["path"]).name, "trip.md")
 
-    async def test_own_notes_first_then_media_then_checkouts(self):
+    async def test_notes_first_then_media_then_code_then_checkouts(self):
         repo = self.docs / "aaa-cloned-project"                      # walked first by name on most systems
         (repo / ".git").mkdir(parents=True)
         (repo / "README.md").write_text("A library someone else wrote.")
@@ -290,8 +290,8 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         index = self.index()
         await index._scan()
         order = [f.path.name for f in index._queue]
-        self.assertEqual(order[-2:], ["photo.png", "README.md"])
-        self.assertEqual(set(order[:-2]), {"invoice-2026.txt", "notes.md", "code.py"})
+        self.assertEqual(set(order[:2]), {"invoice-2026.txt", "notes.md"})
+        self.assertEqual(order[2:], ["photo.png", "code.py", "README.md"])
 
     async def test_a_file_queued_twice_is_indexed_once(self):
         index = self.index()
