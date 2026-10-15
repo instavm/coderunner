@@ -101,7 +101,8 @@ class Encoder:
         import coremltools as ct
         path = self.folder / (pathlib.Path(package).stem + ".mlmodelc")
         if not path.exists():
-            staging = self.folder / "compiling"           # coremltools wants the name to end in .mlmodelc
+            # coremltools wants the name to end in .mlmodelc; a folder per package, as encoders can compile at once
+            staging = self.folder / f"compiling-{path.stem}"
             shutil.rmtree(staging, ignore_errors=True)
             ct.utils.compile_model(str(self.folder / package), str(staging / path.name))
             (staging / path.name).rename(path)

@@ -154,7 +154,7 @@ class ServerTests(unittest.TestCase):
             path = encoder._compiled()
             self.assertEqual(path, pathlib.Path(folder) / srv.COMPILED)
             self.assertTrue(path.is_dir())
-            self.assertFalse((pathlib.Path(folder) / "compiling").exists())
+            self.assertFalse(list(pathlib.Path(folder).glob("compiling*")))
             self.assertEqual(encoder._compiled(), path)
             self.assertEqual(len(compiled), 1)                     # compiled once, then reused
 
