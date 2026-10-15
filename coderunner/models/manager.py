@@ -326,9 +326,10 @@ def _setup_embedding(config, rt: Runtime, hw, progress) -> str:
 
 def setup_coreml_embedding(config, hw: hardware.Hardware | None = None, progress: Callable[[str], None] = print,
                            remeasure: bool = False, rt=None, measure=None, warm=None) -> str:
-    """On Apple silicon the embedding model's text encoder runs on the Neural Engine (coreml.py) unless this
-    machine's GPU measured faster; pictures and sound stay with its build in Ollama, which the Core ML server
-    passes them on to. `models.embedding_runtime` (auto | coreml | gpu) overrides the measurement.
+    """On Apple silicon the embedding model runs on the Neural Engine (coreml.py) unless this machine's GPU
+    measured faster on text; the Core ML server embeds pictures and sound with the build's own encoders and passes
+    them on to its build in Ollama when those are missing. `models.embedding_runtime` (auto | coreml | gpu)
+    overrides the measurement.
     Returns the runtime that embeds text: "coreml" or "gpu"."""
     from . import coreml
     wanted = config.get("models.embedding_runtime") or "auto"

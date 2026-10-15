@@ -236,12 +236,15 @@ declares success. If a model fails the test, the next candidate is tried.
 
 * Embeddings for memory and files: EmbeddingGemma 2 (text, images and audio
   in one space) through Ollama, also when the assistant model runs elsewhere
-  (`models.embedding_url`). On Apple silicon (macOS 15+) its text encoder
-  runs on the Neural Engine through Core ML instead (FluidInference's
-  build, served by CodeRunner on 127.0.0.1:8084 in an environment of its
-  own); pictures and sound still go to the build in Ollama, whose vectors
-  share the space. Measured on an M3 Pro over 821 passages of CodeRunner's
-  own files:
+  (`models.embedding_url`). On Apple silicon (macOS 15+) it runs on the
+  Neural Engine through Core ML instead (FluidInference's build, served by
+  CodeRunner on 127.0.0.1:8084 in an environment of its own): text, and
+  pictures and sound through the build's own vision and audio encoders
+  (a picture at the model's default 280 tokens, about 0.5 s on an M3 Pro;
+  sound 20 s per embedding). Without those encoders pictures and sound go
+  to the build in Ollama, whose vectors share the space. Against Google's
+  full-precision model the Core ML text vectors agree to a cosine of 1.000.
+  Measured on an M3 Pro over 821 passages of CodeRunner's own files:
 
   | | Ollama (GPU) | Core ML (Neural Engine) |
   | --- | --- | --- |
@@ -261,6 +264,10 @@ declares success. If a model fails the test, the next candidate is tried.
   three lengths it uses for the Neural Engine (about 85 s on an M3 Pro, once;
   Core ML keeps the result); after a restart, or after
   `models.idle_unload_minutes` releases the model, it is back in 1-1.5 s.
+  On 64 questions over a real Downloads folder (documents, notes, code,
+  screenshots, photos, videos) search found the right file first as often
+  with Core ML pictures and sound as with Ollama's (mean reciprocal rank
+  0.76 both), with the GPU idle.
 * Fast "System 1" models share the runtime: an embedding model for memory
   search, and a decision model (`models.decision`, served through Ollama's
   decision API) that judges whether a browser step commits something and
@@ -492,13 +499,16 @@ daemon indexes it in the background and keeps it current, and
 `coderunner find "boarding pass for the Delhi trip"` searches it from the
 terminal by describing what you want.
 
-* One multimodal embedding model (`files.embedding`, EmbeddingGemma 2 in
-  Ollama) places names, text, pictures and sound in one space. Every file is
-  findable by its name; text by passage (with its line); PDFs page by page,
-  scanned pages read with on-device OCR; pictures by what they show and by
-  the text in them (screenshots, photos of documents); audio in overlapping
-  30-second windows; video as frames plus sound. Results point at the page,
-  line or moment that matched.
+* One multimodal embedding model (`files.embedding`, EmbeddingGemma 2 on
+  the Neural Engine or in Ollama) places names, text, pictures and sound in
+  one space. Every file is findable by its name; text by passage (with its
+  line); PDFs page by page, scanned pages read with on-device OCR; pictures
+  by what they show and by the text in them (screenshots, photos of
+  documents); audio in overlapping 30-second windows (silence skipped);
+  video by a frame a second (up to 32, spread evenly over a longer video),
+  by the whole video (the mean of its frames) and by its sound. Results
+  point at the page, line or moment that matched. Source code is searched
+  with the model's code-retrieval prompt.
 * Words are matched too (full-text index), so names, codes and numbers
   ("HX-55821") are found exactly. Text made mostly of figures (data exports)
   is matched by words only.
@@ -514,7 +524,11 @@ terminal by describing what you want.
 * Kept current: on macOS new and changed files are picked up within seconds
   (file events); elsewhere the folders are walked every `files.scan_interval`.
   Indexing waits on a battery below `files.min_battery` (30%) and in Low
-  Power Mode. A different embedding model means indexing again.
+  Power Mode; on battery, pictures, sound and video wait for the charger
+  while text goes on (`files.media_on_battery`; `files.media_waits` holds
+  them whatever the power). A different embedding model means indexing
+  again; a new picture or sound encoder for the same text model re-embeds
+  only pictures, sound and video.
 * Files kept only in iCloud are indexed by name and never downloaded (set
   `files.cloud_files` to read them); folders kept only in iCloud are not
   listed. Source code in git checkouts is left to code tools
