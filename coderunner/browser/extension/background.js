@@ -189,7 +189,20 @@ async function forget(tabId) {
 
 async function attach(tabId) {
   if (sessions.has(tabId)) return sessions.get(tabId);
-  await chrome.debugger.attach({tabId}, "1.3");
+  try {
+    await chrome.debugger.attach({tabId}, "1.3");
+  } catch (e) {
+    // When Chrome restarts this worker, the debugger it had attached stays attached while this copy has
+    // forgotten it, and every later attach to the tab failed ("Another debugger is already attached").
+    // Detaching succeeds only for this extension's own attachment: then attach afresh. A debugger that is
+    // someone else's (DevTools, another extension) is left alone and the error stands.
+    try {
+      await chrome.debugger.detach({tabId});
+    } catch (_) {
+      throw e;
+    }
+    await chrome.debugger.attach({tabId}, "1.3");
+  }
   const sessionId = `tab:${tabId}`;
   sessions.set(tabId, sessionId);
   used.set(tabId, Date.now());

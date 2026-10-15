@@ -47,6 +47,14 @@ class ExtensionFilesTests(unittest.TestCase):
     def test_background_script_parses(self):
         subprocess.run(["node", "--check", str(EXTENSION / "background.js")], check=True)
 
+    def test_a_restarted_worker_takes_over_its_own_debugger_and_no_one_elses(self):
+        # In a real run the extension's worker restarted mid-task and every later step on that tab failed with
+        # "Another debugger is already attached": the old worker's attachment outlived its memory of it.
+        check = pathlib.Path(__file__).parent / "js" / "attach_check.js"
+        done = subprocess.run(["node", str(check), str(EXTENSION / "background.js")], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.strip(), "us: attached; devtools: refused")
+
 
 # ---- the native host ---------------------------------------------------------------
 
@@ -346,6 +354,18 @@ class InstallTests(unittest.TestCase):
     def test_long_home_falls_back_to_a_short_socket_path(self):
         os.environ["CODERUNNER_HOME"] = str(self.tmp / ("x" * 120))
         self.assertLess(len(str(extension.socket_path())), 100)
+
+    def test_an_installed_copy_is_brought_up_to_date(self):
+        self.assertFalse(extension.refresh())                     # never installed: nothing is written
+        self.assertFalse(extension.chrome_dir().joinpath("extension").exists())
+        extension.install(roots=self.roots)
+        self.assertFalse(extension.refresh())                     # already current
+        copy = extension.chrome_dir() / "extension" / "background.js"
+        copy.write_text("// an older version")
+        (extension.chrome_dir() / "extension" / "gone.js").write_text("// removed since")
+        self.assertTrue(extension.refresh())
+        self.assertEqual(copy.read_bytes(), (extension.EXTENSION_SOURCE / "background.js").read_bytes())
+        self.assertFalse((extension.chrome_dir() / "extension" / "gone.js").exists())
 
     def test_cli_connect_switches_the_mode(self):
         with mock.patch.object(extension, "browser_roots", return_value=self.roots), \
