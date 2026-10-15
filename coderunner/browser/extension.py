@@ -240,6 +240,7 @@ class ChromeBridge:
         self.audit = audit
         self.connection: ExtensionConnection | None = None
         self._server: asyncio.AbstractServer | None = None
+        self._made: tuple[int, int] | None = None     # the socket file this bridge created (device, inode)
         self._changed = asyncio.Event()
 
     @property
@@ -255,6 +256,8 @@ class ChromeBridge:
                 self.path.unlink()          # left over from a previous run
         self._server = await asyncio.start_unix_server(self._accept, path=str(self.path))
         os.chmod(self.path, 0o600)
+        made = os.lstat(self.path)
+        self._made = (made.st_dev, made.st_ino)
 
     async def stop(self) -> None:
         if self.connection is not None:
@@ -265,7 +268,11 @@ class ChromeBridge:
                 await self._server.wait_closed()
             self._server = None
         with contextlib.suppress(FileNotFoundError):
-            self.path.unlink()
+            now = os.lstat(self.path)
+            # Only the socket this daemon made: a daemon that took a few seconds to stop removed the socket of
+            # the one started after it, and the extension could never connect again.
+            if (now.st_dev, now.st_ino) == self._made:
+                self.path.unlink()
 
     def connected(self) -> bool:
         return self.connection is not None and not self.connection.closed

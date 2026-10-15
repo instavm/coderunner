@@ -212,6 +212,14 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_socket_is_private(self):
         self.assertEqual(os.stat(self.tmp / "c.sock").st_mode & 0o777, 0o600)
 
+    async def test_a_daemon_stopping_late_leaves_the_next_ones_socket(self):
+        newer = extension.ChromeBridge(self.tmp / "c.sock", "good-token", audit=self.audit)
+        await newer.start()                    # started while the first was still stopping
+        await self.bridge.stop()
+        self.assertTrue((self.tmp / "c.sock").exists())
+        await newer.stop()
+        self.assertFalse((self.tmp / "c.sock").exists())
+
     async def test_wrong_token_or_origin_is_refused(self):
         for token, origin in (("bad-token", extension.ORIGIN), ("good-token", "chrome-extension://other/")):
             fake = FakeExtension(self.tmp / "c.sock", token)
