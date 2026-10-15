@@ -299,8 +299,11 @@ class FileIndex:
         if not paths:
             return
         if transaction:
-            with self.store.transaction():
-                self._drop(paths, transaction=False)
+            # A transaction per 2,000 files: dropping 25,000 files (1.7 million pieces) in one filled the disk
+            # with its write-ahead log.
+            for start in range(0, len(paths), 2000):
+                with self.store.transaction():
+                    self._drop(paths[start:start + 2000], transaction=False)
             return
         for start in range(0, len(paths), 500):
             part = paths[start:start + 500]

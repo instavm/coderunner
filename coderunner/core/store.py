@@ -97,7 +97,8 @@ class Store:
             try:
                 yield self
             except BaseException:
-                self._conn.execute("ROLLBACK")
+                if self._conn.in_transaction:      # SQLite rolls back by itself on some errors (a full disk)
+                    self._conn.execute("ROLLBACK")
                 raise
             self._conn.execute("COMMIT")
 

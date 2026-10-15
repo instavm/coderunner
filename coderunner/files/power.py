@@ -9,6 +9,8 @@ import shutil
 import sys
 import time
 
+from ..core import paths
+
 CHECK_EVERY = 60.0
 _cache: tuple[float, tuple[bool, int | None, bool]] = (0.0, (False, None, False))
 
@@ -55,7 +57,18 @@ async def pause_reason(config) -> str:
     minimum = int(config.get("files.min_battery", 30) or 0)
     if on_battery and percent is not None and percent < minimum:
         return f"on battery at {percent}% (below {minimum}%)"
-    return ""
+    return disk_reason(config)
+
+
+def disk_reason(config) -> str:
+    """Indexing stops before it fills the disk: a large folder of source code grew the index by 4 GB in half
+    an hour and left 2.5 GB free."""
+    floor = float(config.get("files.min_free_gb", 5) or 0)
+    try:
+        free = shutil.disk_usage(paths.assistant_dir()).free / 1e9
+    except OSError:
+        return ""
+    return f"only {free:.1f} GB free on disk (below {floor:g} GB)" if free < floor else ""
 
 
 async def on_battery() -> bool:

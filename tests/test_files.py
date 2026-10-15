@@ -313,6 +313,14 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(power, "state", mock.AsyncMock(return_value=(False, 90, True))):
             self.assertIn("Low Power", await power.pause_reason(self.config))
 
+    async def test_indexing_waits_when_the_disk_is_nearly_full(self):
+        charging = mock.patch.object(power, "state", mock.AsyncMock(return_value=(False, 100, False)))
+        nearly_full = mock.patch.object(power.shutil, "disk_usage", return_value=mock.Mock(free=2.5e9))
+        with charging, nearly_full:
+            self.assertIn("2.5 GB free", await power.pause_reason(self.config))
+            self.config.set("files.min_free_gb", 2)
+            self.assertEqual(await power.pause_reason(self.config), "")
+
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is needed for media")
     async def test_images_and_audio_are_embedded_as_media(self):
         subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=red:s=64x64",
@@ -630,6 +638,15 @@ if __name__ == "__main__":
 
 
 class StoreReaderTests(unittest.TestCase):
+    def test_an_error_after_sqlite_rolled_back_by_itself_is_raised_as_it_is(self):
+        store = Store(":memory:")
+        with self.assertRaises(ValueError):
+            with store.transaction():
+                store.execute("INSERT INTO kv(key, value) VALUES ('k', '1')")
+                store.execute("ROLLBACK")              # as SQLite does on a full disk
+                raise ValueError("disk full")
+        self.assertIsNone(store.get_kv("k"))
+
     def test_a_long_read_does_not_wait_for_the_shared_connection(self):
         import threading
         with tempfile.TemporaryDirectory() as folder:
