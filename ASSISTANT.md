@@ -240,11 +240,22 @@ declares success. If a model fails the test, the next candidate is tried.
   Neural Engine through Core ML instead (FluidInference's build, served by
   CodeRunner on 127.0.0.1:8084 in an environment of its own): text, and
   pictures and sound through the build's own vision and audio encoders
-  (a picture at the model's default 280 tokens in 0.7 s on an M3 Pro,
-  against 1.0 s in Ollama on the GPU; sound 20 s per embedding). Without
-  those encoders pictures and sound go to the build in Ollama, whose
-  vectors share the space. Against Google's
-  full-precision model the Core ML text vectors agree to a cosine of 1.000.
+  (a picture at the model's default 280 tokens, sound 20 s per
+  embedding). Without those encoders pictures and sound go to the build in
+  Ollama, whose vectors share the space. Against Google's full-precision
+  model the Core ML text vectors agree to a cosine of 1.000. Pictures are
+  a little slower on the Neural Engine than on this Mac's GPU, but take a
+  third of the energy and leave the GPU to the assistant model (48
+  pictures, M3 Pro):
+
+  | | Ollama (GPU) | Core ML (Neural Engine) |
+  | --- | --- | --- |
+  | Time a picture | 0.41 s | 0.53 s |
+  | Chip power | 16.3 W | 5.4 W |
+  | Energy a picture, above idle | 5.6 J | 1.7 J |
+
+  A search does not wait for a picture being indexed: the encoders run
+  beside the text model (5 ms a query on an M3 Pro, instead of up to 0.5 s).
   Measured on an M3 Pro over 821 passages of CodeRunner's own files:
 
   | | Ollama (GPU) | Core ML (Neural Engine) |

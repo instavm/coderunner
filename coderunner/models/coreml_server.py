@@ -36,7 +36,8 @@ SIZES = (64, 256, 512)
 WINDOW = SIZES[-1] - 2
 URGENT_TEXTS = 2
 VISION_TOKENS = 280       # the model's default budget: on 64 questions over ~/Downloads as good as Ollama's build on
-                          # the GPU (MRR 0.76 both); 70 lost text-heavy screens. 0.71 s a picture (M3 Pro; Ollama 1.0 s).
+                          # the GPU (MRR 0.76 both); 70 lost text-heavy screens. 0.53 s a picture on an M3 Pro
+                          # (its GPU: 0.41 s, at three times the energy).
 AUDIO_TOKENS = 500        # 20 s of sound (25 tokens a second) per embedding, with 4 special tokens within 512
 PACKAGE = "EmbeddingGemma2Text.mlpackage"
 COMPILED = "EmbeddingGemma2Text.mlmodelc"
@@ -207,7 +208,7 @@ class Encoder:
         """A picture through the vision encoder, prepared as the build's card says (HF Gemma4ImageProcessor):
         resized keeping its aspect ratio to sides that are multiples of 48 px within the token budget, cut into
         16 px patches row by row, three by three patches pooled into one token. The vision encoder runs beside
-        the text model, so a search does not wait for a picture (9 ms instead of up to 0.7 s on an M3 Pro); only
+        the text model, so a search does not wait for a picture (5 ms instead of up to 0.5 s on an M3 Pro); only
         reading its tokens takes a turn on the text model."""
         vision = self.config["vision"]
         with self._using(), self.media_lock:
