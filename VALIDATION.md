@@ -97,6 +97,19 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
   queries over notes, data, PDFs, screenshots, a picture and a spoken memo among 70 distractors,
   all answered first (R@1 1.00): a PDF page ("how much is the rent"), a policy number, two
   screenshots by their OCR text, the memo by its sound, the red picture by its look.
+* Sixteen everyday read-only tasks on real sites, one attempt each, 12 minutes at most (M3 Pro,
+  18 GB, while files indexed and a Docker VM held ~4.7 GB): flights, trains, hotels, two shops, an
+  encyclopedia, a code host, a news site, weather, a currency rate, a recipe, a film, a government
+  fee, a returns policy, a map route and the Python docs. Qwen3.5-9B answered 12 right and 2 in
+  part (a pre-release taken for the latest release; a route's time without its distance, which it
+  said it could not see) and gave up on 2 (a two-shop price comparison, a fee calculator), in 52
+  minutes; numbers in the answers were in the pages it read, and the answers checkable against an
+  API (top news story, exchange rate) matched. Bonsai 2 27B ran out of time on the first two tasks
+  (~60 s a step: 50 tokens/s reading, 9 writing) and its runtime then crashed under memory
+  pressure, so the run was stopped. The run found and fixed: the chat command's daemon check (3 s
+  sandbox probe), a daemon frozen 7.5 s while loading the file index, the extension's worker
+  restart leaving every later step on a tab failing, a stopping daemon removing the next one's
+  socket, and links copied from a page as paths being refused.
 * Retrieval on a real Downloads folder (`python tests/retrieval_eval.py`, bench kept outside the
   repo: 64 plain-language questions naming no person, number or company, answers stored as hashes
   of their paths). Index: ~28,000 of the owner's files plus cloned projects, 332,000 pieces;
