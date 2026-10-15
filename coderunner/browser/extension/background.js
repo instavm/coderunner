@@ -77,7 +77,9 @@ async function setDaemon(connected) {
   daemon = connected;
   chrome.action.setBadgeText({text: connected ? "on" : ""});
   chrome.action.setTitle({title: connected ? "CodeRunner: connected" : "CodeRunner: not connected"});
-  if (!connected) {
+  if (connected) {
+    post({type: "extension", version: chrome.runtime.getManifest().version});
+  } else {
     discover = false;
     fetchPatterns = null;
     denyDownloads = false;

@@ -5,13 +5,15 @@ const fs = require("fs");
 const vm = require("vm");
 
 const listener = () => ({addListener() {}});
+const posted = [];
 function fakeChrome(attachedBy) {
   // attachedBy: tabId -> "us" | "devtools"; the debugger refuses a second attach to a tab.
   return {
     action: {setBadgeText() {}, setTitle() {}},
     alarms: {create() {}, onAlarm: listener()},
-    runtime: {connectNative: () => ({onMessage: listener(), onDisconnect: listener(), postMessage() {}}),
-              getManifest: () => ({version: "0"}), onInstalled: listener(), onStartup: listener()},
+    runtime: {connectNative: () => ({onMessage: listener(), onDisconnect: listener(),
+                                     postMessage(message) { posted.push(message); }}),
+              getManifest: () => ({version: "9.9.9"}), onInstalled: listener(), onStartup: listener()},
     tabs: {onCreated: listener(), onRemoved: listener(), onReplaced: listener(), onUpdated: listener()},
     tabGroups: {onRemoved: listener(), TAB_GROUP_ID_NONE: -1},
     debugger: {
@@ -50,6 +52,17 @@ async function main() {
       process.exit(1);
     }
   }
+  // The daemon learns the extension's version when it connects.
+  const context = vm.createContext({chrome: fakeChrome({}), console, setInterval() {}, setTimeout,
+                                    Date, Map, Set, Error, Promise, JSON, String, Number});
+  vm.runInContext(source, context);
+  await context.setDaemon(true);
+  const said = JSON.stringify(posted);
+  if (!said.includes('{"type":"extension","version":"9.9.9"}')) {
+    console.error(`version: got ${said}`);
+    process.exit(1);
+  }
+  results.push("version told");
   console.log(results.join("; "));
 }
 main();

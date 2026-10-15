@@ -53,7 +53,7 @@ class ExtensionFilesTests(unittest.TestCase):
         check = pathlib.Path(__file__).parent / "js" / "attach_check.js"
         done = subprocess.run(["node", str(check), str(EXTENSION / "background.js")], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(done.stdout.strip(), "us: attached; devtools: refused")
+        self.assertEqual(done.stdout.strip(), "us: attached; devtools: refused; version told")
 
 
 # ---- the native host ---------------------------------------------------------------
@@ -241,6 +241,35 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                 break
             await asyncio.sleep(0.02)
         self.assertEqual(self.bridge.status(), {"connected": False})
+
+    async def test_an_older_extension_is_reported_once(self):
+        async def connect(version):
+            reader, writer = await asyncio.open_unix_connection(str(self.tmp / "c.sock"))
+            writer.write(extension.encode({"type": "hello", "token": "good-token", "origin": extension.ORIGIN,
+                                           "pid": 77}))
+            self.assertEqual(await extension.read_frame(reader), {"type": "welcome"})
+            if version is not None:
+                writer.write(extension.encode({"type": "extension", "version": version}))
+            for _ in range(50):
+                if self.bridge.connection is not None and self.bridge.connection.version == version:
+                    break
+                await asyncio.sleep(0.02)
+            status = self.bridge.status()
+            writer.close()
+            for _ in range(50):
+                if not self.bridge.connected():
+                    break
+                await asyncio.sleep(0.02)
+            return status
+
+        status = await connect("0.9.0")
+        self.assertEqual(status["version"], "0.9.0")
+        self.assertIn("chrome://extensions", status["outdated"])
+        await connect("0.9.0")
+        self.assertIn("chrome://extensions", (await connect(None))["outdated"])       # too old to say
+        self.assertNotIn("outdated", await connect(extension.current_version()))
+        noted = [e for e in self.audit.tail() if e["event"] == "browser.extension_outdated"]
+        self.assertEqual([e["had"] for e in noted], ["0.9.0"])                       # once per version
 
     async def test_waiting_for_the_extension(self):
         self.assertIsNone(await self.bridge.wait(0.05))

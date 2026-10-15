@@ -152,6 +152,11 @@ def uninstall(roots: dict[str, pathlib.Path] | None = None) -> list[str]:
     return removed
 
 
+def current_version() -> str:
+    """The version of the extension this CodeRunner carries."""
+    return json.loads((EXTENSION_SOURCE / "manifest.json").read_text())["version"]
+
+
 def refresh() -> bool:
     """Bring an installed copy of the extension and host up to this version of CodeRunner, so a fix reaches
     the browser without installing again; Chrome reads an unpacked extension's files when its worker next
@@ -203,6 +208,8 @@ class ExtensionConnection:
         self.closed = False
         self.on_message: Callable[[dict], None] | None = None
         self.on_close: Callable[[], None] | None = None
+        self.version: str | None = None    # the extension's manifest version, once it has said (1.0.2 and later)
+        self.on_version: Callable[[str], None] | None = None
 
     def send(self, message: dict) -> None:
         if self.closed:
@@ -213,7 +220,11 @@ class ExtensionConnection:
         try:
             while True:
                 message = await read_frame(self.reader)
-                if isinstance(message, dict) and self.on_message is not None:
+                if isinstance(message, dict) and message.get("type") == "extension":
+                    self.version = str(message.get("version") or "")
+                    if self.on_version is not None:
+                        self.on_version(self.version)
+                elif isinstance(message, dict) and self.on_message is not None:
                     self.on_message(message)
         except (asyncio.IncompleteReadError, ConnectionError, ValueError):
             pass
@@ -241,6 +252,7 @@ class ChromeBridge:
         self.connection: ExtensionConnection | None = None
         self._server: asyncio.AbstractServer | None = None
         self._made: tuple[int, int] | None = None     # the socket file this bridge created (device, inode)
+        self._noted: set[str] = set()
         self._changed = asyncio.Event()
 
     @property
@@ -280,7 +292,12 @@ class ChromeBridge:
     def status(self) -> dict:
         if not self.connected():
             return {"connected": False}
-        return {"connected": True, "since": round(self.connection.since), "host_pid": self.connection.pid}
+        version = self.connection.version
+        found = {"connected": True, "since": round(self.connection.since), "host_pid": self.connection.pid,
+                 "version": version}
+        if version != current_version():       # None: from before 1.0.2, which did not say
+            found["outdated"] = "reload the CodeRunner extension in chrome://extensions (the circular arrow)"
+        return found
 
     async def wait(self, timeout: float) -> ExtensionConnection | None:
         deadline = time.monotonic() + timeout
@@ -312,11 +329,22 @@ class ChromeBridge:
         pid = hello.get("pid") if isinstance(hello.get("pid"), int) else None
         writer.write(encode({"type": "welcome"}))
         connection = self.connection = ExtensionConnection(reader, writer, pid)
+        connection.on_version = lambda version: self._check_version(connection, version)
         self._changed.set()
         self._audit("browser.extension_connected", host_pid=pid)
         await connection.pump()
         self._changed.set()
         self._audit("browser.extension_disconnected", host_pid=pid)
+
+    def _check_version(self, connection: ExtensionConnection, version: str) -> None:
+        """An extension older than this CodeRunner is noted, once per version: the daemon brings its files up to
+        date, but Chrome keeps running the worker script it has (also after a restart) until the owner reloads
+        the extension. Asking it to reload itself was tried: an extension loaded from the command line went
+        away instead of coming back."""
+        current = current_version()
+        if version != current and version not in self._noted:
+            self._noted.add(version)
+            self._audit("browser.extension_outdated", had=version, now=current)
 
     def _audit(self, event: str, **fields: Any) -> None:
         if self.audit is not None:

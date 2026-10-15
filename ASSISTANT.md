@@ -374,6 +374,10 @@ and can use only the tabs in that group. To set it up:
 `coderunner browser disconnect` goes back to the dedicated profile. Chrome needs to be open for the
 assistant to browse; if it is not, the assistant says so. Windows is not supported yet.
 
+After CodeRunner is updated, the daemon brings the extension's folder up to date, but Chrome keeps
+running the old extension (also after a restart) until you press its reload arrow in
+`chrome://extensions`; `coderunner browser status` says when the extension is older than CodeRunner.
+
 ### A browser driver for website tasks
 
 `coderunner models driver` adds a second model trained to use websites from screenshots: Microsoft's
