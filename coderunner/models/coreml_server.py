@@ -35,7 +35,7 @@ SIZES = (64, 256, 512)
 WINDOW = SIZES[-1] - 2
 URGENT_TEXTS = 2
 VISION_TOKENS = 280       # the model's default budget: on 64 questions over ~/Downloads as good as Ollama's build on
-                          # the GPU (MRR 0.76 both); 70 lost text-heavy screens. ~0.5 s a picture, Neural Engine.
+                          # the GPU (MRR 0.76 both); 70 lost text-heavy screens. 0.71 s a picture (M3 Pro; Ollama 1.0 s).
 AUDIO_TOKENS = 500        # 20 s of sound (25 tokens a second) per embedding, with 4 special tokens within 512
 PACKAGE = "EmbeddingGemma2Text.mlpackage"
 COMPILED = "EmbeddingGemma2Text.mlmodelc"
