@@ -89,15 +89,22 @@ class VectorIndex:
     def load(self) -> None:
         """Read every code from disk. Built aside and swapped in whole, so a search never sees half of it."""
         fresh = VectorIndex(self.store)
-        rows = self.store.query("SELECT c.id, c.code, c.modality, f.kind FROM file_chunks c JOIN files f "
-                                "ON f.path = c.path WHERE c.code IS NOT NULL")
-        fresh.add((r["id"], r["code"], r["modality"], r["kind"]) for r in rows)
-        for modality in MODALITIES:
-            # Spread over the index by a hash of the id rather than drawn at random: a random draw moved close
-            # results past each other from one start to the next (4 of 64 benchmark questions).
-            picked = self.store.query("SELECT embedding FROM file_chunks WHERE modality = ? AND code IS NOT NULL "
-                                      "ORDER BY (id * 2654435761) % 4294967296 LIMIT ?", (modality, SAMPLE))
-            fresh.sample[modality] = [unpack(r["embedding"]) for r in picked]
+        # Files and pieces read apart and matched here: joined in SQL it took 6.3 s for 227,000 pieces, 1.9 s so.
+        with self.store.reader() as db:
+            kinds = {path: kind for path, kind in db.execute("SELECT path, kind FROM files")}
+            rows = db.execute("SELECT id, code, modality, path FROM file_chunks WHERE code IS NOT NULL").fetchall()
+            fresh.add((row[0], row[1], row[2], kinds[row[3]]) for row in rows if row[3] in kinds)
+            del rows
+            for modality in MODALITIES:
+                # Spread over the index by a hash of the id rather than drawn at random: a random draw moved
+                # close results past each other from one start to the next (4 of 64 benchmark questions). The
+                # ids are picked first and only those vectors read (0.4 s instead of 3.2 s for names).
+                ids = [row[0] for row in db.execute("SELECT id FROM file_chunks WHERE modality = ? AND code IS NOT "
+                                                    "NULL", (modality,))]
+                picked = sorted(ids, key=lambda chunk: (chunk * 2654435761) % 4294967296)[:SAMPLE]
+                found = db.execute(f"SELECT embedding FROM file_chunks WHERE id IN ({','.join('?' * len(picked))})",
+                                   picked).fetchall() if picked else []
+                fresh.sample[modality] = [unpack(row[0]) for row in found]
         (self.ids, self.codes, self.modality, self.kind, self.row, self.dead, self.sample) = (
             fresh.ids, fresh.codes, fresh.modality, fresh.kind, fresh.row, fresh.dead, fresh.sample)
         self._groups = None

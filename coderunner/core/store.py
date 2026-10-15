@@ -105,6 +105,22 @@ class Store:
         with self._lock:
             return [dict(row) for row in self._conn.execute(sql, tuple(params)).fetchall()]
 
+    @contextlib.contextmanager
+    def reader(self):
+        """A read-only connection of its own for a long read, which WAL lets run beside the shared one: reading
+        the file index's 227,000 vectors through the shared connection held its lock for 7 s, and every request
+        to the daemon waited (`coderunner chat` concluded it was not running)."""
+        if self.path == ":memory:":
+            with self._lock:
+                yield self._conn
+            return
+        conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
+
     def one(self, sql: str, params: Iterable[Any] = ()) -> dict | None:
         rows = self.query(sql, params)
         return rows[0] if rows else None

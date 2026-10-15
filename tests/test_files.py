@@ -627,3 +627,20 @@ def make_pdf(pages: list[str]) -> bytes:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StoreReaderTests(unittest.TestCase):
+    def test_a_long_read_does_not_wait_for_the_shared_connection(self):
+        import threading
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(pathlib.Path(folder) / "assistant.db")
+            store.execute("INSERT INTO kv(key, value) VALUES ('k', '1')")
+            done = threading.Event()
+
+            def read():
+                with store.reader() as db:
+                    self.assertEqual(db.execute("SELECT value FROM kv").fetchall()[0][0], "1")
+                done.set()
+            with store._lock:                   # a request or a batch write holds the shared connection
+                threading.Thread(target=read).start()
+                self.assertTrue(done.wait(5))
