@@ -246,6 +246,38 @@ class ServerTests(unittest.TestCase):
             self.assertTrue(all(abs(pool[:, i].sum() - 1 / 9) < 1e-3 for i in range(count)))
             self.assertEqual(encoder.sequences[-1], (33 // 3) * (18 // 3) + 4)          # 66 tokens + 4 special
 
+    def test_a_search_does_not_wait_for_a_picture_in_the_vision_encoder(self):
+        import io as bytes_io
+        import tempfile
+        import types
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as folder:
+            encoder = self.media_encoder(folder)
+            inside, finish = threading.Event(), threading.Event()
+            tokens = encoder._image_tokens
+
+            def slow(data, count):
+                inside.set()
+                finish.wait(5)                   # the picture is still in its encoder
+                return tokens(data, count)
+            encoder._image_tokens = slow
+            encoder._window = lambda ids: [1.0] + [0.0] * 7
+            encoder._load = lambda: setattr(encoder, "tokenizer", types.SimpleNamespace(
+                encode=lambda text, add_special_tokens=False: types.SimpleNamespace(ids=[5, 6])))
+            picture = bytes_io.BytesIO()
+            Image.new("RGB", (96, 96)).save(picture, "PNG")
+            indexing = threading.Thread(target=encoder.image, args=(picture.getvalue(), 70))
+            indexing.start()
+            self.assertTrue(inside.wait(5))
+            asked = time.monotonic()
+            encoder.embed(["task: search result | query: rent"], urgent=True)
+            self.assertLess(time.monotonic() - asked, 1.0)
+            self.assertFalse(encoder.release())  # not while the picture uses the model
+            finish.set()
+            indexing.join(5)
+            self.assertEqual(len(encoder.sequences), 1)                        # then its tokens were read
+            self.assertTrue(encoder.release())
+
     def test_sound_goes_through_the_audio_encoder_ten_seconds_at_a_time(self):
         import io as bytes_io
         import tempfile
