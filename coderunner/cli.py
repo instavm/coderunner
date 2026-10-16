@@ -624,8 +624,7 @@ def _find(config: Config, query: str, kind: str | None, limit: int, as_json: boo
         path = "~" + item["path"][len(home):] if item["path"].startswith(home + os.sep) else item["path"]
         where = (f"page {item['page']}" if "page" in item else f"line {item['line']}" if "line" in item
                  else f"at {clock(item['at'])}" if "at" in item else "")
-        notes = [item.get("kind", ""), where, "in iCloud" if item.get("in_icloud") else "",
-                 "weak match" if item.get("weak") else ""]
+        notes = [item.get("kind", ""), where, "in iCloud" if item.get("in_icloud") else ""]
         print(f"{number:2}. {path}  ({', '.join(note for note in notes if note)})")
         if item.get("copies"):
             print("    same file at " + ", ".join("~" + p[len(home):] if p.startswith(home + os.sep) else p

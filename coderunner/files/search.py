@@ -1,15 +1,20 @@
-"""Finding files by what they are about, and by the words in them.
+"""Finding files by what they are about.
 
-The query is embedded and compared with every piece (vectors.VectorIndex: a fast first pass, then exact
-scores). A piece's similarity is read against its modality for this query, in standard deviations above
-the average name, passage, picture or sound, so a photo that matches well is not buried under text that
-matches a little. Words are matched with SQLite's full-text index over names, passages, PDF pages, text
-read from pictures and transcripts, and a file's word score is the share of the query's words it holds.
+The question is embedded and compared with every piece (vectors.VectorIndex: binary codes, then exact scores
+for each modality's closest pieces). Similarities to names, passages, pictures and sound run on different
+scales, so each is standardised against its own modality (a z-score over a fixed sample of it), and a file
+scores the best of its pieces, plus one standard deviation when it is the kind the question names ("photo
+of...", "...in a video"). Code passages are compared with the question in the model's code-retrieval form.
 
-A file qualifies by standing out in meaning or by holding most of the query's words. Its score adds both,
-plus a bonus when it is the kind the query asks for ("photo of...", "...in a video"). Queries made of codes
-and numbers ("INV-2026-41") lean on words, which an embedding cannot read. Results far behind the best are
-cut: a search returns a few strong answers rather than thirty weak ones. Exact copies of a file count once.
+Words (SQLite's full-text index, BM25) rank questions made only of codes and numbers ("HX-55821"), which an
+embedding cannot read, and find files with no embedded piece (exports made mostly of figures), after the rest.
+Exact copies of a file count once.
+
+Measured on 64 questions over a real Downloads folder and 25 held out from every choice (tests/retrieval_eval.py):
+adding word evidence to the meaning score did not help at any weight (MRR 0.77 / 0.70 without, 0.76 / 0.70 at
+0.5, 0.75 / 0.70 at 1.0), nor did gates or a cut of weak results; fusing a BM25 ranking with the meaning
+ranking, by reciprocal ranks (0.50 / 0.57) or distribution-scaled scores (0.47 / 0.57), buried pictures,
+video and sound under text sharing a word with the question. The kind bonus held (0.72 / 0.69 without it).
 """
 
 from __future__ import annotations
@@ -26,20 +31,14 @@ from .extract import NAME_ONLY
 from .kinds import is_code
 from .vectors import VectorIndex, dot, unpack
 
-CANDIDATES = 300            # pieces scored exactly after the first pass
-Z_GATE = 2.0                # standard deviations above its modality's average for a meaning match to count
-MIN_COVERAGE = 0.5          # share of the query's words for a word match to count
-# Measured on 64 plain-language questions over a real Downloads folder (tests/retrieval_eval.py): a word weight of 2
-# let text that shares a few common words outrank the picture or video that matched in meaning (MRR 0.74);
-# 0.5 gives 0.78 (R@1 0.64 -> 0.69). Exact lookups ("HX-55821", a file name) keep a strong word weight.
-MEANING, WORDS, HINT = 1.0, 0.5, 1.0
-LOOKUP_MEANING, LOOKUP_WORDS = 0.5, 4.0
-STRONG = 0.5                # results scoring below this share of the best are cut
-SMALL = 50                  # with fewer pieces than this, similarities cannot be calibrated; rank instead
+CANDIDATES = 300            # pieces of each modality scored exactly after the binary first pass
+HINT = 1.0                  # standard deviations added for the kind the question names
+WORD_PIECES = 1000          # pieces read from the BM25 ranking
+SMALL = 50                  # with fewer pieces than this, modalities cannot be standardised; raw similarity then
 SNIPPET = 300
 COPY_SAMPLE = 65536         # bytes compared from the start, middle and end of two files of one size to tell copies
 MAX_COPIES = 5              # other places of a copied file named in its result
-WORD =re.compile(r"\w+", re.UNICODE)
+WORD = re.compile(r"\w+", re.UNICODE)
 STOPWORDS = {"a", "an", "the", "of", "in", "on", "at", "to", "for", "from", "by", "with", "and", "or", "my", "me",
              "i", "is", "are", "was", "were", "it", "this", "that", "what", "where", "when", "which", "who",
              "about", "show", "find", "get", "some", "any", "all", "do", "did", "have", "has", "had"}
@@ -91,39 +90,31 @@ class Searcher:
         limit = max(1, min(int(limit), 30))
         kinds = {kind} if kind else None
         words = terms(query)
+        lookup = is_lookup(query.split())        # "HX-55821" as typed, not split into hx and 55821
         # Words are looked up while the query is being embedded.
-        meaning, coverage = await asyncio.gather(self._meaning(query, kinds),
-                                                 asyncio.to_thread(self._words, words, kinds))
-        paths = set(meaning) | set(coverage)
+        meaning, lexical = await asyncio.gather(
+            self._meaning(query, kinds) if not lookup else asyncio.sleep(0, {}),
+            asyncio.to_thread(self._words, words))
+        paths = set(meaning) | {path for path, _ in lexical}
         if not paths:
             return []
         files = {r["path"]: r for r in self._rows(
             "SELECT path, kind, size FROM files WHERE path IN ({})", list(paths))}
         if kinds:
-            paths = {p for p in paths if p in files and files[p]["kind"] in kinds}
-        calibrated = len(self.vectors) >= SMALL
-        lookup = is_lookup(query.split())        # "HX-55821" as typed, not split into hx and 55821
-        weight_meaning, weight_words = (LOOKUP_MEANING, LOOKUP_WORDS) if lookup else (MEANING, WORDS)
+            meaning = {p: m for p, m in meaning.items() if files.get(p, {}).get("kind") in kinds}
+            lexical = [(p, c) for p, c in lexical if files.get(p, {}).get("kind") in kinds]
         hints = kind_hints(query)
-        scored: dict[str, float] = {}
-        for path in paths:
-            z = meaning.get(path, (0.0, None))[0]
-            share = coverage.get(path, (0.0, None))[0]
-            if calibrated and z < Z_GATE and share < MIN_COVERAGE:
-                continue
-            score = weight_meaning * (max(z, 0.0) if calibrated else z) + weight_words * share ** 1.5
-            if files.get(path, {}).get("kind") in hints:
-                score += HINT
-            scored[path] = score
-        weak = not scored
-        if weak:          # nothing stands out: offer the closest few, marked as weak
-            scored = {p: meaning[p][0] for p in sorted(meaning, key=lambda p: -meaning[p][0])[:3]}
+        scored = {path: z + (HINT if files.get(path, {}).get("kind") in hints else 0.0)
+                  for path, (z, _) in meaning.items()}
         ranked = sorted(scored, key=lambda p: (-scored[p], p))
-        top = scored[ranked[0]] if ranked else 0.0
-        if top > 0 and not weak:
-            ranked = [p for p in ranked if scored[p] >= top * STRONG]
+        chosen = {path: chunk for path, (_, chunk) in meaning.items()}
+        # Then what only words find, in BM25 order: everything for a code, else files with no embedded piece.
+        for path, chunk in lexical:
+            if path not in chosen:
+                ranked.append(path)
+                chosen[path] = chunk
         ranked, copies = await asyncio.to_thread(self._copies, ranked, files, limit)
-        return self._results(ranked, scored, meaning, coverage, files, words, weak, calibrated, copies)
+        return self._results(ranked, chosen, files, words, copies)
 
     def _copies(self, ranked: list[str], files: dict, limit: int) -> tuple[list[str], dict[str, list[str]]]:
         """Exact copies of a file ("file (1).pdf", a second checkout of a repository) count once: the best-ranked
@@ -180,7 +171,7 @@ class Searcher:
             return None
 
     async def _meaning(self, query: str, kinds: set[str] | None) -> dict[str, tuple[float, int]]:
-        """Each file's best calibrated similarity to the query, and the piece that has it."""
+        """Each file's best similarity, standardised within its piece's modality, and the piece that has it."""
         if self.embedder is None:
             return {}
         if not self.vectors.loaded:
@@ -199,6 +190,7 @@ class Searcher:
             chunks = list(dict.fromkeys([*chunks, *self.vectors.nearest(code, CANDIDATES, kinds)]))
         if not chunks:
             return {}
+        standardise = len(self.vectors) >= SMALL
         calibrations = {"text": self.vectors.calibration(vector)}
         if code is not None:
             calibrations["code"] = self.vectors.calibration(code)
@@ -209,32 +201,30 @@ class Searcher:
                 continue
             modality = row["modality"] or "text"
             as_code = code is not None and modality == "text" and is_code(row["path"])
-            asked = code if as_code else vector
-            means, spread = calibrations["code" if as_code else "text"]
-            z = (dot(asked, stored) - means.get(modality, 0.0)) / spread
-            if z > best.get(row["path"], (float("-inf"), 0))[0]:
-                best[row["path"]] = (z, row["id"])
+            similarity = dot(code if as_code else vector, stored)
+            if standardise:
+                means, spread = calibrations["code" if as_code else "text"]
+                similarity = (similarity - means.get(modality, 0.0)) / spread
+            if similarity > best.get(row["path"], (float("-inf"), 0))[0]:
+                best[row["path"]] = (similarity, row["id"])
         return best
 
-    def _words(self, words: list[str], kinds: set[str] | None) -> dict[str, tuple[float, int]]:
-        """Each file's share of the query's words (over all its matched pieces), and its best-matching piece."""
+    def _words(self, words: list[str]) -> list[tuple[str, int]]:
+        """Files in BM25 order (SQLite FTS5) by their best piece, with that piece. Ranked inside the full-text
+        index first and only then joined to the pieces: joined in one query, SQLite read the piece behind every
+        match (6 s for a question whose words matched 130,000 of 332,000 pieces)."""
         if not words:
-            return {}
+            return []
         expression = " OR ".join(f'"{w}"' for w in words[:16])
-        # Ranked inside the full-text index, then only the best pieces read: joined in one query SQLite read the
-        # piece behind every match first (6 s for a question whose words matched 130,000 pieces, 0.2 s so).
         ranked = [r["id"] for r in self.store.query(
             "SELECT rowid AS id FROM file_chunks_fts WHERE file_chunks_fts MATCH ? "
-            "ORDER BY bm25(file_chunks_fts) LIMIT 400", (expression,))]
-        pieces = {r["id"]: r for r in self._rows("SELECT id, path, text FROM file_chunks WHERE id IN ({})", ranked)}
-        rows = [pieces[i] for i in ranked if i in pieces]
-        held: dict[str, set[str]] = {}
-        first: dict[str, int] = {}
-        wanted = set(words)
-        for row in rows:
-            held.setdefault(row["path"], set()).update(wanted & set(WORD.findall(row["text"].lower())))
-            first.setdefault(row["path"], row["id"])
-        return {path: (len(found) / len(wanted), first[path]) for path, found in held.items() if found}
+            "ORDER BY bm25(file_chunks_fts) LIMIT ?", (expression, WORD_PIECES))]
+        owner = {r["id"]: r["path"] for r in self._rows("SELECT id, path FROM file_chunks WHERE id IN ({})", ranked)}
+        found: dict[str, int] = {}
+        for chunk in ranked:
+            if chunk in owner:
+                found.setdefault(owner[chunk], chunk)
+        return list(found.items())
 
     def _rows(self, sql: str, values: list[Any]) -> list[dict]:
         found: list[dict] = []
@@ -243,22 +233,14 @@ class Searcher:
             found += self.store.query(sql.format(",".join("?" * len(part))), part)
         return found
 
-    def _results(self, ranked, scored, meaning, coverage, files, words, weak, calibrated, copies) -> list[dict]:
-        chosen = {}
-        for path in ranked:
-            z, by_meaning = meaning.get(path, (0.0, None))
-            by_words = coverage.get(path, (0.0, None))[1]
-            # Point at the piece that matched by meaning when it stands out, else at the one with the words.
-            chosen[path] = by_meaning if by_meaning is not None and (z >= Z_GATE or not calibrated or by_words is None) \
-                else by_words
+    def _results(self, ranked, chosen, files, words, copies) -> list[dict]:
         pieces = {r["id"]: r for r in self._rows("SELECT id, part, text, loc, modality FROM file_chunks "
-                                                 "WHERE id IN ({})", [c for c in chosen.values() if c is not None])}
+                                                 "WHERE id IN ({})", [chosen[p] for p in ranked if p in chosen])}
         results = []
         for path in ranked:
-            piece = pieces.get(chosen[path]) or {}
+            piece = pieces.get(chosen.get(path)) or {}
             part = piece.get("part") or ""
-            found: dict[str, Any] = {"path": path, "kind": files.get(path, {}).get("kind", ""),
-                                     "part": part, "score": round(scored[path], 3)}
+            found: dict[str, Any] = {"path": path, "kind": files.get(path, {}).get("kind", ""), "part": part}
             if piece.get("loc") is not None:
                 place = "page" if part.startswith("page") else "line" if part.startswith("from line") else "at"
                 found[place] = int(piece["loc"]) if place != "at" else round(piece["loc"], 1)
@@ -268,7 +250,5 @@ class Searcher:
                 found["in_icloud"] = True
             if copies.get(path):
                 found["copies"] = copies[path][:MAX_COPIES]
-            if weak:
-                found["weak"] = True
             results.append(found)
         return results

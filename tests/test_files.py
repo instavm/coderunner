@@ -514,7 +514,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(first.sample["text"]), SAMPLE)
         self.assertEqual([list(v) for v in first.sample["text"]], [list(v) for v in second.sample["text"]])
 
-    async def test_pictures_rank_by_their_own_scale_and_weak_matches_are_cut(self):
+    async def test_pictures_rank_by_their_own_scale(self):
         for n in range(80):
             self.add(f"/d/note{n}.txt", "text", "from line 1", f"note {n}", self.noise(), "text")
             self.add(f"/d/photo{n}.jpg", "image", "image", f"photo{n}.jpg", self.noise(), "image")
@@ -525,10 +525,9 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
         found = await self.search(query, "beach trip photo")
         names = [pathlib.Path(r["path"]).name for r in found]
         self.assertEqual(names[0], "beach.jpg")                       # the photo, helped by "photo" in the query
-        self.assertIn("beach-notes.txt", names)
-        self.assertLessEqual(len(found), 4)                            # the noise is cut
+        self.assertEqual(names[1], "beach-notes.txt")
 
-    async def test_codes_and_numbers_lean_on_words(self):
+    async def test_codes_and_numbers_are_found_by_their_words(self):
         for n in range(80):
             self.add(f"/d/doc{n}.txt", "text", "from line 1", f"ordinary text {n}", self.noise(), "text")
         self.add("/d/order.txt", "text", "from line 1", "Order K7Q2LM shipped", self.noise(), "text")
