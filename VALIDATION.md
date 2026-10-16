@@ -110,26 +110,26 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
   sandbox probe), a daemon frozen 7.5 s while loading the file index, the extension's worker
   restart leaving every later step on a tab failing, a stopping daemon removing the next one's
   socket, and links copied from a page as paths being refused.
-* Retrieval on a real Downloads folder (`python tests/retrieval_eval.py`, bench kept outside the
-  repo: 64 plain-language questions naming no person, number or company, answers stored as hashes
-  of their paths). Index: ~28,000 of the owner's files plus cloned projects, 332,000 pieces;
-  EmbeddingGemma 2 on the Neural Engine for text, pictures and sound.
+* Retrieval on a real Downloads folder (`python tests/retrieval_eval.py [BENCH]`, benches kept outside the
+  repo: plain-language questions naming no person, number or company, answers stored as hashes of their
+  paths). 64 questions, and 25 more written later on other files and held out from every choice; ~28,000
+  of the owner's files, 292,000 pieces; EmbeddingGemma 2 on the Neural Engine for text, pictures and sound.
+  Ranking methods compared on one frozen index (MRR, held-out / benchmark):
 
-  | Kind | Questions | Right first | In top 5 | MRR |
-  | --- | --- | --- | --- | --- |
-  | Documents | 16 | 0.75 | 1.00 | 0.86 |
-  | Videos | 10 | 0.90 | 1.00 | 0.93 |
-  | Screenshots | 11 | 0.55 | 0.82 | 0.63 |
-  | Photos | 8 | 0.50 | 0.75 | 0.62 |
-  | Code | 7 | 0.29 | 0.86 | 0.55 |
-  | Notes | 6 | 0.67 | 0.67 | 0.69 |
-  | Pictures | 5 | 0.60 | 1.00 | 0.80 |
-  | All (with 1 scanned document) | 64 | 0.62 | 0.89 | 0.74 |
+  | Ranking | Held-out | Benchmark |
+  | --- | --- | --- |
+  | Meaning, standardised per modality, plus the named kind (shipped) | 0.77 | 0.70 |
+  | Same, plus word matches at weight 0.5 with gates and a cut (before) | 0.76 | 0.70 |
+  | Same without the kind bonus | 0.72 | 0.69 |
+  | Reciprocal rank fusion of meaning and BM25 | 0.50 | 0.57 |
+  | Distribution-based score fusion of meaning and BM25 | 0.47 | 0.57 |
 
-  The same with pictures and sound in Ollama on the GPU: MRR 0.76. Misses are mostly near-twins
-  (two tickets or statements of one kind, several notes about one subject). Exact copies of a file
-  count once (they took a place above the right answer in 3 questions). A search takes 249 ms
-  (median) while indexing runs; reading word matches before ranking them had taken 3.2 s.
+  Shipped, per kind: documents 0.91 / 0.85, videos 0.65 / 0.93, screenshots 0.48 / 0.59, photos — / 0.62,
+  notes 0.72 / 0.67, pictures 1.00 / 0.80, sound 1.00 / —; right file first 0.68 / 0.61, in the top 5
+  0.92 / 0.83. Misses are mostly near-twins (dozens of screenshots of one app, notes on one subject), a
+  document about something outranking the picture of it, and pictures whose point is a shape (a giant
+  digit). A search takes 155 ms (median). The two rank fusions failed on pictures, video and sound: words
+  say nothing about them, yet each fusion gives the word ranking an equal say.
 * Real folders (Documents, Desktop, Movies; 169,051 files, 163,806 of them only in iCloud and
   indexed by name without downloading): walk plus the first 2,000 files 83 s; 54,000 files in 30
   minutes, 30 files/s, limited by embedding (32 inputs/s while a chat model shared the GPU and

@@ -535,13 +535,16 @@ terminal by describing what you want.
   by the whole video (the mean of its frames) and by its sound. Results
   point at the page, line or moment that matched. Source code is searched
   with the model's code-retrieval prompt.
-* Words are matched too (full-text index), so names, codes and numbers
-  ("HX-55821") are found exactly. Text made mostly of figures (data exports)
-  is matched by words only.
 * Search reads each similarity against its kind for that query (names,
   passages, pictures, sound), so a photo that matches well is not buried under
-  text that matches a little; asking for a kind ("photo of...", "...in a
-  video") favours it; weak results are cut rather than padded out.
+  text that matches a little, and a file ranks by its best piece; asking for a
+  kind ("photo of...", "...in a video") favours it.
+* Words (a full-text index, BM25) find what an embedding cannot read: a
+  question made of codes and numbers ("HX-55821") is answered by words alone,
+  and text made mostly of figures (data exports) is found by its words.
+  Mixing word matches into descriptive questions was measured and dropped: it
+  did not help, and fusing the two rankings buried pictures and video under
+  text that shared a word with the question.
 * Fast: the daemon keeps a compact code of every piece in memory (about 100
   bytes each) and the model loads on demand (it is freed after
   `models.idle_unload_minutes`); a search compares the query with all of them,
