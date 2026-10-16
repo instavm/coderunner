@@ -11,6 +11,7 @@ again, since they cannot be compared with new ones.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import datetime
 import collections
@@ -236,6 +237,8 @@ class FileIndex:
             # The model is unreachable: leave the rest for the next pass rather than index it without vectors.
             if upcoming is not None:
                 upcoming.cancel()
+                with contextlib.suppress(BaseException):
+                    await upcoming
             self.audit.write("files.embedding_unavailable", error=str(exc)[:200])
         return done, failed
 

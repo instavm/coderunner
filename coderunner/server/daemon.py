@@ -111,6 +111,15 @@ class Daemon:
         except Exception as exc:  # the first task then reads them itself
             self.svc.audit.write("model.warm_failed", error=str(exc)[:200])
 
+    async def _restart_embedding(self) -> bool:
+        """Start the embedding server again when it has gone (one restart at a time)."""
+        lock = self._locks.setdefault("embedding", asyncio.Lock())
+        async with lock:
+            from ..models import manager
+            restarted = await asyncio.to_thread(manager.restart_embedding, self.config)
+            self.svc.audit.write("embedding.restart", ok=restarted)
+            return restarted
+
     async def _restart_model(self) -> bool:
         """Restart a crashed or stuck local model runtime (one restart at a time)."""
         lock = self._locks.setdefault("model", asyncio.Lock())
@@ -168,6 +177,8 @@ class Daemon:
         # Ollama beside a chat model served by llama.cpp.
         embedding_url = self.config.get("models.embedding_url") or endpoint.base_url
         embed_llm = svc.llm if embedding_url == endpoint.base_url else LLM(embedding_url, svc.embedding_model)
+        if embed_llm is not svc.llm:
+            embed_llm.recover = self._restart_embedding
         svc.embedding_url = "" if embedding_url == endpoint.base_url else embedding_url.rstrip("/")
         embedder = None
         if svc.embedding_model:
@@ -183,9 +194,11 @@ class Daemon:
         file_model = self.config.get("files.embedding") or svc.embedding_model
         ollama = self.config.get("models.runtime") in ("ollama", "auto") or bool(self.config.get("models.embedding_url"))
         # Ollama frees the model after the idle time like every runtime; a negative time (idle unload off) keeps it.
-        svc.files = FileIndex(self.config, store, audit,
-                              Embedder(embedding_url, file_model, keep_alive=f"{idle_seconds(self.config) or -60}s")
-                              if file_model and ollama else None)
+        file_embedder = Embedder(embedding_url, file_model, keep_alive=f"{idle_seconds(self.config) or -60}s") \
+            if file_model and ollama else None
+        if file_embedder is not None and embed_llm is not svc.llm:
+            file_embedder.recover = self._restart_embedding
+        svc.files = FileIndex(self.config, store, audit, file_embedder)
 
         from ..agent.scheduler import Scheduler
         svc.scheduler = Scheduler(store, audit, self._run_schedule, self._deliver_schedule,

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import math
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 
@@ -42,6 +42,7 @@ class Embedder:
         self.query_prefix = profile["query"]
         self.doc_prefix = profile["doc"]
         self.code_prefix = profile.get("code", "")      # questions about code, against code passages
+        self.recover: Callable[[], Awaitable[bool]] | None = None    # starts a dead server again; set by the daemon
 
     async def capabilities(self) -> set[str]:
         if self._capabilities is None:
@@ -67,8 +68,14 @@ class Embedder:
         return f"{self.model}@{digest if '|' in digest else digest[:12]}" if digest else self.model
 
     async def _request(self, inputs: list[Any]) -> list[list[float]]:
-        response = await self._client.post(f"{self.base_url}/api/embed", json={
-            "model": self.model, "input": inputs, "keep_alive": self.keep_alive})
+        body = {"model": self.model, "input": inputs, "keep_alive": self.keep_alive}
+        try:
+            response = await self._client.post(f"{self.base_url}/api/embed", json=body)
+        except httpx.TransportError:
+            # The server is gone (killed under memory pressure): start it again once, then retry.
+            if self.recover is None or not await self.recover():
+                raise
+            response = await self._client.post(f"{self.base_url}/api/embed", json=body)
         response.raise_for_status()
         return [_unit(vector) for vector in response.json()["embeddings"]]
 

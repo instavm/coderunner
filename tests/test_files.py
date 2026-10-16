@@ -661,3 +661,28 @@ class StoreReaderTests(unittest.TestCase):
             with store._lock:                   # a request or a batch write holds the shared connection
                 threading.Thread(target=read).start()
                 self.assertTrue(done.wait(5))
+
+
+class EmbedderRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_dead_server_is_started_again_once(self):
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ConnectError("All connection attempts failed")
+            return httpx.Response(200, json={"embeddings": [[3.0, 4.0]]})
+        embedder = Embedder("http://127.0.0.1:9", "m", transport=httpx.MockTransport(handler))
+        restarts = []
+
+        async def recover():
+            restarts.append(1)
+            return True
+        embedder.recover = recover
+        self.assertEqual(await embedder.embed(["text"]), [[0.6, 0.8]])
+        self.assertEqual(restarts, [1])
+        embedder.recover = None                    # nothing to restart: the failure stands
+        calls["n"] = 0
+        with self.assertRaises(httpx.ConnectError):
+            await embedder.embed(["again"])
+        await embedder.aclose()

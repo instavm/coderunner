@@ -115,7 +115,13 @@ class LLM:
         return response
 
     async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
-        response = await self._client.post("/embeddings", json={"model": model or self.model, "input": texts})
+        body = {"model": model or self.model, "input": texts}
+        try:
+            response = await self._client.post("/embeddings", json=body)
+        except httpx.TransportError:
+            if self.recover is None or not await self.recover():
+                raise
+            response = await self._client.post("/embeddings", json=body)
         if response.status_code >= 400:
             raise LLMError(f"Embedding request failed with {response.status_code}: {response.text[:200]}")
         return [item["embedding"] for item in response.json()["data"]]

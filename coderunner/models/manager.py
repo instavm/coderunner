@@ -813,6 +813,18 @@ def restart(config) -> bool:
     return rt.running()
 
 
+def restart_embedding(config) -> bool:
+    """Start the Core ML embedding server again when it is down (it was found killed, likely under memory
+    pressure, and file indexing then failed for a day); False for runtimes CodeRunner does not run itself."""
+    from .coreml import CoreMLRuntime
+    rt = CoreMLRuntime(config)
+    if (config.get("models.embedding_url") or "").rstrip("/") != rt.base_url:
+        return False
+    if not rt.running():
+        rt.start()
+    return rt.running()
+
+
 def ensure_running(config) -> Endpoint:
     """Start the configured local runtime if it is down; external endpoints are left alone."""
     rt = choose_runtime(config)
