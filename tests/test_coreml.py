@@ -33,6 +33,9 @@ class FakeEncoder:
     def release(self):
         self.loaded, self.released = False, self.released + 1
 
+    def busy_now(self):
+        return False
+
 
 class FakeOllama:
     """Ollama's embed, show and tags endpoints, for the pictures and sound the server passes on."""
@@ -317,16 +320,14 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(server.post("/api/show", {})["capabilities"], ["audio", "embedding", "vision"])
             self.assertEqual(server.get("/api/tags")["models"][0]["digest"], "text:rev|media:coreml-audio-vision")
 
-    def test_the_model_is_released_when_idle(self):
+    def test_the_server_exits_when_idle_instead_of_freeing_the_model_in_process(self):
         encoder = FakeEncoder()
         service = srv.Service(encoder, "m", idle=0.1)
         service.embed(["hi"])
-        threading.Thread(target=service.watch, kwargs={"every": 0.02}, daemon=True).start()
-        deadline = time.monotonic() + 3
-        while encoder.loaded and time.monotonic() < deadline:
-            time.sleep(0.02)
-        self.assertFalse(encoder.loaded)
-        self.assertEqual(encoder.released, 1)
+        left = threading.Event()
+        threading.Thread(target=service.watch, kwargs={"every": 0.02, "leave": left.set}, daemon=True).start()
+        self.assertTrue(left.wait(3))
+        self.assertEqual(encoder.released, 0)       # never freed in the process (coremltools crashed doing so)
 
 
 class ChoiceTests(unittest.TestCase):

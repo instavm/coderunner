@@ -20,6 +20,7 @@ import gc
 import io
 import json
 import math
+import os
 import pathlib
 import shutil
 import sys
@@ -287,6 +288,10 @@ class Encoder:
             found.append(out[keep].astype(np.float32))
         return np.concatenate(found) if found else np.zeros((0, 512), dtype=np.float32)
 
+    def busy_now(self) -> bool:
+        with self.state:
+            return self.users > 0
+
     def release(self) -> bool:
         """Free the model's memory, unless a request is using it (then the watcher tries again later)."""
         with self.state:
@@ -373,12 +378,18 @@ class Service:
             self._caps = (time.monotonic(), sorted({"embedding", *found}))
         return self._caps[1]
 
-    def watch(self, every: float = 15.0) -> None:
-        """Release the model after `idle` seconds without a request."""
+    def watch(self, every: float = 15.0, leave=None) -> None:
+        """After `idle` seconds without a request the server exits, which frees all its memory: freeing the
+        Core ML models inside the process crashed it (a segmentation fault in coremltools' model destructor,
+        three times in two days), after which nothing served embeddings. The daemon starts it again on the next
+        request."""
+        leave = leave or (lambda: os._exit(0))
         while self.idle:
             time.sleep(min(every, self.idle))
-            if self.encoder.loaded and time.monotonic() - self.used >= self.idle and self.encoder.release() is not False:
-                print(f"released the model after {self.idle:.0f} s idle", flush=True)
+            if self.encoder.loaded and time.monotonic() - self.used >= self.idle and not self.encoder.busy_now():
+                print(f"exiting after {self.idle:.0f} s idle to free the model's memory", flush=True)
+                leave()
+                return
 
 
 def handler(service: Service):

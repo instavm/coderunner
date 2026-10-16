@@ -62,6 +62,11 @@ async def main() -> int:
     url = args.query_url or config.get("models.embedding_url") or "http://127.0.0.1:11434"
     model = args.query_model or config.get("files.embedding") or config.get("models.embedding")
     embedder = Embedder(url, model)
+
+    async def recover() -> bool:                 # the Core ML server exits when idle; start it again
+        from coderunner.models import manager
+        return await asyncio.to_thread(manager.restart_embedding, config)
+    embedder.recover = recover
     if args.no_code_prompt:
         embedder.code_prefix = ""
     index = FileIndex(config, Store(paths.assistant_dir() / "assistant.db"), AuditLog(paths.assistant_dir() / "audit-eval.jsonl"),

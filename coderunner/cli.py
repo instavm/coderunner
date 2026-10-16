@@ -636,12 +636,19 @@ def _find(config: Config, query: str, kind: str | None, limit: int, as_json: boo
 
 
 async def _find_here(config: Config, query: str, kind: str | None, limit: int) -> list[dict]:
+    import asyncio
     from .core.audit import AuditLog
     from .files import Embedder, FileIndex
     from .core.store import Store
     model = config.get("files.embedding") or config.get("models.embedding")
     url = config.get("models.embedding_url") or "http://127.0.0.1:11434"
     embedder = Embedder(url, model) if model else None
+    if embedder is not None:
+        from .models import manager
+
+        async def recover() -> bool:             # the Core ML server exits when idle; start it again
+            return await asyncio.to_thread(manager.restart_embedding, config)
+        embedder.recover = recover
     index = FileIndex(config, Store(), AuditLog(paths.audit_path()), embedder)
     try:
         return await index.search(query, kind, limit)
