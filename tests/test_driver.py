@@ -26,15 +26,31 @@ class FakeBroker:
 
     def __init__(self):
         self.calls = []
+        self.kw = []             # the keyword arguments of each call
         self.fail = {}
+        self.extra = {}          # more for an action's result (a tab it opened)
         self.viewports = []      # the page size each screenshot was taken at
+        self.shot_tabs = []      # the tab each screenshot was taken in
+        self.quiet = []          # whether page text was off for each screenshot
 
     async def screenshot(self, **kw):
         self.viewports.append(self.viewport)
-        return {"ok": True, "mime": "image/png", "data_b64": "iVBORw0KGgo=", "url": "https://shop.example/",
+        self.shot_tabs.append(kw.get("tab"))
+        self.quiet.append(self.screens)
+        return {"ok": True, "mime": "image/png", "data_b64": "iVBORw0KGgo=", "url": self.url,
                 "viewport": [1440, 900]}
 
     viewport = None
+    screens = False
+    url = "https://shop.example/"
+
+    @contextlib.asynccontextmanager
+    async def screens_only(self):
+        self.screens = True
+        try:
+            yield
+        finally:
+            self.screens = False
 
     @contextlib.asynccontextmanager
     async def fixed_viewport(self, width, height):
@@ -47,9 +63,11 @@ class FakeBroker:
     def __getattr__(self, name):
         async def action(*args, **kw):
             self.calls.append((name, args))
+            self.kw.append(kw)
             if name in self.fail:
                 return {"ok": False, "error": self.fail[name]}
-            return {"ok": True, "content": "Price: INR 9,995"} if name == "snapshot" else {"ok": True}
+            result = {"ok": True, "content": "Price: INR 9,995"} if name == "snapshot" else {"ok": True}
+            return {**result, **self.extra.pop(name, {})}
         return action
 
 
@@ -71,17 +89,21 @@ class FormatTests(unittest.TestCase):
 
 
 class LoopTests(unittest.IsolatedAsyncioTestCase):
-    async def run_driver(self, script, steps=10, fail=None, format="fara1.5"):
+    async def run_driver(self, script, steps=10, fail=None, format="fara1.5", extra=None, url=None):
         with FakeOpenAI() as fake:
             fake.script = list(script)
             svc = Svc()
             svc.browser = FakeBroker()
             svc.browser.fail = fail or {}
+            svc.browser.extra = extra or {}
+            if url:
+                svc.browser.url = url
             driver = Driver(svc, LLM(fake.base_url, "fara"), steps=steps, format=format)
             ctx = RunContext(conversation="d1")
             report = await driver.run("Find the cheapest flight.", ctx)
             await driver.llm.aclose()
             self.viewports = svc.browser.viewports + [svc.browser.viewport]
+            self.broker = svc.browser
             return report, svc.browser.calls, fake.requests, ctx
 
     async def test_steps_become_checked_broker_actions(self):
@@ -102,16 +124,27 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         # Every screenshot at the page size of its training, and the window's own size again after.
         self.assertEqual(set(self.viewports[:-1]), {fara.VIEWPORT})
         self.assertIsNone(self.viewports[-1])
+        kw = self.broker.kw
         self.assertEqual(calls[0], ("click_at", (720.0, 450.0)))        # 1000-space point on a 1440x900 page
-        self.assertEqual(calls[1], ("type_focused", ("Delhi",)))
+        self.assertEqual(kw[0]["clicks"], 1)
+        self.assertEqual((calls[1], kw[1]["keystrokes"]), (("type_focused", ("Delhi",)), True))   # key by key
         self.assertEqual(calls[2], ("press", ("Enter",)))
-        self.assertEqual(calls[3], ("scroll", ("down", 450)))           # the key combination was refused
-        self.assertEqual(calls[4][0], "navigate")
-        self.assertIn("q=flights+to+Delhi", calls[4][1][0])
-        self.assertEqual(calls[5][0], "snapshot")
+        self.assertEqual(calls[3], ("press_keys", (["Control", "a"],)))  # combinations, as Microsoft's harness
+        self.assertEqual(calls[4], ("wheel", (720.0, 450.0, 0, 450.0)))  # the wheel where the mouse is, 0.9 x 500
+        self.assertEqual(calls[5][0], "navigate")
+        self.assertIn("q=flights+to+Delhi&FORM=QBLH", calls[5][1][0])
+        self.assertEqual(calls[6][0], "snapshot")
         self.assertTrue(ctx.tainted)                                    # web pages were read
-        notes = [m["content"] for m in requests[4]["messages"] if m["role"] == "user"]
-        self.assertIn("Only single keys are available", json.dumps(notes))
+        # After an action that worked the model hears only the address and the usual request, as in training.
+        self.assertEqual(requests[1]["messages"][-1]["content"][1]["text"],
+                         f"Current URL: https://shop.example/\n{fara.NEXT}")
+        steps = [r["messages"][-1]["content"] for r in requests if isinstance(r["messages"][-1]["content"], list)]
+        self.assertTrue(any(part.get("text", "").startswith("Current URL: https://shop.example/\nI read the page to "
+                                                            "answer: What is the price?\nAnswer: INR 9,995")
+                            for content in steps for part in content))    # the step after read_page_answer_question
+        extract = next(r for r in requests if r["messages"][0]["content"].startswith("You are given the markdown"))
+        self.assertIn("Question: What is the price?", extract["messages"][1]["content"])
+        self.assertTrue(all(self.broker.quiet))                         # no page text for a screenshot model
         # The model's own format, and at most three screenshots in any request.
         self.assertEqual(requests[0]["messages"][0]["content"], fara.system_prompt())
         task = requests[0]["messages"][1]["content"][1]["text"]
@@ -134,7 +167,7 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0], ("click_at", (720.0, 450.0)))                 # resized pixels, not a 1000 grid
         self.assertEqual(calls[1][0], "click_at")                                # it types at a point: click first
         self.assertEqual(calls[2][0], "type_focused")
-        self.assertEqual(calls[3], ("scroll", ("down", 900)))                   # a page per scroll, as trained
+        self.assertEqual((calls[3][0], calls[3][1][3]), ("wheel", 400))         # 400 px down, as its harness does
         self.assertEqual(report, "The cheapest is SpiceJet at INR 9,995.")      # the answer is its text
 
     async def test_refusals_reach_the_driver_and_questions_reach_the_planner(self):
@@ -144,7 +177,7 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         ], fail={"click_at": "Not permitted: Click button \"Pay now\" (not approved by the owner)"})
         self.assertIn("needs an answer before it can go on: Which card should I use?", report)
         last = requests[-1]["messages"][-1]["content"]
-        self.assertIn("That did not work: Not permitted", json.dumps(last))
+        self.assertIn("ERROR: Not permitted", json.dumps(last))
 
     def test_old_screenshots_go_together_so_most_steps_only_add_one(self):
         messages = [{"role": "system", "content": "s"}]
@@ -155,7 +188,23 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
             shown.append(sum(isinstance(m["content"], list) for m in messages))
             messages.append({"role": "assistant", "content": "next"})
         self.assertEqual(shown, [1, 2, 3, 1, 2, 3, 1, 2])            # never more than three, as in training
-        self.assertEqual(messages[1]["content"], "step 0")            # what an old step said is kept as text
+        self.assertEqual(messages[1]["content"], "step 0")            # the task keeps its text
+        texts = [m for m in messages if m["role"] == "user" and isinstance(m["content"], str)]
+        self.assertEqual(len(texts), 1)                               # other dropped steps go, as in training
+
+    async def test_addresses_words_and_popups_as_microsofts_harness_has_them(self):
+        long = "https://shop.example/" + "p" * 120 + "?session=1"
+        report, calls, requests, _ = await self.run_driver([
+            step({"action": "visit_url", "url": "shop.example/deals"}),
+            step({"action": "visit_url", "url": "cheap flights to Delhi"}),
+            step({"action": "left_click", "coordinate": [500, 500]}),
+            step({"action": "terminate", "answer": "done"}),
+        ], extra={"click_at": {"new_tabs": ["tab-2"]}}, url=long)
+        self.assertEqual(calls[0], ("navigate", ("https://shop.example/deals",)))
+        self.assertIn("bing.com/search?q=cheap+flights+to+Delhi&FORM=QBLH", calls[1][1][0])
+        said = requests[1]["messages"][-1]["content"][1]["text"]
+        self.assertEqual(said.split("\n")[0], "Current URL: " + long.split("?")[0][:100] + " ...")
+        self.assertEqual(self.broker.shot_tabs[-1], "tab-2")          # the popup the click opened is followed
 
     async def test_a_driver_going_round_in_circles_is_told_and_then_stopped(self):
         # A Google Maps run clicked the same button 18 times in a row. Points a little apart are the same step.

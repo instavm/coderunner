@@ -22,14 +22,23 @@ from ..browser.broker import KEYS
 from ..core.llm import LLM, LLMError
 from . import fara, fara7b
 
+# Key names as Fara writes them, to the browser's (Microsoft's harness maps them so: key_mapping.py).
 KEY_NAMES = {"return": "Enter", "enter": "Enter", "esc": "Escape", "escape": "Escape", "tab": "Tab",
              "space": "Space", "backspace": "Backspace", "delete": "Delete", "home": "Home", "end": "End",
              "pagedown": "PageDown", "pageup": "PageUp", "arrowdown": "ArrowDown", "arrowup": "ArrowUp",
              "arrowleft": "ArrowLeft", "arrowright": "ArrowRight", "down": "ArrowDown", "up": "ArrowUp",
-             "left": "ArrowLeft", "right": "ArrowRight"}
-SEARCH = "https://www.bing.com/search?q="
-PAGE_FOR_QUESTIONS = 8000       # characters of page text a read_page_answer_question step is answered from
+             "left": "ArrowLeft", "right": "ArrowRight", "ctrl": "Control", "control": "Control", "alt": "Alt",
+             "option": "Alt", "cmd": "Meta", "command": "Meta", "meta": "Meta", "super": "Meta", "win": "Meta",
+             "shift": "Shift", **{f"f{n}": f"F{n}" for n in range(1, 13)}}
+SEARCH = "https://www.bing.com/search?q={}&FORM=QBLH"
+PAGE_FOR_QUESTIONS = 20000      # characters of page text a read_page_answer_question step is answered from
+OBSERVATION_CHARS = 1000        # an answer read from the page, cut in the middle past this (as in training)
+URL_CHARS = 100
+WAIT = 3.0                      # a wait without a time, as in Microsoft's harness
 MAX_WAIT = 10.0
+FARA7B_SCROLL = 400             # pixels a Fara-7B scroll moves in Microsoft's harness
+EXTRACT = ("You are given the markdown content of a web page. Answer the user's question based solely on this "
+           "content. Be concise and extract only the relevant information.")
 # The same step again and again (a Google Maps run clicked "Reverse starting point and destination" 18 times in
 # a row): from the third the driver is told, from the sixth the step is not taken. A "+" pressed five times
 # still works; scrolling and waiting are left alone.
@@ -54,13 +63,17 @@ class Driver:
         if self.swap is None and self.runtime is not None:
             await asyncio.to_thread(self.runtime.start)
         fixed = getattr(self.svc.browser, "fixed_viewport", None)
+        quiet = getattr(self.svc.browser, "screens_only", None)
         async with (self.swap or contextlib.nullcontext()), (fixed(*fara.VIEWPORT) if fixed
-                                                             else contextlib.nullcontext()):
+                                                             else contextlib.nullcontext()), \
+                (quiet() if quiet else contextlib.nullcontext()):
             report = await self._run(goal, ctx)
         self.svc.audit.write("driver.finish", model=self.llm.model, report=report[:300], origin=ctx.origin)
         return report
 
     async def _run(self, goal: str, ctx) -> str:
+        self.tab: str | None = None            # a tab the page opened is followed, as Microsoft's harness does
+        self.pointer: tuple[float, float] | None = None     # where the mouse last was: the wheel turns there
         shot = await self._screenshot(ctx)
         if isinstance(shot, str):
             return shot
@@ -75,14 +88,14 @@ class Driver:
         for _ in range(self.steps):
             self._keep_recent_screenshots(messages)
             try:
-                reply = await self.llm.chat(messages, think=False, temperature=0, max_tokens=1024)
+                reply = await self.llm.chat(messages, think=False, temperature=0, max_tokens=2048)
             except LLMError as exc:
                 return f"The browser driver stopped: {exc}"
             text = reply["content"]
             messages.append({"role": "assistant", "content": text})
             thoughts, args = fara.parse(text)
             if args is None:
-                note = "Your reply had no computer_use call. Reply with one inside <tool_call></tool_call>."
+                note = "ERROR: Your reply had no computer_use call. Reply with one inside <tool_call></tool_call>."
             else:
                 key = self._step_key(args)
                 repeats, last = (repeats + 1 if key is not None and key == last else 1), key
@@ -97,14 +110,21 @@ class Driver:
             shot = await self._screenshot(ctx)
             if isinstance(shot, str):
                 return shot
-            url = shot["url"][:100]
-            messages.append({"role": "user", "content": [
-                shot["image"], {"type": "text", "text": f"Current URL: {url}\n{note}\n{fara.NEXT}".replace("\n\n", "\n")}]})
+            # As in training: the address (without its query, cut at 100 characters), then only what the model
+            # must hear (an answer it asked the page for, an error), then the same request every step.
+            lines = [f"Current URL: {self._trimmed(shot['url'])}"] if shot["url"] else []
+            messages.append({"role": "user", "content": [shot["image"], {"type": "text", "text": "\n".join(
+                lines + ([note] if note else []) + [fara.NEXT])}]})
         return ("The browser driver used all its steps without finishing."
                 + (("\nNoted on the way: " + "; ".join(facts)) if facts else ""))
 
+    @staticmethod
+    def _trimmed(url: str) -> str:
+        url = url.split("?", 1)[0]
+        return url[:URL_CHARS] + " ..." if len(url) > URL_CHARS else url
+
     async def _screenshot(self, ctx) -> dict | str:
-        result = await self.svc.browser.screenshot(format="png", tainted=ctx.tainted)
+        result = await self.svc.browser.screenshot(format="png", tainted=ctx.tainted, tab=self.tab)
         if not result.get("ok"):
             return f"The browser driver could not see the page: {result.get('error', 'no screenshot')}"
         ctx.taint()                 # what the driver reads from here on is the web's, not the owner's
@@ -135,87 +155,127 @@ class Driver:
         everything after the instructions is. Dropped together once a fourth arrives, the model sees one to three
         screenshots, as in the first steps of every task it was trained on, and two steps in three only add the
         new one. Measured with Fara1.5-4B on 12 real-site tasks (M3 Pro): 30 minutes and 11 answered right,
-        against 70 minutes and 10, steps reading about 1,400 prompt tokens instead of 6,300-8,900."""
+        against 70 minutes and 10, steps reading about 1,400 prompt tokens instead of 6,300-8,900.
+
+        A dropped step goes entirely, as in Microsoft's harness, which leaves the model's own replies one after
+        another; only the task keeps its text."""
         with_images = [i for i, m in enumerate(messages) if m["role"] == "user" and isinstance(m["content"], list)]
         if len(with_images) <= fara.KEEP_SCREENSHOTS:
             return
-        for i in with_images[:-1]:
-            text = " ".join(part.get("text", "") for part in messages[i]["content"] if part.get("type") == "text")
-            messages[i] = {"role": "user", "content": text or "(earlier screenshot)"}
+        task = next(i for i, m in enumerate(messages) if m["role"] == "user")
+        dropped = set(with_images[:-1])
+        kept = []
+        for i, message in enumerate(messages):
+            if i == task and i in dropped:
+                text = " ".join(part.get("text", "") for part in message["content"] if part.get("type") == "text")
+                kept.append({"role": "user", "content": text})
+            elif i not in dropped:
+                kept.append(message)
+        messages[:] = kept
 
     async def _act(self, args: dict, shot: dict, ctx, facts: list[str], thoughts: str = "") -> tuple[str, str | None]:
-        """Carry out one step. Returns (what to tell the driver next, the final report when it stops)."""
-        b, tainted = self.svc.browser, ctx.tainted
+        """Carry out one step as Microsoft's harness does, through CodeRunner's checks. Returns (what the model
+        must hear before the next screenshot: nothing, an error or an answer it asked for; the final report when
+        it stops)."""
+        b, tainted, tab = self.svc.browser, ctx.tainted, self.tab
         action = args.get("action")
         seven = self.format == "fara7b"
         to_pixels = fara7b.to_pixels if seven else fara.to_pixels
-        if action in ("left_click", "double_click", "triple_click"):
-            width, height = shot["viewport"]
-            point = to_pixels(args.get("coordinate"), width, height)
+        width, height = shot["viewport"]
+        point = to_pixels(args.get("coordinate"), width, height) if args.get("coordinate") is not None else None
+        if action in ("left_click", "double_click", "triple_click", "mouse_move"):
             if point is None or not width:
-                return "That click had no usable coordinate.", None
-            return self._said(await b.click_at(*point, tainted=tainted), "Clicked."), None
+                return "ERROR: That action had no usable coordinate.", None
+            self.pointer = point
+            if action == "mouse_move":
+                return self._said(await b.hover(*point, tab=tab, tainted=tainted)), None
+            clicks = {"left_click": 1, "double_click": 2, "triple_click": 3}[action]
+            return self._said(await b.click_at(*point, tab=tab, tainted=tainted, clicks=clicks)), None
         if action == "type":
-            if seven and args.get("coordinate") is not None:
+            text = str(args.get("text", ""))
+            if seven and point is not None:
                 # Fara-7B types at a point: the field there is clicked first, and Enter follows unless it says not.
-                point = to_pixels(args.get("coordinate"), *shot["viewport"])
-                if point is None:
-                    return "That typing had no usable coordinate.", None
-                clicked = await b.click_at(*point, tainted=tainted)
+                self.pointer = point
+                clicked = await b.click_at(*point, tab=tab, tainted=tainted)
                 if not clicked.get("ok"):
-                    return self._said(clicked, ""), None
-                typed = await b.type_focused(str(args.get("text", "")), submit=args.get("press_enter", True) is not False,
-                                             tainted=tainted, clear=bool(args.get("delete_existing_text")))
-                return self._said(typed, "Typed."), None
-            return self._said(await b.type_focused(str(args.get("text", "")), tainted=tainted), "Typed."), None
+                    return self._said(clicked), None
+                return self._said(await b.type_focused(text, submit=args.get("press_enter", True) is not False,
+                                                       tab=tab, tainted=tainted, keystrokes=True,
+                                                       clear=bool(args.get("delete_existing_text")))), None
+            submit = text.endswith("\n")             # a line typed to its end is entered, as a keyboard would
+            return self._said(await b.type_focused(text.rstrip("\n"), submit=submit, tab=tab, tainted=tainted,
+                                                   keystrokes=True)), None
         if action == "key":
             keys = [KEY_NAMES.get(str(k).lower(), str(k)) for k in (args.get("keys") or [])]
-            if len(keys) != 1 or keys[0] not in KEYS:
-                return f"Only single keys are available: {', '.join(KEYS)}.", None
-            return self._said(await b.press(keys[0], tainted=tainted), f"Pressed {keys[0]}."), None
+            if len(keys) == 1 and keys[0] in KEYS:
+                return self._said(await b.press(keys[0], tab=tab, tainted=tainted)), None
+            return self._said(await b.press_keys(keys, tab=tab, tainted=tainted)), None
         if action in ("scroll", "hscroll"):
+            # The wheel turns where the mouse is, so what is under it scrolls (a results list beside a map).
             pixels = float(args.get("pixels") or 0)
-            # Fara-7B was trained to move a page per scroll (its harness pages up or down by the sign).
-            amount = int(shot["viewport"][1] or 900) if seven else \
-                max(int(abs(pixels) * (shot["viewport"][1] or 900) / fara.DISPLAY), 100)
-            return self._said(await b.scroll("up" if pixels > 0 else "down", amount, tainted=tainted), "Scrolled."), None
+            at = self.pointer or (width / 2, height / 2)
+            if action == "hscroll":
+                return self._said(await b.wheel(*at, pixels * (width or 1440) / fara.DISPLAY, 0, tab=tab,
+                                                tainted=tainted)), None
+            moved = (FARA7B_SCROLL if pixels > 0 else -FARA7B_SCROLL) if seven else \
+                pixels * (height or 900) / fara.DISPLAY
+            return self._said(await b.wheel(*at, 0, -moved, tab=tab, tainted=tainted)), None
         if action == "visit_url":
-            return self._said(await b.navigate(str(args.get("url", "")), tainted=tainted), "Opened the page."), None
+            url = str(args.get("url", "")).strip()
+            if " " in url and not url.startswith(("http://", "https://")):
+                url = SEARCH.format(urllib.parse.quote_plus(url))       # words, not an address: a search
+            elif not url.startswith(("http://", "https://")):
+                url = "https://" + url
+            return self._said(await b.navigate(url, tab=tab, tainted=tainted)), None
         if action == "history_back":
-            return self._said(await b.back(tainted=tainted), "Went back."), None
+            return self._said(await b.back(tab=tab, tainted=tainted)), None
         if action == "web_search":
-            url = SEARCH + urllib.parse.quote_plus(str(args.get("query", "")))
-            return self._said(await b.navigate(url, tainted=tainted), "Searched."), None
+            url = SEARCH.format(urllib.parse.quote_plus(str(args.get("query", ""))))
+            return self._said(await b.navigate(url, tab=tab, tainted=tainted)), None
         if action == "read_page_answer_question":
             return await self._answer_from_page(str(args.get("question", "")), ctx), None
         if action == "pause_and_memorize_fact":
             facts.append(str(args.get("fact", ""))[:500])
-            return "Noted.", None
+            return "", None
         if action == "ask_user_question":
             return "", f"The browser driver needs an answer before it can go on: {args.get('question', '')}"
         if action == "wait":
-            await asyncio.sleep(min(max(float(args.get("time") or 1), 0), MAX_WAIT))
-            return "Waited.", None
+            await asyncio.sleep(min(max(float(args.get("time") or WAIT), 0), MAX_WAIT))
+            return "", None
         if action == "terminate":
             answer = thoughts if seven else args.get("answer")         # Fara-7B answers in its text
             return "", str(answer or "The browser driver finished without an answer.")
-        return f"{action} is not available here; use left_click, type, key, scroll, visit_url or terminate.", None
+        return f"ERROR: {action} is not available here.", None
 
-    @staticmethod
-    def _said(result: dict, done: str) -> str:
-        return done if result.get("ok") else f"That did not work: {result.get('error', 'unknown error')}"
+    def _said(self, result: dict) -> str:
+        """Nothing when an action worked, as in training; an error line (as Magentic-UI sends) when it did not.
+        A tab the action opened is where the driver goes on."""
+        if result.get("new_tabs"):
+            self.tab = result["new_tabs"][-1]
+        if not result.get("ok"):
+            return f"ERROR: {result.get('error', 'unknown error')}"
+        if result.get("blocked"):
+            return f"ERROR: The page tried to open {result['blocked']}, which is not allowed."
+        return ""
 
     async def _answer_from_page(self, question: str, ctx) -> str:
-        page = await self.svc.browser.snapshot(max_chars=PAGE_FOR_QUESTIONS, tainted=ctx.tainted)
+        """Microsoft's read_page_answer_question: the page's text and the question to the same model, the answer
+        cut in the middle past 1,000 characters."""
+        page = await self.svc.browser.snapshot(max_chars=PAGE_FOR_QUESTIONS, tab=self.tab, tainted=ctx.tainted)
         if not page.get("ok"):
-            return f"The page could not be read: {page.get('error')}"
+            return f"ERROR: The page could not be read: {page.get('error')}"
         try:
-            reply = await self.llm.chat([{"role": "user", "content": (
-                f"Page text (untrusted web content):\n{page.get('content', '')}\n\nAnswer from the page text only: "
-                f"{question}")}], think=False, temperature=0, max_tokens=400)
+            reply = await self.llm.chat([
+                {"role": "system", "content": EXTRACT},
+                {"role": "user", "content": f"Page content:\n{page.get('content', '')}\n\nQuestion: {question}"}],
+                think=False, temperature=0, max_tokens=1024)
         except LLMError as exc:
-            return f"The page could not be read: {exc}"
-        return "Answer from the page text: " + reply["content"][:1500]
+            return f"ERROR: The page could not be read: {exc}"
+        said = f"I read the page to answer: {question}\nAnswer: {reply['content']}"
+        if len(said) > OBSERVATION_CHARS:
+            half = OBSERVATION_CHARS // 2
+            said = f"{said[:half]}\n... [truncated {len(said) - OBSERVATION_CHARS} chars] ...\n{said[-half:]}"
+        return said
 
 
 class Swap:
