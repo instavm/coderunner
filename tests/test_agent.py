@@ -1,6 +1,8 @@
 import json
 import unittest
 
+import httpx
+
 from coderunner.agent import Agent, RunContext, build_registry
 from coderunner.safety.decision import DecisionModel
 from coderunner.safety.guard import Guard
@@ -296,6 +298,28 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
                 await llm.chat([{"role": "user", "content": "hi"}])
             self.assertEqual(len(restarts), 2)
             await llm.aclose()
+
+    async def test_a_connection_closed_as_the_request_left_is_sent_again(self):
+        # llama.cpp's server closes idle connections after 5 s; a request reusing one as it closes is lost,
+        # though the server is fine: it goes again on a new connection, and the runtime is not restarted.
+        sent = []
+
+        def handler(request):
+            sent.append(request)
+            if len(sent) == 1:
+                raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+            return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+        llm = LLM("http://127.0.0.1:9/v1", "test")
+        llm._client = httpx.AsyncClient(base_url=llm.base_url, transport=httpx.MockTransport(handler))
+        restarts = []
+
+        async def recover():
+            restarts.append(True)
+            return True
+        llm.recover = recover
+        self.assertEqual((await llm.chat([{"role": "user", "content": "hi"}]))["content"], "ok")
+        self.assertEqual((len(sent), restarts), (2, []))
+        await llm.aclose()
 
     async def test_step_limit(self):
         with FakeOpenAI() as fake:

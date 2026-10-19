@@ -104,7 +104,7 @@ class LLM:
         a long task keeps its progress."""
         for attempt in (1, 2):
             try:
-                response = await self._client.post("/chat/completions", json=payload)
+                response = await self._send(payload)
             except httpx.HTTPError as exc:
                 if attempt == 1 and self.recover is not None and await self.recover():
                     continue
@@ -113,6 +113,15 @@ class LLM:
                 continue
             return response
         return response
+
+    async def _send(self, payload: dict) -> httpx.Response:
+        try:
+            return await self._client.post("/chat/completions", json=payload)
+        except httpx.RemoteProtocolError:
+            # llama.cpp's server closes a connection left idle for 5 s, and a request sent on it as it closes
+            # comes back "disconnected without sending a response" (2 of 10 reuses after 4.9-5.0 s idle): a
+            # browser driver's step lands there often. The server is fine; a new connection carries it.
+            return await self._client.post("/chat/completions", json=payload)
 
     async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
         body = {"model": model or self.model, "input": texts}
