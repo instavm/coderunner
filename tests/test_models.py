@@ -462,6 +462,71 @@ class HubTests(TempHome):
         self.assertEqual(dest.read_bytes(), blob)
         self.assertTrue(any("resuming" in m for m in messages))
 
+    @staticmethod
+    def ranged(blob, seen, drop_at=None):
+        """A CDN answering byte ranges; with drop_at, the range starting there drops after 1.2 MB."""
+        lock = threading.Lock()
+
+        class Dropping(httpx.SyncByteStream):
+            def __init__(self, data):
+                self.data = data
+
+            def __iter__(self):
+                yield self.data[:1_200_000]
+                raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+
+        def resolve(request):
+            first, last = request.headers["range"][6:].split("-")
+            start, end = int(first), int(last) + 1
+            with lock:
+                seen.append(start)
+            if start == drop_at:
+                return httpx.Response(206, stream=Dropping(blob[start:end]))
+            return httpx.Response(206, content=blob[start:end])
+        return resolve
+
+    def test_a_large_download_comes_in_ranges_at_once(self):
+        blob, seen = os.urandom(1_000_003), []
+        hub = Hub(httpx.Client(transport=hf_transport({"/org/M/resolve/abc/model.gguf": self.ranged(blob, seen)})),
+                  cache_dir=False)
+        dest = self.home / "models" / "model.gguf"
+        with mock.patch.object(hub_module, "PARALLEL_MIN", 1000):
+            hub.download("org/M", "model.gguf", dest, revision="abc", sha256=hashlib.sha256(blob).hexdigest(),
+                         size=len(blob))
+        self.assertEqual(sorted(seen), [0, 250_000, 500_001, 750_002])
+        self.assertEqual(dest.read_bytes(), blob)
+        self.assertEqual(sorted(p.name for p in dest.parent.iterdir()), ["model.gguf"])
+
+    def test_an_interrupted_ranged_download_carries_on_in_each_range(self):
+        blob, seen = os.urandom(8_000_000), []
+        third = 4_000_000                                   # where the third of four ranges starts
+        routes = {"/org/M/resolve/abc/model.gguf": self.ranged(blob, seen, drop_at=third)}
+        hub = Hub(httpx.Client(transport=hf_transport(routes)), cache_dir=False)
+        dest = self.home / "models" / "model.gguf"
+        digest = hashlib.sha256(blob).hexdigest()
+        with mock.patch.object(hub_module, "PARALLEL_MIN", 1000), mock.patch.object(hub_module, "RESUMES", 0):
+            with self.assertRaisesRegex(HubError, "run again to resume"):
+                hub.download("org/M", "model.gguf", dest, revision="abc", sha256=digest, size=len(blob))
+            saved = json.loads((dest.parent / "model.gguf.part.json").read_text())["ranges"]
+            self.assertEqual(saved[2][2], 1 << 20)          # what came before the drop is kept
+            seen.clear()
+            routes["/org/M/resolve/abc/model.gguf"] = self.ranged(blob, seen)
+            hub.download("org/M", "model.gguf", dest, revision="abc", sha256=digest, size=len(blob))
+        self.assertEqual(sorted(seen), sorted(start + done for start, end, done in saved if done < end - start))
+        self.assertEqual(dest.read_bytes(), blob)
+        self.assertFalse((dest.parent / "model.gguf.part.json").exists())
+
+    def test_a_server_without_ranges_sends_the_file_in_one_stream(self):
+        blob = os.urandom(100_000)
+        routes = {"/org/M/resolve/abc/model.gguf": lambda request: httpx.Response(200, content=blob)}
+        hub = Hub(httpx.Client(transport=hf_transport(routes)), cache_dir=False)
+        dest = self.home / "models" / "model.gguf"
+        with mock.patch.object(hub_module, "PARALLEL_MIN", 1000):
+            hub.download("org/M", "model.gguf", dest, revision="abc", sha256=hashlib.sha256(blob).hexdigest(),
+                         size=len(blob))
+        self.assertEqual(dest.read_bytes(), blob)
+        self.assertEqual(sorted(p.name for p in dest.parent.iterdir()), ["model.gguf"])
+
     def test_auth_errors_explain_hf_token(self):
         routes = {"/api/models/org/Gated": lambda r: httpx.Response(401, json={"error": "gated"})}
         hub = Hub(httpx.Client(transport=hf_transport(routes)), cache_dir=False)
@@ -1270,9 +1335,11 @@ class PrismTests(TempHome):
         self.assertTrue(shared.exists() and (folder / regular["artifacts"]["prism"]["file"]).exists())
         # An interrupted download of a build is deleted with it.
         partial = folder / (compact["artifacts"]["prism"]["file"] + ".part")
+        ranges = folder / (compact["artifacts"]["prism"]["file"] + ".part.json")
         partial.write_bytes(b"x")
+        ranges.write_text("{}")
         rt.remove(compact)
-        self.assertFalse(partial.exists())
+        self.assertFalse(partial.exists() or ranges.exists())
         self.assertTrue(shared.exists())
 
     def test_memory_estimate_counts_the_8_bit_cache(self):

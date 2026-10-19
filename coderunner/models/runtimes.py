@@ -448,7 +448,8 @@ class LlamaCppRuntime(Runtime):
         art = (entry.get("artifacts") or {}).get(catalog.ARTIFACT.get(self.name, "gguf")) or {}
         name = art.get("file") or art.get("quant")
         if art.get("repo") and name:
-            for part in (self.root / art["repo"].replace("/", "--")).glob(f"*{name}*.part"):
+            folder = self.root / art["repo"].replace("/", "--")
+            for part in [*folder.glob(f"*{name}*.part"), *folder.glob(f"*{name}*.part.json")]:
                 part.unlink(missing_ok=True)
         if (state.get("active") or {}).get("id") == entry["id"]:
             state.pop("active")

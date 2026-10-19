@@ -3,7 +3,8 @@
 API responses are cached under assistant_dir()/models/cache for a day. The
 llama.cpp manifest endpoint resolves a quant tag to the GGUF and its vision
 projector in one call. Downloads are pinned to a commit, resumable through
-HTTP Range and checked against the LFS sha256 before they are moved into place.
+HTTP Range and checked against the LFS sha256 before they are moved into place;
+large files come in several ranges at once.
 """
 
 from __future__ import annotations
@@ -13,7 +14,9 @@ import json
 import os
 import pathlib
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 from urllib.parse import quote
 
@@ -40,6 +43,16 @@ def token() -> str:
 
 
 RESUMES = 20           # times a dropped download carries on from where it stopped
+# Large files come in PARALLEL ranges at once. Measured on a home line (Oct 2026): one connection to Hugging
+# Face's CDN held 1.5 MB/s through a whole 2.9 GB file while fresh ones got 0.9-6.6 MB/s, and four together
+# 7.3 MB/s, what the line carries. Each range is written into its place in the .part file, so a download
+# needs no space beyond the file itself.
+PARALLEL = 4
+PARALLEL_MIN = 256 << 20
+
+
+class _NoRanges(Exception):
+    """The server sends whole files only."""
 
 
 class HubError(Exception):
@@ -159,13 +172,36 @@ class Hub:
             size = size or sib.get("size")
         dest.parent.mkdir(parents=True, exist_ok=True)
         part = dest.with_name(dest.name + ".part")
+        state = part.with_name(part.name + ".json")            # what each range has so far
+        url = f"{endpoint()}/{repo}/resolve/{revision}/{quote(file)}"
+        digest = None
+        # A .part without its ranges is an earlier one-stream download: that carries on as it was.
+        if size and size >= PARALLEL_MIN and (state.exists() or not part.exists()):
+            try:
+                self._ranges(url, repo, file, part, state, size, progress)
+                digest = _sha256(part)
+            except _NoRanges:
+                part.unlink(missing_ok=True)
+                state.unlink(missing_ok=True)
+        if digest is None:
+            digest = self._stream(url, repo, file, part, size, progress)
+        if size and part.stat().st_size != size:
+            raise HubError(f"{file}: expected {size} bytes, got {part.stat().st_size}; run again to resume")
+        if sha256 and digest.hexdigest() != sha256:
+            part.unlink()
+            raise HubError(f"{file}: sha256 mismatch, deleted the download")
+        os.replace(part, dest)
+        return dest
+
+    def _stream(self, url: str, repo: str, file: str, part: pathlib.Path, size: int | None,
+                progress: Callable[[str], None] | None) -> "hashlib._Hash":
+        """One stream from the start, or from where an earlier one stopped; hashed as it comes."""
         digest, offset = hashlib.sha256(), 0
         if part.exists():
             with open(part, "rb") as handle:
                 for block in iter(lambda: handle.read(1 << 20), b""):
                     digest.update(block)
                     offset += len(block)
-        url = f"{endpoint()}/{repo}/resolve/{revision}/{quote(file)}"
         last, resumes = 0.0, 0
         while True:
             headers = {**self._auth(), **({"Range": f"bytes={offset}-"} if offset else {})}
@@ -190,9 +226,8 @@ class Hub:
                                 done += len(chunk)
                                 if progress and (time.monotonic() - last > 2 or done == total):
                                     last = time.monotonic()
-                                    pct = f"{100 * done / total:.0f}% of {total / 1e9:.2f} GB" if total else f"{done / 1e9:.2f} GB"
-                                    progress(f"downloading {file}: {pct}")
-                break
+                                    progress(_progress(file, done, total))
+                return digest
             except httpx.HTTPError as exc:
                 # Hugging Face's CDN closed connections every 1.4-1.7 GB in testing: carry on from where it stopped
                 # while each attempt gets further.
@@ -203,13 +238,92 @@ class Hub:
                 if progress:
                     progress(f"downloading {file}: the connection dropped at {offset / 1e9:.2f} GB; resuming")
                 time.sleep(min(30, 2 * resumes))
-        if size and part.stat().st_size != size:
-            raise HubError(f"{file}: expected {size} bytes, got {part.stat().st_size}; run again to resume")
-        if sha256 and digest.hexdigest() != sha256:
-            part.unlink()
-            raise HubError(f"{file}: sha256 mismatch, deleted the download")
-        os.replace(part, dest)
-        return dest
+
+    def _ranges(self, url: str, repo: str, file: str, part: pathlib.Path, state: pathlib.Path, size: int,
+                progress: Callable[[str], None] | None) -> None:
+        """PARALLEL ranges at once, each written into its place in the .part file. What each has so far is
+        kept beside it (.part.json, only ever behind what is written), so an interrupted download carries on."""
+        try:
+            saved = json.loads(state.read_text())
+            ranges = [list(map(int, r)) for r in saved["ranges"]] if saved.get("size") == size and part.exists() \
+                else None
+        except (OSError, ValueError, KeyError, TypeError):
+            ranges = None
+        if not ranges:
+            ranges = [[size * i // PARALLEL, size * (i + 1) // PARALLEL, 0] for i in range(PARALLEL)]
+        lock, stop, last = threading.Lock(), threading.Event(), [0.0]
+
+        def save() -> None:
+            state.write_text(json.dumps({"size": size, "ranges": ranges}))
+
+        def fetch(r: list[int]) -> None:
+            start, end, resumes = r[0], r[1], 0
+            while r[2] < end - start and not stop.is_set():
+                before = r[2]
+                headers = {**self._auth(), "Range": f"bytes={start + r[2]}-{end - 1}"}
+                try:
+                    with self.client.stream("GET", url, headers=headers,
+                                            timeout=httpx.Timeout(30, read=300)) as response:
+                        if response.status_code in (401, 403):
+                            raise HubError(f"{repo} needs access: accept its terms on Hugging Face and set HF_TOKEN")
+                        if response.status_code == 200:
+                            raise _NoRanges()
+                        if response.status_code != 206:
+                            raise HubError(f"Download of {repo}/{file} failed with {response.status_code}")
+                        for chunk in response.iter_bytes(1 << 20):
+                            if stop.is_set():
+                                return
+                            chunk = chunk[:end - start - r[2]]
+                            os.pwrite(fd, chunk, start + r[2])
+                            with lock:
+                                r[2] += len(chunk)
+                                if time.monotonic() - last[0] > 2:
+                                    last[0] = time.monotonic()
+                                    save()
+                                    if progress:
+                                        progress(_progress(file, sum(x[2] for x in ranges), size))
+                    if r[2] <= before:
+                        raise HubError(f"Download of {repo}/{file} stopped sending; run again to resume")
+                except httpx.HTTPError as exc:
+                    resumes += 1
+                    if r[2] <= before or resumes > RESUMES:
+                        raise HubError(f"Download of {repo}/{file} interrupted ({exc}); run again to resume") from exc
+                    time.sleep(min(30, 2 * resumes))
+
+        fd = os.open(part, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            with ThreadPoolExecutor(PARALLEL) as pool:
+                futures = [pool.submit(fetch, r) for r in ranges]
+                errors = []
+                for future in futures:
+                    try:
+                        future.result()
+                    except BaseException as exc:            # the others stop too; what they have is kept
+                        stop.set()
+                        errors.append(exc)
+        finally:
+            os.close(fd)
+            with lock:
+                save()
+        if errors:
+            raise next((e for e in errors if isinstance(e, _NoRanges)), errors[0])
+        state.unlink(missing_ok=True)
+        if progress:
+            progress(_progress(file, size, size))
+
+
+def _sha256(path: pathlib.Path) -> "hashlib._Hash":
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest
+
+
+def _progress(file: str, done: int, total: int) -> str:
+    return f"downloading {file}: " + (f"{100 * done / total:.0f}% of {total / 1e9:.2f} GB" if total
+                                      else f"{done / 1e9:.2f} GB")
+
 
 
 _default: Hub | None = None
