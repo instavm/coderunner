@@ -75,6 +75,23 @@ KEYS = {  # name -> (windows virtual key code, text)
     "Delete": (46, ""), "PageDown": (34, ""), "PageUp": (33, ""), "Space": (32, " "),
 }
 ACTIVATING_KEYS = frozenset({"Enter", "Space"})   # press the focused control, or submit its form
+CHOOSING_KEYS = frozenset({"ArrowDown", "ArrowUp", "Home", "End", "PageDown", "PageUp"})   # in a focused dropdown
+MODIFIERS = {"Alt": 1, "Control": 2, "Meta": 4, "Shift": 8}
+# Key combinations a model may press: editing and focus keys, as named editing commands, which is how Chrome on
+# macOS takes them from outside (Playwright sends them so too). Copy, cut and paste would reach the owner's
+# clipboard, and the browser's own shortcuts (tabs, windows, address bar) are not the page's: neither is here.
+CHORDS = {
+    ("Control", "a"): "selectAll", ("Meta", "a"): "selectAll", ("Control", "z"): "undo", ("Meta", "z"): "undo",
+    ("Control", "Shift", "z"): "redo", ("Meta", "Shift", "z"): "redo",
+    ("Alt", "Backspace"): "deleteWordBackward", ("Control", "Backspace"): "deleteWordBackward",
+    ("Alt", "Delete"): "deleteWordForward", ("Control", "Delete"): "deleteWordForward",
+    ("Backspace", "Meta"): "deleteToBeginningOfLine",
+    ("ArrowLeft", "Shift"): "moveLeftAndModifySelection", ("ArrowRight", "Shift"): "moveRightAndModifySelection",
+    ("ArrowUp", "Shift"): "moveUpAndModifySelection", ("ArrowDown", "Shift"): "moveDownAndModifySelection",
+    ("Home", "Shift"): "moveToBeginningOfLineAndModifySelection",
+    ("End", "Shift"): "moveToEndOfLineAndModifySelection", ("Shift", "Tab"): "",
+}
+KEYSTROKE_CHARS = 100       # typed key by key up to this length, as a person (and Playwright) does; longer is inserted
 # Before reading the page after an action: how long to wait for it to start changing (typed text often brings
 # suggestions about a second later), then for it to stay still, and at most in all (seconds).
 SETTLE_START = {"type": 1.5, "load": 1.5}
@@ -162,6 +179,7 @@ class BrowserBroker:
         self._page_targets: dict[str, dict] = {}  # every page target -> {"opener": ...}
         self._spawned: dict[str, tuple[bool, str, float]] = {}   # popup -> (tainted, opener, until)
         self._new_tabs: dict[str, list[str]] = {}         # tab -> popups it opened during the action
+        self._screens_only = 0          # while a model that reads screenshots acts: no page text after actions
         self._dns: dict[str, tuple[float, str | None]] = {}
 
     @property
@@ -281,19 +299,24 @@ class BrowserBroker:
             except (BrowserError, CDPError):
                 return None
 
-    async def click_at(self, x: float, y: float, tab: str | None = None, tainted: bool = False) -> dict:
-        """Click what is at viewport point (x, y) of a screenshot: the element there is found first and clicked
-        through the same checks as click(ref), so a point never bypasses policy, the judge or approvals."""
-        return await self._run("click_at", {"x": round(float(x)), "y": round(float(y)), "tab": tab, "tainted": tainted},
-                               lambda: self._click_at(float(x), float(y), tab, tainted))
+    async def click_at(self, x: float, y: float, tab: str | None = None, tainted: bool = False,
+                       clicks: int = 1) -> dict:
+        """Click what is at viewport point (x, y) of a screenshot, at that point, once or (clicks) two or three
+        times as a double or triple click: the element there is found first and clicked through the same checks
+        as click(ref), so a point never bypasses policy, the judge or approvals."""
+        clicks = min(max(int(clicks), 1), 3)
+        return await self._run("click_at", {"x": round(float(x)), "y": round(float(y)), "clicks": clicks, "tab": tab,
+                                            "tainted": tainted},
+                               lambda: self._click_at(float(x), float(y), tab, tainted, clicks))
 
     async def type_focused(self, text: str, submit: bool = False, tab: str | None = None,
-                           tainted: bool = False, clear: bool = False) -> dict:
+                           tainted: bool = False, clear: bool = False, keystrokes: bool = False) -> dict:
         """Type into the field that has the focus (after a click on it), with the same checks as type(ref);
-        clear replaces what the field holds."""
+        clear replaces what the field holds, keystrokes types key by key; a focused dropdown list chooses the
+        option with that text instead, checked as select() is."""
         return await self._run("type_focused", {"chars": len(str(text)), "submit": submit, "tab": tab,
                                                 "tainted": tainted},
-                               lambda: self._type_focused(str(text), submit, tab, tainted, clear))
+                               lambda: self._type_focused(str(text), submit, tab, tainted, clear, keystrokes))
 
     async def find(self, text: str, tab: str | None = None, tainted: bool = False) -> dict:
         """The lines of the whole page (not just the first part) that mention text, with element refs."""
@@ -307,6 +330,25 @@ class BrowserBroker:
     async def press(self, key: str, tab: str | None = None, tainted: bool = False) -> dict:
         return await self._run("press", {"key": key, "tab": tab, "tainted": tainted},
                                lambda: self._press(key, tab, tainted))
+
+    async def press_keys(self, keys: list[str], tab: str | None = None, tainted: bool = False) -> dict:
+        """Press one key with modifiers held (["Control", "a"], ["Shift", "Tab"]): editing and focus combinations,
+        Alt+ArrowLeft for back, Control/Meta+R or F5 to reload; Enter and Space are checked as press() checks."""
+        return await self._run("press_keys", {"keys": [str(k) for k in keys][:5], "tab": tab, "tainted": tainted},
+                               lambda: self._press_keys([str(k) for k in keys], tab, tainted))
+
+    async def wheel(self, x: float, y: float, dx: float, dy: float, tab: str | None = None,
+                    tainted: bool = False) -> dict:
+        """Turn the mouse wheel at viewport point (x, y) by (dx, dy) pixels: what is under the pointer scrolls
+        (a results list beside a map, say), as a model trained on screenshots expects."""
+        return await self._run("wheel", {"x": round(float(x)), "y": round(float(y)), "dx": round(float(dx)),
+                                         "dy": round(float(dy)), "tab": tab, "tainted": tainted},
+                               lambda: self._wheel(float(x), float(y), float(dx), float(dy), tab, tainted))
+
+    async def hover(self, x: float, y: float, tab: str | None = None, tainted: bool = False) -> dict:
+        """Move the pointer to viewport point (x, y): menus that open on hover open."""
+        return await self._run("hover", {"x": round(float(x)), "y": round(float(y)), "tab": tab, "tainted": tainted},
+                               lambda: self._hover(float(x), float(y), tab, tainted))
 
     async def scroll(self, direction: str = "down", amount: int = 600, tab: str | None = None,
                      tainted: bool = False) -> dict:
@@ -494,6 +536,17 @@ class BrowserBroker:
             for sid in list(self._sessions.values()):
                 with contextlib.suppress(CDPError, BrowserError):
                     await self._send(sid, "Emulation.clearDeviceMetricsOverride")
+
+    @contextlib.asynccontextmanager
+    async def screens_only(self):
+        """While a model that reads screenshots acts (the browser driver): actions settle as always, but their
+        results carry no page text, which the model would not read; rendering the page's accessibility tree
+        after every action cost seconds a step on heavy pages."""
+        self._screens_only += 1
+        try:
+            yield
+        finally:
+            self._screens_only -= 1
 
     async def _fix_viewport(self, sid: str) -> None:
         width, height = self._viewport or (0, 0)
@@ -906,6 +959,8 @@ class BrowserBroker:
                 "functionDeclaration": SETTLE_JS, "executionContextId": await self._world(sid, target),
                 "arguments": [{"value": start * 1000}, {"value": SETTLE_QUIET * 1000}, {"value": most * 1000}],
                 "awaitPromise": True, "returnByValue": True}, timeout=most + 5)
+        if self._screens_only:
+            return result
         try:
             content = await self._render(target, sid, url)
             deadline = time.monotonic() + self.blank_wait
@@ -993,7 +1048,8 @@ class BrowserBroker:
         except (KeyError, ValueError, TypeError):
             raise BrowserError(f"Unknown element [{ref}] in this tab; take a new snapshot") from None
 
-    async def _click(self, ref: int | None, tab: str | None, tainted: bool, element: dict | None = None) -> dict:
+    async def _click(self, ref: int | None, tab: str | None, tainted: bool, element: dict | None = None,
+                     clicks: int = 1) -> dict:
         target = await self._target(tab)
         url, host = await self._web_page(target)
         read = self._read_urls.get(target, "")      # the page as the model last saw it
@@ -1002,6 +1058,14 @@ class BrowserBroker:
         async with self._acting(target, sid, tainted):
             options = await self._call(sid, await self._object(sid, element["backend"], await self._world(sid, target)),
                                        OPTIONS_JS)
+        if options is not None and element.get("point"):
+            # A model working from screenshots clicks a dropdown to open it, but a native list opens outside the
+            # page where it cannot be seen or used: the dropdown gets the focus, and typing an option's text or the
+            # arrow keys then choose, each checked as choosing is.
+            await self._allow("browser.read", host, f"Focus the dropdown at the point on {host}", tainted, url=url)
+            async with self._acting(target, sid, tainted):
+                await self._send(sid, "DOM.focus", {"backendNodeId": element["backend"]})
+                return await self._observe(target, sid, await self._result(target), tainted)
         if options is not None:
             # A native dropdown opens a menu outside the page that cannot be used, and sites often lay their own
             # control over it (booking.com's dates sit under "Rooms and occupancy"): choosing is the way.
@@ -1015,7 +1079,7 @@ class BrowserBroker:
             if kind == "browser.interact" and await self._commits(
                     host, url, "click", plan["role"], plan["name"] or plan["text"], nearby=plan["label"]):
                 kind = "browser.sensitive"
-            summary = f"Click {plan['label']} on {host}"
+            summary = f"{('Click', 'Double-click', 'Triple-click')[clicks - 1]} {plan['label']} on {host}"
             # Whether the owner is shown this exact plan; if so it must not change at all before the click.
             approved = self.policy.evaluate(Action(kind, host, summary, {"url": url}, tainted)) is not Decision.ALLOW
             await self._allow(kind, host, summary, tainted, url=url, ref=ref, label=plan["label"])
@@ -1030,9 +1094,10 @@ class BrowserBroker:
                     moved = _fingerprint(await self._probe(sid, target, element, x, y)) != _fingerprint(plan)
                 if not moved:
                     watch = self._watch_navigation(sid, target)
-                    for event in ("mousePressed", "mouseReleased"):
-                        await self._send(sid, "Input.dispatchMouseEvent", {
-                            "type": event, "x": x, "y": y, "button": "left", "buttons": 1, "clickCount": 1})
+                    for count in range(1, clicks + 1):           # a double click is two, the second counted 2
+                        for event in ("mousePressed", "mouseReleased"):
+                            await self._send(sid, "Input.dispatchMouseEvent", {
+                                "type": event, "x": x, "y": y, "button": "left", "buttons": 1, "clickCount": count})
                     navigated = await self._settle(sid, watch)
                     result = await self._observe(target, sid, await self._result(target, navigated=navigated),
                                                  tainted, "load" if navigated else "")
@@ -1051,7 +1116,7 @@ class BrowserBroker:
             await asyncio.sleep(CLICK_SETTLE)
         raise BrowserError("The page changed under the pointer; nothing was clicked. Take a new snapshot")
 
-    async def _click_at(self, x: float, y: float, tab: str | None, tainted: bool) -> dict:
+    async def _click_at(self, x: float, y: float, tab: str | None, tainted: bool, clicks: int = 1) -> dict:
         target = await self._target(tab)
         url, host = await self._web_page(target)
         sid = await self._session(target)
@@ -1075,10 +1140,14 @@ class BrowserBroker:
                            "password": False, "point": (x, y)}
         if ref is None and element is None:
             raise BrowserError(f"Nothing is at ({x:.0f}, {y:.0f}); take a new screenshot")
-        return await self._click(ref, tab, tainted, element=element)
+        if element is None:
+            # The press goes where the model pointed, inside the element found there (a long result card, a
+            # slider's track), not to its middle as a click by number does.
+            element = {**self._ref(target, ref), "point": (x, y)}
+        return await self._click(ref, tab, tainted, element=element, clicks=clicks)
 
     async def _type_focused(self, text: str, submit: bool, tab: str | None, tainted: bool,
-                            clear: bool = False) -> dict:
+                            clear: bool = False, keystrokes: bool = False) -> dict:
         target = await self._target(tab)
         url, _ = await self._web_page(target)
         sid = await self._session(target)
@@ -1091,9 +1160,13 @@ class BrowserBroker:
                 backend = (await self._send(sid, "DOM.describeNode", {"objectId": object_id}))["node"].get(
                     "backendNodeId")
             ref = await self._numbered(sid, target, url, backend) if backend else None
+            dropdown = backend is not None and (await self._send(sid, "DOM.describeNode", {"backendNodeId": backend}))[
+                "node"].get("nodeName") == "SELECT"
         if ref is None:
             raise BrowserError("No text field has the focus; click the field first")
-        return await self._type(ref, text, submit, tab, tainted, clear=clear)
+        if dropdown:
+            return await self._select(ref, text, tab, tainted)
+        return await self._type(ref, text, submit, tab, tainted, clear=clear, keystrokes=keystrokes)
 
     async def _numbered(self, sid: str, target: str, url: str, backend: int | None) -> int | None:
         """The number of the nearest element at or above a node that the page text numbers (a button around an
@@ -1245,7 +1318,8 @@ class BrowserBroker:
             return None
         return await self._describe(sid, target, other, closest=True) or {"tag": "unknown", "text": ""}
 
-    async def _type(self, ref: int, text: str, submit: bool, tab: str | None, tainted: bool, clear: bool) -> dict:
+    async def _type(self, ref: int, text: str, submit: bool, tab: str | None, tainted: bool, clear: bool,
+                    keystrokes: bool = False) -> dict:
         text = str(text)
         target = await self._target(tab)
         url, host = await self._web_page(target)
@@ -1295,7 +1369,10 @@ class BrowserBroker:
                 await self._call(sid, await self._object(sid, backend, context), SELECT_ALL_JS)
                 if not text:
                     await self._key(sid, "Backspace")
-            if text:
+            if text and keystrokes and len(text) <= KEYSTROKE_CHARS and text.isascii():
+                for char in text:               # key events too, for fields that act on keys (suggestions)
+                    await self._char(sid, char)
+            elif text:
                 await self._send(sid, "Input.insertText", {"text": text})
             navigated = False
             if submit:
@@ -1307,6 +1384,12 @@ class BrowserBroker:
             if field is None:
                 result["_audit"] = {"text": text}
             return result
+
+    async def _char(self, sid: str, char: str) -> None:
+        code = ord(char.upper()) if char.isalnum() else 32 if char == " " else 0
+        await self._send(sid, "Input.dispatchKeyEvent", {"type": "keyDown", "key": char, "text": char,
+                                                         "unmodifiedText": char, "windowsVirtualKeyCode": code})
+        await self._send(sid, "Input.dispatchKeyEvent", {"type": "keyUp", "key": char, "windowsVirtualKeyCode": code})
 
     async def _key(self, sid: str, key: str) -> None:
         code, text = KEYS[key]
@@ -1330,8 +1413,9 @@ class BrowserBroker:
         risky = False
         if focused:
             summary += f' (focus: {focused.get("tag")} {json.dumps(focused.get("text", ""), ensure_ascii=False)})'
-            if key in ACTIVATING_KEYS:
-                # Enter and Space activate the focused control; Enter also submits its form.
+            if key in ACTIVATING_KEYS or (key in CHOOSING_KEYS and focused.get("tag") == "select"):
+                # Enter and Space activate the focused control; Enter also submits its form. In a dropdown list
+                # the arrow keys choose an option, which a page may act on at once.
                 risky = focused.get("tag") in FRAME_TAGS or focused.get("truncated") or await self._commits(
                     host, url, f"press {key} in", focused.get("tag", ""), focused.get("text", ""),
                     nearby=f"submit button: {focused['submit']}" if focused.get("submit") else "")
@@ -1347,6 +1431,81 @@ class BrowserBroker:
             navigated = await self._settle(sid, watch)
             return await self._observe(target, sid, await self._result(target, navigated=navigated), tainted,
                                               "load" if navigated else "")
+
+    async def _press_keys(self, keys: list[str], tab: str | None, tainted: bool) -> dict:
+        held = sorted({k for k in keys if k in MODIFIERS})
+        rest = [k for k in keys if k not in MODIFIERS]
+        if len(rest) != 1:
+            raise BrowserError("Press one key, with Shift, Control, Alt or Meta held if needed")
+        key = rest[0].lower() if len(rest[0]) == 1 else rest[0]
+        if not held and key in KEYS:
+            return await self._press(key, tab, tainted)
+        if (held in (["Control"], ["Meta"]) and key == "r") or (not held and key == "F5"):
+            return await self._reload(tab, tainted)
+        if held == ["Alt"] and key == "ArrowLeft":
+            return await self._back(tab, tainted)
+        if key in ("Enter", "Space") and held:
+            return await self._press(key, tab, tainted)            # checked as Enter or Space alone
+        combo = tuple(sorted(held + [key]))
+        if combo not in CHORDS and not (not held and len(key) == 1 and key.isprintable()):
+            allowed = ", ".join("+".join(c) for c in CHORDS)
+            raise BrowserError(f"{'+'.join(held + [key])} is not available here; single keys, {allowed}, "
+                               "Alt+ArrowLeft (back) and Control+R (reload) are")
+        target = await self._target(tab)
+        url, host = await self._web_page(target)
+        sid = await self._session(target)
+        async with self._acting(target, sid, tainted):
+            focused = await self._describe(sid, target)
+        name = "+".join(held + [key])
+        summary = f"Press {name} on {host}" + (
+            f' (focus: {focused.get("tag")} {json.dumps(focused.get("text", ""), ensure_ascii=False)})' if focused else "")
+        await self._allow("browser.interact", host, summary, tainted, url=url, key=name)
+        async with self._acting(target, sid, tainted):
+            if not held:                          # a character: typed where the focus is
+                await self._char(sid, key)
+            else:
+                code = KEYS[key][0] if key in KEYS else ord(key.upper()) if len(key) == 1 else 0
+                bits = sum(MODIFIERS[m] for m in held)
+                down = {"type": "rawKeyDown", "key": key, "modifiers": bits, "windowsVirtualKeyCode": code}
+                if CHORDS[combo]:
+                    down["commands"] = [CHORDS[combo]]
+                await self._send(sid, "Input.dispatchKeyEvent", down)
+                await self._send(sid, "Input.dispatchKeyEvent", {"type": "keyUp", "key": key, "modifiers": bits,
+                                                                 "windowsVirtualKeyCode": code})
+            await asyncio.sleep(0.1)
+            return await self._observe(target, sid, await self._result(target), tainted)
+
+    async def _reload(self, tab: str | None, tainted: bool) -> dict:
+        target = await self._target(tab)
+        url, host = await self._web_page(target)
+        await self._allow("browser.interact", host, f"Reload {url}", tainted, url=url)
+        sid = await self._session(target)
+        async with self._acting(target, sid, tainted):
+            watch = self._watch_navigation(sid, target)
+            await self._send(sid, "Page.reload")
+            navigated = await self._settle(sid, watch)
+            return await self._observe(target, sid, await self._result(target, navigated=navigated), tainted,
+                                       "load" if navigated else "")
+
+    async def _wheel(self, x: float, y: float, dx: float, dy: float, tab: str | None, tainted: bool) -> dict:
+        target = await self._target(tab)
+        url, host = await self._web_page(target)
+        await self._allow("browser.read", host, f"Scroll on {host}", tainted)
+        sid = await self._session(target)
+        async with self._acting(target, sid, tainted):
+            await self._send(sid, "Input.dispatchMouseEvent", {"type": "mouseWheel", "x": x, "y": y,
+                                                               "deltaX": dx, "deltaY": dy})
+            await asyncio.sleep(0.25)               # pages load more content as they scroll
+            return await self._observe(target, sid, await self._result(target), tainted)
+
+    async def _hover(self, x: float, y: float, tab: str | None, tainted: bool) -> dict:
+        target = await self._target(tab)
+        url, host = await self._web_page(target)
+        await self._allow("browser.read", host, f"Point at ({x:.0f}, {y:.0f}) on {host}", tainted)
+        sid = await self._session(target)
+        async with self._acting(target, sid, tainted):
+            await self._send(sid, "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+            return await self._observe(target, sid, await self._result(target), tainted)
 
     async def _scroll(self, direction: str, amount: int, tab: str | None, tainted: bool) -> dict:
         deltas = {"down": (0, 1), "up": (0, -1), "right": (1, 0), "left": (-1, 0)}
@@ -1389,11 +1548,18 @@ class BrowserBroker:
                 params["clip"] = {"x": 0, "y": 0, "width": min(size.get("width", 1280), 4096),
                                   "height": min(size.get("height", 900), 16384), "scale": 1}
             data = (await self._send(sid, "Page.captureScreenshot", params, timeout=60))["data"]
+            # In CSS pixels, the space click_at takes points in, whatever the screen's pixel density, and with
+            # any scrollbar, as the screenshot has it: clientWidth leaves a classic scrollbar out, which put a
+            # driver's clicks up to 15 px left of where it pointed at the right of the page.
+            inner = await self._send(sid, "Runtime.evaluate", {
+                "expression": "[innerWidth, innerHeight]", "contextId": await self._world(sid, target),
+                "returnByValue": True})
+            size = (inner.get("result") or {}).get("value") or [view.get("clientWidth", 0),
+                                                                 view.get("clientHeight", 0)]
             result = await self._result(target)
         digest = hashlib.sha256(base64.b64decode(data)).hexdigest()
         result.update(mime=f"image/{format}", data_b64=data, changed=self._shots.get(target) != digest,
-                      # in CSS pixels, the space click_at takes points in, whatever the screen's pixel density
-                      viewport=[view.get("clientWidth", 0), view.get("clientHeight", 0)])
+                      viewport=list(size))
         self._shots[target] = digest
         return result
 

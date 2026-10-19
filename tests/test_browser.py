@@ -645,7 +645,10 @@ class InteractionPolicyTests(BrokerTestCase):
         browser.hit = 126
         clicked = await self.broker.click_at(60, 30)
         self.assertTrue(clicked["ok"], clicked)
-        self.assertEqual(browser.sent("DOM.getBoxModel")[-1]["backendNodeId"], 109)
+        clicks = [e for e in self.audit.tail() if e["event"] == "browser.click_at"]
+        self.assertIn("Search", clicks[-1]["clicked"])                   # the search box, found from its text
+        pressed = browser.sent("Input.dispatchMouseEvent")[-2]
+        self.assertEqual((pressed["type"], pressed["x"], pressed["y"]), ("mousePressed", 60, 30))  # where pointed
         # A paragraph, which nothing numbers: clicked where the model pointed, as a mouse would, through the
         # same checks, and described by what is there.
         browser.hit = 4
@@ -667,7 +670,8 @@ class InteractionPolicyTests(BrokerTestCase):
         browser.hit = 140
         clicked = await self.broker.click_at(60, 30)
         self.assertTrue(clicked["ok"], clicked)
-        self.assertEqual(browser.sent("DOM.getBoxModel")[-1]["backendNodeId"], 140)
+        clicks = [e for e in self.audit.tail() if e["event"] == "browser.click_at"]
+        self.assertIn("Careers", clicks[-1]["clicked"])
 
     async def test_typing_goes_to_the_focused_field_with_the_usual_checks(self):
         browser, _ = await self.load_shop()
@@ -1135,6 +1139,21 @@ button.icon::before { content: ""; position: absolute; left: 40px; top: 5px; wid
   document.getElementById('out').textContent = 'route chosen'; });</script>
 </body></html>"""
 
+# What a model working from screenshots does besides clicking: a wheel over a side list, a hover menu, a double
+# click, replacing a field's text, a dropdown.
+CONTROLS = (b"""<!doctype html><html><head><title>Controls</title><style>
+body { margin: 0; font: 16px sans-serif; } #list { position: absolute; left: 0; top: 0; width: 300px; height: 200px;
+overflow-y: scroll; } #list div { height: 40px; } #name { position: absolute; left: 400px; top: 20px; width: 200px; }
+#pick { position: absolute; left: 400px; top: 80px; } #word { position: absolute; left: 400px; top: 140px; }
+#menu { position: absolute; left: 700px; top: 20px; width: 100px; height: 40px; }
+#out { position: absolute; left: 400px; top: 300px; } #tall { height: 3000px; }
+</style></head><body><div id="list">""" + b"".join(b"<div>row %d</div>" % i for i in range(40)) + b"""</div>
+<input id="name" aria-label="Name" value="old text" onkeydown="window.keys = (window.keys || 0) + 1">
+<select id="pick" aria-label="Size"><option>Small</option><option>Medium</option><option>Large</option></select>
+<span id="word" ondblclick="document.getElementById('out').textContent = 'double ' + this.textContent">wordy</span>
+<div id="menu" onmouseover="document.getElementById('out').textContent = 'menu open'">Menu</div>
+<div id="out"></div><div id="tall"></div></body></html>""")
+
 
 class _Fixture(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -1145,6 +1164,7 @@ class _Fixture(http.server.BaseHTTPRequestHandler):
             return
         port = str(self.server.server_port).encode()
         body = FIXTURE.replace(b"PORT", port) if self.path == "/" else DRAWN if self.path == "/drawn" else \
+            CONTROLS if self.path == "/controls" else \
             b"<title>Next</title><h2>Second page</h2>"
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1193,6 +1213,39 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
 
     def refs(self):
         return {info["name"]: ref for ref, info in self.broker._refs[self.broker._active].items()}
+
+    async def page(self, expression: str):
+        sid = await self.broker._session(self.broker._active)
+        found = await self.broker._send(sid, "Runtime.evaluate", {"expression": expression, "returnByValue": True})
+        return found["result"].get("value")
+
+    async def test_what_a_screenshot_model_does_besides_clicking(self):
+        opened = await self.broker.navigate(self.base + "/controls")
+        self.assertTrue(opened["ok"], opened)
+        async with self.broker.screens_only():
+            shot = await self.broker.screenshot(format="png")
+            self.assertEqual(shot["viewport"], await self.page("[innerWidth, innerHeight]"))   # scrollbar included
+            # The wheel scrolls what is under the pointer: the side list, not the page.
+            wheel = await self.broker.wheel(150, 100, 0, 200)
+            self.assertTrue(wheel["ok"], wheel)
+            self.assertNotIn("content", wheel)                                # no page text for a screenshot model
+            self.assertEqual(await self.page("[document.getElementById('list').scrollTop > 0, scrollY]"), [True, 0])
+            self.assertTrue((await self.broker.hover(750, 40))["ok"])
+            self.assertEqual(await self.page("document.getElementById('out').textContent"), "menu open")
+            self.assertTrue((await self.broker.click_at(420, 150, clicks=2))["ok"])
+            self.assertEqual(await self.page("document.getElementById('out').textContent"), "double wordy")
+            # Select all, then type key by key: the field's text is replaced, and the page saw the keys.
+            self.assertTrue((await self.broker.click_at(450, 30))["ok"])
+            self.assertTrue((await self.broker.press_keys(["Control", "a"]))["ok"])
+            typed = await self.broker.type_focused("new", keystrokes=True)
+            self.assertTrue(typed["ok"], typed)
+            self.assertEqual(await self.page("[document.getElementById('name').value, window.keys >= 3]"), ["new", True])
+            self.assertIn("not available", (await self.broker.press_keys(["Meta", "v"]))["error"])   # no paste
+            # A dropdown clicked by point gets the focus; typing an option's text chooses it.
+            self.assertTrue((await self.broker.click_at(420, 90))["ok"])
+            chosen = await self.broker.type_focused("Large")
+            self.assertTrue(chosen["ok"], chosen)
+            self.assertEqual(await self.page("document.getElementById('pick').value"), "Large")
 
     async def test_points_on_drawn_controls_reach_them(self):
         # A point on ::before content hits the pseudo-element, not an element: booking.com's one-way radio

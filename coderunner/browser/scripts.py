@@ -29,7 +29,12 @@ FOCUSED_JS = r"""(() => {
   while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
   return el && el !== document.body && el !== document.documentElement ? el : null;
 })()"""
-CONTAINS_JS = "function(other) { for (let n = other; n; n = n.parentNode || n.host) if (n === this) return true; return false; }"
+# Whether a hit is the element or inside it; a click on a control's label is a click on the control.
+CONTAINS_JS = r"""function(other) {
+  for (let n = other; n; n = n.parentNode || n.host) if (n === this) return true;
+  for (const label of this.labels || []) if (label.contains(other)) return true;
+  return false;
+}"""
 # Choose an option of a native <select>, whose popup is drawn by the OS where mouse events cannot reach it.
 SELECT_OPTION_JS = r"""function(choice) {
   if (!this || this.tagName !== 'SELECT') return {ok: false, error: 'not a dropdown (<select>); click it instead'};
