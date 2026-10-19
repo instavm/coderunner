@@ -146,6 +146,17 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         last = requests[-1]["messages"][-1]["content"]
         self.assertIn("That did not work: Not permitted", json.dumps(last))
 
+    def test_old_screenshots_go_together_so_most_steps_only_add_one(self):
+        messages = [{"role": "system", "content": "s"}]
+        shown = []
+        for n in range(8):
+            messages.append({"role": "user", "content": [{"type": "image_url"}, {"type": "text", "text": f"step {n}"}]})
+            Driver._keep_recent_screenshots(messages)
+            shown.append(sum(isinstance(m["content"], list) for m in messages))
+            messages.append({"role": "assistant", "content": "next"})
+        self.assertEqual(shown, [1, 2, 3, 1, 2, 3, 1, 2])            # never more than three, as in training
+        self.assertEqual(messages[1]["content"], "step 0")            # what an old step said is kept as text
+
     async def test_a_driver_going_round_in_circles_is_told_and_then_stopped(self):
         # A Google Maps run clicked the same button 18 times in a row. Points a little apart are the same step.
         script = [step({"action": "left_click", "coordinate": [610 + i % 2, 300]}) for i in range(7)] + [

@@ -128,8 +128,18 @@ class Driver:
 
     @staticmethod
     def _keep_recent_screenshots(messages: list[dict]) -> None:
+        """At most KEEP_SCREENSHOTS screenshots, as in training, but dropped all but the newest at once.
+
+        Fara's own harness drops the oldest of three at every step, and the two kept after it must then be read
+        again, every step; on a hybrid model such as Fara1.5, whose state cannot be wound back to the change,
+        everything after the instructions is. Dropped together once a fourth arrives, the model sees one to three
+        screenshots, as in the first steps of every task it was trained on, and two steps in three only add the
+        new one. Measured with Fara1.5-4B on 12 real-site tasks (M3 Pro): 30 minutes and 11 answered right,
+        against 70 minutes and 10, steps reading about 1,400 prompt tokens instead of 6,300-8,900."""
         with_images = [i for i, m in enumerate(messages) if m["role"] == "user" and isinstance(m["content"], list)]
-        for i in with_images[:-fara.KEEP_SCREENSHOTS]:
+        if len(with_images) <= fara.KEEP_SCREENSHOTS:
+            return
+        for i in with_images[:-1]:
             text = " ".join(part.get("text", "") for part in messages[i]["content"] if part.get("type") == "text")
             messages[i] = {"role": "user", "content": text or "(earlier screenshot)"}
 
