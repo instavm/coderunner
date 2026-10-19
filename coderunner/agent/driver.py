@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import urllib.parse
+from datetime import datetime
 from typing import Any
 
 from ..browser.broker import KEYS
@@ -57,8 +58,11 @@ class Driver:
         if isinstance(shot, str):
             return shot
         system = fara7b.system_prompt(*shot["viewport"]) if self.format == "fara7b" else fara.system_prompt()
+        # The date, which the model cannot know: without it "released 4 days ago" became April, and a 14-day
+        # forecast's "tomorrow" the 27th.
+        task = f"{goal}\n\nToday is {datetime.now().astimezone().strftime('%A %-d %B %Y')}."
         messages: list[dict] = [{"role": "system", "content": system},
-                                {"role": "user", "content": [shot["image"], {"type": "text", "text": goal}]}]
+                                {"role": "user", "content": [shot["image"], {"type": "text", "text": task}]}]
         facts: list[str] = []
         for _ in range(self.steps):
             self._keep_recent_screenshots(messages)

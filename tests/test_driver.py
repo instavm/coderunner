@@ -5,6 +5,7 @@ import contextlib
 import dataclasses
 import json
 import unittest
+from datetime import datetime
 
 from fakes import FakeOpenAI, Svc
 
@@ -113,6 +114,8 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Only single keys are available", json.dumps(notes))
         # The model's own format, and at most three screenshots in any request.
         self.assertEqual(requests[0]["messages"][0]["content"], fara.system_prompt())
+        task = requests[0]["messages"][1]["content"][1]["text"]
+        self.assertIn(f"Today is {datetime.now().strftime('%A')} ", task)       # the date it cannot know
         for request in requests:
             images = sum(1 for m in request["messages"] if isinstance(m["content"], list)
                          for part in m["content"] if part.get("type") == "image_url")
