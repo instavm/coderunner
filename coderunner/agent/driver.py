@@ -30,6 +30,13 @@ KEY_NAMES = {"return": "Enter", "enter": "Enter", "esc": "Escape", "escape": "Es
 SEARCH = "https://www.bing.com/search?q="
 PAGE_FOR_QUESTIONS = 8000       # characters of page text a read_page_answer_question step is answered from
 MAX_WAIT = 10.0
+# The same step again and again (a Google Maps run clicked "Reverse starting point and destination" 18 times in
+# a row): from the third the driver is told, from the sixth the step is not taken. A "+" pressed five times
+# still works; scrolling and waiting are left alone.
+REPEAT_NOTE, REPEAT_STOP = 3, 6
+REPEATING = ("You have taken this same step {n} times in a row and are no closer: do something different, or stop "
+             "and say what you found.")
+SAME_POINT = 25                 # coordinates this close (grid units or pixels) count as the same point
 
 
 class Driver:
@@ -64,6 +71,7 @@ class Driver:
         messages: list[dict] = [{"role": "system", "content": system},
                                 {"role": "user", "content": [shot["image"], {"type": "text", "text": task}]}]
         facts: list[str] = []
+        last, repeats = None, 0
         for _ in range(self.steps):
             self._keep_recent_screenshots(messages)
             try:
@@ -76,9 +84,16 @@ class Driver:
             if args is None:
                 note = "Your reply had no computer_use call. Reply with one inside <tool_call></tool_call>."
             else:
-                note, final = await self._act(args, shot, ctx, facts, thoughts)
-                if final is not None:
-                    return final + (("\nNoted on the way: " + "; ".join(facts)) if facts else "")
+                key = self._step_key(args)
+                repeats, last = (repeats + 1 if key is not None and key == last else 1), key
+                if key is not None and repeats >= REPEAT_STOP:
+                    note = REPEATING.format(n=repeats) + " That step was not taken."
+                else:
+                    note, final = await self._act(args, shot, ctx, facts, thoughts)
+                    if final is not None:
+                        return final + (("\nNoted on the way: " + "; ".join(facts)) if facts else "")
+                    if key is not None and repeats >= REPEAT_NOTE:
+                        note = f"{note} {REPEATING.format(n=repeats)}".strip()
             shot = await self._screenshot(ctx)
             if isinstance(shot, str):
                 return shot
@@ -95,6 +110,21 @@ class Driver:
         ctx.taint()                 # what the driver reads from here on is the web's, not the owner's
         return {"image": {"type": "image_url", "image_url": {"url": f"data:{result['mime']};base64,{result['data_b64']}"}},
                 "url": result.get("url", ""), "viewport": result.get("viewport") or [0, 0]}
+
+    @staticmethod
+    def _step_key(args: dict) -> tuple | None:
+        """What makes two steps the same, for the steps that can go round in circles."""
+        action = args.get("action")
+        if action not in ("left_click", "double_click", "triple_click", "type", "key", "visit_url", "history_back",
+                          "web_search"):
+            return None
+        point = args.get("coordinate")
+        try:
+            near = tuple(round(float(v) / SAME_POINT) for v in point) if point else None
+        except (TypeError, ValueError):
+            near = None
+        return (action, near, str(args.get("text", "")), str(args.get("keys", "")), str(args.get("url", "")),
+                str(args.get("query", "")))
 
     @staticmethod
     def _keep_recent_screenshots(messages: list[dict]) -> None:

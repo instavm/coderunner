@@ -146,6 +146,18 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         last = requests[-1]["messages"][-1]["content"]
         self.assertIn("That did not work: Not permitted", json.dumps(last))
 
+    async def test_a_driver_going_round_in_circles_is_told_and_then_stopped(self):
+        # A Google Maps run clicked the same button 18 times in a row. Points a little apart are the same step.
+        script = [step({"action": "left_click", "coordinate": [610 + i % 2, 300]}) for i in range(7)] + [
+            step({"action": "terminate", "status": "success", "answer": "2 h 17 min"})]
+        report, calls, requests, _ = await self.run_driver(script, steps=10)
+        self.assertEqual(report, "2 h 17 min")
+        self.assertEqual(sum(1 for name, _ in calls if name == "click_at"), 5)    # the sixth and seventh not taken
+        said = [json.dumps(r["messages"][-1]["content"]) for r in requests[1:]]
+        self.assertNotIn("same step", said[1])                                   # after the second click
+        self.assertIn("same step 3 times in a row", said[2])
+        self.assertIn("That step was not taken", said[5])
+
     async def test_a_driver_that_does_not_finish_says_so(self):
         report, _, _, _ = await self.run_driver([step({"action": "wait", "time": 0})] * 3, steps=3)
         self.assertIn("used all its steps", report)
