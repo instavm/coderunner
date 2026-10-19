@@ -1057,7 +1057,7 @@ class BrowserBroker:
         sid = await self._session(target)
         async with self._acting(target, sid, tainted):
             try:
-                hit = await self._node_at(sid, x, y)
+                hit = await self._node_at(sid, target, x, y)
             except CDPError:
                 raise BrowserError(f"Nothing is at ({x:.0f}, {y:.0f}); take a new screenshot") from None
             if hit.get("frameId") not in (None, target):
@@ -1120,7 +1120,7 @@ class BrowserBroker:
     async def _probe(self, sid: str, target: str, element: dict, x: float, y: float) -> dict:
         """What a click at (x, y) would hit, described in full for the approval."""
         backend = element["backend"]
-        hit = await self._node_at(sid, x, y)
+        hit = await self._node_at(sid, target, x, y)
         own = await self._describe(sid, target, backend) or {}
         name, text = element["name"], own.get("text", "")
         label = f'{element["role"]} {json.dumps(name or text, ensure_ascii=False)}'
@@ -1138,16 +1138,41 @@ class BrowserBroker:
                 "label": label, "kind": "browser.sensitive" if risky else "browser.interact",
                 "text": text, "name": name, "role": element["role"]}
 
-    async def _node_at(self, sid: str, x: float, y: float) -> dict:
+    async def _node_at(self, sid: str, target: str, x: float, y: float) -> dict:
         """The node under window point (x, y), where a mouse event there lands. Chrome's hit test takes page
         coordinates, so the scroll offset is added: without it every element reached by scrolling (a results
         page's "Show more") was tested at a point above it, found nothing and could not be clicked."""
         metrics = await self._send(sid, "Page.getLayoutMetrics")
         viewport = metrics.get("cssVisualViewport") or {}
         scale = viewport.get("scale") or 1
-        return await self._send(sid, "DOM.getNodeForLocation", {
+        hit = await self._send(sid, "DOM.getNodeForLocation", {
             "x": int(x / scale + viewport.get("pageX", 0)), "y": int(y / scale + viewport.get("pageY", 0)),
             "includeUserAgentShadowDOM": True, "ignorePointerEventsNone": True})
+        with contextlib.suppress(CDPError, KeyError):
+            return await self._owner(sid, target, hit)
+        return hit
+
+    async def _owner(self, sid: str, target: str, hit: dict) -> dict:
+        """A point on generated content (::before or ::after: a radio's drawn circle, an icon, an overlay) hits
+        the pseudo-element, which scripts reach only as a CSSPseudoElement: the element it belongs to is what
+        a mouse event there reaches. Without this a click by point on booking.com's radios and map banner
+        found nothing to click, and an element's own icon counted as covering it."""
+        backend = hit.get("backendNodeId")
+        if not backend or hit.get("frameId") not in (None, target):
+            return hit
+        node = (await self._send(sid, "DOM.describeNode", {"backendNodeId": backend}))["node"]
+        if not node.get("pseudoType"):
+            return hit
+        context = await self._world(sid, target)
+        owner = await self._send(sid, "Runtime.callFunctionOn", {
+            "functionDeclaration": "function() { return this.element || null; }",
+            "objectId": await self._object(sid, backend, context), "returnByValue": False,
+            "objectGroup": "coderunner"})
+        object_id = (owner.get("result") or {}).get("objectId")
+        if not object_id:
+            return hit
+        element = (await self._send(sid, "DOM.describeNode", {"objectId": object_id}))["node"]
+        return {**hit, "backendNodeId": element["backendNodeId"]}
 
     async def _center(self, sid: str, backend: int) -> tuple[float, float]:
         try:

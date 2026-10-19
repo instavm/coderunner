@@ -1109,6 +1109,21 @@ FIXTURE = b"""<!doctype html><html><head><title>Fixture shop</title></head><body
 <div id="hints"></div>
 <div style="height: 4000px"></div><p>The end</p>
 </body></html>"""
+# Controls drawn the way most sites draw them: a radio's circle and a button's icon are ::before content, and
+# the radio's own input is hidden inside its label (booking.com's flight search).
+DRAWN = b"""<!doctype html><html><head><title>Drawn controls</title><style>
+body { margin: 0; font: 16px sans-serif; }
+label.choice { position: absolute; left: 20px; top: 20px; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+label.choice input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
+label.choice .dot { position: relative; width: 24px; height: 24px; }
+label.choice .dot::before { content: ""; position: absolute; inset: 0; border: 2px solid #333; border-radius: 50%; }
+button.icon { position: absolute; left: 20px; top: 100px; width: 120px; height: 40px; }
+button.icon::before { content: ""; position: absolute; left: 40px; top: 5px; width: 40px; height: 30px; background: #08f; }
+</style></head><body>
+<label class="choice"><input type="radio" name="trip" value="one"><span class="dot"></span>One way</label>
+<button class="icon" type="button" onclick="document.getElementById('out').textContent = 'searched'">Search</button>
+<div id="out"></div>
+</body></html>"""
 
 
 class _Fixture(http.server.BaseHTTPRequestHandler):
@@ -1119,7 +1134,8 @@ class _Fixture(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         port = str(self.server.server_port).encode()
-        body = FIXTURE.replace(b"PORT", port) if self.path == "/" else b"<title>Next</title><h2>Second page</h2>"
+        body = FIXTURE.replace(b"PORT", port) if self.path == "/" else DRAWN if self.path == "/drawn" else \
+            b"<title>Next</title><h2>Second page</h2>"
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -1167,6 +1183,19 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
 
     def refs(self):
         return {info["name"]: ref for ref, info in self.broker._refs[self.broker._active].items()}
+
+    async def test_points_on_drawn_controls_reach_them(self):
+        # A point on ::before content hits the pseudo-element, not an element: booking.com's one-way radio
+        # could not be clicked by point, and a button's own icon counted as covering it.
+        opened = await self.broker.navigate(self.base + "/drawn")
+        self.assertTrue(opened["ok"], opened)
+        radio = await self.broker.click_at(32, 32)                      # the radio's drawn circle
+        self.assertTrue(radio["ok"], radio)
+        self.assertIn('radio "One way" checked', (await self.broker.snapshot())["content"])
+        button = await self.broker.click_at(80, 120)                    # the button's drawn icon
+        self.assertTrue(button["ok"], button)
+        self.assertNotIn("note", button)                                # its own icon, nothing covering it
+        self.assertIn("searched", (await self.broker.snapshot())["content"])
 
     async def test_end_to_end(self):
         opened = await self.broker.navigate(self.base + "/")

@@ -97,10 +97,14 @@ SCROLL_JS = r"""function(dx, dy) {
           percent: Math.round(100 * el.scrollTop / range)};
 }"""
 # The element at a point and its ancestors, nearest first (through shadow roots), for actions a model
-# places by coordinates on a screenshot.
+# places by coordinates on a screenshot. A label stands for its control: a click on a label is a click on the
+# control, and sites draw radios and checkboxes inside the label beside a hidden input.
 ANCESTORS_JS = r"""function() {
   const out = [];
   for (let n = this.nodeType === 1 ? this : this.parentElement; n && out.length < 40;
-       n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null) out.push(n);
+       n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null) {
+    out.push(n);
+    if (n.localName === 'label' && n.control) out.push(n.control);
+  }
   return out;
 }"""
