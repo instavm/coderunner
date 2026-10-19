@@ -230,8 +230,13 @@ class Daemon:
         runtime = DriverRuntime(self.config)
         alias = (runtime._state().get("active") or {}).get("alias") or settings["model"]
         swap = Swap(svc, choose_runtime(self.config), runtime) if settings.get("exclusive") else None
+        from ..models import catalog
+        try:
+            fmt = settings.get("format") or catalog.get(settings["model"])["driver"]["format"]
+        except (KeyError, TypeError):
+            fmt = "fara1.5"
         return Driver(svc, LLM(runtime.base_url, alias), steps=int(settings.get("steps") or 30), swap=swap,
-                      runtime=runtime)
+                      runtime=runtime, format=fmt)
 
     # ---- message handling --------------------------------------------------
 

@@ -286,7 +286,8 @@ The GNU General Public License does not permit incorporating your program into p
 
 ## **MIT License**
 
-**Fara1.5 system prompt and computer_use tool schema** (in `coderunner/agent/fara.py`), from
+**Fara1.5 and Fara-7B system prompts and computer_use tool schemas** (in `coderunner/agent/fara.py` and
+`coderunner/agent/fara7b.py`), from
 https://github.com/microsoft/fara, Copyright (c) Microsoft Corporation.
 
 **License Text:**

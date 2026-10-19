@@ -923,6 +923,46 @@
         "kv_heads": 4,
         "head_dim": 256
       }
+    },
+    {
+      "id": "fara-7b",
+      "family": "fara",
+      "roles": [
+        "driver",
+        "vision"
+      ],
+      "rank": 1.0,
+      "params_b": 8.29,
+      "active_params_b": 8.29,
+      "ctx_max": 32768,
+      "license": {
+        "spdx": "mit",
+        "base_repo": "microsoft/Fara-7B",
+        "link": "https://huggingface.co/microsoft/Fara-7B",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "bartowski/microsoft_Fara-7B-GGUF",
+          "quant": "Q4_K_M",
+          "file": "microsoft_Fara-7B-Q4_K_M.gguf",
+          "size_gb": 4.68,
+          "mmproj_gb": 1.35
+        }
+      },
+      "driver": {
+        "format": "fara7b",
+        "webvoyager": 73.5,
+        "online_mind2web": 34.1,
+        "webtailbench": 38.4
+      },
+      "notes": "Microsoft's first browser computer-use model, on Qwen2.5-VL-7B: acts from screenshots by coordinates in the resized screenshot's pixels with its own computer_use tool; scores are Microsoft's.",
+      "verified": "2026-10-19",
+      "arch": {
+        "full_attn_layers": 28,
+        "kv_heads": 4,
+        "head_dim": 128
+      }
     }
   ]
 }

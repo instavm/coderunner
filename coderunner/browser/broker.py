@@ -288,11 +288,12 @@ class BrowserBroker:
                                lambda: self._click_at(float(x), float(y), tab, tainted))
 
     async def type_focused(self, text: str, submit: bool = False, tab: str | None = None,
-                           tainted: bool = False) -> dict:
-        """Type into the field that has the focus (after a click on it), with the same checks as type(ref)."""
+                           tainted: bool = False, clear: bool = False) -> dict:
+        """Type into the field that has the focus (after a click on it), with the same checks as type(ref);
+        clear replaces what the field holds."""
         return await self._run("type_focused", {"chars": len(str(text)), "submit": submit, "tab": tab,
                                                 "tainted": tainted},
-                               lambda: self._type_focused(str(text), submit, tab, tainted))
+                               lambda: self._type_focused(str(text), submit, tab, tainted, clear))
 
     async def find(self, text: str, tab: str | None = None, tainted: bool = False) -> dict:
         """The lines of the whole page (not just the first part) that mention text, with element refs."""
@@ -1066,7 +1067,8 @@ class BrowserBroker:
             raise BrowserError(f"Nothing the assistant can click is at ({x:.0f}, {y:.0f}); take a new screenshot")
         return await self._click(ref, tab, tainted)
 
-    async def _type_focused(self, text: str, submit: bool, tab: str | None, tainted: bool) -> dict:
+    async def _type_focused(self, text: str, submit: bool, tab: str | None, tainted: bool,
+                            clear: bool = False) -> dict:
         target = await self._target(tab)
         url, _ = await self._web_page(target)
         sid = await self._session(target)
@@ -1081,7 +1083,7 @@ class BrowserBroker:
             ref = await self._numbered(sid, target, url, backend) if backend else None
         if ref is None:
             raise BrowserError("No text field has the focus; click the field first")
-        return await self._type(ref, text, submit, tab, tainted, clear=False)
+        return await self._type(ref, text, submit, tab, tainted, clear=clear)
 
     async def _numbered(self, sid: str, target: str, url: str, backend: int | None) -> int | None:
         """The number of the nearest element at or above a node that the page text numbers (a button around an

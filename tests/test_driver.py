@@ -70,13 +70,13 @@ class FormatTests(unittest.TestCase):
 
 
 class LoopTests(unittest.IsolatedAsyncioTestCase):
-    async def run_driver(self, script, steps=10, fail=None):
+    async def run_driver(self, script, steps=10, fail=None, format="fara1.5"):
         with FakeOpenAI() as fake:
             fake.script = list(script)
             svc = Svc()
             svc.browser = FakeBroker()
             svc.browser.fail = fail or {}
-            driver = Driver(svc, LLM(fake.base_url, "fara"), steps=steps)
+            driver = Driver(svc, LLM(fake.base_url, "fara"), steps=steps, format=format)
             ctx = RunContext(conversation="d1")
             report = await driver.run("Find the cheapest flight.", ctx)
             await driver.llm.aclose()
@@ -117,6 +117,22 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
             images = sum(1 for m in request["messages"] if isinstance(m["content"], list)
                          for part in m["content"] if part.get("type") == "image_url")
             self.assertLessEqual(images, fara.KEEP_SCREENSHOTS)
+
+    async def test_fara_7b_speaks_its_own_format(self):
+        report, calls, requests, _ = await self.run_driver([
+            step({"action": "left_click", "coordinate": [714, 448]}),
+            step({"action": "type", "text": "Delhi", "coordinate": [100, 50], "delete_existing_text": True}),
+            step({"action": "scroll", "pixels": -1}),
+            step({"action": "terminate", "status": "success"}, thought="The cheapest is SpiceJet at INR 9,995."),
+        ], format="fara7b")
+        system = requests[0]["messages"][0]["content"]
+        self.assertTrue(system.startswith("You are a helpful assistant.\n\nYou are a web automation agent"))
+        self.assertIn("The screen's resolution is 1428x896.", system)          # 1440 x 900 after Qwen2.5-VL's resize
+        self.assertEqual(calls[0], ("click_at", (720.0, 450.0)))                 # resized pixels, not a 1000 grid
+        self.assertEqual(calls[1][0], "click_at")                                # it types at a point: click first
+        self.assertEqual(calls[2][0], "type_focused")
+        self.assertEqual(calls[3], ("scroll", ("down", 900)))                   # a page per scroll, as trained
+        self.assertEqual(report, "The cheapest is SpiceJet at INR 9,995.")      # the answer is its text
 
     async def test_refusals_reach_the_driver_and_questions_reach_the_planner(self):
         report, calls, requests, _ = await self.run_driver([

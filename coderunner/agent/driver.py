@@ -19,7 +19,7 @@ from typing import Any
 
 from ..browser.broker import KEYS
 from ..core.llm import LLM, LLMError
-from . import fara
+from . import fara, fara7b
 
 KEY_NAMES = {"return": "Enter", "enter": "Enter", "esc": "Escape", "escape": "Escape", "tab": "Tab",
              "space": "Space", "backspace": "Backspace", "delete": "Delete", "home": "Home", "end": "End",
@@ -32,8 +32,10 @@ MAX_WAIT = 10.0
 
 
 class Driver:
-    def __init__(self, svc, llm: LLM, steps: int = 30, swap: Any = None, runtime: Any = None):
+    def __init__(self, svc, llm: LLM, steps: int = 30, swap: Any = None, runtime: Any = None,
+                 format: str = "fara1.5"):
         self.svc = svc
+        self.format = format        # the action format the model was trained with: fara1.5 or fara7b
         self.llm = llm
         self.steps = steps
         self.swap = swap            # an async context manager that frees memory for the driver, if needed
@@ -54,7 +56,8 @@ class Driver:
         shot = await self._screenshot(ctx)
         if isinstance(shot, str):
             return shot
-        messages: list[dict] = [{"role": "system", "content": fara.system_prompt()},
+        system = fara7b.system_prompt(*shot["viewport"]) if self.format == "fara7b" else fara.system_prompt()
+        messages: list[dict] = [{"role": "system", "content": system},
                                 {"role": "user", "content": [shot["image"], {"type": "text", "text": goal}]}]
         facts: list[str] = []
         for _ in range(self.steps):
@@ -65,11 +68,11 @@ class Driver:
                 return f"The browser driver stopped: {exc}"
             text = reply["content"]
             messages.append({"role": "assistant", "content": text})
-            _, args = fara.parse(text)
+            thoughts, args = fara.parse(text)
             if args is None:
                 note = "Your reply had no computer_use call. Reply with one inside <tool_call></tool_call>."
             else:
-                note, final = await self._act(args, shot, ctx, facts)
+                note, final = await self._act(args, shot, ctx, facts, thoughts)
                 if final is not None:
                     return final + (("\nNoted on the way: " + "; ".join(facts)) if facts else "")
             shot = await self._screenshot(ctx)
@@ -96,17 +99,30 @@ class Driver:
             text = " ".join(part.get("text", "") for part in messages[i]["content"] if part.get("type") == "text")
             messages[i] = {"role": "user", "content": text or "(earlier screenshot)"}
 
-    async def _act(self, args: dict, shot: dict, ctx, facts: list[str]) -> tuple[str, str | None]:
+    async def _act(self, args: dict, shot: dict, ctx, facts: list[str], thoughts: str = "") -> tuple[str, str | None]:
         """Carry out one step. Returns (what to tell the driver next, the final report when it stops)."""
         b, tainted = self.svc.browser, ctx.tainted
         action = args.get("action")
+        seven = self.format == "fara7b"
+        to_pixels = fara7b.to_pixels if seven else fara.to_pixels
         if action in ("left_click", "double_click", "triple_click"):
             width, height = shot["viewport"]
-            point = fara.to_pixels(args.get("coordinate"), width, height)
+            point = to_pixels(args.get("coordinate"), width, height)
             if point is None or not width:
                 return "That click had no usable coordinate.", None
             return self._said(await b.click_at(*point, tainted=tainted), "Clicked."), None
         if action == "type":
+            if seven and args.get("coordinate") is not None:
+                # Fara-7B types at a point: the field there is clicked first, and Enter follows unless it says not.
+                point = to_pixels(args.get("coordinate"), *shot["viewport"])
+                if point is None:
+                    return "That typing had no usable coordinate.", None
+                clicked = await b.click_at(*point, tainted=tainted)
+                if not clicked.get("ok"):
+                    return self._said(clicked, ""), None
+                typed = await b.type_focused(str(args.get("text", "")), submit=args.get("press_enter", True) is not False,
+                                             tainted=tainted, clear=bool(args.get("delete_existing_text")))
+                return self._said(typed, "Typed."), None
             return self._said(await b.type_focused(str(args.get("text", "")), tainted=tainted), "Typed."), None
         if action == "key":
             keys = [KEY_NAMES.get(str(k).lower(), str(k)) for k in (args.get("keys") or [])]
@@ -115,7 +131,9 @@ class Driver:
             return self._said(await b.press(keys[0], tainted=tainted), f"Pressed {keys[0]}."), None
         if action in ("scroll", "hscroll"):
             pixels = float(args.get("pixels") or 0)
-            amount = max(int(abs(pixels) * (shot["viewport"][1] or 900) / fara.DISPLAY), 100)
+            # Fara-7B was trained to move a page per scroll (its harness pages up or down by the sign).
+            amount = int(shot["viewport"][1] or 900) if seven else \
+                max(int(abs(pixels) * (shot["viewport"][1] or 900) / fara.DISPLAY), 100)
             return self._said(await b.scroll("up" if pixels > 0 else "down", amount, tainted=tainted), "Scrolled."), None
         if action == "visit_url":
             return self._said(await b.navigate(str(args.get("url", "")), tainted=tainted), "Opened the page."), None
@@ -135,7 +153,8 @@ class Driver:
             await asyncio.sleep(min(max(float(args.get("time") or 1), 0), MAX_WAIT))
             return "Waited.", None
         if action == "terminate":
-            return "", str(args.get("answer") or "The browser driver finished without an answer.")
+            answer = thoughts if seven else args.get("answer")         # Fara-7B answers in its text
+            return "", str(answer or "The browser driver finished without an answer.")
         return f"{action} is not available here; use left_click, type, key, scroll, visit_url or terminate.", None
 
     @staticmethod
