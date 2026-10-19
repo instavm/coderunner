@@ -993,11 +993,11 @@ class BrowserBroker:
         except (KeyError, ValueError, TypeError):
             raise BrowserError(f"Unknown element [{ref}] in this tab; take a new snapshot") from None
 
-    async def _click(self, ref: int, tab: str | None, tainted: bool) -> dict:
+    async def _click(self, ref: int | None, tab: str | None, tainted: bool, element: dict | None = None) -> dict:
         target = await self._target(tab)
         url, host = await self._web_page(target)
         read = self._read_urls.get(target, "")      # the page as the model last saw it
-        element = self._ref(target, ref)
+        element = element or self._ref(target, ref)
         sid = await self._session(target)
         async with self._acting(target, sid, tainted):
             options = await self._call(sid, await self._object(sid, element["backend"], await self._world(sid, target)),
@@ -1063,9 +1063,19 @@ class BrowserBroker:
             if hit.get("frameId") not in (None, target):
                 raise BrowserError("That point is inside an embedded frame, which the assistant cannot use")
             ref = await self._numbered(sid, target, url, hit.get("backendNodeId"))
-        if ref is None:
-            raise BrowserError(f"Nothing the assistant can click is at ({x:.0f}, {y:.0f}); take a new screenshot")
-        return await self._click(ref, tab, tainted)
+            element = None
+            if ref is None and hit.get("backendNodeId"):
+                # Nothing the page text numbers is there: a card or a header that page scripts make clickable
+                # (Google's jsaction, a route on Google Maps), or plain text. A mouse would click it all the
+                # same, which is what a model trained on screenshots expects: the click goes, through the same
+                # checks, to that point, and a click that changes nothing is reported as such. Refused, the
+                # driver tried the same point again and again (9 of a Google Maps task's 30 steps).
+                about = await self._describe(sid, target, hit["backendNodeId"], closest=True) or {}
+                element = {"backend": hit["backendNodeId"], "role": about.get("tag") or "element", "name": "",
+                           "password": False, "point": (x, y)}
+        if ref is None and element is None:
+            raise BrowserError(f"Nothing is at ({x:.0f}, {y:.0f}); take a new screenshot")
+        return await self._click(ref, tab, tainted, element=element)
 
     async def _type_focused(self, text: str, submit: bool, tab: str | None, tainted: bool,
                             clear: bool = False) -> dict:
@@ -1112,9 +1122,12 @@ class BrowserBroker:
         return None
 
     async def _click_plan(self, sid: str, target: str, element: dict) -> dict:
-        with contextlib.suppress(CDPError):
-            await self._send(sid, "DOM.scrollIntoViewIfNeeded", {"backendNodeId": element["backend"]})
-        x, y = await self._center(sid, element["backend"])
+        if element.get("point"):
+            x, y = element["point"]             # an element no page text numbers: where the model pointed
+        else:
+            with contextlib.suppress(CDPError):
+                await self._send(sid, "DOM.scrollIntoViewIfNeeded", {"backendNodeId": element["backend"]})
+            x, y = await self._center(sid, element["backend"])
         return {"x": x, "y": y, **await self._probe(sid, target, element, x, y)}
 
     async def _probe(self, sid: str, target: str, element: dict, x: float, y: float) -> dict:

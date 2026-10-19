@@ -646,10 +646,17 @@ class InteractionPolicyTests(BrokerTestCase):
         clicked = await self.broker.click_at(60, 30)
         self.assertTrue(clicked["ok"], clicked)
         self.assertEqual(browser.sent("DOM.getBoxModel")[-1]["backendNodeId"], 109)
-        browser.hit = 4                                     # a paragraph: nothing to click
-        nothing = await self.broker.click_at(60, 30)
-        self.assertIn("Nothing the assistant can click", nothing["error"])
+        # A paragraph, which nothing numbers: clicked where the model pointed, as a mouse would, through the
+        # same checks, and described by what is there.
+        browser.hit = 4
+        browser.labels[4] = {"tag": "p", "text": "Fresh bread every morning.", "submit": ""}
+        clicked = await self.broker.click_at(70, 40)
+        self.assertTrue(clicked["ok"], clicked)
+        pressed = browser.sent("Input.dispatchMouseEvent")[-2]
+        self.assertEqual((pressed["type"], pressed["x"], pressed["y"]), ("mousePressed", 70, 40))
         self.assertEqual(self.kinds(), ["browser.sensitive"])
+        clicks = [e for e in self.audit.tail() if e["event"] == "browser.click_at"]
+        self.assertIn('p "Fresh bread every morning."', clicks[-1]["clicked"])
 
     async def test_a_point_on_a_footer_link_finds_it(self):
         browser, _ = await self.load_shop()
@@ -1122,7 +1129,10 @@ button.icon::before { content: ""; position: absolute; left: 40px; top: 5px; wid
 </style></head><body>
 <label class="choice"><input type="radio" name="trip" value="one"><span class="dot"></span>One way</label>
 <button class="icon" type="button" onclick="document.getElementById('out').textContent = 'searched'">Search</button>
-<div id="out"></div>
+<div class="route" style="position: absolute; left: 20px; top: 180px; width: 300px; height: 60px">2 hr 20 min, 145 km</div>
+<div id="out" style="position: absolute; top: 300px"></div>
+<script>document.querySelector('.route').addEventListener('click', () => {
+  document.getElementById('out').textContent = 'route chosen'; });</script>
 </body></html>"""
 
 
@@ -1196,6 +1206,10 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(button["ok"], button)
         self.assertNotIn("note", button)                                # its own icon, nothing covering it
         self.assertIn("searched", (await self.broker.snapshot())["content"])
+        # A card only a script makes clickable (Google Maps' routes): nothing numbers it, a mouse clicks it.
+        route = await self.broker.click_at(100, 210)
+        self.assertTrue(route["ok"], route)
+        self.assertIn("route chosen", (await self.broker.snapshot())["content"])
 
     async def test_end_to_end(self):
         opened = await self.broker.navigate(self.base + "/")
