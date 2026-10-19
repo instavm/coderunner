@@ -624,6 +624,17 @@ class RuntimeTests(TempHome):
             with self.assertRaisesRegex(RuntimeError, "model not found"):
                 rt.prepare(catalog.get("qwen3.5-4b"), 8192)
 
+    def test_the_driver_keeps_its_conversation_while_the_step_judge_asks_it(self):
+        rt = runtimes.DriverRuntime()
+        entry = catalog.get("fara1.5-4b")
+        rt._save({"models": {entry["id"]: {"model": "/m/f.gguf", "mmproj": "/m/mmproj.gguf"}}})
+        with mock.patch.object(rt, "running", return_value=False):
+            rt.prepare(entry, 16384)
+        with mock.patch.object(rt, "binary", return_value="llama-server"):
+            cmd = " ".join(rt.command(rt._state()["active"]))
+        self.assertIn("-np 2 --kv-unified", cmd)            # the judge gets a slot of its own
+        self.assertIn("--port 8083", cmd)
+
     def test_llama_server_command(self):
         rt = runtimes.LlamaCppRuntime()
         entry = catalog.get("qwen3.5-9b")

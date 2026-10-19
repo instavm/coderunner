@@ -652,8 +652,11 @@ class DriverRuntime(LlamaCppRuntime):
         if active.get("mmproj"):
             cmd += ["--mmproj", active["mmproj"]]
         idle = idle_seconds(self.config)
+        # Two slots over one shared cache, as for the assistant's model: where the driver runs alone the step
+        # judge asks it too, and with one slot each judge call evicted the driver's conversation. Measured with
+        # Fara1.5-4B on an M3 Pro: every step re-read its whole prompt, 10,000 tokens and 40 s.
         return cmd + ["--jinja", "-c", str(active["ctx"]), "--host", "127.0.0.1", "--port", str(self.port),
-                      "-np", "1", "-ngl", "99", "--alias", active["alias"]] + (
+                      "--cache-ram", "0", "-np", "2", "--kv-unified", "-ngl", "99", "--alias", active["alias"]] + (
                           ["--sleep-idle-seconds", str(idle)] if idle else [])
 
     def start(self, timeout: float = 300) -> None:
