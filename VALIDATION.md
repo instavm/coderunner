@@ -212,6 +212,33 @@ Setup installs tev1 4B where it fits beside the chat and embedding models (24 GB
 does not fit on 18 GB, where the chat model judges. nimble (9B) and clef-flash (9B, 11 GB) were not
 measured: they cannot sit beside a 27B or 9B chat model on this Mac.
 
+### Browser drivers on twelve real-site tasks (October 19-20, same Mac)
+
+`browser_task` run alone (the assistant's own model unloaded), one model at a time, each from a browser with
+no cookies or site storage, on twelve read-only tasks: booking.com flights and hotels, Google Finance (two
+quotes), Wikipedia, GitHub's latest release, Hacker News, xe.com, timeanddate, amazon.in, IMDb and Google
+Maps. Answers were checked against APIs at task time where one exists (quotes, rates, Hacker News, GitHub)
+and by hand otherwise. Each model in its own trained format: Fara1.5 in Microsoft's harness, Holo3.1 in H
+Company's (tools, observations, thinking on).
+
+| Driver | Right (of 12) | Resident memory | Failed |
+| --- | --- | --- | --- |
+| Fara1.5-4B Q4_K_M | 11 | 4.4 GB (peak 4.8) | Google Maps |
+| Holo3.1-4B Q4_K_M | 8 | 4.1 GB (peak 5.2) | both booking.com tasks, Google Maps; GitHub gave a build, not the latest release |
+| Holo3.1-0.8B Q8_0 | 2 | 2.0 GB (peak 2.4) | most tasks; answered Reliance with NVIDIA's price, xe.com in euros |
+
+Times are not compared here: the Mac was left idle during this run and ran about three times slower (pages
+and model alike). With someone at it, Fara1.5-4B took 30 minutes for the twelve.
+
+What the runs changed in CodeRunner: a click by point now reaches controls drawn with ::before and elements
+only scripts make clickable (19 of 25 clicks on booking.com were refused before); the driver's server keeps
+two slots, so the step judge does not evict its conversation (steps re-read 10,000 tokens, 40 s); old
+screenshots are dropped together (30 minutes and 11 right, against 70 minutes and 10, dropping one per
+step); the driver is told the date; a request lost to a closing idle connection is sent again; a driver
+going round in circles is told, then stopped; and actions and messages follow Microsoft's harness (clicks
+where pointed, double and triple clicks, key combinations, the wheel where the mouse is, no note after an
+action that worked, popups followed).
+
 ## Not yet validated
 
 * Voice: Qwen3-ASR on Linux and NVIDIA machines; the 🎤 button in a real browser and
