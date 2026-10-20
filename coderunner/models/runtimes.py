@@ -657,7 +657,10 @@ class DriverRuntime(LlamaCppRuntime):
         # judge asks it too, and with one slot each judge call evicted the driver's conversation. Measured with
         # Fara1.5-4B on an M3 Pro: every step re-read its whole prompt, 10,000 tokens and 40 s.
         return cmd + ["--jinja", "-c", str(active["ctx"]), "--host", "127.0.0.1", "--port", str(self.port),
-                      "--cache-ram", "0", "-np", "2", "--kv-unified", "-ngl", "99", "--alias", active["alias"]] + (
+                      "--cache-ram", "0", "-np", "2", "--kv-unified", "-ngl", "99", "--alias", active["alias"],
+                      # Qwen-VL grounding needs at least 1,024 image tokens (llama.cpp's warning, H's settings):
+                      # a 1440 x 900 page is already more; a 1280 x 800 one is brought up to it.
+                      "--image-min-tokens", "1024"] + (
                           ["--sleep-idle-seconds", str(idle)] if idle else [])
 
     def start(self, timeout: float = 300) -> None:

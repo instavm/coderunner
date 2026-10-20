@@ -963,6 +963,44 @@
         "kv_heads": 4,
         "head_dim": 128
       }
+    },
+    {
+      "id": "holo3.1-4b",
+      "family": "holo3.1",
+      "roles": [
+        "driver",
+        "vision"
+      ],
+      "rank": 1.0,
+      "params_b": 4.66,
+      "active_params_b": 4.66,
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "Hcompany/Holo-3.1-4B",
+        "link": "https://huggingface.co/Hcompany/Holo-3.1-4B",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "mradermacher/Holo-3.1-4B-GGUF",
+          "quant": "Q4_K_M",
+          "file": "Holo-3.1-4B.Q4_K_M.gguf",
+          "size_gb": 3.07,
+          "mmproj_gb": 0.37
+        }
+      },
+      "driver": {
+        "format": "holo",
+        "androidworld": 71.0
+      },
+      "notes": "H Company's computer-use model on Qwen3.5-4B: acts from screenshots through function calls (click, type, scroll, goto, answer) with coordinates in 0-1000, in the harness of H's documentation. H publishes no web-browsing score for it (AndroidWorld 71%), so it is never picked by itself; GGUF by mradermacher.",
+      "verified": "2026-10-20",
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 4,
+        "head_dim": 256
+      }
     }
   ]
 }

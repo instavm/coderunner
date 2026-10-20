@@ -663,7 +663,9 @@ def driver_pick(hw: hardware.Hardware, config, used_gb: float | None) -> dict | 
     stays loaded with it. Where none does (18 GB Macs and below), the smallest one that fits on its own takes
     turns with it: each turn costs a load (Fara1.5-4B: 10-20 s on an M3 Pro) and the assistant's model
     reloading after, so the quickest to load wins there."""
-    drivers = sorted(catalog.by_role("driver"), key=lambda e: -e["driver"]["webvoyager"])
+    # Ranked on the published web-browsing score; a driver without one (Holo3.1) is used only when chosen.
+    drivers = sorted((e for e in catalog.by_role("driver") if e["driver"].get("webvoyager") is not None),
+                     key=lambda e: -e["driver"]["webvoyager"])
     sized = [(e, fit.estimate(e, hw, ctx=DRIVER_CTX, runtime="driver")["need_gb"]) for e in drivers]
     if used_gb is not None:
         for entry, need in sized:

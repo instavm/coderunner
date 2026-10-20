@@ -7,7 +7,7 @@ import json
 import unittest
 from datetime import datetime
 
-from fakes import FakeOpenAI, Svc
+from fakes import FakeOpenAI, Svc, tool_call
 
 from coderunner.agent import RunContext, build_registry, fara
 from coderunner.agent.driver import Driver, Swap
@@ -169,6 +169,36 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[2][0], "type_focused")
         self.assertEqual((calls[3][0], calls[3][1][3]), ("wheel", 400))         # 400 px down, as its harness does
         self.assertEqual(report, "The cheapest is SpiceJet at INR 9,995.")      # the answer is its text
+
+    async def test_holo_works_in_its_own_harness(self):
+        from coderunner.agent import holo
+        report, calls, requests, _ = await self.run_driver([
+            tool_call("click", {"element": "Search box", "x": 500, "y": 500}, "c1"),
+            tool_call("type", {"text": "Delhi", "press_enter": True}, "c2"),
+            tool_call("scroll", {"direction": "down"}, "c3"),
+            tool_call("goto", {"url": "https://flights.example/"}, "c4"),
+            tool_call("answer", {"content": "SpiceJet at INR 9,995"}, "c5"),
+        ], format="holo")
+        self.assertEqual(report, "SpiceJet at INR 9,995")
+        first = requests[0]
+        self.assertEqual((first["tool_choice"], first["temperature"]), ("required", 0.8))
+        self.assertEqual(first["chat_template_kwargs"], {"enable_thinking": True})       # thinking on, as trained
+        self.assertEqual([t["function"]["name"] for t in first["tools"]], ["click", "type", "scroll", "goto", "answer"])
+        self.assertEqual(first["messages"][0]["content"], holo.SYSTEM)
+        observed = first["messages"][2]["content"]
+        self.assertEqual((observed[0]["text"], observed[2]["text"]), ("<observation>\n", "\n</observation>"))
+        self.assertEqual(set(self.viewports[:-1]), {holo.VIEWPORT})                     # 1280 x 800, its cookbook's
+        self.assertEqual(calls[0], ("click_at", (720.0, 450.0)))                         # [0, 1000] of the screenshot
+        self.assertEqual((calls[1], self.broker.kw[1]["submit"]), (("type_focused", ("Delhi",)), True))
+        self.assertEqual(calls[2], ("wheel", (720.0, 450.0, 0, 720.0)))                  # 0.8 of the page down
+        self.assertEqual(calls[3], ("navigate", ("https://flights.example/",)))
+        results = [m for m in requests[-1]["messages"] if m["role"] == "tool"]
+        self.assertEqual(results[0], {"role": "tool", "tool_call_id": "c1",
+                                      "content": "Done. Current URL: https://shop.example/"})
+        images = sum(1 for m in requests[-1]["messages"] if isinstance(m["content"], list)
+                     for part in m["content"] if part.get("type") == "image_url")
+        self.assertLessEqual(images, holo.KEEP_SCREENSHOTS)
+        self.assertIn(holo.EVICTED, json.dumps(requests[-1]["messages"]))              # older ones, in their wrapper
 
     async def test_refusals_reach_the_driver_and_questions_reach_the_planner(self):
         report, calls, requests, _ = await self.run_driver([

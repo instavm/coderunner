@@ -20,7 +20,7 @@ from typing import Any
 
 from ..browser.broker import KEYS
 from ..core.llm import LLM, LLMError
-from . import fara, fara7b
+from . import fara, fara7b, holo
 
 # Key names as Fara writes them, to the browser's (Microsoft's harness maps them so: key_mapping.py).
 KEY_NAMES = {"return": "Enter", "enter": "Enter", "esc": "Escape", "escape": "Escape", "tab": "Tab",
@@ -52,7 +52,7 @@ class Driver:
     def __init__(self, svc, llm: LLM, steps: int = 30, swap: Any = None, runtime: Any = None,
                  format: str = "fara1.5"):
         self.svc = svc
-        self.format = format        # the action format the model was trained with: fara1.5 or fara7b
+        self.format = format        # the action format the model was trained with: fara1.5, fara7b or holo
         self.llm = llm
         self.steps = steps
         self.swap = swap            # an async context manager that frees memory for the driver, if needed
@@ -64,7 +64,8 @@ class Driver:
             await asyncio.to_thread(self.runtime.start)
         fixed = getattr(self.svc.browser, "fixed_viewport", None)
         quiet = getattr(self.svc.browser, "screens_only", None)
-        async with (self.swap or contextlib.nullcontext()), (fixed(*fara.VIEWPORT) if fixed
+        viewport = holo.VIEWPORT if self.format == "holo" else fara.VIEWPORT
+        async with (self.swap or contextlib.nullcontext()), (fixed(*viewport) if fixed
                                                              else contextlib.nullcontext()), \
                 (quiet() if quiet else contextlib.nullcontext()):
             report = await self._run(goal, ctx)
@@ -74,6 +75,8 @@ class Driver:
     async def _run(self, goal: str, ctx) -> str:
         self.tab: str | None = None            # a tab the page opened is followed, as Microsoft's harness does
         self.pointer: tuple[float, float] | None = None     # where the mouse last was: the wheel turns there
+        if self.format == "holo":
+            return await self._run_holo(goal, ctx)
         shot = await self._screenshot(ctx)
         if isinstance(shot, str):
             return shot
@@ -117,6 +120,51 @@ class Driver:
                 lines + ([note] if note else []) + [fara.NEXT])}]})
         return ("The browser driver used all its steps without finishing."
                 + (("\nNoted on the way: " + "; ".join(facts)) if facts else ""))
+
+    async def _run_holo(self, goal: str, ctx) -> str:
+        """Holo's own harness (see holo.py): its tools in every request, the screen in <observation> tags, a tool
+        result with the address after each action, thinking on; it stops by calling answer."""
+        shot = await self._screenshot(ctx)
+        if isinstance(shot, str):
+            return shot
+        task = f"{goal}\n\nToday is {datetime.now().astimezone().strftime('%A %-d %B %Y')}."
+        messages: list[dict] = [{"role": "system", "content": holo.SYSTEM}, {"role": "user", "content": task}]
+        facts: list[str] = []
+        last, repeats = None, 0
+        for _ in range(self.steps):
+            messages.append(holo.observation(shot["image"]))
+            holo.keep_recent_screenshots(messages)
+            try:
+                reply = await self.llm.chat(messages, tools=holo.TOOLS, tool_choice="required",
+                                            temperature=holo.TEMPERATURE, max_tokens=holo.MAX_TOKENS,
+                                            chat_template_kwargs={"enable_thinking": True})
+            except LLMError as exc:
+                return f"The browser driver stopped: {exc}"
+            call = holo.call_of(reply)
+            # Only the parsed reply goes back into the history, never the reasoning (core concepts: reasoning).
+            messages.append({"role": "assistant", "content": reply["content"],
+                             **({"tool_calls": reply["tool_calls"][:1]} if call else {})})
+            if call is None:
+                continue                             # a step without a call is not a stop
+            name, args, call_id = call
+            if name == "answer":
+                return (str(args.get("content") or "The browser driver finished without an answer.")
+                        + (("\nNoted on the way: " + "; ".join(facts)) if facts else ""))
+            step = holo.as_fara(name, args)
+            key = self._step_key(step)
+            repeats, last = (repeats + 1 if key is not None and key == last else 1), key
+            if key is not None and repeats >= REPEAT_STOP:
+                note = REPEATING.format(n=repeats) + " That step was not taken."
+            else:
+                note, _ = await self._act(step, shot, ctx, facts)
+                if key is not None and repeats >= REPEAT_NOTE:
+                    note = f"{note} {REPEATING.format(n=repeats)}".strip()
+            shot = await self._screenshot(ctx)
+            if isinstance(shot, str):
+                return shot
+            messages.append({"role": "tool", "tool_call_id": call_id,
+                             "content": f"{note + ' ' if note else 'Done. '}Current URL: {shot['url']}"})
+        return "The browser driver used all its steps without finishing."
 
     @staticmethod
     def _trimmed(url: str) -> str:
