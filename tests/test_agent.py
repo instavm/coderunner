@@ -299,6 +299,17 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(restarts), 2)
             await llm.aclose()
 
+    def test_qwens_own_call_form_is_read_from_text(self):
+        # Qwen3.5 writes calls as XML; the runtime returns them as text when its parser could not read them.
+        text = ("I will click the search box.\n<tool_call>\n<function=click>\n<parameter=element>\nSearch box\n"
+                "</parameter>\n<parameter=x>\n500\n</parameter>\n<parameter=y>\n120\n</parameter>\n</function>\n"
+                "</tool_call>")
+        remaining, calls = parse_text_tool_calls(text, {"click", "answer"})
+        self.assertEqual(remaining, "I will click the search box.")
+        self.assertEqual(calls[0]["function"]["name"], "click")
+        self.assertEqual(json.loads(calls[0]["function"]["arguments"]), {"element": "Search box", "x": 500, "y": 120})
+        self.assertEqual(parse_text_tool_calls("<function=rm>x</function>", {"click"})[1], [])   # only its tools
+
     async def test_a_connection_closed_as_the_request_left_is_sent_again(self):
         # llama.cpp's server closes idle connections after 5 s; a request reusing one as it closes is lost,
         # though the server is fine: it goes again on a new connection, and the runtime is not restarted.

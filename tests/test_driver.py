@@ -208,6 +208,7 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
             tool_call("answer", {"content": "done"}, "c2")], format="holo")
         self.assertEqual(report, "done")
         self.assertEqual(calls[0][0], "click_at")
+        self.assertEqual([r["tool_choice"] for r in requests[:2]], ["required", "auto"])   # asked again, loosened
 
     async def test_refusals_reach_the_driver_and_questions_reach_the_planner(self):
         report, calls, requests, _ = await self.run_driver([

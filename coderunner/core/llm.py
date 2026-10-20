@@ -26,13 +26,29 @@ def _loads(text: str) -> Any:
         return None
 
 
+# Qwen3.5's own call form (as Qwen3-Coder's): <function=name><parameter=key>value</parameter>...</function>
+QWEN_CALL = re.compile(r"<function=([\w.-]+)>(.*?)</function>", re.S)
+QWEN_PARAMETER = re.compile(r"<parameter=([\w.-]+)>\s*(.*?)\s*</parameter>", re.S)
+
+
 def parse_text_tool_calls(content: str, tool_names: set[str]) -> tuple[str, list[dict]]:
-    """Extract tool calls written as text by models whose template was not parsed."""
+    """Extract tool calls written as text by models whose template was not parsed: JSON inside <tool_call>, or
+    Qwen3.5's own XML form, which the runtime returns as text when it could not read it."""
     calls = []
     for raw in TOOL_CALL_TAG.findall(content):
         data = _loads(raw)
         if isinstance(data, dict) and data.get("name") in tool_names:
             calls.append(data)
+    if not calls:
+        for name, body in QWEN_CALL.findall(content):
+            if name in tool_names:
+                arguments = {}
+                for key, value in QWEN_PARAMETER.findall(body):
+                    loaded = _loads(value)
+                    arguments[key] = value if loaded is None else loaded
+                calls.append({"name": name, "arguments": arguments})
+        if calls:
+            content = QWEN_CALL.sub("", content).replace("<tool_call>", "").replace("</tool_call>", "")
     remaining = TOOL_CALL_TAG.sub("", content).strip()
     if not calls:
         stripped = remaining.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()

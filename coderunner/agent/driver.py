@@ -137,13 +137,15 @@ class Driver:
             holo.keep_recent_screenshots(messages)
             for attempt in range(UNPARSED_TRIES):
                 try:
-                    reply = await self.llm.chat(messages, tools=holo.TOOLS, tool_choice="required",
+                    # llama.cpp answers 500 when it cannot read a reply's tool call ("does not match the expected
+                    # ... format", a call cut short by a long reasoning, say): the step is asked again without
+                    # requiring a call, so a call it cannot read comes back as text, which is read here.
+                    reply = await self.llm.chat(messages, tools=holo.TOOLS,
+                                                tool_choice="required" if attempt == 0 else "auto",
                                                 temperature=holo.TEMPERATURE, max_tokens=holo.MAX_TOKENS,
                                                 chat_template_kwargs={"enable_thinking": True})
                     break
                 except LLMError as exc:
-                    # llama.cpp answers 500 when it cannot read the reply's tool call ("does not match the
-                    # expected ... format"); sampled at 0.8, the step asked again usually reads.
                     if "does not match" not in str(exc) or attempt == UNPARSED_TRIES - 1:
                         return f"The browser driver stopped: {exc}"
             call = holo.call_of(reply)
