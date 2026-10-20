@@ -176,6 +176,75 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(tools[2].startswith('<untrusted source="browser_scroll">'))
             await svc.llm.aclose()
 
+    async def test_a_batch_fills_a_form_in_one_call_and_stops_where_it_must(self):
+        class Recording(FakeBrowser):
+            def __init__(self, page_text, fail=None, navigate_on=None):
+                super().__init__(page_text)
+                self.done, self.fail, self.navigate_on = [], fail, navigate_on
+
+            async def _act(self, name, *args, **kw):
+                self.done.append((name, args, {k: v for k, v in kw.items() if k != "tainted"}))
+                if name == self.fail:
+                    return {"ok": False, "error": "Element [9] is gone; take a new snapshot"}
+                if name == self.navigate_on:
+                    return {"ok": True, "navigated": True, "url": "https://flights.example/results", "content": "Results"}
+                return {"ok": True, "url": "https://flights.example/", "changes": f"+ {name} done"}
+
+            async def type(self, ref, text, submit=False, tab=None, tainted=False, clear=True, pick=False):
+                return await self._act("type", ref, text, submit=submit, pick=pick)
+
+            async def click(self, ref, tab=None, tainted=False):
+                return await self._act("click", ref)
+
+            async def select(self, ref, option, tab=None, tainted=False):
+                return await self._act("select", ref, option)
+
+        form = {"steps": [{"action": "type", "ref": 4, "text": "Bengaluru"}, {"action": "type", "ref": 5, "text": "Delhi"},
+                          {"action": "select", "ref": 6, "option": "1 adult"}, {"action": "click", "ref": 7}]}
+        for fail, navigate_on, expected in ((None, None, 4), ("select", None, 3), (None, "type", 1)):
+            with FakeOpenAI() as fake:
+                svc = Svc()
+                svc.browser = Recording("", fail=fail, navigate_on=navigate_on)
+                svc.llm = LLM(fake.base_url, "test")
+                svc.registry = build_registry(svc)
+                fake.script = [tool_call("browser_batch", form), {"role": "assistant", "content": "searched"}]
+                await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-batch"), "search flights")
+                result = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"][0]
+                self.assertEqual(len(svc.browser.done), expected)
+                if expected == 4:
+                    self.assertEqual(svc.browser.done[0], ("type", (4, "Bengaluru"), {"submit": False, "pick": True}))
+                    self.assertIn("Step 4 (click [7])", result)
+                    self.assertIn("+ type done", result)                         # each step's changes in turn
+                elif fail:
+                    self.assertIn("Step 3 (select [6]) Error: Element [9] is gone", result)
+                    self.assertIn("steps 4-4 were not taken", result)
+                else:
+                    self.assertIn("steps 2-4 were not taken: their numbers belong to the page before", result)
+                await svc.llm.aclose()
+
+    async def test_a_page_that_ignores_steps_points_at_the_driver(self):
+        class Unmoved(FakeBrowser):
+            async def click(self, ref, tab=None, tainted=False):
+                return {"ok": True, "url": "https://xe.com", "changes": "No visible change on the page."}
+
+        class Driver:
+            async def run(self, goal, ctx):
+                return "94.9"
+
+        for driver in (Driver(), None):
+            with FakeOpenAI() as fake:
+                svc = Svc()
+                svc.browser = Unmoved("")
+                svc.driver = driver
+                svc.llm = LLM(fake.base_url, "test")
+                svc.registry = build_registry(svc)
+                fake.script = [tool_call("browser_click", {"ref": 3})] * 3 + [{"role": "assistant", "content": "done"}]
+                await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-stuck"), "convert 1 USD")
+                tools = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
+                said = ["browser_task can finish it" in t for t in tools]
+                self.assertEqual(said, [False, False, driver is not None])     # only where there is a driver
+                await svc.llm.aclose()
+
     async def test_the_shell_keeps_state_reports_exit_and_keeps_the_end_of_long_output(self):
         with FakeOpenAI() as fake:
             svc = Svc()

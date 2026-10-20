@@ -43,6 +43,10 @@ def _params(properties: dict, required: list[str] | None = None) -> dict:
 
 
 STR = {"type": "string"}
+# browser_batch: Qwen3.5 sent one call per reply in 157 of 157 browser replies although asked for several, so a
+# form took a model call per field; a list of steps in one call does not depend on that.
+BATCH_STEPS = 12
+BATCH_STEP_CHARS = 1500         # what each earlier step changed; the last step's result comes in full
 INT = {"type": "integer"}
 BOOL = {"type": "boolean"}
 
@@ -266,6 +270,48 @@ def browser_tools(svc) -> list[Tool]:
     async def back(args, ctx):
         return _text(_result(await b.back(tainted=ctx.tainted)))
 
+    async def batch(args, ctx):
+        """Several numbered steps in one call, each checked as its own tool is. It stops at the first error, and
+        after a step that opened a new page, whose numbers the later steps do not know. Each step's changes are
+        returned in turn (a suggestion list that typing brought), the last in full."""
+        steps = [s for s in (args.get("steps") or []) if isinstance(s, dict)][:BATCH_STEPS]
+        if not steps:
+            return "Error: steps is empty; give a list of {action, ref, ...}"
+        parts = []
+        for i, step in enumerate(steps, 1):
+            action = str(step.get("action", ""))
+            try:
+                if action == "click":
+                    raw = await b.click(int(step["ref"]), tainted=ctx.tainted)
+                elif action == "type":
+                    raw = await b.type(int(step["ref"]), str(step.get("text", "")), submit=bool(step.get("submit")),
+                                       pick=step.get("pick", True) is not False, tainted=ctx.tainted)
+                elif action == "select":
+                    raw = await b.select(int(step["ref"]), str(step.get("option", "")), tainted=ctx.tainted)
+                elif action == "press":
+                    raw = await b.press(str(step.get("key", "")), tainted=ctx.tainted)
+                else:
+                    parts.append(f"Error: step {i}: action must be click, type, select or press")
+                    break
+            except (KeyError, TypeError, ValueError):
+                parts.append(f"Error: step {i} ({action}) needs a numeric ref")
+                break
+            label = f"Step {i} ({action}{' [' + str(step.get('ref')) + ']' if 'ref' in step else ''})"
+            if raw.get("ok") is False:
+                parts.append(f"{label} Error: {raw.get('error', 'browser action failed')}"
+                             + (f"; steps {i + 1}-{len(steps)} were not taken" if i < len(steps) else ""))
+                break
+            text = _text(raw)
+            last = i == len(steps) or raw.get("navigated")
+            if not last and len(text) > BATCH_STEP_CHARS:
+                text = text[:BATCH_STEP_CHARS] + " …"
+            parts.append(f"{label}:\n{text}")
+            if raw.get("navigated") and i < len(steps):
+                parts.append(f"Step {i} opened a new page, so steps {i + 1}-{len(steps)} were not taken: their "
+                             "numbers belong to the page before. Look at this page and go on.")
+                break
+        return "\n\n".join(parts)
+
     async def tabs(args, ctx):
         return _result(await b.tabs(tainted=ctx.tainted))
 
@@ -296,6 +342,14 @@ def browser_tools(svc) -> list[Tool]:
              "page is cut: start=<text> reads it from the first line mentioning that text (a heading, \"properties "
              "found\", a result's name), which is how to see results further down.",
              _params({"start": STR}), snapshot, True),
+        Tool("browser_batch", "Several steps on the current page in one call, such as every field of a form and then "
+             "its search button: steps is a list of {action: click|type|select|press, ref, text, submit, option, "
+             "key}. They run in order with the same checks as the single tools; it stops at the first error or when "
+             "a step opens a new page. Returns what each step changed.",
+             _params({"steps": {"type": "array", "items": {"type": "object", "properties": {
+                 "action": {"type": "string", "enum": ["click", "type", "select", "press"]}, "ref": INT, "text": STR,
+                 "submit": {"type": "boolean"}, "option": STR, "key": STR}, "required": ["action"]}}}, ["steps"]),
+             batch, True),
         Tool("browser_click", "Click element [ref]. Returns what changed on the page (a new page in full).",
              _params({"ref": INT}, ["ref"]), click, True),
         Tool("browser_type", "Type text into element [ref] (it focuses the field: no click first) and return what "
@@ -326,10 +380,11 @@ def browser_tools(svc) -> list[Tool]:
             return await svc.driver.run(str(args["goal"]), ctx)
 
         tools.append(Tool(
-            "browser_task", "Hand a whole browser task to the browser driver, a model trained to use web pages from "
-            "screenshots, and get its report back. Give the complete goal with every detail it needs (site, dates, "
-            "names, limits, what to report). It stops and asks before anything irreversible. Prefer this for tasks "
-            "on websites over clicking through them yourself.",
+            "browser_task", "Hand a browser task to the browser driver, a model that uses web pages from screenshots, "
+            "and get its report back. Use it where numbered elements do not work: maps, converters and other "
+            "widgets, forms that ignore typing or clicks, or after steps that failed or changed nothing. Give the "
+            "complete goal with every detail it needs (site, dates, names, limits, what to report). It stops and "
+            "asks before anything irreversible. On ordinary pages your own browser tools are quicker.",
             _params({"goal": STR}, ["goal"]), browser_task, True))
     if svc.vision:
         tools.append(Tool("browser_screenshot", "Take a screenshot of the current page to look at it.",
