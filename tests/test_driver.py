@@ -200,6 +200,15 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(images, holo.KEEP_SCREENSHOTS)
         self.assertIn(holo.EVICTED, json.dumps(requests[-1]["messages"]))              # older ones, in their wrapper
 
+    async def test_a_holo_step_the_runtime_could_not_read_is_asked_again(self):
+        unread = {"_status": 500, "error": {"code": 500, "message": "The model produced output that does not match "
+                                                                    "the expected peg-native format"}}
+        report, calls, requests, _ = await self.run_driver([
+            unread, tool_call("click", {"element": "Search", "x": 500, "y": 500}, "c1"),
+            tool_call("answer", {"content": "done"}, "c2")], format="holo")
+        self.assertEqual(report, "done")
+        self.assertEqual(calls[0][0], "click_at")
+
     async def test_refusals_reach_the_driver_and_questions_reach_the_planner(self):
         report, calls, requests, _ = await self.run_driver([
             step({"action": "left_click", "coordinate": [100, 100]}),

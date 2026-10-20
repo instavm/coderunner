@@ -46,6 +46,7 @@ REPEAT_NOTE, REPEAT_STOP = 3, 6
 REPEATING = ("You have taken this same step {n} times in a row and are no closer: do something different, or stop "
              "and say what you found.")
 SAME_POINT = 25                 # coordinates this close (grid units or pixels) count as the same point
+UNPARSED_TRIES = 3              # a step whose tool call the runtime could not read is asked again, twice at most
 
 
 class Driver:
@@ -134,12 +135,17 @@ class Driver:
         for _ in range(self.steps):
             messages.append(holo.observation(shot["image"]))
             holo.keep_recent_screenshots(messages)
-            try:
-                reply = await self.llm.chat(messages, tools=holo.TOOLS, tool_choice="required",
-                                            temperature=holo.TEMPERATURE, max_tokens=holo.MAX_TOKENS,
-                                            chat_template_kwargs={"enable_thinking": True})
-            except LLMError as exc:
-                return f"The browser driver stopped: {exc}"
+            for attempt in range(UNPARSED_TRIES):
+                try:
+                    reply = await self.llm.chat(messages, tools=holo.TOOLS, tool_choice="required",
+                                                temperature=holo.TEMPERATURE, max_tokens=holo.MAX_TOKENS,
+                                                chat_template_kwargs={"enable_thinking": True})
+                    break
+                except LLMError as exc:
+                    # llama.cpp answers 500 when it cannot read the reply's tool call ("does not match the
+                    # expected ... format"); sampled at 0.8, the step asked again usually reads.
+                    if "does not match" not in str(exc) or attempt == UNPARSED_TRIES - 1:
+                        return f"The browser driver stopped: {exc}"
             call = holo.call_of(reply)
             # Only the parsed reply goes back into the history, never the reasoning (core concepts: reasoning).
             messages.append({"role": "assistant", "content": reply["content"],
