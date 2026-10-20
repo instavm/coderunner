@@ -1001,6 +1001,43 @@
         "kv_heads": 4,
         "head_dim": 256
       }
+    },
+    {
+      "id": "holo3.1-0.8b",
+      "family": "holo3.1",
+      "roles": [
+        "driver",
+        "vision"
+      ],
+      "rank": 1.0,
+      "params_b": 1.11,
+      "active_params_b": 1.11,
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "Hcompany/Holo-3.1-0.8B",
+        "link": "https://huggingface.co/Hcompany/Holo-3.1-0.8B",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "mradermacher/Holo-3.1-0.8B-GGUF",
+          "quant": "Q8_0",
+          "file": "Holo-3.1-0.8B.Q8_0.gguf",
+          "size_gb": 1.08,
+          "mmproj_gb": 0.12
+        }
+      },
+      "driver": {
+        "format": "holo"
+      },
+      "notes": "H Company's smallest computer-use model, on Qwen3.5-0.8B, for grounding and simple actions (H's words), in the same harness as Holo3.1-4B. No web-browsing score is published, so it is used only when chosen; 8-bit, as a model this small loses more at 4 bits. GGUF by mradermacher.",
+      "verified": "2026-10-20",
+      "arch": {
+        "full_attn_layers": 6,
+        "kv_heads": 2,
+        "head_dim": 256
+      }
     }
   ]
 }
