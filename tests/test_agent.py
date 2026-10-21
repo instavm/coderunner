@@ -225,7 +225,8 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_long_list_comes_one_line_per_item_with_the_way_on(self):
         class Listing(FakeBrowser):
             async def items(self, start=0, count=40, tab=None, tainted=False):
-                rows = [{"text": f"Movie {n} 9{n}% Streaming", "href": f"https://rt.example/m/{n}"} for n in range(1, 101)]
+                rows = [{"text": f"Movie {n} 9{n}% Streaming", "href": f"https://rt.example/m/{n}", "ref": 500 + n}
+                        for n in range(1, 101)]
                 return {"ok": True, "url": "https://rt.example/browse", "total": 100, "items": rows[start:start + count]}
 
         with FakeOpenAI() as fake:
@@ -238,7 +239,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-list"), "movies over 90%")
             first, last = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
             self.assertIn("items 1-40 of 100", first)
-            self.assertIn("1. Movie 1 91% Streaming -> /m/1", first)
+            self.assertIn("[501] Movie 1 91% Streaming -> /m/1", first)
             self.assertIn("60 more: browser_list start=40", first)
             self.assertIn("items 81-100 of 100", last)
             self.assertNotIn("more:", last)
@@ -250,7 +251,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
                 async def navigate(self, url, tainted=False):          # a whole page, as the broker gives it
                     return {"ok": True, "url": url, "title": "Movies", "content": self.page_text}
 
-                async def items(self, start=0, count=40, tab=None, tainted=False):
+                async def items(self, start=0, count=40, tab=None, tainted=False, numbered=True):
                     return {"ok": True, "url": "https://rt.example/browse", "total": total, "items": []}
 
             with FakeOpenAI() as fake:
@@ -264,6 +265,31 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
                 opened = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"][0]
                 self.assertEqual("list: 28 items; browser_list reads them one line each" in opened, hinted)
                 await svc.llm.aclose()
+
+    async def test_a_link_that_opens_a_new_tab_is_followed(self):
+        class Popping(FakeBrowser):
+            async def click(self, ref, tab=None, tainted=False):
+                return {"ok": True, "tab": "t1", "navigated": False, "new_tabs": ["t2"],
+                        "changes": "- Ends in 09:00:29"}
+
+            async def snapshot(self, tab=None, tainted=False):
+                self.read = tab
+                return {"ok": True, "tab": tab, "url": "https://shop.example/dp/1", "title": "Kindle",
+                        "content": "Kindle Paperwhite ₹20,999", "changed": True}
+
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.browser = Popping("")
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            fake.script = [tool_call("browser_click", {"ref": 3}), {"role": "assistant", "content": "done"}]
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-tab"), "kindle price")
+            clicked = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"][0]
+            self.assertEqual(svc.browser.read, "t2")
+            self.assertIn("Kindle Paperwhite ₹20,999", clicked)
+            self.assertIn("opened in a new tab (t2)", clicked)
+            self.assertNotIn("Ends in", clicked)
+            await svc.llm.aclose()
 
     async def test_a_page_that_ignores_steps_points_at_the_driver(self):
         class Unmoved(FakeBrowser):

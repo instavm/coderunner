@@ -1253,6 +1253,9 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Rs 1,999", first["text"])
         self.assertIn("1000 ratings", first["text"])
         self.assertEqual(first["href"], self.base + "/p/1")
+        link = next(ref for ref, info in self.broker._refs[self.broker._active].items()
+                    if info["role"] == "link" and info.get("url") == self.base + "/p/1")
+        self.assertEqual(first["ref"], link)                    # the item's link, by the number the page text gives it
         later = await self.broker.items(start=3)
         self.assertEqual([i["href"].rsplit("/", 1)[1] for i in later["items"]], ["4", "5"])
 

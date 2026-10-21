@@ -142,12 +142,16 @@ LIST_JS = r"""function(start, count, limit) {
       if (score > bestScore) { bestScore = score; best = shown; }
     }
   }
-  if (!best) return {total: 0, items: []};
-  const items = best.slice(start, start + count).map(e => {
-    const link = e.matches('a[href]') ? e : e.querySelector('a[href]');
-    return {text: clean(e.innerText || e.textContent).slice(0, limit), href: link ? link.href : ''};
-  });
-  return {total: best.length, items};
+  if (!best) return {total: 0, items: [], links: []};
+  // An item's link is its first one that is shown and read out: a product's picture link is often hidden from
+  // screen readers (Amazon), and so has no number in the page text.
+  const read = a => !a.closest('[aria-hidden="true"]') && boxed(a);
+  const shown = best.slice(start, start + count);
+  const all = shown.map(e => (e.matches('a[href]') ? [e] : []).concat(Array.from(e.querySelectorAll('a[href]'))));
+  const links = all.map(found => found.find(read) || null);
+  const items = shown.map((e, i) => ({text: clean(e.innerText || e.textContent).slice(0, limit),
+                                      href: (links[i] || all[i][0] || {}).href || ''}));
+  return {total: best.length, items, links};      // the links themselves, for the numbers the page text gives them
 }"""
 # The element at a point and its ancestors, nearest first (through slots and shadow roots, as for CONTAINS_JS),
 # for actions a model places by coordinates on a screenshot. A label stands for its control: a click on a label

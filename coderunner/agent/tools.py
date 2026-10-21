@@ -240,10 +240,23 @@ def browser_tools(svc) -> list[Tool]:
         """A whole page that holds a long list says so: told about browser_list in its instructions, the model
         still read Rotten Tomatoes' movie grid a snapshot at a time (80,000 tokens and the time limit)."""
         if isinstance(result, dict) and "content" in result and hasattr(b, "items"):
-            listed = await b.items(count=1, tainted=ctx.tainted)
+            listed = await b.items(count=1, tainted=ctx.tainted, numbered=False)
             if listed.get("ok") and int(listed.get("total") or 0) >= LIST_HINT_ITEMS:
                 result["list"] = f"{listed['total']} items; browser_list reads them one line each"
         return result
+
+    async def _followed(raw: Any, ctx) -> Any:
+        """An action that opened a page in a new tab goes on there, as the browser driver does and as a person's
+        window shows: the model cannot name tabs, and kept working in the old one (Amazon's product links)."""
+        if not (isinstance(raw, dict) and raw.get("ok") and raw.get("new_tabs") and not raw.get("navigated")):
+            return raw
+        tab = raw["new_tabs"][-1]
+        page = await b.snapshot(tab=tab, tainted=ctx.tainted)
+        if not isinstance(page, dict) or page.get("ok") is False:
+            return raw
+        page = {key: value for key, value in page.items() if key != "changed"}
+        return {**page, "tab": tab, "navigated": True, "note": f"This page opened in a new tab ({tab}); the browser "
+                "goes on there."}
 
     async def open_(args, ctx):
         return _text(await _listed(_result(await b.navigate(args["url"], tainted=ctx.tainted)), ctx))
@@ -256,14 +269,16 @@ def browser_tools(svc) -> list[Tool]:
         return _text(await _listed(result, ctx))
 
     async def click(args, ctx):
-        return _text(await _listed(_result(await b.click(int(args["ref"]), tainted=ctx.tainted)), ctx))
+        return _text(await _listed(_result(await _followed(await b.click(int(args["ref"]), tainted=ctx.tainted), ctx)),
+                                   ctx))
 
     async def type_(args, ctx):
-        return _text(_result(await b.type(int(args["ref"]), args["text"], submit=bool(args.get("submit")),
-                                          pick=args.get("pick", True) is not False, tainted=ctx.tainted)))
+        return _text(_result(await _followed(await b.type(
+            int(args["ref"]), args["text"], submit=bool(args.get("submit")), pick=args.get("pick", True) is not False,
+            tainted=ctx.tainted), ctx)))
 
     async def press(args, ctx):
-        return _text(_result(await b.press(args["key"], tainted=ctx.tainted)))
+        return _text(_result(await _followed(await b.press(args["key"], tainted=ctx.tainted), ctx)))
 
     async def find(args, ctx):
         result = _result(await b.find(args["text"], tainted=ctx.tainted))
@@ -288,8 +303,8 @@ def browser_tools(svc) -> list[Tool]:
             if (target.scheme, target.netloc) == (here.scheme, here.netloc):
                 href = urllib.parse.urlunsplit(("", "", target.path or "/", target.query, target.fragment))
             return _short_address(href)
-        lines = [f"{start + i}. {item.get('text', '')}" + (f" -> {link(item['href'])}" if item.get("href") else "")
-                 for i, item in enumerate(items, 1)]
+        lines = [(f"[{item['ref']}] " if item.get("ref") else "- ") + item.get("text", "")
+                 + (f" -> {link(item['href'])}" if item.get("href") else "") for item in items]
         shown = start + len(items)
         more = f"\n{total - shown} more: browser_list start={shown}" if shown < total else ""
         return (f"url: {_short_address(result.get('url', ''))}\nThe page's main list, items {start + 1}-{shown} of "
@@ -330,6 +345,7 @@ def browser_tools(svc) -> list[Tool]:
             except (KeyError, TypeError, ValueError):
                 parts.append(f"Error: step {i} ({action}) needs a numeric ref")
                 break
+            raw = await _followed(raw, ctx)
             label = f"Step {i} ({action}{' [' + str(step.get('ref')) + ']' if 'ref' in step else ''})"
             if raw.get("ok") is False:
                 parts.append(f"{label} Error: {raw.get('error', 'browser action failed')}"

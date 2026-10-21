@@ -331,25 +331,53 @@ class BrowserBroker:
                                lambda: self._type_focused(str(text), submit, tab, tainted, clear, keystrokes))
 
     async def items(self, start: int = 0, count: int = LIST_ITEMS, tab: str | None = None,
-                    tainted: bool = False) -> dict:
-        """The page's main repeated list (results, products, rows), one line of text and a link per item."""
+                    tainted: bool = False, numbered: bool = True) -> dict:
+        """The page's main repeated list (results, products, rows), one line of text and a link per item, and
+        the number of the item's link (numbered=False leaves the numbers out and the page unread: a count)."""
         return await self._run("items", {"start": start, "tab": tab, "tainted": tainted},
-                               lambda: self._items(max(int(start), 0), max(int(count), 1), tab, tainted))
+                               lambda: self._items(max(int(start), 0), max(int(count), 1), tab, tainted, numbered))
 
-    async def _items(self, start: int, count: int, tab: str | None, tainted: bool) -> dict:
+    async def _items(self, start: int, count: int, tab: str | None, tainted: bool, numbered: bool = True) -> dict:
         target = await self._target(tab)
         url, host = await self._web_page(target)
         await self._allow("browser.read", host, f"Read {url}", tainted)
         sid = await self._session(target)
         async with self._acting(target, sid, tainted):
+            if numbered:
+                await self._render(target, sid, url)    # numbers for the items' links, as the page text has them
             found = await self._send(sid, "Runtime.callFunctionOn", {
                 "functionDeclaration": LIST_JS, "executionContextId": await self._world(sid, target),
                 "arguments": [{"value": start}, {"value": count}, {"value": LIST_ITEM_CHARS}],
-                "returnByValue": True}, timeout=30)
-            outcome = (found.get("result") or {}).get("value") or {}
+                "returnByValue": False, "objectGroup": "coderunner"}, timeout=30)
+            listed = (found.get("result") or {}).get("objectId")
+            outcome = await self._call(sid, listed, "function() { return {total: this.total, items: this.items}; }") \
+                if listed else {}
+            items = list((outcome or {}).get("items") or [])
+            # Each item's link by its number, so the model clicks it as any other element; the list's own
+            # positions (1., 2., ...) were taken for numbers to click ("Unknown element [1]").
+            numbers = {info["backend"]: ref for ref, info in self._refs.get(target, {}).items()}
+            for index, backend in enumerate(await self._list_links(sid, listed) if listed and numbered else []):
+                if index < len(items) and backend in numbers:
+                    items[index]["ref"] = numbers[backend]
             result = await self._result(target)
-        result.update(total=int(outcome.get("total") or 0), items=list(outcome.get("items") or []), start=start)
+        result.update(total=int((outcome or {}).get("total") or 0), items=items, start=start)
         return result
+
+    async def _list_links(self, sid: str, listed: str) -> list[int | None]:
+        """The DOM nodes of the links LIST_JS found, in item order (None for an item without one)."""
+        array = await self._send(sid, "Runtime.callFunctionOn", {
+            "functionDeclaration": "function() { return this.links; }", "objectId": listed,
+            "returnByValue": False, "objectGroup": "coderunner"})
+        array_id = (array.get("result") or {}).get("objectId")
+        if not array_id:
+            return []
+        entries = (await self._send(sid, "Runtime.getProperties", {"objectId": array_id, "ownProperties": True}))["result"]
+        backends: list[int | None] = []
+        for entry in sorted((e for e in entries if e.get("name", "").isdigit()), key=lambda e: int(e["name"])):
+            object_id = (entry.get("value") or {}).get("objectId")
+            node = (await self._send(sid, "DOM.describeNode", {"objectId": object_id}))["node"] if object_id else {}
+            backends.append(node.get("backendNodeId"))
+        return backends
 
     async def find(self, text: str, tab: str | None = None, tainted: bool = False) -> dict:
         """The lines of the whole page (not just the first part) that mention text, with element refs."""
