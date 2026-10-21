@@ -111,6 +111,19 @@ class Daemon:
         except Exception as exc:  # the first task then reads them itself
             self.svc.audit.write("model.warm_failed", error=str(exc)[:200])
 
+    async def _start_sandbox(self) -> None:
+        """Start the sandbox VM when it is down: after a restart, macOS brings back the daemon (its login service)
+        but not the VM, and run_python and run_shell failed with "the sandbox is not running" until `coderunner
+        up` was run by hand. A sandbox never installed (missing) or without a runtime (unavailable) is left alone."""
+        try:
+            state = await asyncio.to_thread(self.driver.status)
+            if state in ("running", "missing", "unavailable"):
+                return
+            await asyncio.to_thread(self.driver.start)
+            self.svc.audit.write("sandbox.started", driver=self.driver.name, was=state)
+        except Exception as exc:              # the tools then say the sandbox is not running, as before
+            self.svc.audit.write("sandbox.start_failed", driver=self.driver.name, error=str(exc)[:200])
+
     async def _restart_embedding(self) -> bool:
         """Start the embedding server again when it has gone (one restart at a time)."""
         lock = self._locks.setdefault("embedding", asyncio.Lock())
@@ -364,6 +377,7 @@ class Daemon:
         except Exception as exc:
             svc.audit.write("models.start_failed", error=str(exc))
         self._tasks.append(asyncio.create_task(self._warm()))
+        self._tasks.append(asyncio.create_task(self._start_sandbox()))
 
         admin = admin_app(svc, self)
         self._tasks.append(asyncio.create_task(self._serve_with_retry(

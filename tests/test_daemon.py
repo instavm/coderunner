@@ -213,6 +213,30 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
             failures = [r for r in daemon.svc.audit.tail(50) if r["event"] == "gateway.bind_failed"]
             self.assertEqual(len(failures), 1)
 
+    async def test_a_stopped_sandbox_is_started_with_the_daemon(self):
+        # After a restart macOS brings back the daemon but not the VM: the daemon starts it.
+        class Driver:
+            name = "apple"
+
+            def __init__(self, state):
+                self.state, self.started = state, 0
+
+            def status(self):
+                return self.state
+
+            def start(self):
+                self.started += 1
+
+        with FakeOpenAI() as fake:
+            daemon = self.make_daemon(fake)
+            for state, starts in (("stopped", 1), ("service-stopped", 1), ("running", 0), ("missing", 0),
+                                  ("unavailable", 0)):
+                daemon.driver = Driver(state)
+                await daemon._start_sandbox()
+                self.assertEqual(daemon.driver.started, starts, state)
+            started = [r for r in daemon.svc.audit.tail(50) if r["event"] == "sandbox.started"]
+            self.assertEqual([r["was"] for r in started], ["stopped", "service-stopped"])
+
 
 if __name__ == "__main__":
     unittest.main()
