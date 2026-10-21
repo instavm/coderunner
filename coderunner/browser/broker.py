@@ -45,7 +45,7 @@ from . import launcher as default_launcher
 from .cdp import CDPError, CDPPipe
 from .errors import BrowserError
 from .page import PAGE_CHARS, ax_value, cut, page_changes, render_ax, squash
-from .scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, OPTIONS_JS, SCROLL_JS, SELECT_ALL_JS,
+from .scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, LIST_JS, OPTIONS_JS, SCROLL_JS, SELECT_ALL_JS,
                       SELECT_OPTION_JS, SETTLE_JS)
 from .urls import is_local_ip, local_problem, page_host, parse_url, same_site
 
@@ -62,6 +62,8 @@ MESSAGING_HOSTS = ("web.telegram.org", "*.web.telegram.org", "web.whatsapp.com",
                    "signal.org", "*.signal.org", "discord.com", "*.discord.com", "discordapp.com",
                    "*.discordapp.com", "slack.com", "*.slack.com")
 FIND_SCAN_CHARS = 400_000   # browser_find reads the whole page, not just the first snapshot screenful
+LIST_ITEMS = 40             # items of a page's main list given at once
+LIST_ITEM_CHARS = 300       # of each item's text
 FIND_LIMIT = 40             # matching lines returned
 FIND_AFTER = 8              # lines shown after each of the first matches: a result card's price, rating
 FIND_DETAILED = 5           # and room follow its name (booking.com: 4-8 lines below)
@@ -317,6 +319,27 @@ class BrowserBroker:
         return await self._run("type_focused", {"chars": len(str(text)), "submit": submit, "tab": tab,
                                                 "tainted": tainted},
                                lambda: self._type_focused(str(text), submit, tab, tainted, clear, keystrokes))
+
+    async def items(self, start: int = 0, count: int = LIST_ITEMS, tab: str | None = None,
+                    tainted: bool = False) -> dict:
+        """The page's main repeated list (results, products, rows), one line of text and a link per item."""
+        return await self._run("items", {"start": start, "tab": tab, "tainted": tainted},
+                               lambda: self._items(max(int(start), 0), max(int(count), 1), tab, tainted))
+
+    async def _items(self, start: int, count: int, tab: str | None, tainted: bool) -> dict:
+        target = await self._target(tab)
+        url, host = await self._web_page(target)
+        await self._allow("browser.read", host, f"Read {url}", tainted)
+        sid = await self._session(target)
+        async with self._acting(target, sid, tainted):
+            found = await self._send(sid, "Runtime.callFunctionOn", {
+                "functionDeclaration": LIST_JS, "executionContextId": await self._world(sid, target),
+                "arguments": [{"value": start}, {"value": count}, {"value": LIST_ITEM_CHARS}],
+                "returnByValue": True}, timeout=30)
+            outcome = (found.get("result") or {}).get("value") or {}
+            result = await self._result(target)
+        result.update(total=int(outcome.get("total") or 0), items=list(outcome.get("items") or []), start=start)
+        return result
 
     async def find(self, text: str, tab: str | None = None, tainted: bool = False) -> dict:
         """The lines of the whole page (not just the first part) that mention text, with element refs."""

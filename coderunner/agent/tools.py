@@ -9,6 +9,7 @@ actions need fresh approval.
 from __future__ import annotations
 
 import json
+import urllib.parse
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -261,6 +262,29 @@ def browser_tools(svc) -> list[Tool]:
                                   "images, for example): browser_screenshot shows the page as it looks.")
         return _text(result)
 
+    async def list_(args, ctx):
+        start = max(int(args.get("start") or 0), 0)
+        result = _result(await b.items(start=start, tainted=ctx.tainted))
+        if isinstance(result, str):
+            return result
+        items, total = result.get("items") or [], int(result.get("total") or 0)
+        if not items:
+            return ("No repeated list on this page" + (f" from item {start + 1}" if start else "")
+                    + "; browser_snapshot reads all of it.")
+        page = result.get("url", "")
+
+        def link(href: str) -> str:              # on the same site, the path (opened against the page, as clicks are)
+            target, here = urllib.parse.urlsplit(href), urllib.parse.urlsplit(page)
+            if (target.scheme, target.netloc) == (here.scheme, here.netloc):
+                href = urllib.parse.urlunsplit(("", "", target.path or "/", target.query, target.fragment))
+            return _short_address(href)
+        lines = [f"{start + i}. {item.get('text', '')}" + (f" -> {link(item['href'])}" if item.get("href") else "")
+                 for i, item in enumerate(items, 1)]
+        shown = start + len(items)
+        more = f"\n{total - shown} more: browser_list start={shown}" if shown < total else ""
+        return (f"url: {_short_address(result.get('url', ''))}\nThe page's main list, items {start + 1}-{shown} of "
+                f"{total}:\n" + "\n".join(lines) + more)
+
     async def select(args, ctx):
         return _text(_result(await b.select(int(args["ref"]), args["option"], tainted=ctx.tainted)))
 
@@ -350,6 +374,9 @@ def browser_tools(svc) -> list[Tool]:
                  "action": {"type": "string", "enum": ["click", "type", "select", "press"]}, "ref": INT, "text": STR,
                  "submit": {"type": "boolean"}, "option": STR, "key": STR}, "required": ["action"]}}}, ["steps"]),
              batch, True),
+        Tool("browser_list", "Read the page's main list (search results, products, flights, hotels, movies, table "
+             "rows) as one line per item with its link: quicker than reading or scrolling a long page. start= "
+             "goes on through a long list.", _params({"start": INT}), list_, True),
         Tool("browser_click", "Click element [ref]. Returns what changed on the page (a new page in full).",
              _params({"ref": INT}, ["ref"]), click, True),
         Tool("browser_type", "Type text into element [ref] (it focuses the field: no click first) and return what "

@@ -222,6 +222,28 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("steps 2-4 were not taken: their numbers belong to the page before", result)
                 await svc.llm.aclose()
 
+    async def test_a_long_list_comes_one_line_per_item_with_the_way_on(self):
+        class Listing(FakeBrowser):
+            async def items(self, start=0, count=40, tab=None, tainted=False):
+                rows = [{"text": f"Movie {n} 9{n}% Streaming", "href": f"https://rt.example/m/{n}"} for n in range(1, 101)]
+                return {"ok": True, "url": "https://rt.example/browse", "total": 100, "items": rows[start:start + count]}
+
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.browser = Listing("")
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            fake.script = [tool_call("browser_list", {}), tool_call("browser_list", {"start": 80}),
+                           {"role": "assistant", "content": "done"}]
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-list"), "movies over 90%")
+            first, last = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
+            self.assertIn("items 1-40 of 100", first)
+            self.assertIn("1. Movie 1 91% Streaming -> /m/1", first)
+            self.assertIn("60 more: browser_list start=40", first)
+            self.assertIn("items 81-100 of 100", last)
+            self.assertNotIn("more:", last)
+            await svc.llm.aclose()
+
     async def test_a_page_that_ignores_steps_points_at_the_driver(self):
         class Unmoved(FakeBrowser):
             async def click(self, ref, tab=None, tainted=False):

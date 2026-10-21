@@ -1154,6 +1154,15 @@ overflow-y: scroll; } #list div { height: 40px; } #name { position: absolute; le
 <div id="menu" onmouseover="document.getElementById('out').textContent = 'menu open'">Menu</div>
 <div id="out"></div><div id="tall"></div></body></html>""")
 
+# A shop page: a short menu, five product cards and a footer. The cards are the page's main list.
+LISTING = (b"""<!doctype html><html><head><title>Chargers</title></head><body>
+<nav><a href="/">Home</a><a href="/deals">Deals</a><a href="/help">Help</a><a href="/cart">Cart</a></nav>
+<div class="grid">""" + b"".join(b"""<div class="card s-result-%d"><a href="/p/%d"><h3>USB-C charger %dW</h3></a>
+<span class="price">Rs %d,999</span><span class="rating">4.%d of 5 stars, %d ratings</span></div>""" % (n, n, 45 + n * 5, n, n, n * 1000)
+                                     for n in range(1, 6)) + b"""</div>
+<footer><ul><li>About our company and team</li><li>Careers at the shop today</li><li>Press and media enquiries</li></ul></footer>
+</body></html>""")
+
 
 class _Fixture(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -1164,7 +1173,7 @@ class _Fixture(http.server.BaseHTTPRequestHandler):
             return
         port = str(self.server.server_port).encode()
         body = FIXTURE.replace(b"PORT", port) if self.path == "/" else DRAWN if self.path == "/drawn" else \
-            CONTROLS if self.path == "/controls" else \
+            CONTROLS if self.path == "/controls" else LISTING if self.path == "/list" else \
             b"<title>Next</title><h2>Second page</h2>"
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1218,6 +1227,20 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
         sid = await self.broker._session(self.broker._active)
         found = await self.broker._send(sid, "Runtime.evaluate", {"expression": expression, "returnByValue": True})
         return found["result"].get("value")
+
+    async def test_a_pages_main_list_is_read_one_line_per_item(self):
+        opened = await self.broker.navigate(self.base + "/list")
+        self.assertTrue(opened["ok"], opened)
+        listed = await self.broker.items()
+        self.assertTrue(listed["ok"], listed)
+        self.assertEqual(listed["total"], 5)                                # the cards, not the menu or footer
+        first = listed["items"][0]
+        self.assertIn("USB-C charger 50W", first["text"])
+        self.assertIn("Rs 1,999", first["text"])
+        self.assertIn("1000 ratings", first["text"])
+        self.assertEqual(first["href"], self.base + "/p/1")
+        later = await self.broker.items(start=3)
+        self.assertEqual([i["href"].rsplit("/", 1)[1] for i in later["items"]], ["4", "5"])
 
     async def test_what_a_screenshot_model_does_besides_clicking(self):
         opened = await self.broker.navigate(self.base + "/controls")

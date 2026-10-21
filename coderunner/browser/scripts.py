@@ -101,6 +101,38 @@ SCROLL_JS = r"""function(dx, dy) {
   return {moved: el.scrollLeft !== before[0] || el.scrollTop !== before[1],
           percent: Math.round(100 * el.scrollTop / range)};
 }"""
+# The page's main repeated list (search results, products, flights, movie tiles, table rows): the group of
+# siblings built alike (tag and classes, numbers in class names aside: item-3, s-result-4) with the most text. Scored on
+# textContent, which costs no layout; only the chosen group is measured and read as shown.
+LIST_JS = r"""function(start, count, limit) {
+  const sig = e => e.tagName + '.' + Array.from(e.classList).map(c => c.replace(/\d+/g, '#')).sort().join('.');
+  const clean = s => String(s || '').replace(/\s+/g, ' ').trim();
+  let best = null, bestScore = 0;
+  for (const parent of document.querySelectorAll('body *')) {
+    if (parent.children.length < 3) continue;
+    const groups = new Map();
+    for (const kid of parent.children) {
+      if (/^(SCRIPT|STYLE|TEMPLATE|NOSCRIPT)$/.test(kid.tagName)) continue;
+      const key = sig(kid);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(kid);
+    }
+    for (const items of groups.values()) {
+      if (items.length < 3) continue;
+      const sizes = items.map(e => clean(e.textContent).length).filter(n => n >= 15);
+      if (sizes.length < 3) continue;
+      const score = sizes.reduce((a, n) => a + Math.min(n, 400), 0);
+      if (score > bestScore) { bestScore = score; best = items; }
+    }
+  }
+  if (!best) return {total: 0, items: []};
+  const shown = best.filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+  const items = shown.slice(start, start + count).map(e => {
+    const link = e.matches('a[href]') ? e : e.querySelector('a[href]');
+    return {text: clean(e.innerText).slice(0, limit), href: link ? link.href : ''};
+  });
+  return {total: shown.length, items};
+}"""
 # The element at a point and its ancestors, nearest first (through shadow roots), for actions a model
 # places by coordinates on a screenshot. A label stands for its control: a click on a label is a click on the
 # control, and sites draw radios and checkboxes inside the label beside a hidden input.
