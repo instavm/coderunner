@@ -44,7 +44,7 @@ from ..safety.policy import Action, Decision, _matches
 from . import launcher as default_launcher
 from .cdp import CDPError, CDPPipe
 from .errors import BrowserError
-from .page import PAGE_CHARS, ax_value, cut, page_changes, render_ax, squash
+from .page import PAGE_CHARS, ax_value, cut, page_changes, render_ax, short_url, squash
 from .scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, LIST_JS, OPTIONS_JS, SCROLL_JS, SELECT_ALL_JS,
                       SELECT_OPTION_JS, SETTLE_JS)
 from .urls import is_local_ip, local_problem, page_host, parse_url, same_site
@@ -69,6 +69,8 @@ FIND_AFTER = 8              # lines shown after each of the first matches: a res
 FIND_DETAILED = 5           # and room follow its name (booking.com: 4-8 lines below)
 CLICK_ATTEMPTS = 3          # clicks nobody approved are re-checked when the page moves under them
 CLICK_SETTLE = 0.4          # seconds to let overlays and hover effects settle before re-checking
+# Where in an element a click by number goes, as fractions of its visible box: the middle, then nearer the edges.
+CLICK_POINTS = ((0.5, 0.5), (0.5, 0.2), (0.5, 0.8), (0.2, 0.5), (0.8, 0.5), (0.2, 0.2), (0.8, 0.2), (0.2, 0.8), (0.8, 0.8))
 SECRET_AUTOCOMPLETE = frozenset({"current-password", "new-password", "one-time-code"})
 FRAME_TAGS = frozenset({"iframe", "frame", "object", "embed"})
 KEYS = {  # name -> (windows virtual key code, text)
@@ -131,6 +133,14 @@ def card_field(node: dict) -> str:
     raw = node.get("attributes") or []
     tokens = {raw[i].lower(): raw[i + 1] for i in range(0, len(raw) - 1, 2)}.get("autocomplete", "").lower().split()
     return next((CARD_FIELDS[t] for t in tokens if t in CARD_FIELDS), "card details")
+
+
+def _stayed(link: str | None, before: str, after: str | None) -> bool:
+    """Whether a click on a link to another web page left the window on the page it was clicked on."""
+    if not link or not after or not link.startswith(("http://", "https://")):
+        return False
+    link, before, after = (u.split("#")[0] for u in (link, before, after))
+    return link != before and after == before
 
 
 def _fingerprint(plan: dict) -> tuple:
@@ -1132,6 +1142,12 @@ class BrowserBroker:
                         result["note"] = f"The click landed on {now['label']}."
                         if read and result.get("url") and result["url"].split("#")[0] != read.split("#")[0]:
                             result["note"] += " The page's address changed since you read it; take a new snapshot."
+                    if _stayed(element.get("url"), url, result.get("url")) and not (
+                            result.get("new_tabs") or result.get("blocked")):
+                        # Sites take over some links' clicks (Rotten Tomatoes' posters play a trailer): clicked
+                        # again and again, the link never opens what it names.
+                        result["note"] = (result.get("note", "") + " The link did not open its address ("
+                                          + short_url(element["url"], url) + "); browser_open opens it.").strip()
                     return result
             if approved or attempt == CLICK_ATTEMPTS - 1:
                 break
@@ -1220,11 +1236,20 @@ class BrowserBroker:
     async def _click_plan(self, sid: str, target: str, element: dict) -> dict:
         if element.get("point"):
             x, y = element["point"]             # an element no page text numbers: where the model pointed
-        else:
-            with contextlib.suppress(CDPError):
-                await self._send(sid, "DOM.scrollIntoViewIfNeeded", {"backendNodeId": element["backend"]})
-            x, y = await self._center(sid, element["backend"])
-        return {"x": x, "y": y, **await self._probe(sid, target, element, x, y)}
+            return {"x": x, "y": y, **await self._probe(sid, target, element, x, y)}
+        with contextlib.suppress(CDPError):
+            await self._send(sid, "DOM.scrollIntoViewIfNeeded", {"backendNodeId": element["backend"]})
+        left, top, right, bottom = await self._visible_box(sid, element["backend"])
+        # The middle first, then other points of the element: a control laid over its middle (the play-trailer
+        # button on Rotten Tomatoes' movie posters) would take the click, and a person clicks beside it.
+        first = None
+        for fx, fy in CLICK_POINTS:
+            x, y = left + (right - left) * fx, top + (bottom - top) * fy
+            plan = {"x": x, "y": y, **await self._probe(sid, target, element, x, y)}
+            if plan["hit"] == "element":
+                return plan
+            first = first or plan
+        return first
 
     async def _probe(self, sid: str, target: str, element: dict, x: float, y: float) -> dict:
         """What a click at (x, y) would hit, described in full for the approval."""
@@ -1283,7 +1308,8 @@ class BrowserBroker:
         element = (await self._send(sid, "DOM.describeNode", {"objectId": object_id}))["node"]
         return {**hit, "backendNodeId": element["backendNodeId"]}
 
-    async def _center(self, sid: str, backend: int) -> tuple[float, float]:
+    async def _visible_box(self, sid: str, backend: int) -> tuple[float, float, float, float]:
+        """The part of the element inside the window: left, top, right, bottom."""
         try:
             quad = (await self._send(sid, "DOM.getBoxModel", {"backendNodeId": backend}))["model"]["border"]
         except CDPError:
@@ -1296,7 +1322,7 @@ class BrowserBroker:
         top, bottom = max(min(ys), 0), min(max(ys), height)
         if right - left < 1 or bottom - top < 1:
             raise BrowserError("That element has no visible area; scroll or take a new snapshot")
-        return (left + right) / 2, (top + bottom) / 2
+        return left, top, right, bottom
 
     async def _world(self, sid: str, target: str) -> int:
         world = await self._send(sid, "Page.createIsolatedWorld", {"frameId": target, "worldName": "coderunner"})

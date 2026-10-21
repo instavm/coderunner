@@ -40,8 +40,8 @@ def cut(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + (f"\n… [{len(text) - limit} more characters: browser_snapshot with start=<text on a later "
-                           f"line> reads on from there and browser_find searches all of the page; scrolling does not "
-                           f"change this text]")
+                           f"line> reads on from there, browser_find searches all of the page and browser_list reads "
+                           f"a list of results one line per item; scrolling does not change this text]")
 
 
 def short_url(url: str, page_url: str) -> str:
@@ -164,6 +164,8 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
                 numbers["next"] += 1
             is_secret = backend in secret
             refs[ref] = {"backend": backend, "role": role, "name": name, "password": is_secret}
+            if role == "link" and props.get("url"):
+                refs[ref]["url"] = str(props["url"])
             emit(_element_line(ref, role, name, node, props, page_url, is_secret), name)
             if role not in ("textbox", "searchbox") and not props.get("editable"):
                 descend(node_id, name)      # the value is already shown; skip editor internals

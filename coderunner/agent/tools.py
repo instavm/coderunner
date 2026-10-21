@@ -47,6 +47,7 @@ STR = {"type": "string"}
 # browser_batch: Qwen3.5 sent one call per reply in 157 of 157 browser replies although asked for several, so a
 # form took a model call per field; a list of steps in one call does not depend on that.
 BATCH_STEPS = 12
+LIST_HINT_ITEMS = 8             # a page with a list this long says browser_list reads it
 BATCH_STEP_CHARS = 1500         # what each earlier step changed; the last step's result comes in full
 INT = {"type": "integer"}
 BOOL = {"type": "boolean"}
@@ -235,18 +236,27 @@ def browser_tools(svc) -> list[Tool]:
             lines += ["", value["content"]]
         return "\n".join(lines)
 
+    async def _listed(result: Any, ctx) -> Any:
+        """A whole page that holds a long list says so: told about browser_list in its instructions, the model
+        still read Rotten Tomatoes' movie grid a snapshot at a time (80,000 tokens and the time limit)."""
+        if isinstance(result, dict) and "content" in result and hasattr(b, "items"):
+            listed = await b.items(count=1, tainted=ctx.tainted)
+            if listed.get("ok") and int(listed.get("total") or 0) >= LIST_HINT_ITEMS:
+                result["list"] = f"{listed['total']} items; browser_list reads them one line each"
+        return result
+
     async def open_(args, ctx):
-        return _text(_result(await b.navigate(args["url"], tainted=ctx.tainted)))
+        return _text(await _listed(_result(await b.navigate(args["url"], tainted=ctx.tainted)), ctx))
 
     async def snapshot(args, ctx):
         start = str(args.get("start") or "").strip()
         result = _result(await b.snapshot(tainted=ctx.tainted, **({"start": start} if start else {})))
         if isinstance(result, dict) and result.get("changed") is False:
             result["note"] = "Page unchanged since you last saw it."
-        return _text(result)
+        return _text(await _listed(result, ctx))
 
     async def click(args, ctx):
-        return _text(_result(await b.click(int(args["ref"]), tainted=ctx.tainted)))
+        return _text(await _listed(_result(await b.click(int(args["ref"]), tainted=ctx.tainted)), ctx))
 
     async def type_(args, ctx):
         return _text(_result(await b.type(int(args["ref"]), args["text"], submit=bool(args.get("submit")),
@@ -292,7 +302,7 @@ def browser_tools(svc) -> list[Tool]:
         return _text(_result(await b.scroll(args.get("direction", "down"), tainted=ctx.tainted)))
 
     async def back(args, ctx):
-        return _text(_result(await b.back(tainted=ctx.tainted)))
+        return _text(await _listed(_result(await b.back(tainted=ctx.tainted)), ctx))
 
     async def batch(args, ctx):
         """Several numbered steps in one call, each checked as its own tool is. It stops at the first error, and

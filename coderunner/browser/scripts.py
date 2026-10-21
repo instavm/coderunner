@@ -29,9 +29,11 @@ FOCUSED_JS = r"""(() => {
   while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
   return el && el !== document.body && el !== document.documentElement ? el : null;
 })()"""
-# Whether a hit is the element or inside it; a click on a control's label is a click on the control.
+# Whether a hit is the element or inside it; a click on a control's label is a click on the control. "Inside" is
+# as shown and as a click's event travels: content a web component places in a slot of its own is inside the
+# slot's element (Rotten Tomatoes' poster sits in a link through two such slots) though it is not its child.
 CONTAINS_JS = r"""function(other) {
-  for (let n = other; n; n = n.parentNode || n.host) if (n === this) return true;
+  for (let n = other; n; n = n.assignedSlot || n.parentNode || n.host) if (n === this) return true;
   for (const label of this.labels || []) if (label.contains(other)) return true;
   return false;
 }"""
@@ -107,8 +109,21 @@ SCROLL_JS = r"""function(dx, dy) {
 LIST_JS = r"""function(start, count, limit) {
   const sig = e => e.tagName + '.' + Array.from(e.classList).map(c => c.replace(/\d+/g, '#')).sort().join('.');
   const clean = s => String(s || '').replace(/\s+/g, ' ').trim();
+  // Lists built from web components live inside open shadow roots too (Rotten Tomatoes' tiles).
+  const parents = [];
+  const walk = root => {
+    for (const el of root.querySelectorAll('*')) {
+      parents.push(el);
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+  };
+  walk(document.body || document.documentElement);
+  // An item is shown when it or a child has a box: wrappers with display: contents have none of their own.
+  // Only shown items count, so a hidden menu with more text (Rotten Tomatoes' header) cannot win.
+  const boxed = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const shownItem = e => boxed(e) || Array.from(e.children).some(boxed);
   let best = null, bestScore = 0;
-  for (const parent of document.querySelectorAll('body *')) {
+  for (const parent of parents) {
     if (parent.children.length < 3) continue;
     const groups = new Map();
     for (const kid of parent.children) {
@@ -119,27 +134,28 @@ LIST_JS = r"""function(start, count, limit) {
     }
     for (const items of groups.values()) {
       if (items.length < 3) continue;
-      const sizes = items.map(e => clean(e.textContent).length).filter(n => n >= 15);
-      if (sizes.length < 3) continue;
-      const score = sizes.reduce((a, n) => a + Math.min(n, 400), 0);
-      if (score > bestScore) { bestScore = score; best = items; }
+      const sized = items.filter(e => clean(e.textContent).length >= 15);
+      if (sized.length < 3) continue;
+      const shown = sized.filter(shownItem);
+      if (shown.length < 3) continue;
+      const score = shown.reduce((a, e) => a + Math.min(clean(e.textContent).length, 400), 0);
+      if (score > bestScore) { bestScore = score; best = shown; }
     }
   }
   if (!best) return {total: 0, items: []};
-  const shown = best.filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
-  const items = shown.slice(start, start + count).map(e => {
+  const items = best.slice(start, start + count).map(e => {
     const link = e.matches('a[href]') ? e : e.querySelector('a[href]');
-    return {text: clean(e.innerText).slice(0, limit), href: link ? link.href : ''};
+    return {text: clean(e.innerText || e.textContent).slice(0, limit), href: link ? link.href : ''};
   });
-  return {total: shown.length, items};
+  return {total: best.length, items};
 }"""
-# The element at a point and its ancestors, nearest first (through shadow roots), for actions a model
-# places by coordinates on a screenshot. A label stands for its control: a click on a label is a click on the
-# control, and sites draw radios and checkboxes inside the label beside a hidden input.
+# The element at a point and its ancestors, nearest first (through slots and shadow roots, as for CONTAINS_JS),
+# for actions a model places by coordinates on a screenshot. A label stands for its control: a click on a label
+# is a click on the control, and sites draw radios and checkboxes inside the label beside a hidden input.
 ANCESTORS_JS = r"""function() {
   const out = [];
   for (let n = this.nodeType === 1 ? this : this.parentElement; n && out.length < 40;
-       n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null) {
+       n = n.assignedSlot || n.parentElement || (n.getRootNode && n.getRootNode().host) || null) {
     out.push(n);
     if (n.localName === 'label' && n.control) out.push(n.control);
   }

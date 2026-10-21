@@ -42,6 +42,7 @@ class FakeBrowser:
         self.selected = {}
         self.focused = None
         self.hit = None
+        self.hit_at = None    # (x, y) -> backendNodeId, for pages where what a click hits depends on the point
         self.parents = {}     # backendNodeId -> parent's, for hit tests that land inside an element
         self.image = b"\xff\xd8 first"
         self.on_move = None   # called when the pointer moves, to let tests change the page
@@ -120,7 +121,8 @@ class FakeBrowser:
                                           "pageY": self.scroll[1], "scale": 1},
                     "cssContentSize": {"width": 1280, "height": 3000}}
         if method == "DOM.getNodeForLocation":
-            return {"backendNodeId": self.hit or self._box, "frameId": target}
+            hit = self.hit_at and self.hit_at(params["x"] - self.scroll[0], params["y"] - self.scroll[1])
+            return {"backendNodeId": hit or self.hit or self._box, "frameId": target}
         if method == "Page.createIsolatedWorld":
             return {"executionContextId": 7}
         if method == "DOM.resolveNode":
@@ -503,7 +505,8 @@ class InteractionPolicyTests(BrokerTestCase):
         browser, _ = await self.load_shop()
         result = await self.broker.click(self.ref("Read more"))
         self.assertEqual(result["changes"], "No visible change on the page.")
-        self.assertEqual(result["note"], 'The click landed on link "Read more".')
+        self.assertEqual(result["note"], 'The click landed on link "Read more". '
+                                         'The link did not open its address (/about); browser_open opens it.')
         browser.pages[self.broker._active]["url"] = "https://shop.example/hotels"
         result = await self.broker.click(self.ref("Read more"))         # a late redirect the model has not read
         self.assertIn("address changed since you read it", result["note"])
@@ -561,6 +564,17 @@ class InteractionPolicyTests(BrokerTestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(self.kinds(), ["browser.sensitive"])
         self.assertIn("covered by button", self.asked[0][1])
+
+    async def test_a_click_goes_beside_a_control_laid_over_the_middle(self):
+        browser, _ = await self.load_shop()
+        browser.hit_at = lambda x, y: 555 if (x, y) == (60, 30) else None    # a play button on a poster link
+        browser.labels[555] = {"tag": "button", "text": "Play trailer", "submit": ""}
+        result = await self.broker.click(self.ref("Read more"))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.asked, [])
+        self.assertNotIn("covered", result.get("note", ""))
+        press = [p for p in browser.sent("Input.dispatchMouseEvent") if p["type"] == "mousePressed"][-1]
+        self.assertEqual((press["x"], press["y"]), (60, 24))
 
     async def test_sensitive_label_in_text_but_not_aria_name(self):
         browser, _ = await self.load_shop()

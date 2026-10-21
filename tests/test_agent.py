@@ -244,6 +244,27 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("more:", last)
             await svc.llm.aclose()
 
+    async def test_a_page_with_a_long_list_says_so(self):
+        for total, hinted in ((28, True), (3, False)):
+            class Listing(FakeBrowser):
+                async def navigate(self, url, tainted=False):          # a whole page, as the broker gives it
+                    return {"ok": True, "url": url, "title": "Movies", "content": self.page_text}
+
+                async def items(self, start=0, count=40, tab=None, tainted=False):
+                    return {"ok": True, "url": "https://rt.example/browse", "total": total, "items": []}
+
+            with FakeOpenAI() as fake:
+                svc = Svc()
+                svc.browser = Listing("Movies at home")
+                svc.llm = LLM(fake.base_url, "test")
+                svc.registry = build_registry(svc)
+                fake.script = [tool_call("browser_open", {"url": "https://rt.example/browse"}),
+                               {"role": "assistant", "content": "done"}]
+                await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-hint"), "movies over 90%")
+                opened = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"][0]
+                self.assertEqual("list: 28 items; browser_list reads them one line each" in opened, hinted)
+                await svc.llm.aclose()
+
     async def test_a_page_that_ignores_steps_points_at_the_driver(self):
         class Unmoved(FakeBrowser):
             async def click(self, ref, tab=None, tainted=False):
