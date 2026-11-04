@@ -341,9 +341,11 @@ wait_for_server() {
                 -H @<(printf 'Authorization: Bearer %s\n' "$CODERUNNER_API_TOKEN") \
                 "http://$MCP_HOST:8222/v1/sessions/session")
             if [ "$auth_code" != "200" ] || [ "$unauth_code" != "401" ]; then
-                echo "❌ The server must reject anonymous requests and accept the configured credential."
-                echo "   An image built before authentication ignores the token: recreate the sandbox with"
-                echo "   container delete coderunner && ./install.sh"
+                # Left running, an image that ignores the token is an open code-execution service.
+                container stop coderunner 2>/dev/null || true
+                echo "❌ The server must reject anonymous requests and accept the configured credential;"
+                echo "   the sandbox has been stopped. An image built before authentication ignores the"
+                echo "   token: recreate the sandbox with  container delete coderunner && ./install.sh"
                 return 1
             fi
             echo "✅ Setup complete. MCP server: http://$MCP_HOST:8222/mcp"

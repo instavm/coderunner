@@ -59,8 +59,15 @@ class BrowserUrlTests(unittest.TestCase):
                     "http://0.0.0.0/"):
             with self.subTest(url=url):
                 self.assertIn("not a public address", guard(url))
+        self.assertIn("not a public address", guard("http://100.64.1.2/"))    # shared space (CGNAT, tailnets)
+        self.assertIn("not a public address", guard("http://224.0.0.1/"))
         self.assertIsNone(guard("https://93.184.216.34/"))          # a public address, no DNS needed
         self.assertIn("does not resolve", guard("http://no-such-host.invalid/"))
+        # The same decision with addresses the caller resolved, as every request the page makes is checked.
+        self.assertIn("not a public address", guard("http://example.com/", addresses={"93.184.216.34", "10.0.0.1"}))
+        self.assertIsNone(guard("http://example.com/", addresses={"93.184.216.34"}))
+        self.assertIsNone(asyncio.run(server.checked_url("https://93.184.216.34/")))
+        self.assertIn("not a public address", asyncio.run(server.checked_url("http://127.0.0.1:8888/")))
 
 
 class SkillArchiveTests(unittest.TestCase):
@@ -90,6 +97,11 @@ class SkillArchiveTests(unittest.TestCase):
 
     def test_a_bad_archive_is_set_aside_and_listing_goes_on(self):
         (server.USER_SKILLS_DIR / "broken.zip").write_bytes(b"not a zip")
+        locked = self.archive("locked.zip", [("locked-skill/SKILL.md", "x")])
+        with mock.patch.object(server, "_extract_skill_archive", side_effect=RuntimeError("File is encrypted")):
+            listing = asyncio.run(server.list_skills())
+        self.assertTrue((server.USER_SKILLS_DIR / "locked.zip.bad").exists())      # a password-protected zip
+        self.assertFalse(locked.exists())
         self.archive("ok.zip", [("ok-skill/SKILL.md", "---\nname: ok-skill\ndescription: Fine\n---\n")])
         listing = asyncio.run(server.list_skills())
         self.assertIn("ok-skill", listing)

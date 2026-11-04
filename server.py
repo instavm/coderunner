@@ -107,10 +107,12 @@ NAVIGATE_TIMEOUT_MS = 30_000
 MAX_PAGE_TEXT = 200_000       # characters returned from a page
 
 
-def public_url(url: str) -> str | None:
+def public_url(url: str, addresses: Optional[set[str]] = None) -> str | None:
     """Why a URL may not be opened by the browser tool, or None when it may: only http and https, and only
-    hosts that resolve to public addresses. The browser runs inside the sandbox, where loopback, link-local
-    (cloud metadata) and private addresses reach the Jupyter server, the host and the LAN."""
+    hosts whose every address is globally routable (no loopback, private, link-local, shared 100.64/10,
+    multicast or reserved address). The browser runs inside the sandbox, where those addresses reach the
+    Jupyter server, the host and the LAN. `addresses` are the host's resolved addresses when the caller already
+    has them; otherwise the host is resolved here (synchronously: callers on the event loop use checked_url)."""
     import ipaddress
     try:
         parsed = urlsplit(url)
@@ -121,16 +123,39 @@ def public_url(url: str) -> str | None:
     host = parsed.hostname
     if not host:
         return "the URL has no host"
-    try:
-        addresses = {info[4][0] for info in socket.getaddrinfo(host, parsed.port or 80, proto=socket.IPPROTO_TCP)}
-    except socket.gaierror:
-        return f"{host} does not resolve"
+    if addresses is None:
+        try:
+            addresses = resolve_host(host, parsed.port or 80)
+        except socket.gaierror:
+            return f"{host} does not resolve"
     for address in addresses:
         ip = ipaddress.ip_address(address.split("%")[0])
-        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast or ip.is_reserved \
-                or ip.is_unspecified:
+        if not ip.is_global or ip.is_multicast or ip.is_reserved:
             return f"{host} is not a public address"
     return None
+
+
+def resolve_host(host: str, port: int) -> set[str]:
+    return {info[4][0] for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)}
+
+
+RESOLVE_TIMEOUT = 10.0
+
+
+async def checked_url(url: str) -> str | None:
+    """public_url for the event loop: the DNS lookup runs in a thread and waits at most RESOLVE_TIMEOUT."""
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return public_url(url, addresses=set())
+    try:
+        addresses = await asyncio.wait_for(asyncio.to_thread(resolve_host, parsed.hostname, parsed.port or 80),
+                                           RESOLVE_TIMEOUT)
+    except socket.gaierror:
+        return f"{parsed.hostname} does not resolve"
+    except asyncio.TimeoutError:
+        return f"{parsed.hostname} took too long to resolve"
+    return public_url(url, addresses=addresses)
+
 
 # --- CUSTOM EXCEPTIONS ---
 
@@ -584,8 +609,8 @@ async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
             close_timeout=10
         ) as jupyter_ws:
             sent_msg_id, jupyter_request_json = create_jupyter_request(command)
+            sent = True              # a send that raises may still have reached the kernel
             await jupyter_ws.send(jupyter_request_json)
-            sent = True
             logger.info(f"Sent execute_request to kernel {kernel_id} (msg_id: {sent_msg_id})")
 
             execution_complete = False
@@ -728,14 +753,25 @@ async def navigate_and_get_all_visible_text(url: str) -> str:
     Args:
         url: The URL of the webpage from which to retrieve text.
     """
-    reason = public_url(url)
+    reason = await checked_url(url)
     if reason:
         return f"Error: {reason}"
+
+    async def only_public(route):
+        # Redirects, frames and subresources are requests of their own: each is checked like the first URL.
+        # The browser resolves the name again when it connects, so a name that changes its address between
+        # the check and the connection is not caught here.
+        if await checked_url(route.request.url):
+            await route.abort("blockedbyclient")
+        else:
+            await route.continue_()
+
     try:
         async with async_playwright() as p:
             browser = await p.chromium.connect(PLAYWRIGHT_WS_URL)
             try:
                 page = await browser.new_page()
+                await page.route("**/*", only_public)
                 await page.goto(url, timeout=NAVIGATE_TIMEOUT_MS, wait_until="domcontentloaded")
                 html_content = await page.content()
             finally:
@@ -831,7 +867,7 @@ async def list_skills() -> str:
                     try:
                         _extract_skill_archive(item)
                         os.remove(item)
-                    except (ValueError, zipfile.BadZipFile, OSError) as exc:
+                    except Exception as exc:        # unsafe paths, a bad or password-protected zip, disk errors
                         logger.warning(f"Skill archive {item.name} not unpacked: {exc}")
                         item.rename(item.with_suffix(".zip.bad"))
 
