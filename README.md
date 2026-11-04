@@ -17,17 +17,14 @@ For cloud managed VMs for agents, we have launched - [InstaVM - Instant computer
 
 **Prerequisites:** Mac with macOS and Apple Silicon (M1/M2/M3/M4), Python 3.10+
 
-This branch requires an operator-supplied `CODERUNNER_API_TOKEN` of at least 32
-bytes, without whitespace. Export it before running the installer and supply the
-same secret to each client as `Authorization: Bearer <token>`. Only `GET /health`
-and `HEAD /health` are public. Missing or weak server configuration fails closed.
-Do not put the credential in a URL or commit it. Desktop apps may need the
-environment variable configured explicitly rather than inheriting your shell.
+### Credentials
 
-These changes are local and unreleased: previously published images do not gain
-authentication automatically. The installer checks both anonymous rejection and
-authenticated access, and refuses a legacy image that ignores the credential.
-See [authentication and network boundaries](AUTHENTICATION.md) before testing.
+The installer generates the sandbox token in `~/.coderunner/api-token` (or saves
+the `CODERUNNER_API_TOKEN` you exported). Clients send it as
+`Authorization: Bearer <token>`; `cat ~/.coderunner/api-token` prints it. Only
+`GET /health` is public, and a missing or weak token fails closed. The Claude
+Desktop proxy and the examples read the token from that file when the variable
+is not set. See [authentication and network boundaries](AUTHENTICATION.md).
 
 ```bash
 git clone https://github.com/instavm/coderunner.git
@@ -85,6 +82,14 @@ CODERUNNER_NETWORK=none ./install.sh
 
 In this mode, the MCP server is available at `http://127.0.0.1:8222/mcp`. The setting is fixed when the container is created; the installer refuses to resume a container with a different network mode.
 
+
+### With Claude Code
+
+Claude Code runs commands on your machine, as you, with permission prompts as the only boundary. Pointing it at
+CodeRunner's tools instead runs the code it writes in the VM: it can only touch the folders you mounted under
+`/workspace`, the network you allowed, and the sandbox's own filesystem, whatever it was told to do. Use the
+sandbox for code that handles untrusted input or that you would not run by hand, and for several agents that
+must not share state (named sessions). It does not protect anything you mount read-write.
 
 ## Run Claude Code inside a Sandbox
 
@@ -147,7 +152,12 @@ pip install -r examples/requirements.txt
    - Restart Claude Desktop
 
 4. **Start using CodeRunner in Claude:**
-   You can now ask Claude to execute code, and it will run safely in the sandbox!
+   Code Claude writes now runs in the sandbox.
+
+   If the tool shows as "Disabled" in the chat's tool menu although the server is listed as running: quit Claude
+   Desktop fully (Cmd-Q) and open it again, make sure `command` is the venv python the installer printed (it
+   has `fastmcp`), and read `~/Library/Logs/Claude/mcp-server-coderunner.log` for the proxy's error. The proxy
+   needs the sandbox running (`container list`) and the token file `~/.coderunner/api-token`.
 </details>
 
 #### 2. Claude Code CLI

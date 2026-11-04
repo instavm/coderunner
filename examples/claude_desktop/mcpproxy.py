@@ -1,7 +1,23 @@
 
 import os
+import pathlib
 import socket
 import sys
+
+
+def api_token() -> str:
+    """The sandbox token: CODERUNNER_API_TOKEN, else the file the installer wrote."""
+    token = os.environ.get("CODERUNNER_API_TOKEN", "").strip()
+    if not token:
+        try:
+            token = pathlib.Path(os.environ.get("CODERUNNER_HOME", "~/.coderunner")).expanduser() \
+                .joinpath("api-token").read_text().strip()
+        except OSError:
+            pass
+    if not token:
+        print("No sandbox token: run ./install.sh, or export CODERUNNER_API_TOKEN.", file=sys.stderr)
+        sys.exit(1)
+    return token
 
 from fastmcp import FastMCP
 
@@ -29,7 +45,7 @@ config = {
     "mcpServers": {
         "default": {  # For single server configs, 'default' is commonly used
             "url": f"http://{address}:8222/mcp",
-            "headers": {"Authorization": "Bearer " + os.environ["CODERUNNER_API_TOKEN"]},
+            "headers": {"Authorization": "Bearer " + api_token()},
             "transport": "http"
         }
     }
