@@ -23,13 +23,24 @@ updates:
       - dependency-name: node
         update-types: ["version-update:semver-major"]
 
-  # requirements.txt is generated from requirements.in with uv pip compile.
-  - package-ecosystem: pip
-    directories: ["/", "/examples"]
+  # requirements.txt is generated from requirements.in with uv pip compile. The
+  # uv updater keeps the --universal and --python-version options from its header.
+  - package-ecosystem: uv
+    directory: /
     schedule:
       interval: weekly
     cooldown:
       default-days: 7
     groups:
       python:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /examples
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      examples:
         patterns: ["*"]
