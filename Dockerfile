@@ -3,7 +3,7 @@
 FROM node:22.23.4-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS node
 
 # Use the specified standard Python 3.13.3 base image (Debian-based)
-FROM python:3.13.3@sha256:0bc836167214f98aca9c9bca7b4c6dc2c2a77f4a29d5029e6561a14706335102
+FROM python:3.13.17@sha256:4732b037ed90bd6965ebdc6e6564895b01e6687943d1f5b99f651d073a5ac6c2
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE 1
