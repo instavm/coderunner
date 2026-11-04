@@ -44,6 +44,24 @@ To start over with a clean sandbox, delete the container and run the installer a
 container delete coderunner && ./install.sh
 ```
 
+### Resource limits and workspace mounts
+
+CPU and memory limits can be set with installer options or the `CODERUNNER_CPUS` and `CODERUNNER_MEMORY` environment variables:
+
+```bash
+./install.sh --cpus 4 --memory 8g
+```
+
+Additional host directories must be mounted under `/workspace`. They are read-only by default; add `:rw` only when the sandbox needs to write to the host:
+
+```bash
+./install.sh \
+  --mount "$HOME/projects/api:/workspace/api" \
+  --mount "$HOME/projects/output:/workspace/output:rw"
+```
+
+Extra mounts default to none. Resource and mount settings are fixed when the container is created; delete the container before changing them.
+
 ### Disable outbound network access
 
 By default, code running in the sandbox has unrestricted network access. To run it on a host-only network with no internet access:
