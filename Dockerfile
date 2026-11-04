@@ -1,5 +1,9 @@
+# Node.js for the sandbox, taken from the official image. Images are pinned by
+# digest; Dependabot keeps the digests current.
+FROM node:22.23.4-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS node
+
 # Use the specified standard Python 3.13.3 base image (Debian-based)
-FROM python:3.13.3
+FROM python:3.13.3@sha256:0bc836167214f98aca9c9bca7b4c6dc2c2a77f4a29d5029e6561a14706335102
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE 1
@@ -54,14 +58,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 
-# Upgrade pip
-RUN python -m pip install --no-cache-dir --upgrade pip
-
-# Copy requirements file
+# Copy requirements file (generated from requirements.in, every package pinned with hashes)
 COPY ./requirements.txt /app/requirements.txt
 
 # Install Python dependencies
-RUN pip install -r requirements.txt
+RUN pip install --require-hashes -r requirements.txt
 
 
 # Install the bash kernel spec for Jupyter (not working with uv)
@@ -98,14 +99,17 @@ EXPOSE 8222
 # CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "1", "--no-access-log"]
 
 # Ensure Node.js, npm (and npx) are set up
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-RUN apt-get update && apt-get install -y nodejs
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 
 
 ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-RUN npm install playwright@1.53.0 -g
-RUN npx playwright@1.53.0 install
+# Browsers for the Playwright version in requirements.txt. The same package runs
+# the Playwright server (entrypoint.sh), so client and server versions always match.
+RUN python -m playwright install
 
 # Copy the entrypoint script into the image
 COPY entrypoint.sh /entrypoint.sh
