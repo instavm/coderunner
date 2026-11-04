@@ -1,0 +1,84 @@
+
+duckdb
+
+# Core Jupyter Server
+jupyter-server
+
+# Bash Kernel for Jupyter
+bash_kernel
+
+
+# Web Framework
+fastapi
+
+
+# ASGI Server (with standard extras like websockets, httptools)
+uvicorn[standard]
+
+# WebSocket client library (explicitly needed by main.py)
+websockets
+
+# Async HTTP client (used by main.py to talk to Jupyter API)
+httpx
+
+# For FastAPI file uploads
+python-multipart
+
+# For async file operations in FastAPI uploads
+aiofiles
+
+openai
+
+requests>=2.33.0
+
+mcp[cli]>=1.26,<2
+
+fastmcp
+
+openai-agents
+
+playwright==1.53.0
+
+# Data Science Libraries
+pandas
+numpy
+scipy
+scikit-learn
+statsmodels
+
+# Visualization Libraries
+matplotlib
+seaborn
+
+# Image/Video I/O Libraries
+imageio
+imageio-ffmpeg
+
+# File Processing Libraries
+pyarrow
+openpyxl
+xlsxwriter
+xlrd
+pillow
+python-pptx
+python-docx
+pypdf
+pdfplumber
+pypdfium2
+pdf2image
+tabula-py
+reportlab[pycairo]
+img2pdf
+
+# Math & Computing Libraries
+sympy
+mpmath
+
+# Utilities
+tqdm
+python-dateutil
+pytz
+joblib
+
+# Beautiful Soup for HTML parsing (already used in server.py)
+beautifulsoup4
