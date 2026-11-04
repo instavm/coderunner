@@ -168,18 +168,21 @@ pip install -r examples/requirements.txt
 **Quick Start:**
 
 ```bash
-# 1. Install and start CodeRunner (one-time setup)
+# 1. Install and start CodeRunner (one-time setup; run as yourself, it asks for sudo when it needs it)
 git clone https://github.com/instavm/coderunner.git
 cd coderunner
-sudo ./install.sh
+./install.sh
 
-# 2. Install the Claude Code plugin
-claude plugin marketplace add https://github.com/instavm/coderunner-plugin
-claude plugin install instavm-coderunner
+# 2. Add the sandbox with its token (the installer prints this command)
+claude mcp add --transport http coderunner http://coderunner.local:8222/mcp \
+  --header "Authorization: Bearer $(cat ~/.coderunner/api-token)"
 
 # 3. Reconnect to MCP servers
 /mcp
 ```
+
+The Claude Code plugin (`claude plugin marketplace add https://github.com/instavm/coderunner-plugin`) predates
+the token and gets 401 until it sends the same header; use the command above until the plugin is updated.
 
 **Installation Steps:**
 
@@ -227,6 +230,7 @@ Create or edit `~/.config/opencode/opencode.json`:
     "coderunner": {
       "type": "remote",
       "url": "http://coderunner.local:8222/mcp",
+      "headers": { "Authorization": "Bearer <contents of ~/.coderunner/api-token>" },
       "enabled": true
     }
   }
@@ -272,7 +276,8 @@ After saving the configuration:
   "selectedAuthType": "oauth-personal",
   "mcpServers": {
     "coderunner": {
-      "httpUrl": "http://coderunner.local:8222/mcp"
+      "httpUrl": "http://coderunner.local:8222/mcp",
+      "headers": { "Authorization": "Bearer <contents of ~/.coderunner/api-token>" }
     }
   }
 }

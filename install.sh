@@ -1,6 +1,12 @@
 #!/bin/bash
 set -u
 
+# Run as yourself: under sudo, HOME is root's, so the token, the venv and the assets would land in /var/root and
+# the clients run as you would never find them. The steps that need root ask for sudo themselves.
+if [ "$(id -u)" = "0" ]; then
+    echo "❌ Run ./install.sh as your own user, not with sudo." >&2
+    exit 1
+fi
 CODERUNNER_HOME="${CODERUNNER_HOME:-$HOME/.coderunner}"
 
 # The sandbox credential: created once and kept in a 0600 file for the clients on this Mac. An exported
@@ -178,14 +184,16 @@ else
   echo "✅ macOS system detected."
 fi
 
-# Check if container is installed and display its version
+# Install Apple 'container' when it is missing or older than the version this installer was tested with; a
+# newer one is kept (replacing 1.5 with 1.2 would be a downgrade, with sudo).
+version_at_least() {
+    [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
+}
 if command -v container &> /dev/null
 then
-    echo "Apple 'container' tool detected. Current version:"
-    container --version
     current_version=$(container --version | awk '{print $4}')
-    echo $current_version
-    if [ "$current_version" != "$CONTAINER_VERSION" ]; then
+    echo "Apple 'container' $current_version detected."
+    if ! version_at_least "$current_version" "$CONTAINER_VERSION"; then
         echo "Updating Apple 'container' to version $CONTAINER_VERSION..."
         install_container_tool
     fi
@@ -339,7 +347,10 @@ wait_for_server() {
                 return 1
             fi
             echo "✅ Setup complete. MCP server: http://$MCP_HOST:8222/mcp"
-            echo "   Clients send: Authorization: Bearer \$(cat $CODERUNNER_HOME/api-token)"
+            echo "   Every client sends the token in $CODERUNNER_HOME/api-token. For Claude Code:"
+            echo "   claude mcp add --transport http coderunner http://$MCP_HOST:8222/mcp \\"
+            echo "     --header \"Authorization: Bearer \$(cat $CODERUNNER_HOME/api-token)\""
+            echo "   Other clients: see README.md (Claude Desktop uses the proxy, which reads the file itself)."
             return 0
         fi
         sleep 2
