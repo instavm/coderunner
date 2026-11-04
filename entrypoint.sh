@@ -45,7 +45,7 @@ echo "$kernel_id" > /app/uploads/python_kernel_id.txt
 
 # Playwright is used exclusively by server.py inside this container, so it
 # must only listen on loopback.
-node /usr/lib/node_modules/playwright/cli.js run-server --port 3000 --host 127.0.0.1 &
+python -m playwright run-server --port 3000 --host 127.0.0.1 &
 
 # Start FastAPI application
 exec uvicorn server:app --host 0.0.0.0 --port 8222 --workers 1 --no-access-log

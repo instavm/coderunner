@@ -25,6 +25,11 @@ check() {
     fi
 }
 
+# Prints one field of a JSON response
+field() {
+    python3 -c 'import json,sys; print(str(json.loads(sys.argv[1])[sys.argv[2]]).strip())' "$1" "$2"
+}
+
 echo "Testing CodeRunner at $BASE"
 echo
 
@@ -41,16 +46,15 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: evil.example" "$BASE/hea
 check "foreign Host is rejected" "403" "$code"
 
 # 4. Code execution via the REST API
-out=$(curl -s -X POST "$BASE/execute" -H "Content-Type: application/json" \
-    -d '{"code": "print(6 * 7)"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout"].strip())')
-check "python execution works" "42" "$out"
+resp=$(curl -s -X POST "$BASE/execute" -H "Content-Type: application/json" \
+    -d '{"code": "print(6 * 7)"}')
+check "python execution works" "42" "$(field "$resp" stdout)"
 
 # 5. Browser navigation works when outbound networking is enabled
 if [ -z "${EGRESS_BLOCKED:-}" ]; then
-    out=$(curl -s -X POST "$BASE/v1/browser/interactions/navigate" \
-        -H "Content-Type: application/json" -d '{"url":"https://pypi.org"}' \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')
-    check "browser navigation works" "success" "$out"
+    resp=$(curl -s -X POST "$BASE/v1/browser/interactions/navigate" \
+        -H "Content-Type: application/json" -d '{"url":"https://pypi.org"}')
+    check "browser navigation works" "success" "$(field "$resp" status)"
 fi
 
 # 6. MCP endpoint accepts an initialize request
@@ -119,15 +123,13 @@ check "playwright is not exposed" "000" "$code"
 
 # Optional offline-network checks
 if [ -n "${EGRESS_BLOCKED:-}" ]; then
-    out=$(curl -s -X POST "$BASE/execute" -H "Content-Type: application/json" \
-        -d '{"code": "import urllib.request\ntry:\n    urllib.request.urlopen(\"https://example.com\", timeout=10)\n    print(\"reachable\")\nexcept Exception:\n    print(\"blocked\")"}' \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout"].strip())')
-    check "disallowed domain is blocked" "blocked" "$out"
+    resp=$(curl -s -X POST "$BASE/execute" -H "Content-Type: application/json" \
+        -d '{"code": "import urllib.request\ntry:\n    urllib.request.urlopen(\"https://example.com\", timeout=10)\n    print(\"reachable\")\nexcept Exception:\n    print(\"blocked\")"}')
+    check "disallowed domain is blocked" "blocked" "$(field "$resp" stdout)"
 
-    out=$(curl -s -X POST "$BASE/execute" -H "Content-Type: application/json" \
-        -d '{"code": "import socket\ntry:\n    socket.gethostbyname(\"example.com\")\n    print(\"reachable\")\nexcept OSError:\n    print(\"blocked\")"}' \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout"].strip())')
-    check "external DNS is unavailable" "blocked" "$out"
+    resp=$(curl -s -X POST "$BASE/execute" -H "Content-Type: application/json" \
+        -d '{"code": "import socket\ntry:\n    socket.gethostbyname(\"example.com\")\n    print(\"reachable\")\nexcept OSError:\n    print(\"blocked\")"}')
+    check "external DNS is unavailable" "blocked" "$(field "$resp" stdout)"
 fi
 
 echo
