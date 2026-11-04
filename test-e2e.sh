@@ -10,6 +10,9 @@ set -u
 
 HOST="${1:-coderunner.local}"
 BASE="http://$HOST:8222"
+TOKEN="${CODERUNNER_API_TOKEN:-$(tr -d '[:space:]' < "${CODERUNNER_HOME:-$HOME/.coderunner}/api-token" 2>/dev/null)}"
+# Every request below carries the sandbox token.
+curl() { command curl -H "Authorization: Bearer $TOKEN" "$@"; }
 SKILLS_DIR="${SKILLS_DIR:-$HOME/.coderunner/assets/skills/user}"
 PASS=0
 FAIL=0
@@ -44,6 +47,11 @@ check "foreign Origin is rejected" "403" "$code"
 # 3. Requests with a foreign Host header are rejected
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: evil.example" "$BASE/health")
 check "foreign Host is rejected" "403" "$code"
+
+# 3b. A wrong token is refused
+code=$(command curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/execute" \
+    -H "Authorization: Bearer wrong-token" -H "Content-Type: application/json" -d '{"code": "print(1)"}')
+check "wrong token is rejected" "401" "$code"
 
 # 4. Code execution via the REST API
 resp=$(curl -s -X POST "$BASE/execute" -H "Content-Type: application/json" \

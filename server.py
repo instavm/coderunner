@@ -1,7 +1,5 @@
 # --- IMPORTS ---
 import asyncio
-import base64
-import binascii
 import json
 import logging
 import os
@@ -29,6 +27,7 @@ from bs4 import BeautifulSoup
 import socket
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from auth import BearerAuthentication
 # --- CONFIGURATION & SETUP ---
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -74,8 +73,8 @@ MAX_RETRY_ATTEMPTS = 3
 RETRY_BACKOFF_BASE = 2  # exponential backoff base
 
 # Jupyter connection settings
-JUPYTER_WS_URL = "ws://127.0.0.1:8888"
-JUPYTER_HTTP_URL = "http://127.0.0.1:8888"
+JUPYTER_HTTP_URL = os.environ.get("CODERUNNER_JUPYTER_URL", "http://127.0.0.1:8888").rstrip("/")
+JUPYTER_WS_URL = "ws" + JUPYTER_HTTP_URL[len("http"):]
 
 # Enhanced WebSocket settings
 WEBSOCKET_TIMEOUT = 600  # 10 minutes for long operations
@@ -84,8 +83,11 @@ WEBSOCKET_PING_TIMEOUT = 10
 
 # Directory configuration (ensure this matches your Jupyter/Docker setup)
 # This directory must be accessible by both this script and the Jupyter kernel.
-SHARED_DIR = pathlib.Path("/app/uploads")
-SHARED_DIR.mkdir(exist_ok=True)
+SHARED_DIR = pathlib.Path(os.environ.get("CODERUNNER_SHARED_DIR", "/app/uploads"))
+try:
+    SHARED_DIR.mkdir(parents=True, exist_ok=True)
+except OSError as exc:            # outside the image (tests): the directory is not needed to import
+    logger.warning(f"Could not create {SHARED_DIR}: {exc}")
 KERNEL_ID_FILE_PATH = SHARED_DIR / "python_kernel_id.txt"
 
 # Skills directory configuration
@@ -100,7 +102,60 @@ def resolve_with_system_dns(hostname):
         print(f"Error resolving {hostname}: {e}")
         return None
 
-PLAYWRIGHT_WS_URL =f"ws://127.0.0.1:3000/"
+PLAYWRIGHT_WS_URL = "ws://127.0.0.1:3000/"
+NAVIGATE_TIMEOUT_MS = 30_000
+MAX_PAGE_TEXT = 200_000       # characters returned from a page
+
+
+def public_url(url: str, addresses: Optional[set[str]] = None) -> str | None:
+    """Why a URL may not be opened by the browser tool, or None when it may: only http and https, and only
+    hosts whose every address is globally routable (no loopback, private, link-local, shared 100.64/10,
+    multicast or reserved address). The browser runs inside the sandbox, where those addresses reach the
+    Jupyter server, the host and the LAN. `addresses` are the host's resolved addresses when the caller already
+    has them; otherwise the host is resolved here (synchronously: callers on the event loop use checked_url)."""
+    import ipaddress
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return "not a valid URL"
+    if parsed.scheme not in ("http", "https"):
+        return "only http and https URLs can be opened"
+    host = parsed.hostname
+    if not host:
+        return "the URL has no host"
+    if addresses is None:
+        try:
+            addresses = resolve_host(host, parsed.port or 80)
+        except socket.gaierror:
+            return f"{host} does not resolve"
+    for address in addresses:
+        ip = ipaddress.ip_address(address.split("%")[0])
+        if not ip.is_global or ip.is_multicast or ip.is_reserved:
+            return f"{host} is not a public address"
+    return None
+
+
+def resolve_host(host: str, port: int) -> set[str]:
+    return {info[4][0] for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)}
+
+
+RESOLVE_TIMEOUT = 10.0
+
+
+async def checked_url(url: str) -> str | None:
+    """public_url for the event loop: the DNS lookup runs in a thread and waits at most RESOLVE_TIMEOUT."""
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return public_url(url, addresses=set())
+    try:
+        addresses = await asyncio.wait_for(asyncio.to_thread(resolve_host, parsed.hostname, parsed.port or 80),
+                                           RESOLVE_TIMEOUT)
+    except socket.gaierror:
+        return f"{parsed.hostname} does not resolve"
+    except asyncio.TimeoutError:
+        return f"{parsed.hostname} took too long to resolve"
+    return public_url(url, addresses=addresses)
+
 
 # --- CUSTOM EXCEPTIONS ---
 
@@ -118,6 +173,10 @@ class KernelExecutionError(KernelError):
 
 class KernelTimeoutError(KernelError):
     """Raised when kernel operation times out"""
+    pass
+
+class KernelConnectError(KernelError):
+    """Raised when the kernel could not be reached before the code was sent (safe to retry)"""
     pass
 
 class SessionConflictError(ValueError):
@@ -247,7 +306,7 @@ class KernelPool:
     async def _get_existing_kernel(self) -> Optional[str]:
         """Try to get kernel ID from existing file"""
         try:
-            async with aiofiles.open(KERNEL_ID_FILE_PATH, mode='r') as f:
+            async with aiofiles.open(KERNEL_ID_FILE_PATH) as f:
                 kernel_id = (await f.read()).strip()
                 if kernel_id and await self._check_kernel_health(kernel_id):
                     return kernel_id
@@ -497,7 +556,9 @@ def create_jupyter_request(code: str) -> tuple[str, str]:
 # --- ENHANCED EXECUTION WITH RETRY LOGIC ---
 
 async def execute_with_retry(command: str, ctx: Context, max_attempts: int = MAX_RETRY_ATTEMPTS) -> str:
-    """Execute code with retry logic and exponential backoff"""
+    """Execute code, trying another kernel when one cannot be reached. Code that was sent to a kernel is
+    never sent again: a connection lost during a run, or a run that timed out, is reported as an error, since
+    the code may have had side effects (files written, requests made) that a second run would repeat."""
     last_error = None
 
     for attempt in range(max_attempts):
@@ -515,11 +576,14 @@ async def execute_with_retry(command: str, ctx: Context, max_attempts: int = MAX
             except KernelExecutionError as e:
                 await kernel_pool.release_kernel(kernel_id)
                 return f"Error: {e}"
-            except Exception as e:
+            except KernelConnectError as e:
                 await kernel_pool.discard_kernel(kernel_id)
                 raise e
+            except Exception as e:
+                await kernel_pool.discard_kernel(kernel_id)
+                return f"Error: {e} (the code was sent and is not run again; check its effects before retrying)"
 
-        except Exception as e:
+        except (NoKernelAvailableError, KernelConnectError) as e:
             last_error = e
             if attempt < max_attempts - 1:
                 backoff_time = RETRY_BACKOFF_BASE ** attempt
@@ -536,8 +600,8 @@ async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
     final_output_lines = []
     sent_msg_id = None
 
+    sent = False          # once the code is sent, a failure must not lead to a second run
     try:
-        # Enhanced WebSocket connection with longer timeouts
         async with websockets.connect(
             jupyter_ws_url,
             ping_interval=WEBSOCKET_PING_INTERVAL,
@@ -545,6 +609,7 @@ async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
             close_timeout=10
         ) as jupyter_ws:
             sent_msg_id, jupyter_request_json = create_jupyter_request(command)
+            sent = True              # a send that raises may still have reached the kernel
             await jupyter_ws.send(jupyter_request_json)
             logger.info(f"Sent execute_request to kernel {kernel_id} (msg_id: {sent_msg_id})")
 
@@ -614,17 +679,19 @@ async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
 
             return "".join(final_output_lines) if final_output_lines else "[Execution successful with no output]"
 
-    except websockets.exceptions.ConnectionClosed as e:
-        error_msg = f"WebSocket connection to kernel {kernel_id} closed unexpectedly: {e}"
-        logger.error(error_msg)
-        raise KernelError(error_msg)
-    except websockets.exceptions.WebSocketException as e:
-        error_msg = f"WebSocket error with kernel {kernel_id}: {e}"
-        logger.error(error_msg)
-        raise KernelError(error_msg)
+    except (KernelExecutionError, KernelTimeoutError):
+        raise
     except Exception as e:
-        logger.error(f"Unexpected error during execution on kernel {kernel_id}: {e}", exc_info=True)
-        raise e
+        if not sent:                 # nothing reached the kernel: another one can take the code
+            raise KernelConnectError(f"Could not connect to kernel {kernel_id}: {e}") from e
+        if isinstance(e, websockets.exceptions.ConnectionClosed):
+            error_msg = f"WebSocket connection to kernel {kernel_id} closed unexpectedly: {e}"
+        elif isinstance(e, websockets.exceptions.WebSocketException):
+            error_msg = f"WebSocket error with kernel {kernel_id}: {e}"
+        else:
+            error_msg = f"Unexpected error during execution on kernel {kernel_id}: {e}"
+        logger.error(error_msg, exc_info=not isinstance(e, websockets.exceptions.WebSocketException))
+        raise KernelError(error_msg) from e
 
 # --- MCP TOOLS ---
 @mcp.tool()
@@ -686,28 +753,36 @@ async def navigate_and_get_all_visible_text(url: str) -> str:
     Args:
         url: The URL of the webpage from which to retrieve text.
     """
-    # This function doesn't have intermediate steps, so it only needs 'return'.
+    reason = await checked_url(url)
+    if reason:
+        return f"Error: {reason}"
+
+    async def only_public(route):
+        # Redirects, frames and subresources are requests of their own: each is checked like the first URL.
+        # The browser resolves the name again when it connects, so a name that changes its address between
+        # the check and the connection is not caught here.
+        if await checked_url(route.request.url):
+            await route.abort("blockedbyclient")
+        else:
+            await route.continue_()
+
     try:
-        # Note: 'async with async_playwright() as p:' can be slow.
-        # For performance, consider managing a single Playwright instance
-        # outside the tool function if this tool is called frequently.
         async with async_playwright() as p:
             browser = await p.chromium.connect(PLAYWRIGHT_WS_URL)
-            page = await browser.new_page()
-            await page.goto(url)
-
-            html_content = await page.content()
-            soup = BeautifulSoup(html_content, 'html.parser')
-            visible_text = soup.get_text(separator="\n", strip=True)
-
-            await browser.close()
-
-            # The operation is complete, return the final result.
-            return visible_text
-
+            try:
+                page = await browser.new_page()
+                await page.route("**/*", only_public)
+                await page.goto(url, timeout=NAVIGATE_TIMEOUT_MS, wait_until="domcontentloaded")
+                html_content = await page.content()
+            finally:
+                await browser.close()
+        soup = BeautifulSoup(html_content, 'html.parser')
+        visible_text = soup.get_text(separator="\n", strip=True)
+        if len(visible_text) > MAX_PAGE_TEXT:
+            visible_text = visible_text[:MAX_PAGE_TEXT] + "\n[... cut after 200,000 characters]"
+        return visible_text
     except Exception as e:
         logger.error(f"Failed to retrieve all visible text: {e}")
-        # An error occurred, return the final error message.
         return f"Error: Failed to retrieve all visible text: {str(e)}"
 
 
@@ -716,7 +791,7 @@ async def navigate_and_get_all_visible_text(url: str) -> str:
 
 async def _parse_skill_frontmatter(skill_md_path):
     try:
-        async with aiofiles.open(skill_md_path, mode='r') as f:
+        async with aiofiles.open(skill_md_path) as f:
             content = await f.read()
             frontmatter = []
             in_frontmatter = False
@@ -740,10 +815,16 @@ async def _parse_skill_frontmatter(skill_md_path):
         return {}
 
 
+MAX_SKILL_ARCHIVE_BYTES = 200 * 1024 * 1024     # uncompressed
+
+
 def _extract_skill_archive(archive_path: pathlib.Path) -> None:
     destination = USER_SKILLS_DIR.resolve()
     with zipfile.ZipFile(archive_path, "r") as archive:
-        for member in archive.infolist():
+        members = archive.infolist()
+        if sum(member.file_size for member in members) > MAX_SKILL_ARCHIVE_BYTES:
+            raise ValueError("Skill archive is too large when unpacked (200 MB at most)")
+        for member in members:
             target = (destination / member.filename).resolve()
             if not target.is_relative_to(destination):
                 raise ValueError(f"Unsafe path in skill archive: {member.filename}")
@@ -778,12 +859,17 @@ async def list_skills() -> str:
         JSON string with skill names organized by category.
     """
     try:
-        # Unzip any user-provided skills
+        # Unzip any user-provided skills. A bad archive is set aside (.zip.bad) so it does not stop the
+        # listing on every call.
         if USER_SKILLS_DIR.exists():
             for item in USER_SKILLS_DIR.iterdir():
                 if item.is_file() and item.suffix == '.zip':
-                    _extract_skill_archive(item)
-                    os.remove(item)
+                    try:
+                        _extract_skill_archive(item)
+                        os.remove(item)
+                    except Exception as exc:        # unsafe paths, a bad or password-protected zip, disk errors
+                        logger.warning(f"Skill archive {item.name} not unpacked: {exc}")
+                        item.rename(item.with_suffix(".zip.bad"))
 
         skills = {
             "public": [],
@@ -810,7 +896,7 @@ async def list_skills() -> str:
         skills["public"].sort(key=lambda x: x['name'])
         skills["user"].sort(key=lambda x: x['name'])
 
-        result = f"Available Skills:\n\n"
+        result = "Available Skills:\n\n"
         result += f"Public Skills ({len(skills['public'])}):\n"
         if skills["public"]:
             for skill in skills["public"]:
@@ -825,7 +911,7 @@ async def list_skills() -> str:
         else:
             result += "  (none)\n"
 
-        result += f"\nUse get_skill_info(skill_name) to read documentation for a specific skill."
+        result += "\nUse get_skill_info(skill_name) to read documentation for a specific skill."
 
         return result
 
@@ -856,7 +942,7 @@ async def _read_skill_file(skill_name: str, filename: str) -> tuple[str, str, st
         for base_dir, category in ((PUBLIC_SKILLS_DIR, "public"), (USER_SKILLS_DIR, "user")):
             candidate = (base_dir / skill_name / filename).resolve()
             if not candidate.is_relative_to(base_dir.resolve()):
-                return None, None, f"Error: Invalid skill or file name."
+                return None, None, "Error: Invalid skill or file name."
             if candidate.is_file():
                 skill_file_path = candidate
                 skill_type = category
@@ -866,7 +952,7 @@ async def _read_skill_file(skill_name: str, filename: str) -> tuple[str, str, st
             return None, None, f"Error: File '{filename}' not found in skill '{skill_name}'. Use list_skills() to see available skills."
 
         # Read the file content
-        async with aiofiles.open(skill_file_path, mode='r') as f:
+        async with aiofiles.open(skill_file_path) as f:
             content = await f.read()
 
         # Replace all occurrences of /mnt/user-data with /app/uploads
@@ -962,7 +1048,7 @@ def _header_hostname(value: str, *, origin: bool = False) -> Optional[str]:
             return None
         if parsed.path or parsed.query or parsed.fragment:
             return None
-        parsed.port
+        _ = parsed.port                       # raises ValueError for a malformed port
         return parsed.hostname.lower() if parsed.hostname else None
     except ValueError:
         return None
@@ -994,8 +1080,17 @@ class HostOriginValidator:
 
 
 async def api_health(request: Request):
-    """Liveness endpoint used by the installer and container healthchecks."""
-    return JSONResponse({"status": "ok"})
+    """Liveness for the installer and the container healthcheck: 200 only when the Jupyter server that runs
+    the kernels answers too, so a sandbox whose kernels cannot start is not reported healthy."""
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(f"{JUPYTER_HTTP_URL}/api/status")
+        jupyter = response.status_code == 200
+    except httpx.HTTPError:
+        jupyter = False
+    body = {"status": "ok" if jupyter else "degraded", "jupyter": jupyter,
+            "kernels": len(kernel_pool.kernels), "sessions": len(python_sessions.sessions)}
+    return JSONResponse(body, status_code=200 if jupyter else 503)
 
 # Add custom REST API endpoints compatible with instavm SDK client
 async def api_execute(request: Request):
@@ -1242,4 +1337,4 @@ app.add_route("/v1/browser/interactions/navigate", api_browser_navigate, methods
 app.add_route("/v1/browser/interactions/content", api_browser_extract_content, methods=["POST"])
 
 # Wrap the app last so validation covers every route
-app = HostOriginValidator(app)
+app = HostOriginValidator(BearerAuthentication(app))

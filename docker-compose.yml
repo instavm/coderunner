@@ -5,12 +5,13 @@ services:
     image: instavm/coderunner:docker-latest
     container_name: coderunner
     ports:
-      - "8222:8222"
+      - "127.0.0.1:8222:8222"
     volumes:
       - ./uploads:/app/uploads
     environment:
       - FASTMCP_HOST=0.0.0.0
       - FASTMCP_PORT=8222
+      - CODERUNNER_API_TOKEN=${CODERUNNER_API_TOKEN:?Supply an API token of at least 32 bytes}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8222/health"]
