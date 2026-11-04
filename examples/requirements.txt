@@ -1,2 +1,2 @@
-fastmcp==3.4.11
+fastmcp==4.1.4
 openai-agents
