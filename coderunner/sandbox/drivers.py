@@ -59,6 +59,17 @@ class Driver:
     def stop(self) -> bool:
         return False
 
+    def delete(self) -> bool:
+        """Remove the sandbox and its filesystem; the installer creates it again."""
+        return False
+
+    def exec_argv(self, command: list[str], tty: bool) -> list[str] | None:
+        """The command line that runs `command` inside the sandbox, or None without one."""
+        return None
+
+    def logs_argv(self, follow: bool) -> list[str] | None:
+        return None
+
     def gateway_address(self) -> str:
         """Host address the sandbox uses to reach the gateway."""
         return "127.0.0.1"
@@ -96,15 +107,32 @@ class AppleDriver(Driver):
     def _service_running(self) -> bool:
         return _run(["container", "system", "status"], timeout=20).returncode == 0
 
+    def _ensure_service(self) -> bool:
+        return self._service_running() or _run(
+            ["container", "system", "start", "--disable-kernel-install", "--timeout", "60"],
+            timeout=90).returncode == 0
+
     def start(self) -> bool:
-        if not self._service_running() and _run(
-                ["container", "system", "start", "--disable-kernel-install", "--timeout", "60"],
-                timeout=90).returncode != 0:
+        if not self._ensure_service():
             return False
         return _run(["container", "start", self.container], timeout=180).returncode == 0
 
     def stop(self) -> bool:
         return _run(["container", "stop", self.container], timeout=120).returncode == 0
+
+    def delete(self) -> bool:
+        # With the service stopped (after a restart) nothing can be deleted, nor told apart from missing.
+        if not self._ensure_service():
+            return False
+        if _run(["container", "inspect", self.container]).returncode != 0:
+            return True
+        return _run(["container", "delete", "--force", self.container], timeout=120).returncode == 0
+
+    def exec_argv(self, command: list[str], tty: bool) -> list[str]:
+        return ["container", "exec", "-it" if tty else "-i", self.container, *command]
+
+    def logs_argv(self, follow: bool) -> list[str]:
+        return ["container", "logs", *(["--follow"] if follow else []), self.container]
 
     def network(self) -> str:
         info = self._inspect() or {}
@@ -143,6 +171,15 @@ class DockerDriver(Driver):
 
     def stop(self) -> bool:
         return _run(["docker", "stop", self.container], timeout=120).returncode == 0
+
+    def delete(self) -> bool:
+        return _run(["docker", "rm", "--force", self.container], timeout=120).returncode == 0
+
+    def exec_argv(self, command: list[str], tty: bool) -> list[str]:
+        return ["docker", "exec", "-it" if tty else "-i", self.container, *command]
+
+    def logs_argv(self, follow: bool) -> list[str]:
+        return ["docker", "logs", *(["--follow"] if follow else []), self.container]
 
     def gateway_address(self) -> str:
         # Docker Desktop (macOS/Windows) routes host.docker.internal to host

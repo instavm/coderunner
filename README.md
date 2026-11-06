@@ -46,23 +46,11 @@ use `./install.sh --build` until an authenticated image is published. See
 
 ### Stop and resume
 
-Stop the sandbox when you are done:
-
 ```bash
-container stop coderunner
-```
-
-Resume the same sandbox later, preserving its filesystem. Python kernel state is
-volatile and does not survive a VM or server restart:
-
-```bash
-container start coderunner
-```
-
-To start over with a clean sandbox, delete the container and run the installer again:
-
-```bash
-container delete coderunner && ./install.sh
+coderunner sandbox stop        # stop; the filesystem is kept (Python kernel state is not)
+coderunner sandbox start       # resume
+coderunner sandbox reset       # delete it and its filesystem, then run the installer again
+coderunner sandbox logs -f     # follow its logs; `status` shows whether it is running
 ```
 
 ### Resource limits and workspace mounts
@@ -81,7 +69,7 @@ Additional host directories must be mounted under `/workspace`. They are read-on
   --mount "$HOME/projects/output:/workspace/output:rw"
 ```
 
-Extra mounts default to none. Resource and mount settings are fixed when the container is created; delete the container before changing them.
+Extra mounts default to none. Resource and mount settings are fixed when the sandbox is created; change them with `coderunner sandbox reset --cpus 4 --memory 8g --mount ...`, which takes the same options.
 
 ### Network modes
 
@@ -92,14 +80,14 @@ By default, code running in the sandbox has unrestricted network access. Two str
 ./install.sh --network none    # no network at all
 ```
 
-In `proxy` mode package registries (PyPI, npm, GitHub, Hugging Face) are allowed by default and every other host becomes an approval request; LAN, loopback and tailnet addresses are refused. In both modes the MCP server is available at `http://127.0.0.1:8222/mcp`. The setting is fixed when the container is created; the installer refuses to resume a container with a different network mode. These modes currently need Apple `container` on macOS. `CODERUNNER_NETWORK` still works as an alternative to `--network`.
+In `proxy` mode package registries (PyPI, npm, GitHub, Hugging Face) are allowed by default and every other host becomes an approval request; LAN, loopback and tailnet addresses are refused. In both modes the MCP server is available at `http://127.0.0.1:8222/mcp`. The setting is fixed when the sandbox is created; `coderunner sandbox reset --network ...` changes it. These modes currently need Apple `container` on macOS. `CODERUNNER_NETWORK` still works as an alternative to `--network`.
 
 
 ## Run Claude Code inside a Sandbox
 
 `./install.sh` (if not already done)
 
-`container exec -it coderunner /bin/bash`
+`coderunner sandbox shell`
 
 `root@coderunner:/app# npm install -g @anthropic-ai/claude-code`
 

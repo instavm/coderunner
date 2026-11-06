@@ -51,5 +51,87 @@ class AppleDriverTests(unittest.TestCase):
             self.assertEqual(driver.status(), "running")
 
 
+
+
+
+class FakeDriver:
+    name = "apple"
+
+    def __init__(self, state="running"):
+        self.state, self.deleted, self.stopped = state, False, False
+
+    def status(self):
+        return self.state
+
+    def stop(self):
+        self.stopped = True
+        return True
+
+    def delete(self):
+        self.deleted = True
+        return True
+
+    def exec_argv(self, command, tty):
+        return drivers.AppleDriver(Config({})).exec_argv(command, tty)
+
+    def logs_argv(self, follow):
+        return drivers.AppleDriver(Config({})).logs_argv(follow)
+
+
+class SandboxCommandTests(unittest.TestCase):
+    """`coderunner sandbox` covers what the README used to do with `container` commands, on either runtime."""
+
+    def run_cli(self, argv, driver, **patches):
+        import contextlib
+        import io
+        import os
+        import shutil
+        import tempfile
+
+        from coderunner import cli
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"CODERUNNER_HOME": tmp}), \
+                mock.patch("coderunner.sandbox.driver_for", return_value=driver), contextlib.redirect_stdout(out):
+            with contextlib.ExitStack() as stack:
+                mocks = {name: stack.enter_context(mock.patch(target, **kw)) for name, (target, kw) in patches.items()}
+                return cli.main(argv), out.getvalue(), mocks
+
+    def test_exec_and_logs_use_the_runtime_command(self):
+        apple, docker = drivers.AppleDriver(Config({})), drivers.DockerDriver(Config({}))
+        self.assertEqual(apple.exec_argv(["/bin/bash"], tty=True), ["container", "exec", "-it", "coderunner", "/bin/bash"])
+        self.assertEqual(docker.exec_argv(["ls"], tty=False), ["docker", "exec", "-i", "coderunner", "ls"])
+        self.assertEqual(docker.logs_argv(follow=True), ["docker", "logs", "--follow", "coderunner"])
+        cli = FakeContainerCLI(service=False)
+        with mock.patch.object(drivers, "_run", cli):
+            self.assertTrue(apple.delete())                     # starts the service first, or delete cannot run
+        self.assertEqual(cli.calls[1][:3], ["container", "system", "start"])
+        self.assertEqual(cli.calls[-1], ["container", "delete", "--force", "coderunner"])
+
+    def test_shell_replaces_the_process_with_exec(self):
+        code, _, mocks = self.run_cli(["sandbox", "shell", "python3", "-V"], FakeDriver(),
+                                      execvp=("os.execvp", {}))
+        mocks["execvp"].assert_called_once()
+        self.assertEqual(mocks["execvp"].call_args.args[1][-2:], ["python3", "-V"])
+
+    def test_a_missing_sandbox_points_to_the_installer(self):
+        code, out, _ = self.run_cli(["sandbox", "stop"], FakeDriver("missing"))
+        self.assertEqual(code, 1)
+        self.assertIn("./install.sh", out)
+
+    def test_reset_asks_then_deletes_and_runs_the_installer_with_the_options(self):
+        driver = FakeDriver("stopped")
+        code, out, _ = self.run_cli(["sandbox", "reset"], driver, ask=("builtins.input", {"return_value": "n"}))
+        self.assertEqual((code, driver.deleted), (1, False))
+        code, _, mocks = self.run_cli(["sandbox", "reset", "--yes", "--cpus", "4", "--mount", "/a:/workspace/a"],
+                                      driver, call=("subprocess.call", {"return_value": 0}))
+        self.assertEqual(code, 0)
+        self.assertTrue(driver.deleted)
+        argv = mocks["call"].call_args.args[0]
+        self.assertTrue(argv[0].endswith("install.sh"))
+        self.assertEqual(argv[1:], ["--cpus", "4", "--mount", "/a:/workspace/a"])
+
+
 if __name__ == "__main__":
     unittest.main()

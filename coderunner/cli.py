@@ -6,6 +6,7 @@ import argparse
 import getpass
 import json
 import os
+import pathlib
 import signal
 import subprocess
 import sys
@@ -88,7 +89,7 @@ def cmd_up(args, config: Config) -> int:
         print(f"Starting sandbox ({driver.name})…")
         driver.start()
     elif state == "missing":
-        print("No sandbox container yet. Run ./install.sh first.")
+        print(NO_SANDBOX)
     if _daemon_up(config):
         print("Daemon already running.")
         return 0
@@ -130,6 +131,68 @@ def cmd_down(args, config: Config) -> int:
         driver_for(config).stop()
     print("Stopped.")
     return 0
+
+
+NO_SANDBOX = "No sandbox is installed. Run ./install.sh to create one."
+
+
+def cmd_sandbox(args, config: Config) -> int:
+    """The sandbox VM's lifecycle, the same on Apple `container` and Docker."""
+    from .sandbox import driver_for
+    driver = driver_for(config)
+    state = driver.status()
+    if state == "unavailable":
+        print("No sandbox runtime here (Apple `container` on macOS, Docker elsewhere).")
+        return 1
+    if args.action == "status":
+        print(f"{state} ({driver.name})")
+        return 0
+    if state == "missing" and args.action != "reset":
+        print(NO_SANDBOX)
+        return 1
+    if args.action == "start":
+        if state == "running":
+            print("The sandbox is already running.")
+            return 0
+        ok = driver.start()
+        print("Started." if ok else "❌ The sandbox did not start; see `coderunner sandbox logs`.")
+        return 0 if ok else 1
+    if args.action == "stop":
+        if state != "running":
+            print("The sandbox is not running.")
+            return 0
+        ok = driver.stop()
+        print("Stopped; its filesystem is kept (Python kernel state is not)." if ok
+              else "❌ The sandbox did not stop.")
+        return 0 if ok else 1
+    if args.action in ("shell", "logs"):
+        if state != "running" and args.action == "shell":
+            print("The sandbox is not running; start it with `coderunner sandbox start`.")
+            return 1
+        argv = (driver.exec_argv(args.cmdline or ["/bin/bash"], tty=sys.stdin.isatty())
+                if args.action == "shell" else driver.logs_argv(args.follow))
+        os.execvp(argv[0], argv)              # does not return
+        return 1
+    # reset: delete the VM and its filesystem, then create it again with the installer.
+    installer = pathlib.Path(__file__).resolve().parent.parent / "install.sh"
+    options = [*(["--cpus", args.cpus] if args.cpus else []), *(["--memory", args.memory] if args.memory else []),
+               *(["--network", args.network] if args.network else []), *(["--build"] if args.build else [])]
+    for mount in args.mount or []:
+        options += ["--mount", mount]
+    if state != "missing":
+        if not args.yes:
+            answer = input("Delete the sandbox and everything in its filesystem (host mounts are untouched)? [y/N] ")
+            if answer.strip().lower() not in ("y", "yes"):
+                print("Nothing was deleted.")
+                return 1
+        if not driver.delete():
+            print("❌ The sandbox could not be deleted.")
+            return 1
+        print("Deleted the sandbox.")
+    if not installer.exists():
+        print(f"Create it again from the CodeRunner checkout: ./install.sh {' '.join(options)}".rstrip())
+        return 0
+    return subprocess.call([str(installer), *options], cwd=installer.parent)
 
 
 def cmd_daemon(args, config: Config) -> int:
@@ -712,6 +775,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sandbox", action="store_true", help="Also stop the sandbox VM")
     p.add_argument("--uninstall", action="store_true", help="Also remove the login service")
     p.set_defaults(func=cmd_down)
+    p = sub.add_parser("sandbox", help="Start, stop, open a shell in, or recreate the sandbox VM")
+    sandbox = p.add_subparsers(dest="action", required=True)
+    sandbox.add_parser("status")
+    sandbox.add_parser("start")
+    sandbox.add_parser("stop", help="Stop it; the filesystem is kept")
+    sp = sandbox.add_parser("shell", help="A shell (or the given command) inside the sandbox")
+    sp.add_argument("cmdline", nargs=argparse.REMAINDER, metavar="command")
+    sp = sandbox.add_parser("logs")
+    sp.add_argument("-f", "--follow", action="store_true")
+    sp = sandbox.add_parser("reset", help="Delete the sandbox and its filesystem, then run the installer again; "
+                                          "resource, mount and network settings can change here")
+    sp.add_argument("--yes", action="store_true", help="Do not ask before deleting")
+    sp.add_argument("--cpus"), sp.add_argument("--memory")
+    sp.add_argument("--mount", action="append", help="HOST:/workspace/NAME[:rw], repeatable")
+    sp.add_argument("--network", choices=["default", "none", "proxy"])
+    sp.add_argument("--build", action="store_true", help="Build the image from this checkout")
+    p.set_defaults(func=cmd_sandbox)
     sub.add_parser("daemon", help="Run the daemon in the foreground").set_defaults(func=cmd_daemon)
     sub.add_parser("status").set_defaults(func=cmd_status)
     sub.add_parser("doctor", help="Show hardware and environment checks").set_defaults(func=cmd_doctor)
