@@ -77,6 +77,10 @@ class FakeDriver:
     def logs_argv(self, follow):
         return drivers.AppleDriver(Config({})).logs_argv(follow)
 
+    def settings(self):
+        return {"cpus": "4", "memory": "2g", "profile": "lite", "network": "none",
+                "mounts": ["/p:/workspace/p:rw"], "home": "/h", "image": "coderunner-local:latest"}
+
 
 class SandboxCommandTests(unittest.TestCase):
     """`coderunner sandbox` covers what the README used to do with `container` commands, on either runtime."""
@@ -124,14 +128,39 @@ class SandboxCommandTests(unittest.TestCase):
         driver = FakeDriver("stopped")
         code, out, _ = self.run_cli(["sandbox", "reset"], driver, ask=("builtins.input", {"return_value": "n"}))
         self.assertEqual((code, driver.deleted), (1, False))
-        code, _, mocks = self.run_cli(["sandbox", "reset", "--yes", "--cpus", "4", "--mount", "/a:/workspace/a"],
-                                      driver, call=("subprocess.call", {"return_value": 0}))
+        code, _, mocks = self.run_cli(["sandbox", "reset", "--yes", "--cpus", "8"], driver,
+                                      call=("subprocess.call", {"return_value": 0}))
         self.assertEqual(code, 0)
         self.assertTrue(driver.deleted)
         argv = mocks["call"].call_args.args[0]
         self.assertTrue(argv[0].endswith("install.sh"))
-        self.assertEqual(argv[1:], ["--cpus", "4", "--mount", "/a:/workspace/a"])
+        # the old network, mounts, profile and home are kept: a reset must not reopen a `none` sandbox
+        self.assertEqual(argv[1:], ["--cpus", "8", "--memory", "2g", "--network", "none", "--profile", "lite",
+                                    "--mount", "/p:/workspace/p:rw", "--no-assistant", "--image", "coderunner-local:latest"])
+        self.assertEqual(mocks["call"].call_args.kwargs["env"]["CODERUNNER_HOME"], "/h")
 
+    def test_a_build_without_space_deletes_nothing(self):
+        import collections
+        driver = FakeDriver("running")
+        code, out, _ = self.run_cli(["sandbox", "reset", "--yes", "--build"], driver, disk=(
+            "shutil.disk_usage", {"return_value": collections.namedtuple("u", "total used free")(0, 0, 4e9)}))
+        self.assertEqual((code, driver.deleted), (1, False))
+        self.assertIn("Nothing was deleted", out)
+
+    def test_settings_are_read_back_from_inspect(self):
+        info = [{"configuration": {
+            "resources": {"cpus": 4, "memoryInBytes": 2 << 30}, "image": {"reference": "coderunner-local:latest"},
+            "initProcess": {"environment": ["CODERUNNER_PROFILE=lite", "PATH=/bin"]},
+            "networks": [{"network": "coderunner-offline"}],
+            "mounts": [{"source": "/h/assets/outputs", "destination": "/app/uploads/outputs", "options": []},
+                       {"source": "/src", "destination": "/workspace/src", "options": ["ro"]},
+                       {"source": "/out", "destination": "/workspace/out", "options": []}]}}]
+        ok = subprocess.CompletedProcess([], 0, json.dumps(info), "")
+        with mock.patch.object(drivers, "_run", return_value=ok):
+            got = drivers.AppleDriver(Config({})).settings()
+        self.assertEqual(got, {"cpus": "4", "memory": "2g", "profile": "lite", "network": "none", "home": "/h",
+                               "image": "coderunner-local:latest",
+                               "mounts": ["/src:/workspace/src", "/out:/workspace/out:rw"]})
 
 if __name__ == "__main__":
     unittest.main()

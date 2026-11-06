@@ -7,6 +7,7 @@ import getpass
 import json
 import os
 import pathlib
+import shutil
 import signal
 import subprocess
 import sys
@@ -133,6 +134,7 @@ def cmd_down(args, config: Config) -> int:
     return 0
 
 
+BUILD_SPACE_GB = 20                          # as install.sh checks
 NO_SANDBOX = "No sandbox is installed. Run ./install.sh to create one."
 
 
@@ -173,12 +175,25 @@ def cmd_sandbox(args, config: Config) -> int:
                 if args.action == "shell" else driver.logs_argv(args.follow))
         os.execvp(argv[0], argv)              # does not return
         return 1
-    # reset: delete the VM and its filesystem, then create it again with the installer.
+    # reset: delete the VM and its filesystem, then create it again with the installer. Settings not given here
+    # are kept from the old sandbox: a reset must not reopen the network of a `--network none` sandbox, drop its
+    # mounts, or move it to another CodeRunner home. Only the sandbox is recreated (--no-assistant), not models.
     installer = pathlib.Path(__file__).resolve().parent.parent / "install.sh"
-    options = [*(["--cpus", args.cpus] if args.cpus else []), *(["--memory", args.memory] if args.memory else []),
-               *(["--network", args.network] if args.network else []), *(["--build"] if args.build else [])]
-    for mount in args.mount or []:
+    kept = driver.settings() if state != "missing" else {}
+    chosen = {"cpus": args.cpus or kept.get("cpus"), "memory": args.memory or kept.get("memory"),
+              "network": args.network or kept.get("network"), "profile": kept.get("profile")}
+    options = [part for key, value in chosen.items() if value for part in (f"--{key}", value)]
+    for mount in args.mount or kept.get("mounts") or []:     # --mount replaces the old mounts
         options += ["--mount", mount]
+    # The same image again unless --build asks for a fresh one: published images can lag behind the checkout.
+    options += ["--no-assistant", *(["--build"] if args.build else
+                                    ["--image", kept["image"]] if kept.get("image") else [])]
+    env = {**os.environ, **({"CODERUNNER_HOME": kept["home"]} if kept.get("home") else {})}
+    free_gb = shutil.disk_usage(pathlib.Path.home()).free / 1e9
+    if args.build and free_gb < BUILD_SPACE_GB:     # the installer refuses then, after the old sandbox is gone
+        print(f"Building the image needs about {BUILD_SPACE_GB} GB free; {free_gb:.0f} GB is free. Nothing was "
+              "deleted; free some space, or reset without --build to reuse the current image.")
+        return 1
     if state != "missing":
         if not args.yes:
             answer = input("Delete the sandbox and everything in its filesystem (host mounts are untouched)? [y/N] ")
@@ -188,11 +203,12 @@ def cmd_sandbox(args, config: Config) -> int:
         if not driver.delete():
             print("❌ The sandbox could not be deleted.")
             return 1
-        print("Deleted the sandbox.")
+        print("Deleted the sandbox.", flush=True)
     if not installer.exists():
-        print(f"Create it again from the CodeRunner checkout: ./install.sh {' '.join(options)}".rstrip())
+        print(f"Create it again from the CodeRunner checkout: ./install.sh {' '.join(options)}")
         return 0
-    return subprocess.call([str(installer), *options], cwd=installer.parent)
+    print(f"Recreating it: ./install.sh {' '.join(options)}", flush=True)
+    return subprocess.call([str(installer), *options], cwd=installer.parent, env=env)
 
 
 def cmd_daemon(args, config: Config) -> int:
@@ -784,11 +800,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("cmdline", nargs=argparse.REMAINDER, metavar="command")
     sp = sandbox.add_parser("logs")
     sp.add_argument("-f", "--follow", action="store_true")
-    sp = sandbox.add_parser("reset", help="Delete the sandbox and its filesystem, then run the installer again; "
-                                          "resource, mount and network settings can change here")
+    sp = sandbox.add_parser("reset", help="Delete the sandbox and its filesystem and create it again; settings "
+                                          "not given are kept from the old one")
     sp.add_argument("--yes", action="store_true", help="Do not ask before deleting")
     sp.add_argument("--cpus"), sp.add_argument("--memory")
-    sp.add_argument("--mount", action="append", help="HOST:/workspace/NAME[:rw], repeatable")
+    sp.add_argument("--mount", action="append", help="HOST:/workspace/NAME[:rw], repeatable; replaces the old mounts")
     sp.add_argument("--network", choices=["default", "none", "proxy"])
     sp.add_argument("--build", action="store_true", help="Build the image from this checkout")
     p.set_defaults(func=cmd_sandbox)

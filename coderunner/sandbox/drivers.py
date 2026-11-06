@@ -70,6 +70,11 @@ class Driver:
     def logs_argv(self, follow: bool) -> list[str] | None:
         return None
 
+    def settings(self) -> dict:
+        """What the installer was given when it created the sandbox, so a reset can keep it: cpus, memory,
+        profile, network, mounts under /workspace, the image, and the CodeRunner home whose assets are mounted."""
+        return {}
+
     def gateway_address(self) -> str:
         """Host address the sandbox uses to reach the gateway."""
         return "127.0.0.1"
@@ -134,6 +139,20 @@ class AppleDriver(Driver):
     def logs_argv(self, follow: bool) -> list[str]:
         return ["container", "logs", *(["--follow"] if follow else []), self.container]
 
+    def settings(self) -> dict:
+        info = self._inspect()
+        if not info:
+            return {}
+        conf = info.get("configuration") or {}
+        res = conf.get("resources") or {}
+        env = dict(e.split("=", 1) for e in (conf.get("initProcess") or {}).get("environment", []) if "=" in e)
+        networks = {"coderunner-offline": "none", "coderunner-egress": "proxy"}
+        mounts = [(m.get("source", ""), m.get("destination", ""), "ro" not in (m.get("options") or []))
+                  for m in conf.get("mounts") or []]
+        image = ((conf.get("image") or {}).get("reference") or "").removeprefix("docker.io/library/")
+        return _settings(res.get("cpus"), res.get("memoryInBytes"), env.get("CODERUNNER_PROFILE"),
+                         networks.get(((conf.get("networks") or [{}])[0]).get("network"), "default"), mounts, image)
+
     def network(self) -> str:
         info = self._inspect() or {}
         networks = (info.get("configuration") or {}).get("networks") or []
@@ -181,6 +200,21 @@ class DockerDriver(Driver):
     def logs_argv(self, follow: bool) -> list[str]:
         return ["docker", "logs", *(["--follow"] if follow else []), self.container]
 
+    def settings(self) -> dict:
+        result = _run(["docker", "inspect", self.container])
+        try:
+            info = json.loads(result.stdout)[0] if result.returncode == 0 else None
+        except (json.JSONDecodeError, IndexError):
+            info = None
+        if not info:
+            return {}
+        host = info.get("HostConfig") or {}
+        env = dict(e.split("=", 1) for e in (info.get("Config") or {}).get("Env") or [] if "=" in e)
+        mounts = [(m.get("Source", ""), m.get("Destination", ""), bool(m.get("RW"))) for m in info.get("Mounts") or []]
+        cpus = host.get("NanoCpus") and host["NanoCpus"] // 1_000_000_000
+        return _settings(cpus, host.get("Memory"), env.get("CODERUNNER_PROFILE"), "default", mounts,
+                         (info.get("Config") or {}).get("Image"))
+
     def gateway_address(self) -> str:
         # Docker Desktop (macOS/Windows) routes host.docker.internal to host
         # loopback, so the gateway listens there. On Linux the container reaches
@@ -196,6 +230,25 @@ class DockerDriver(Driver):
             except ValueError:
                 continue
         return "172.17.0.1"
+
+
+def _settings(cpus, memory_bytes, profile, network, mounts, image=None) -> dict:
+    out: dict = {"network": network, "mounts": [], "home": None}
+    if image:
+        out["image"] = image
+    if cpus:
+        out["cpus"] = str(cpus)
+    if memory_bytes:
+        gib, mib = divmod(int(memory_bytes), 1 << 30)
+        out["memory"] = f"{gib}g" if not mib else f"{int(memory_bytes) >> 20}m"
+    if profile in ("lite", "full"):
+        out["profile"] = profile
+    for source, dest, rw in mounts:
+        if dest == "/workspace" or dest.startswith("/workspace/"):
+            out["mounts"].append(f"{source}:{dest}" + (":rw" if rw else ""))
+        elif dest == "/app/uploads/outputs" and source.endswith("/assets/outputs"):
+            out["home"] = source[:-len("/assets/outputs")]
+    return out
 
 
 def driver_for(config: Config) -> Driver:

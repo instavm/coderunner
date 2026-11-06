@@ -512,8 +512,9 @@ print(networks[0]["network"] if networks else "default")
         remove_builder
     else
         IMAGE="${IMAGE:-instavm/coderunner:$SANDBOX_TAG}"
-        echo "Pulling the image: $IMAGE"
-        if ! container image pull "$IMAGE"; then
+        if container image inspect "$IMAGE" &>/dev/null; then
+            echo "Using the image already on this Mac: $IMAGE"
+        elif echo "Pulling the image: $IMAGE" && ! container image pull "$IMAGE"; then
             if [ "$IMAGE" != "instavm/coderunner:$SANDBOX_TAG" ] || [ ! -f "$SCRIPT_DIR/Dockerfile" ]; then
                 echo "❌ Failed to pull image. Please check your internet connection and try again."
                 exit 1

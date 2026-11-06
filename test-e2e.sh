@@ -59,10 +59,14 @@ check "python execution works" "42" "$out"
 
 # 5. Browser navigation works when outbound networking is enabled
 if [ -z "${EGRESS_BLOCKED:-}" ]; then
-    out=$(curl -s -X POST "$BASE/v1/browser/interactions/navigate" \
-        -H "Content-Type: application/json" -d '{"url":"https://pypi.org"}' \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')
-    check "browser navigation works" "success" "$out"
+    body=$(curl -s -X POST "$BASE/v1/browser/interactions/navigate" \
+        -H "Content-Type: application/json" -d '{"url":"https://pypi.org"}')
+    if echo "$body" | grep -q "lite profile"; then
+        echo "skip browser navigation (the lite profile has no browser in the sandbox)"
+    else
+        out=$(echo "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))')
+        check "browser navigation works" "success" "$out"
+    fi
 fi
 
 # 6. MCP endpoint accepts an initialize request
