@@ -10,3 +10,7 @@ Instead, please use one of the following methods:
 - **GitHub Security Advisories:** Use [GitHub's private security reporting](https://github.com/instavm/coderunner/security/advisories/new) to disclose the vulnerability confidentially.
 
 We take all security reports seriously and will respond as quickly as possible. Thank you for helping keep this project and its users safe.
+
+## Threat model
+
+What the sandbox protects, from whom, and what it does not cover: [THREAT_MODEL.md](THREAT_MODEL.md).
