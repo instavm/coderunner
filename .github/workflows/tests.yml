@@ -1,0 +1,34 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      - name: Install the image's requirements
+        run: |
+          sudo apt-get install -y libcairo2-dev pkg-config
+          pip install --require-hashes -r requirements.txt
+      - name: Lint
+        run: |
+          pip install ruff==0.15.6
+          ruff check --select E9,F,B --ignore B008 server.py tests examples
+          sudo apt-get install -y shellcheck
+          shellcheck -S warning install.sh entrypoint.sh test-e2e.sh cleanup.sh
+          bash -n install.sh entrypoint.sh test-e2e.sh cleanup.sh test-build.sh
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
