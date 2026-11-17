@@ -17,6 +17,12 @@ For cloud managed VMs for agents, we have launched - [InstaVM - Instant computer
 
 **Prerequisites:** Mac with macOS and Apple Silicon (M1/M2/M3/M4), Python 3.10+
 
+### Experimental macOS guest
+
+To run CodeRunner inside a full macOS VM on an Apple silicon Mac, see the
+[macOS backend guide](macos/README.md). It uses Tart, has separate VM storage and
+credentials, and serves the same API at `http://127.0.0.1:8223/mcp`.
+
 ### Credentials
 
 The installer generates the sandbox token in `~/.coderunner/api-token` (or saves
