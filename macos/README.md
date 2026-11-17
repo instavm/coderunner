@@ -7,6 +7,10 @@ The server, Jupyter kernels and Playwright run **inside the guest**. The host on
 runs Tart and an SSH tunnel. This is macOS on a physical Mac, not another layer of
 nested virtualization inside a VM.
 
+![Python 3.13.9 executing through CodeRunner MCP inside the macOS guest](../images/macos-mcp-execution.png)
+
+Python execution through the guest's MCP endpoint at `http://127.0.0.1:8223/mcp`.
+
 ## Requirements
 
 - Apple silicon Mac, macOS 13 or newer, Python 3.10+, OpenSSH, Tart 2.41+.
