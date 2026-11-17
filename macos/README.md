@@ -30,6 +30,9 @@ licensing question. This backend is a local development experiment.
 
 ## Create and run
 
+Linux is the default: `./install.sh` keeps its existing Linux behavior, and
+`./install.sh --guest linux` selects it explicitly. macOS requires `--guest macos`.
+
 From the repository root:
 
 ```bash
