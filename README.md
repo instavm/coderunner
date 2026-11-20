@@ -19,6 +19,8 @@ For cloud managed VMs for agents, we have launched - [InstaVM - Instant computer
 
 ### Experimental macOS guest
 
+Requires an Apple silicon Mac, at least 50 GiB of free disk space, and 8 GiB of RAM (4 GiB for the guest and 4 GiB for the host).
+
 To run CodeRunner inside a full macOS VM on an Apple silicon Mac, see the
 [macOS backend guide](macos/README.md). It uses Tart, has separate VM storage and
 credentials, and serves the same API at `http://127.0.0.1:8223/mcp`.
