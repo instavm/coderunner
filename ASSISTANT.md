@@ -26,7 +26,7 @@ local model later with `coderunner setup`, or the sandbox with `./install.sh`. `
                                               │
  ┌──────────────────────── host (trusted) ────┴──────────────────────────────┐
  │ coderunner daemon: agent loop · policy + approvals · audit log · secrets   │
- │   ├─ model runtime (Ollama / llama.cpp)       127.0.0.1 only              │
+ │   ├─ model runtime (llama.cpp; Ollama on Linux) 127.0.0.1 only            │
  │   ├─ browser broker ── your Chrome/Brave/Edge: its own profile over a     │
  │   │     private pipe, or a CodeRunner tab group (extension)               │
  │   ├─ connectors: Calendar, Reminders, Notes, Mail drafts, Contacts (opt-in)│
@@ -142,10 +142,17 @@ declares success. If a model fails the test, the next candidate is tried.
 * `coderunner models plan` shows what would be chosen and why;
   `coderunner models setup --model <id>` overrides; `coderunner models test`
   re-runs the smoke test.
-* Models are ranked across runtimes. Prism ML's Bonsai builds of 27B models
-  (1-bit, 3.8 GB; ternary Bonsai 2, 6-7 GB) run on Prism's llama.cpp build,
-  which setup downloads pinned to a release and checks against its published
-  checksum. Where a maker publishes how much of the full model's scores a
+* Models are ranked across runtimes. Ternary Bonsai 2 27B runs on llama.cpp
+  itself on Apple silicon: the packing llama.cpp reads (Q2_0, 7.63 GB) is
+  published only in Ollama's registry, which serves it as a plain download
+  that setup checks against its SHA-256 (Ori's finding; neither Ollama nor
+  Prism's fork is involved), with the maker's vision projector from Hugging
+  Face. The registry is slow by the connection (0.15 MB/s each on a line
+  that carries 3 MB/s), so that file comes in twelve ranges at once. Prism
+  ML's other builds (the 1-bit 27B, 3.8 GB, and Bonsai 2's denser PTQ1_0
+  and PQ2_0 packings) run on Prism's llama.cpp build, which setup downloads
+  pinned to a release and checks against its published checksum; it is used
+  only for what the main runtime cannot serve. Where a maker publishes how much of the full model's scores a
   build keeps, that figure sets its loss instead of the generic one for its
   bit width: Bonsai 2 27B (1.72 bits per weight) keeps 98.2% of
   Qwen3.8-27B's scores across 14 benchmarks in Prism's measurement (84.78
@@ -178,13 +185,25 @@ declares success. If a model fails the test, the next candidate is tried.
   instructions again (37 s for a 27B on an M3 Pro, once per wake). Setup
   unloads the previous model before it loads another.
 
-* On Apple silicon chat models run on CodeRunner's own llama.cpp server
-  (llama.cpp's official build, pinned and checksum-checked, installed by
-  setup), Ollama keeping the embedding and decision models: Ollama's server
-  keeps up to 8 GB of earlier prompts in memory with no setting for it (2.4
-  GB in one sample-task run on an 18 GB Mac, which then wrote 0.06 tokens/s),
-  and its plain tags became MLX builds that took 16.3 GB for Qwen3.5-9B. On
-  NVIDIA, llama.cpp's official build is CPU-only, so Ollama serves them.
+* On Apple silicon there is one runtime: CodeRunner's own llama.cpp server
+  (llama.cpp's official build, pinned and checksum-checked, fetched by setup
+  when no `llama-server` is installed) serves every model, and embeddings
+  and speech run on Core ML. Ollama is neither installed nor used there
+  unless you name it (`coderunner setup --runtime ollama`); the same shape
+  as Ori, which bundles llama.cpp's server and embeds on Core ML. Ollama's
+  server keeps up to 8 GB of earlier prompts in memory with no setting for
+  it (2.4 GB in one sample-task run on an 18 GB Mac, which then wrote 0.06
+  tokens/s), its plain tags became MLX builds that took 16.3 GB for
+  Qwen3.5-9B, and a first run fetched it (0.17 GB) and a second copy of the
+  embedding model through it (1.33 GB) that Core ML does not need. The
+  decision model, which only Ollama serves, is therefore set up on a Mac
+  only when Ollama is the runtime; otherwise the assistant's model judges
+  browser steps. Elsewhere llama.cpp's official build is CPU-only, so
+  Ollama serves the models (its Linux build carries CUDA).
+* A second CodeRunner home (a test run, a bench) can serve its own models
+  beside the first: `models.port_base` (8081) is llama.cpp's port, and
+  Prism's build, the browser driver and the Core ML embedding server take
+  the three after it.
 * Runtimes per model: Ollama serves families whose tool calls it parses;
   others (GLM-5.x, DeepSeek V4, MiMo, Ling...) run on llama.cpp's own server
   next to it. When llama.cpp is missing, the plan says which better model it
@@ -215,7 +234,7 @@ declares success. If a model fails the test, the next candidate is tried.
   | 8 GB Mac | Qwen3.5-4B compact, text only, 8K context |
   | 16 GB M1 | Qwen3.5-9B (Bonsai 2 steps would take about 46 s, against 23 s) |
   | 16 GB M2 and newer | Qwen3.5-9B (32 s against 17 s a step: a tie the faster model wins) |
-  | 18-128 GB Macs | Bonsai 2 27B (Prism's llama.cpp build); on 32 GB and up it ties with Qwen3.8-27B, whose scores it keeps 98.2% of, and its steps are faster |
+  | 18-128 GB Macs | Bonsai 2 27B (llama.cpp); on 32 GB and up it ties with Qwen3.8-27B, whose scores it keeps 98.2% of, and its steps are faster |
   | 12-24 GB NVIDIA | Bonsai 2 27B (Prism's CUDA build), 16K context on 12 GB |
   | 32 GB NVIDIA | Qwen3.8-27B (steps as fast as Bonsai 2's: its scores break the tie) |
   | DGX Spark | Qwen3.8-27B (Prism has no CUDA build for ARM) |
@@ -251,10 +270,11 @@ declares success. If a model fails the test, the next candidate is tried.
   failed one, and answers routine steps directly; `on` and `off` force it.
 
 * Embeddings for memory and files: EmbeddingGemma 2 (text, images and audio
-  in one space) through Ollama, also when the assistant model runs elsewhere
-  (`models.embedding_url`). On Apple silicon (macOS 15+) it runs on the
-  Neural Engine through Core ML instead (FluidInference's build, served by
-  CodeRunner on 127.0.0.1:8084 in an environment of its own): text, and
+  in one space). On Apple silicon (macOS 15+) it runs on the Neural Engine
+  through Core ML and nothing else is fetched (FluidInference's build,
+  served by CodeRunner on 127.0.0.1:8084 in an environment of its own);
+  elsewhere, or with Ollama named as the runtime, through Ollama
+  (`models.embedding_url`). On Core ML: text, and
   pictures and sound through the build's own vision and audio encoders
   (a picture at the model's default 280 tokens, sound 20 s per
   embedding). Without those encoders pictures and sound go to the build in
@@ -299,9 +319,10 @@ declares success. If a model fails the test, the next candidate is tried.
 * Fast "System 1" models share the runtime: an embedding model for memory
   search, and a decision model (`models.decision`, served through Ollama's
   decision API) that judges whether a browser step commits something and
-  screens untrusted text for instructions aimed at the assistant. Setup
+  screens untrusted text for instructions aimed at the assistant. Where
+  Ollama is the runtime, setup
   installs one when it fits well beside the chat and embedding models (24
-  GB Macs and up), chosen by accuracy on 66 labelled browser steps: tev1 4B
+  GB and up), chosen by accuracy on 66 labelled browser steps: tev1 4B
   missed no committing step and asked on 7 of 39 safe ones (0.5 s each);
   laya (421M) missed 7 and asked on 21; tev1 0.8B asked on 35 of 39.
   Otherwise the assistant model judges browser steps itself (Qwen3.5-9B
@@ -322,7 +343,9 @@ declares success. If a model fails the test, the next candidate is tried.
   ships 3.9: where no newer one is found it downloads Python 3.12.16
   (python-build-standalone's build, the one uv installs; pinned and checked
   against the release's checksums) into `~/.coderunner/runtime`, 67 MB.
-* Nothing to run models with needs installing first. Where neither Ollama
+* Nothing to run models with needs installing first. On a Mac setup
+  fetches llama.cpp's pinned build (30 MB) when there is no `llama-server`.
+  Elsewhere, where neither Ollama
   nor llama.cpp is installed, setup downloads its own copy of Ollama 0.40.3
   into `~/.coderunner/runtime`, checked against its published checksum (167
   MB on macOS; 1.4 GB on Linux, where the archive carries NVIDIA's CUDA
@@ -339,8 +362,9 @@ declares success. If a model fails the test, the next candidate is tried.
   expect: in `coderunner models plan`, on the app's first-run screen and as
   setup's first line. Setup then goes on, on the processor.
 * Downloads never take the disk under `files.min_free_gb` (5 GB, the floor
-  file indexing also pauses at). A first run on an 18 GB Mac fetches 11 GB:
-  the assistant's model, the two embedding builds and the runtimes. Setup
+  file indexing also pauses at). A first run on an 18 GB Mac fetches 9.9 GB:
+  the assistant's model (8.3 GB with its vision projector), the embedding
+  model for Core ML (1.5 GB) and llama.cpp's build. Setup
   says what a model takes before it starts, skips one that would not leave
   the floor free and takes the best that fits, and says how much to free
   when none does; `coderunner models plan` notes when its pick does not fit

@@ -436,8 +436,9 @@ def _accept(config, key: str) -> None:
 def _license_gate(entry: dict, rt: Runtime, config, accept: bool, hub: Hub | None) -> tuple[str, str, str]:
     """Catalog license, plus the live license of the GGUF repo when llama.cpp downloads it."""
     sources: list = [entry]
-    if rt.name == "llama.cpp":
-        sources.append(entry["artifacts"]["gguf"]["repo"])
+    repo = (entry["artifacts"].get("gguf") or {}).get("repo") if rt.name == "llama.cpp" else None
+    if repo:            # a build named by its address has no repository of its own: the catalog's licence stands
+        sources.append(repo)
     for source in sources:
         decision, why, link = licenses.check(source, config, hub)
         if decision == "ask" and accept:
@@ -719,7 +720,16 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
             _free_gpu(config, rt)
             model = rt.prepare(entry, cand["ctx"], offload=True) if cand.get("offload") else \
                 rt.prepare(entry, cand["ctx"])
-            rt.start()
+            progress(f"loading {entry['id']} into memory")
+            try:
+                rt.start()
+            except Exception as exc:
+                # A server that does not come up says nothing about the model: it may be short of memory right
+                # now, or have been given an argument it does not take (--no-mmap, once, on a build that calls
+                # it --load-mode; setup then deleted 7.6 GB that had taken two hours to fetch). The weights stay.
+                attempts.append({"model": entry["id"], "error": str(exc)})
+                progress(f"{entry['id']} did not start: {exc}; its download is kept")
+                continue
             vision = rt.vision(entry, model)
             progress(f"smoke testing {model}{' with vision' if vision else ''}")
             result = _run_async(smoke(rt.base_url, model, vision=vision, api_key=rt.api_key))

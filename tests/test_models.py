@@ -208,8 +208,13 @@ class FitTests(TempHome):
     def test_apple_recommendations(self):
         cfg = self.config()
         # Ranked by published benchmarks first, then speed: on 64-128 GB Macs Qwen3.8-27B's scores outweigh
-        # the 35B-A3B's faster steps (Ollama and llama.cpp builds only here; Prism's builds are below).
-        expected = {16: "qwen3.5-4b", 18: "qwen3.5-9b", 24: "qwen3.5-9b", 64: "qwen3.8-27b", 128: "qwen3.8-27b"}
+        # the 35B-A3B's faster steps. llama.cpp also reads Bonsai 2 27B's Q2_0 file (the ternary Qwen3.8-27B:
+        # 98.2% of its scores in 7.6 GB), which Ollama's catalog entry here does not: from 24 GB up it leads
+        # there, on 64-128 GB by a tie with Qwen3.8-27B that its faster steps decide. Its speed on llama.cpp is
+        # still the estimate from memory bandwidth (not yet timed with this runtime).
+        expected = {"ollama": {16: "qwen3.5-4b", 18: "qwen3.5-9b", 24: "qwen3.5-9b", 64: "qwen3.8-27b", 128: "qwen3.8-27b"},
+                    "llama.cpp": {16: "qwen3.5-4b", 18: "qwen3.5-9b", 24: "bonsai-2-27b", 64: "bonsai-2-27b",
+                                  128: "bonsai-2-27b"}}
         chips = {8: "Apple M1", 16: "Apple M2", 18: "Apple M3 Pro", 24: "Apple M4 Pro", 32: "Apple M2 Pro",
                  64: "Apple M1 Max", 128: "Apple M4 Max"}
         for ram, chip in chips.items():
@@ -220,16 +225,22 @@ class FitTests(TempHome):
                     if ram == 8:
                         self.assertEqual(picks, [])                 # VM + OS leave no room for a 4B model
                         continue
-                    if ram in expected:
-                        self.assertEqual(picks[0]["id"], expected[ram])
+                    if ram in expected[runtime]:
+                        self.assertEqual(picks[0]["id"], expected[runtime][ram])
                     self.assertTrue(picks[0]["vision"])
                     self.assertEqual(picks[0]["fit"], "good")
-        # Across runtimes, Bonsai 2 27B (Prism's build) leads on 18-24 GB Macs with the lite sandbox: Prism
-        # measured it at 98.2% of Qwen3.8-27B's scores, far above Qwen3.5-9B, which outweighs its slower steps
-        # (22 s against 12 s on an M3 Pro). On a 16 GB M2 its steps would take 32 s: the two tie, the faster wins.
+        # Across runtimes, Bonsai 2 27B leads on 16-24 GB Macs with the lite sandbox: Prism measured it at
+        # 98.2% of Qwen3.8-27B's scores, far above Qwen3.5-9B, which outweighs its slower steps (19 s against
+        # 12 s on an M3 Pro, 28 s against 17 s on a 16 GB M2). The 64-128 GB tie with Qwen3.8-27B is a tie in
+        # utility to one decimal, decided by the faster steps.
         two = fit.recommend(apple(16, "Apple M2", sandbox=1), cfg)
-        self.assertEqual(two[0]["id"], "qwen3.5-9b")
-        self.assertEqual(round(fit.utility(two[0]), 1), round(fit.utility(two[1]), 1))
+        self.assertEqual([c["id"] for c in two[:2]], ["bonsai-2-27b", "qwen3.5-9b"])
+        self.assertGreater(two[0]["step_s"], two[1]["step_s"])
+        self.assertGreater(fit.utility(two[0]), fit.utility(two[1]))
+        big = fit.recommend(apple(64, "Apple M1 Max"), cfg, runtime="llama.cpp")
+        self.assertEqual([c["id"] for c in big[:2]], ["bonsai-2-27b", "qwen3.8-27b"])
+        self.assertEqual(round(fit.utility(big[0]), 1), round(fit.utility(big[1]), 1))
+        self.assertLess(big[0]["step_s"], big[1]["step_s"])
         for ram, chip in ((18, "Apple M3 Pro"), (24, "Apple M4 Pro")):
             with self.subTest(ram=ram):
                 picks = fit.recommend(apple(ram, chip, sandbox=1), cfg)
@@ -248,8 +259,10 @@ class FitTests(TempHome):
         compact = fit.candidate(catalog.get("bonsai-2-27b-compact"), apple(18), cfg, "chat", "prism")
         self.assertLess(compact["tok_s"], fit.MIN_TOK_S)        # measured factor applied
         self.assertEqual(fit.recommend(apple(18), cfg, runtime="ollama")[0]["id"], "qwen3.5-9b")
-        # Qwen3.5-9B scores above Gemma 4 26B-A4B, which is faster but no longer outranks it on speed.
-        self.assertEqual(fit.recommend(apple(32, "Apple M2 Pro"), cfg, runtime="llama.cpp")[0]["id"], "qwen3.5-9b")
+        # Qwen3.5-9B scores above Gemma 4 26B-A4B, which is faster but no longer outranks it on speed; on
+        # llama.cpp Bonsai 2 27B is above both.
+        order = [c["id"] for c in fit.recommend(apple(32, "Apple M2 Pro"), cfg, runtime="llama.cpp")]
+        self.assertEqual(order[:3], ["bonsai-2-27b", "qwen3.5-9b", "gemma-4-26b-a4b"])
 
     def test_nvidia_recommendations(self):
         cfg = self.config()
@@ -423,6 +436,66 @@ class HubTests(TempHome):
         stale.write_text(json.dumps({"sha": "from yesterday"}))
         os.utime(stale, (1, 1))                                       # far older than the cache's day
         self.assertEqual(hub.model_info("org/M"), {"sha": "from yesterday"})
+
+    def test_a_model_named_by_its_address_is_fetched_checked_and_served_with_its_arguments(self):
+        # Bonsai 2 27B for llama.cpp itself: one file from Ollama's registry by address and checksum, the vision
+        # projector from the maker's repository. Setup from the app stopped at once on this entry (KeyError:
+        # 'repo'), which a run through the API with another model had not touched.
+        entry = catalog.get("bonsai-2-27b")
+        art = entry["artifacts"]["gguf"]
+        self.assertTrue(art["url"].endswith(art["sha256"]) and "repo" not in art)
+        fetched = []
+
+        class Registry:
+            def fetch(self, url, dest, sha256, size=None, progress=None, parallel=None):
+                fetched.append((url, sha256, size, parallel))
+                pathlib.Path(dest).parent.mkdir(parents=True, exist_ok=True)
+                pathlib.Path(dest).write_bytes(b"gguf")
+                return pathlib.Path(dest)
+
+            def download(self, repo, file, dest, revision="main", sha256=None, size=None, progress=None):
+                fetched.append((repo, file, sha256))
+                pathlib.Path(dest).write_bytes(b"mmproj")
+                return pathlib.Path(dest)
+
+            def resolve_license(self, repo, depth=3):
+                raise AssertionError("a build without a repository has no licence to look up there")
+
+        rt = runtimes.LlamaCppRuntime(self.config(), hub=Registry())
+        with mock.patch.object(rt, "binary", return_value="/usr/bin/true"), \
+                mock.patch.object(rt, "start"), mock.patch.object(rt, "stop"), \
+                mock.patch.object(manager, "_prism", return_value=None):
+            result = manager.setup(self.config(), model_id="bonsai-2-27b", runtime=rt, hw=apple(18, sandbox=1),
+                                   hub=Registry(), progress=lambda m: None, embedding=False, decision=False,
+                                   smoke=fake_smoke({}), measure=False)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(fetched[0], (art["url"], art["sha256"], art["bytes"], art["streams"]))
+        self.assertEqual(fetched[1][:2], (art["mmproj_repo"], art["mmproj"]))
+        active = rt._state()["active"]
+        self.assertEqual((active["id"], active["args"]), ("bonsai-2-27b", art["server_args"]))
+        command = rt.command(active)
+        self.assertEqual(command[-len(art["server_args"]):], art["server_args"])
+        self.assertIn("--mmproj", command)
+        # Only where it was run: an NVIDIA machine is not offered this build.
+        self.assertFalse(fit.candidate(entry, nvidia(24), self.config(), "chat", "llama.cpp")["ok"])
+        self.assertTrue(fit.candidate(entry, apple(24, "Apple M4 Pro", sandbox=1), self.config(), "chat", "llama.cpp")["ok"])
+
+    def test_a_server_that_does_not_start_keeps_the_download(self):
+        class WillNotStart(FakeLlama):
+            def start(self, timeout=60):
+                raise RuntimeError("llama-server exited with code 1")
+        rt, said = WillNotStart(), []
+        result = manager.setup(self.config(), model_id="qwen3.5-9b", runtime=rt, hw=apple(18), progress=said.append,
+                               embedding=False, decision=False, smoke=fake_smoke({}), hub=ApacheHub())
+        self.assertFalse(result["ok"])
+        self.assertIn("llama-server exited with code 1", result["error"])
+        self.assertEqual((rt.pulled, rt.removed), (["qwen3.5-9b"], []))          # fetched, and not thrown away
+        self.assertIn("loading qwen3.5-9b into memory", said)
+        self.assertTrue(any("its download is kept" in line for line in said))
+        # What the catalog passes to llama.cpp for Bonsai 2 27B are options the pinned build takes.
+        args = catalog.get("bonsai-2-27b")["artifacts"]["gguf"]["server_args"]
+        self.assertEqual(args[args.index("--load-mode") + 1], "none")
+        self.assertNotIn("--no-mmap", args)
 
     def test_a_refused_licence_lookup_is_that_models_failure_not_a_crash(self):
         class Limited:

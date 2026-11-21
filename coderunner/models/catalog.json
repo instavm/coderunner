@@ -112,6 +112,35 @@
         "commercial": true
       },
       "artifacts": {
+        "gguf": {
+          "url": "https://registry.ollama.ai/v2/library/bonsai-2/blobs/sha256:4f99aed01b8a877e153f9aa6569a4440fe17c59701cc0953e36d7f460549e70e",
+          "folder": "ollama--bonsai-2",
+          "file": "bonsai-2-27b-Q2_0.gguf",
+          "sha256": "4f99aed01b8a877e153f9aa6569a4440fe17c59701cc0953e36d7f460549e70e",
+          "bytes": 7626008928,
+          "size_gb": 7.63,
+          "mmproj_repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+          "mmproj": "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+          "mmproj_sha256": "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903",
+          "mmproj_gb": 0.63,
+          "kv_bytes": 1,
+          "server_args": [
+            "--reasoning-effort",
+            "medium",
+            "-ctk",
+            "q8_0",
+            "-ctv",
+            "q8_0",
+            "-ngl",
+            "99",
+            "--load-mode",
+            "none"
+          ],
+          "gpu": [
+            "apple"
+          ],
+          "streams": 12
+        },
         "prism": {
           "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
           "file": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
@@ -125,7 +154,7 @@
           "read_factor": 0.87
         }
       },
-      "notes": "Qwen3.8-27B with ternary weights (about 2 bits each); needs Prism ML's llama.cpp build (runtime prism). Maker reports 98% of full-precision quality.",
+      "notes": "Qwen3.8-27B with ternary weights (about 2 bits each); the maker reports 98% of full-precision quality.",
       "verified": "2026-10-11",
       "evidence": {
         "repo": "Qwen/Qwen3.8-27B",
