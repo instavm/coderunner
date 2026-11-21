@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import pathlib
 import threading
@@ -15,6 +16,10 @@ from coderunner.models import catalog, coreml, coreml_server as srv, manager
 from coderunner.server.gateway import sandbox_app
 from fakes import Svc
 from test_models import TempHome, apple
+
+# The media encoders use the Core ML environment's own packages, which the host assistant does not need.
+needs_media_packages = unittest.skipUnless(importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL"),
+                                           "needs numpy and Pillow (the Core ML environment's packages)")
 
 SANDBOX = "sandbox-token-0123456789abcdefghijklmnop"
 
@@ -223,6 +228,7 @@ class ServerTests(unittest.TestCase):
         encoder._sequence = sequence
         return encoder
 
+    @needs_media_packages
     def test_pictures_are_cut_into_patches_and_pooled_as_the_card_says(self):
         import io as bytes_io
         import tempfile
@@ -249,6 +255,7 @@ class ServerTests(unittest.TestCase):
             self.assertTrue(all(abs(pool[:, i].sum() - 1 / 9) < 1e-3 for i in range(count)))
             self.assertEqual(encoder.sequences[-1], (33 // 3) * (18 // 3) + 4)          # 66 tokens + 4 special
 
+    @needs_media_packages
     def test_a_search_does_not_wait_for_a_picture_in_the_vision_encoder(self):
         import io as bytes_io
         import tempfile
@@ -281,6 +288,7 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(len(encoder.sequences), 1)                        # then its tokens were read
             self.assertTrue(encoder.release())
 
+    @needs_media_packages
     def test_sound_goes_through_the_audio_encoder_ten_seconds_at_a_time(self):
         import io as bytes_io
         import tempfile
