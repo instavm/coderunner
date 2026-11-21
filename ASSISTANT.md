@@ -750,6 +750,29 @@ answer ends with how long it took. Where it works on a web page, a picture of th
 after it opens one, when it asks for approval on one, and at the end: at most 8 a task and 20 seconds apart,
 kept 14 days in `assistant/shots` and served on the owner surface at `/api/shots/<name>`.
 
+Files can be attached to a task: the paperclip in the box where a task is typed, a file dropped anywhere on
+the window, or a picture pasted into the box. Each is sent to the daemon as soon as it is chosen and waits
+above the box as a small tile (a picture or a video's first frame, or a file's name and size) with a bar for
+how far it has got; at most 8 to a message, each up to `files.max_file_mb`. In the thread a picture shows as
+itself and opens large on a click, a video and a recording play in place, and anything else is a card with its
+name and size. A message can be files alone.
+
+The assistant is told each file's name, kind, size and place, and what reads it: it is shown pictures (and one
+frame of a video, at 1 s) with the message itself, up to 4, where the model can see; `file_read` reads
+documents and text, `file_view` other moments of a video, `file_listen` what is said in a recording or a
+video. The files are kept in `assets/outputs/attached/<id>/` under the home, which the sandbox mounts, so code
+run there works on them at `/app/uploads/outputs/attached/<id>/<name>`; a script that names the host's path is
+given the sandbox's. The file tools read an attached file though it is in no shared folder, and nothing else
+under the home. Code in the sandbox can write into that folder, so only a regular file that is the one thing
+in its id's folder counts: a link left there is not followed. `POST /api/uploads` takes the file as the body
+and its name in `X-File-Name`; `GET /api/uploads/<id>` serves pictures, video, sound and PDFs in place and
+everything else only as a download, so an attached HTML page or SVG never runs as the daemon's own page;
+`POST /api/tasks` takes their ids in `attachments`.
+
+An approval in the thread is one sentence with Allow and Deny; the step it is about (a script, a form) is two
+small lines under it that open on a click, and once decided the card says how: Allowed, Declined, or not
+answered in time.
+
 The window opens at 1152 by 720. `coderunner app` opens it: with the checkout's
 own Electron where `npm install` was run in `app/`, and otherwise with Electron 45.2.3 downloaded once into
 `~/.coderunner/runtime` (121 MB, checked against the release's checksums), so no Node is needed. The app finds

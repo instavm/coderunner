@@ -88,7 +88,9 @@ class Tasks:
 
     # ---- starting and stopping -------------------------------------------
 
-    def start(self, conversation: str, prompt: str, origin: str) -> dict:
+    def start(self, conversation: str, prompt: str, origin: str, attachments: list[str] | None = None) -> dict:
+        """attachments: ids of files the owner attached in the app (files/attached.py)."""
+        from ..files import attached
         task_id = secrets.token_hex(6)
         now = time.time()
         self.store.execute("INSERT INTO tasks(id, conversation, prompt, status, reply, created, finished) "
@@ -100,16 +102,28 @@ class Tasks:
 
         emit.task = task_id
         emit.shots = {"count": 0, "page": "", "at": 0.0, "since": 0, "busy": False}
-        emit({"type": "started", "prompt": prompt})
-        self.running[task_id] = asyncio.create_task(self._run(task_id, conversation, prompt, origin, emit))
+        files = [info for info in map(attached.describe, (attachments or [])[:attached.MAX_PER_TASK]) if info]
+        emit({"type": "started", "prompt": prompt, **({"attachments": files} if files else {})})
+        self.running[task_id] = asyncio.create_task(
+            self._run(task_id, conversation, prompt, origin, emit, [info["id"] for info in files]))
         return self.get(task_id)
 
-    async def _run(self, task_id: str, conversation: str, prompt: str, origin: str, emit) -> None:
+    async def _run(self, task_id: str, conversation: str, prompt: str, origin: str, emit,
+                   attachments: list[str] | None = None) -> None:
         status, reply = "done", ""
         try:
             channel, _, chat_id = conversation.partition(":")
-            reply = await self.daemon.handle_message(channel, chat_id, prompt, origin=origin, events=emit,
-                                                     task=task_id)
+            text, images = prompt, None
+            if attachments:
+                # The model is told where each file is, and shown the pictures among them straight away.
+                from ..files import attached
+                svc = self.daemon.svc
+                note, images, _ = await attached.for_the_model(
+                    attachments, getattr(getattr(svc, "files", None), "media", None), bool(getattr(svc, "vision", False)),
+                    sandbox=svc.config.get("sandbox.driver") != "none")
+                text = f"{prompt}\n\n{note}".strip() if note else prompt
+            reply = await self.daemon.handle_message(channel, chat_id, text, origin=origin, events=emit,
+                                                     task=task_id, **({"images": images} if images else {}))
         except asyncio.CancelledError:
             status, reply = "cancelled", "Stopped."
         except Exception as exc:        # the app shows the failure instead of waiting for ever

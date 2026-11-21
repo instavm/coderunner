@@ -38,8 +38,13 @@
       </div>
     </section>
     <form id="composer" autocomplete="off">
-      <textarea id="input" rows="1" placeholder="Describe a task…" aria-label="Task"></textarea>
-      <button id="send" class="send" type="submit" aria-label="Start task">↑</button>
+      <div id="attachments" class="attachments" hidden></div>
+      <div class="composer-row">
+        <button id="attach" class="attach" type="button" title="Attach files" aria-label="Attach files"></button>
+        <textarea id="input" rows="1" placeholder="Describe a task…" aria-label="Task"></textarea>
+        <button id="send" class="send" type="submit" aria-label="Start task">↑</button>
+      </div>
+      <input id="filePick" type="file" multiple hidden>
     </form>
   </main>
 

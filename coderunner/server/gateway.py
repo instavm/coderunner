@@ -23,6 +23,7 @@ import secrets
 import shutil
 import tempfile
 import time
+import urllib.parse
 from typing import Any
 
 import httpx
@@ -506,16 +507,50 @@ def admin_app(svc, daemon) -> Starlette:
         return RedirectResponse("/app/", status_code=307)
 
     async def start_task(request: Request):
+        from ..files import attached
         body = await request.json()
         message = str(body.get("message", "")).strip()
-        if not message:
+        given = body.get("attachments") or []
+        files = [str(item) for item in given if attached.path_of(str(item))] if isinstance(given, list) else []
+        if not message and not files:
             return JSONResponse({"error": "message is required"}, status_code=400)
+        if len(files) > attached.MAX_PER_TASK:
+            return JSONResponse({"error": f"At most {attached.MAX_PER_TASK} files to a message."}, status_code=400)
         if not svc.config.get("models.chat"):
             return JSONResponse({"error": "No local chat model is set up. Run `coderunner setup`."}, status_code=409)
         conversation = str(body.get("conversation") or "")
         if not conversation.startswith("app:"):
             conversation = "app:" + secrets.token_hex(6)
-        return JSONResponse(daemon.tasks.start(conversation, message, principal(request)))
+        return JSONResponse(daemon.tasks.start(conversation, message, principal(request), attachments=files))
+
+    async def upload(request: Request):
+        """A file the owner attaches to a task: the body is the file, X-File-Name its name (URL-encoded). It is kept where the
+        file tools and the sandbox can reach it (files/attached.py), and named in a task by the id returned."""
+        from ..files import attached
+        try:
+            name = urllib.parse.unquote(request.headers.get("x-file-name") or "") or request.query_params.get("name") or ""
+            kept = await attached.save(request.stream(), name, attached.limit_bytes(svc.config))
+        except attached.TooLarge as exc:
+            return JSONResponse({"error": f"That file is {exc}."}, status_code=413)
+        except ValueError as exc:
+            return JSONResponse({"error": f"That file was not kept: {exc}."}, status_code=400)
+        svc.audit.write("files.attached", name=kept["name"], kind=kept["kind"], size=kept["size"],
+                        origin=principal(request))
+        return JSONResponse(kept)
+
+    async def uploaded(request: Request):
+        """An attached file, for the app to show: pictures, video, sound and PDFs in place, anything else only
+        as a download (an attached HTML page must never run as the daemon's own)."""
+        from ..files import attached
+        info, path = attached.describe(request.path_params["id"]), attached.path_of(request.path_params["id"])
+        if info is None:
+            return JSONResponse({"error": "no such file"}, status_code=404)
+        headers = {"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff",
+                   "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'"}
+        if info["inline"]:
+            return FileResponse(path, media_type=info["mime"], headers=headers, content_disposition_type="inline",
+                                filename=info["name"])
+        return FileResponse(path, media_type="application/octet-stream", headers=headers, filename=info["name"])
 
     async def cancel_task(request: Request):
         return JSONResponse({"cancelled": daemon.tasks.cancel(request.path_params["id"])})
@@ -668,6 +703,8 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/tasks", start_task, methods=["POST"]),
         Route("/api/tasks/{id}/cancel", cancel_task, methods=["POST"]),
         Route("/api/shots/{name}", shot, methods=["GET"]),
+        Route("/api/uploads", upload, methods=["POST"]),
+        Route("/api/uploads/{id}", uploaded, methods=["GET"]),
         Route("/api/conversations", conversations, methods=["GET"]),
         Route("/api/conversations/{conversation}", conversation, methods=["GET"]),
         Route("/api/events", events, methods=["GET"]),

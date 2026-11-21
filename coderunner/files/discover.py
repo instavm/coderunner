@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Iterator
 
 from ..core import paths
+from . import attached
 from .kinds import MAX_CODE_BYTES, PROSE, is_code, is_generated, is_screenshot, kind_of
 
 SECRET_DIRS = {".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".password-store", "Keychains", ".coderunner"}
@@ -157,7 +158,9 @@ class Folders:
 
     def resolve(self, path: str) -> pathlib.Path:
         """The real path of a shared-folder file the assistant may read, or FileAccessError."""
-        real = pathlib.Path(os.path.expanduser(str(path))).resolve()
+        real = pathlib.Path(os.path.expanduser(attached.on_host(str(path)))).resolve()
+        if attached.is_attached(real):          # a file the owner handed over in the app, kept under the home
+            return real
         root = next((r for r in self.roots() if r in real.parents), None)
         if root is None:
             raise FileAccessError(f"{path} is not in a folder the owner shared (coderunner files add <folder>)")

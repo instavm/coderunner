@@ -128,8 +128,15 @@ def sandbox_tools(svc) -> list[Tool]:
             svc.egress.taint()
         return True
 
+    def in_sandbox(text: str) -> str:
+        """Code that names an attached file by its path on the host is given the path the sandbox has for it:
+        the model is told both, and wrote the host's into its first script."""
+        from ..files import attached
+        return str(text).replace(str(attached.attached_dir()), attached.SANDBOX_DIR)
+
     async def run_python(args, ctx):
         session = args.get("session") or "main"
+        args = {**args, "code": in_sandbox(args["code"])}
         if not await approved(f"Run in the sandbox:\n{args['code']}", session, ctx):
             return "Error: the owner did not approve running this code."
         try:
@@ -142,7 +149,7 @@ def sandbox_tools(svc) -> list[Tool]:
             or "(no output)"
 
     async def run_shell(args, ctx):
-        command, session = args["command"], args.get("session") or "main"
+        command, session = in_sandbox(args["command"]), args.get("session") or "main"
         timeout = max(1, min(int(args.get("timeout") or 120), 3600))
         if not await approved(f"Run in the sandbox shell:\n{command}", session, ctx):
             return "Error: the owner did not approve running this command."

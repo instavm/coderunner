@@ -179,7 +179,9 @@ class TaskView {
     this.seq = 0;
     this.steps = 0;
     this.root = el("article", "task");
-    this.root.appendChild(el("div", "bubble-user", task.prompt));
+    this.bubble = el("div", "bubble-user", task.prompt);
+    this.bubble.hidden = !task.prompt;          // files alone, with no words
+    this.root.appendChild(this.bubble);
     this.flow = el("div", "flow");
     this.root.appendChild(this.flow);
     this.now = null;              // the line that says what is happening
@@ -223,6 +225,14 @@ class TaskView {
     }
   }
 
+  // What the owner attached, above their words: pictures and videos as themselves, anything else by name.
+  showAttached(files) {
+    if (!Array.isArray(files) || !files.length || this.attached) return;
+    this.attached = el("div", "attached");
+    for (const file of files) this.attached.appendChild(attachedFile(file));
+    this.root.insertBefore(this.attached, this.bubble);
+  }
+
   showPicture(e) {
     const figure = el("figure", "shot"), image = el("img");
     image.src = `/api/shots/${encodeURIComponent(e.file)}`;
@@ -239,7 +249,7 @@ class TaskView {
     if (e.seq && e.seq <= this.seq) return;
     if (e.seq) this.seq = e.seq;
     switch (e.type) {
-      case "started": break;
+      case "started": this.showAttached(e.attachments); break;
       case "note": this.say(markdown(el("div", "note"), e.text)); break;
       case "plan": this.showPlan(e.steps); break;
       case "tool":
@@ -251,6 +261,7 @@ class TaskView {
       case "shot": this.showPicture(e); break;
       case "activity":
         if (e.event === "approval.requested") this.ask(e);
+        else if (e.event === "approval.decided") closeAsk(e.id, e.status === "approved" ? true : e.status === "denied" ? false : "late");
         else if (e.ok !== false) this.setNow(describeActivity(e));
         break;
       case "done": case "failed": case "cancelled": this.finish(e); break;
@@ -262,13 +273,24 @@ class TaskView {
     const handoff = e.kind === "browser.handoff";
     const card = el("div", "ask");
     card.appendChild(el("div", "ask-title", handoff ? "Your turn on the computer" : "Needs your approval"));
-    card.appendChild(richText(el("div", ""), e.summary || e.kind));
-    const row = el("div", "row");
+    // One sentence says what is asked; the step itself (a script, a form) is shown small under it.
+    const [first, ...rest] = String(e.summary || e.kind).split(/\n+/);
+    const share = e.kind === "data.share";
+    card.appendChild(richText(el("div", ""), share ? `This task holds data from your files. Allow it to use that data on ${e.target}?` : first));
+    const step = (share ? rest.join("\n").replace(/^First step: /, "") : rest.join("\n")).trim();
+    if (step) {
+      const more = el("div", "ask-step", step);
+      more.title = "Show all of it";
+      more.onclick = () => more.classList.toggle("open");
+      card.appendChild(more);
+    }
+    const row = el("div", "row"), before = this.now?.what.textContent || "Working";
     const decide = async (allow) => {
       row.querySelectorAll("button").forEach((b) => b.disabled = true);
       try { await api(`/api/approvals/${e.id}`, {method: "POST", body: JSON.stringify({allow, scope: "once"})}); }
       catch (err) { row.querySelectorAll("button").forEach((b) => b.disabled = false); alert(err.message); return; }
       closeAsk(e.id, allow);
+      this.setNow(before);            // no longer waiting for the owner
     };
     if (handoff) {
       const take = el("button", "btn primary", "Take control");
@@ -319,7 +341,8 @@ function closeAsk(id, allowed) {
   state.pending.delete(id);
   if (!entry || entry.card.classList.contains("closed")) return;
   entry.card.classList.add("closed");
-  entry.row.replaceChildren(el("span", "muted small", allowed === null ? "Answered" : allowed ? "Done" : "Declined"));
+  entry.row.replaceChildren(el("span", "muted small", allowed === "late" ? "Not answered in time" : allowed === null ? "Answered" :
+                                                      allowed ? "Allowed" : "Declined"));
 }
 
 // ---- conversations ----------------------------------------------------------
@@ -334,12 +357,12 @@ async function loadConversations() {
     const waiting = [...state.approvals.values()].some((a) => a.conversation === c.conversation &&
                                                        !a.card.classList.contains("closed"));
     const status = waiting ? "waiting" : c.status;
-    t.append(el("span", "dot " + status), el("span", "label", trunc(c.title, 60)));
+    t.append(el("span", "dot " + status), el("span", "label", trunc(c.title || "Attached files", 60)));
     const sub = status === "running" ? "Working…" : status === "waiting" ? "Needs you" :
                 status === "failed" ? "Failed" : status === "cancelled" ? "Stopped" :
                 new Date(c.updated * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
     button.append(t, el("div", "s", sub));
-    button.onclick = () => openConversation(c.conversation, c.title);
+    button.onclick = () => openConversation(c.conversation, c.title || "Attached files");
     nav.appendChild(button);
   }
 }
@@ -405,23 +428,158 @@ async function pollApprovals() {
   } catch { /* the daemon restarts now and then */ }
 }
 
+// ---- files attached to a task -----------------------------------------------------
+
+const FILE_ICON = "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z M14 3v5h5";
+const CLIP_ICON = "M20.5 11.5l-8.2 8.2a5 5 0 0 1-7.1-7.1l8.5-8.5a3.4 3.4 0 0 1 4.8 4.8l-8.4 8.4a1.8 1.8 0 0 1-2.6-2.6l7.6-7.6";
+const MAX_ATTACHED = 8;
+const sizeText = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e5 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(Math.round(n / 1000), 1)} KB`;
+const mediaKind = (type) => /^image\/(?!svg)/.test(type) ? "image" : /^video\//.test(type) ? "video" : /^audio\//.test(type) ? "audio" : "file";
+
+// A picture at full size over the app; a click or Escape puts it away.
+function lightbox(src, alt) {
+  const box = el("div", "lightbox"), image = el("img");
+  image.src = src; image.alt = alt || "";
+  box.appendChild(image);
+  const close = () => { box.remove(); document.removeEventListener("keydown", onKey, true); };
+  const onKey = (event) => { if (event.key === "Escape") { event.stopPropagation(); close(); } };
+  box.onclick = close;
+  document.addEventListener("keydown", onKey, true);
+  document.body.appendChild(box);
+}
+
+// A file by its name and size, for what cannot be shown as itself.
+function fileCard(name, size, href) {
+  const card = el(href ? "a" : "div", "att-file"), words = el("span", "att-words");
+  words.append(el("span", "att-name", name), el("span", "att-size", sizeText(size)));
+  card.append(icon(FILE_ICON), words);
+  card.title = name;
+  if (href) { card.href = href; card.download = name; }
+  return card;
+}
+
+// One attached file in a task's thread: {name, kind, size, url, inline}.
+function attachedFile(file) {
+  if (file.kind === "image" && file.inline) {
+    const image = el("img", "att-image");
+    image.src = file.url; image.alt = file.name; image.title = file.name; image.loading = "lazy";
+    image.onclick = () => lightbox(file.url, file.name);
+    image.onerror = () => image.replaceWith(fileCard(file.name, file.size));
+    return image;
+  }
+  if (file.kind === "video" && file.inline) {
+    const video = el("video", "att-video");
+    video.src = `${file.url}#t=0.1`; video.controls = true; video.preload = "metadata"; video.title = file.name;
+    video.onerror = () => video.replaceWith(fileCard(file.name, file.size, file.url));   // a format this browser cannot play
+    return video;
+  }
+  if (file.kind === "audio" && file.inline) {
+    const box = el("div", "att-audio"), audio = el("audio");
+    audio.src = file.url; audio.controls = true; audio.preload = "metadata";
+    box.append(el("span", "att-name", file.name), audio);
+    return box;
+  }
+  return fileCard(file.name, file.size, file.url);
+}
+
+// What is waiting in the composer: each file is sent to the daemon as soon as it is chosen, and shown small
+// with how far it has got. {file, id, tile, request, failed}
+const waiting = [];
+
+function refreshComposer() {
+  $("attachments").hidden = !waiting.length;
+  $("send").disabled = waiting.some((item) => !item.id && !item.failed);
+}
+
+function dropWaiting(item) {
+  item.request?.abort();
+  if (item.preview) URL.revokeObjectURL(item.preview);
+  item.tile.remove();
+  waiting.splice(waiting.indexOf(item), 1);
+  refreshComposer();
+}
+
+function attach(files) {
+  for (const file of files) {
+    if (waiting.length >= MAX_ATTACHED) { alert(`At most ${MAX_ATTACHED} files to a message.`); break; }
+    const kind = mediaKind(file.type), name = file.name || `pasted.${(file.type.split("/")[1] || "bin").replace(/\W.*/, "")}`;
+    const item = {file, id: "", failed: "", preview: kind === "image" || kind === "video" ? URL.createObjectURL(file) : ""};
+    const tile = item.tile = el("div", "wait " + kind), remove = el("button", "wait-remove", "×"), bar = el("span", "wait-bar");
+    remove.type = "button"; remove.title = "Remove"; remove.setAttribute("aria-label", `Remove ${name}`);
+    remove.onclick = () => dropWaiting(item);
+    if (kind === "image") { const image = el("img"); image.src = item.preview; image.alt = name; tile.appendChild(image); }
+    else if (kind === "video") {
+      const video = el("video"); video.src = `${item.preview}#t=0.1`; video.muted = true; video.preload = "metadata";
+      tile.append(video, el("span", "wait-play"));
+    } else tile.appendChild(fileCard(name, file.size));
+    tile.title = `${name} · ${sizeText(file.size)}`;
+    tile.append(bar, remove);
+    $("attachments").appendChild(tile);
+    waiting.push(item);
+    const request = item.request = new XMLHttpRequest();
+    request.open("POST", "/api/uploads");
+    request.setRequestHeader("X-CodeRunner", "1");
+    request.setRequestHeader("X-File-Name", encodeURIComponent(name));
+    request.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    request.upload.onprogress = (event) => { if (event.lengthComputable) bar.style.width = `${event.loaded / event.total * 100}%`; };
+    const fail = (why) => { item.failed = why; tile.classList.add("failed"); tile.title = `${name}: ${why}`; refreshComposer(); };
+    request.onload = () => {
+      let data = {};
+      try { data = JSON.parse(request.responseText); } catch { /* not ours */ }
+      if (request.status >= 300 || !data.id) return fail(data.error || "It was not kept.");
+      item.id = data.id;
+      tile.classList.add("kept");
+      refreshComposer();
+    };
+    request.onerror = () => fail("The upload did not go through.");
+    request.send(file);
+  }
+  refreshComposer();
+  $("input").focus();
+}
+
+$("attach").appendChild(icon(CLIP_ICON));
+$("attach").onclick = () => $("filePick").click();
+$("filePick").onchange = () => { attach([...$("filePick").files]); $("filePick").value = ""; };
+$("input").addEventListener("paste", (event) => {
+  const files = [...(event.clipboardData?.files || [])];
+  if (files.length) { event.preventDefault(); attach(files); }
+});
+// Files dragged over the window are attached wherever they are dropped.
+let dragging = 0;
+const carriesFiles = (event) => [...(event.dataTransfer?.types || [])].includes("Files") && !$("composer").hidden;
+window.addEventListener("dragenter", (event) => { if (carriesFiles(event)) { dragging += 1; $("main").classList.add("dropping"); } });
+window.addEventListener("dragleave", (event) => { if (carriesFiles(event) && --dragging <= 0) { dragging = 0; $("main").classList.remove("dropping"); } });
+window.addEventListener("dragover", (event) => { if (carriesFiles(event)) event.preventDefault(); });
+window.addEventListener("drop", (event) => {
+  if (!carriesFiles(event)) return;
+  event.preventDefault();
+  dragging = 0;
+  $("main").classList.remove("dropping");
+  attach([...event.dataTransfer.files]);
+});
+
 // ---- composer ------------------------------------------------------------------
 
 const emptyState = $("empty");
 $("composer").onsubmit = async (event) => {
   event.preventDefault();
   const message = $("input").value.trim();
-  if (!message) return;
+  const failed = waiting.find((item) => item.failed);
+  if (failed) { alert(`${failed.file.name || "A file"} was not attached: ${failed.failed} Remove it to go on.`); return; }
+  const attachments = waiting.filter((item) => item.id).map((item) => item.id);
+  if ((!message && !attachments.length) || waiting.some((item) => !item.id)) return;
   $("send").disabled = true;
   try {
     const task = await api("/api/tasks", {method: "POST",
-      body: JSON.stringify({message, conversation: state.conversation || ""})});
+      body: JSON.stringify({message, conversation: state.conversation || "", attachments})});
     $("input").value = ""; grow();
+    for (const item of [...waiting]) dropWaiting(item);
     if (task.conversation !== state.conversation) {
-      await openConversation(task.conversation, message);
+      await openConversation(task.conversation, message || "Attached files");
     }
   } catch (err) { alert(err.message); }
-  finally { $("send").disabled = false; }
+  finally { refreshComposer(); }
 };
 function grow() { const i = $("input"); i.style.height = "auto"; i.style.height = Math.min(i.scrollHeight, 200) + "px"; }
 $("input").addEventListener("input", grow);
