@@ -1309,6 +1309,19 @@ class OwnRuntimeTests(TempHome):
         self.assertIn("brew install ollama", result["error"])
 
 
+class NoGpuTests(TempHome):
+    def test_a_machine_without_a_gpu_is_told_models_will_be_slow_before_it_downloads_one(self):
+        notes = manager.plan(self.config(), hw=linux(32), runtime=FakeRuntime())["notes"]
+        self.assertRegex(" ".join(notes), r"No GPU was found here \(AMD Ryzen 9 7950X\), so models run on the processor, "
+                                          r"slowly: about \d+ tokens a second and \d+ s a step with ")
+        said = []
+        manager.setup(self.config(), runtime=FakeRuntime(), hw=linux(32), progress=said.append, embedding=False,
+                      decision=False, smoke=fake_smoke({}), measure=False)
+        self.assertTrue(said[0].startswith("warning: No GPU was found here"), said[:1])
+        for hw in (apple(18), nvidia(24)):
+            self.assertNotIn("No GPU", " ".join(manager.plan(self.config(), hw=hw, runtime=FakeRuntime())["notes"]))
+
+
 class DiskRoomTests(TempHome):
     """Downloads never take the disk under files.min_free_gb; setup moves on to a model that fits."""
 

@@ -66,6 +66,16 @@ def _own_ollama(rt: Runtime, hw, progress: Callable[[str], None]) -> str | None:
     return None
 
 
+def _cpu_note(hw, chosen: dict | None = None) -> str | None:
+    """What an owner should hear before setting up a machine with no GPU CodeRunner can use: it works, slowly."""
+    if hw.gpu != "none":
+        return None
+    speed = (f": about {chosen['tok_s']:.0f} tokens a second and {chosen['step_s']:.0f} s a step with {chosen['id']}"
+             if chosen and chosen.get("tok_s") else "")
+    return (f"No GPU was found here ({hw.chip or 'unknown processor'}), so models run on the processor, slowly"
+            f"{speed}. An Apple silicon Mac or an NVIDIA GPU runs them many times faster.")
+
+
 def _free_gb(path) -> float:
     """Decimal GB free on the disk that holds `path` (or will, once it exists)."""
     path = pathlib.Path(path).expanduser()
@@ -338,6 +348,8 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
         notes.append(f"No model runtime is installed here: setup fetches its own copy of Ollama {rt.RELEASE}.")
     elif rt is None or not rt.available():
         notes.append(install_hint(hw, rt.name if rt else None))
+    if _cpu_note(hw, chosen):
+        notes.append(_cpu_note(hw, chosen))
     if chosen is not None:
         room = _room_gb(config)[0]
         chosen_on = prism if chosen.get("runtime") == "prism" and prism is not None else \
@@ -601,6 +613,8 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
         return {"ok": False, "error": f"{rt.name} is not available. {install_hint(hw, rt.name)}"}
     if rt.name not in LOCAL:
         return _external(config, rt, model_id, progress, smoke)
+    if _cpu_note(hw):
+        progress("warning: " + _cpu_note(hw))
     if hasattr(rt, "ensure_current"):
         try:
             rt.ensure_current(progress)       # EmbeddingGemma 2 and decision models need a recent Ollama
