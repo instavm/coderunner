@@ -96,6 +96,7 @@ class SetupJob(Job):
                          "gpu": hw.get("gpu"), "measured": hw.get("measured") or ""},
             "model": model and {"id": model["id"], "runtime": model.get("runtime"), "ctx": model.get("ctx"),
                                 "step_s": model.get("step_s"), "vision": model.get("vision"),
+                                "need_gb": model.get("need_gb"), "tok_s": model.get("tok_s"),
                                 "reasons": model.get("reasons", [])[:4]},
             "alternatives": [{"id": c["id"], "runtime": c.get("runtime"), "step_s": c.get("step_s")}
                              for c in planned.get("alternatives", [])[:4]],

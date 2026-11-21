@@ -139,9 +139,13 @@ def bare_machine():
 
 
 @contextlib.contextmanager
-def clean_home():
+def clean_home(keep: str | None = None):
+    """A throwaway CODERUNNER_HOME, deleted afterwards; or `keep`, a folder that stays (to start a daemon on what
+    a full run set up, without downloading it again)."""
     before = os.environ.get("CODERUNNER_HOME")
-    folder = tempfile.mkdtemp(prefix="cr-setup-")
+    if keep:
+        pathlib.Path(keep).mkdir(parents=True, exist_ok=True)
+    folder = keep or tempfile.mkdtemp(prefix="cr-setup-")
     os.environ["CODERUNNER_HOME"] = folder
     try:
         paths.ensure_dirs()
@@ -156,7 +160,8 @@ def clean_home():
             os.environ.pop("CODERUNNER_HOME", None)
         else:
             os.environ["CODERUNNER_HOME"] = before
-        shutil.rmtree(folder, ignore_errors=True)
+        if not keep:
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 def speed_mb_s(art: dict) -> float | None:
@@ -215,7 +220,7 @@ def run(args) -> dict:
     if busy:
         report["warning"] = ("already answering here, so the run would use them instead of starting its own: "
                              + ", ".join(busy))
-    with clean_home() as home, (bare_machine() if args.bare else contextlib.nullcontext()), \
+    with clean_home(args.home) as home, (bare_machine() if args.bare else contextlib.nullcontext()), \
             instrumented(args.download):
         config = Config.load()
         if args.min_free is not None:
@@ -312,6 +317,7 @@ def main() -> int:
     parser.add_argument("--no-speed", action="store_true", help="do not sample the connection's speed")
     parser.add_argument("--min-free", type=float, help="GB of disk downloads must leave free (files.min_free_gb)")
     parser.add_argument("--no-discover", action="store_true", help="the catalog only: no model discovery")
+    parser.add_argument("--home", help="run in this folder and keep it, instead of a throwaway one")
     parser.add_argument("--json", help="also write the report to this file")
     args = parser.parse_args()
     report = run(args)

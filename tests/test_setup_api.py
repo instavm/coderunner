@@ -43,6 +43,7 @@ class SetupJobTests(unittest.TestCase):
         shown = job.plan()
         self.assertEqual(shown["hardware"], {"chip": "Apple M3 Pro", "ram_gb": 18, "gpu": "apple", "measured": ""})
         self.assertEqual((shown["model"]["id"], len(shown["model"]["reasons"])), ("qwen3.5-9b", 4))
+        self.assertEqual((shown["model"]["need_gb"], shown["model"]["step_s"], shown["model"]["vision"]), (8.2, 12.0, True))
         self.assertEqual([a["id"] for a in shown["alternatives"]], ["qwen3.5-4b"])
         self.assertEqual((shown["download_gb"], shown["free_gb"], shown["room_gb"]), (6.77, 11.4, 6.4))
         self.assertEqual(job.public()["plan"], shown)

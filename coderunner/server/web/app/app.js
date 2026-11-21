@@ -611,9 +611,15 @@ function renderPlan(plan) {
     card.append(el("p", "setup-error", plan.notes.join(" ") || "No model fits this computer."), setupButton("Look again", showPlan));
     return;
   }
-  const pick = el("div", "setup-box");
-  pick.append(el("div", "section-title", "The model for this computer"), el("div", "setup-model", plan.model.id),
-              el("div", "muted small", plan.model.reasons.join(" · ")));
+  const pick = el("div", "setup-box"), model = plan.model;
+  // In a sentence first; the planner's own reasons stay a click away.
+  const facts = [model.need_gb ? `uses ${model.need_gb.toFixed(1)} of this computer's ${hw.ram_gb} GB of memory` : "",
+                 model.step_s ? `about ${Math.round(model.step_s)} seconds for each step of a task` : "",
+                 model.vision ? "reads pictures and screenshots" : "text only"].filter(Boolean).join(" · ");
+  const why = el("details", "setup-why");
+  why.append(el("summary", "", "Why this one"), el("div", "muted small", model.reasons.join(" · ")));
+  pick.append(el("div", "section-title", "The model for this computer"), el("div", "setup-model", model.id),
+              el("div", "muted small", facts.charAt(0).toUpperCase() + facts.slice(1)), why);
   const list = el("div", "setup-box");
   list.appendChild(el("div", "section-title", "To download"));
   for (const item of plan.downloads) {
