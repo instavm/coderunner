@@ -95,6 +95,20 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         transport, seen = fake_embed_server(capabilities, digest)
         return Embedder("http://ollama/v1", "embeddinggemma-2", transport=transport), seen, transport
 
+    async def test_a_scan_reads_what_is_indexed_off_the_event_loop_on_a_connection_of_its_own(self):
+        import threading
+        index, readers, real = self.index(), [], self.store.reader
+
+        def reader():
+            readers.append(threading.current_thread())
+            return real()
+        self.store.reader = reader
+        with mock.patch.object(self.store, "query", wraps=self.store.query) as shared:
+            await index.index_once()
+        # With 107,000 files that read took 8 s; on the shared connection the daemon answered nothing meanwhile.
+        self.assertTrue(readers and all(thread is not threading.main_thread() for thread in readers))
+        self.assertFalse([c for c in shared.call_args_list if "FROM files f" in c.args[0]])
+
     async def test_only_shared_non_secret_files_are_indexed_and_readable(self):
         index = self.index()
         result = await index.index_once()

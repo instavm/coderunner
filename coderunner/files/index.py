@@ -219,10 +219,16 @@ class FileIndex:
 
     async def _scan(self) -> int:
         # Entries from the app sources (mail://..., note://...) are not the walk's to find or forget.
-        known = {r["path"]: r for r in self.store.query(
-            "SELECT path, kind, size, mtime, profile, device, inode, "
-            "(SELECT part FROM file_chunks c WHERE c.path = f.path LIMIT 1) AS part FROM files f "
-            "WHERE path NOT LIKE '%://%'")}
+        def read_known():
+            # On a connection of its own, off the event loop: with 107,000 files this read took 8 s, and through
+            # the shared connection every scan (one every ten minutes, and one when a folder is added) stopped
+            # the daemon answering for that long.
+            with self.store.reader() as db:
+                return {r["path"]: dict(r) for r in db.execute(
+                    "SELECT path, kind, size, mtime, profile, device, inode, "
+                    "(SELECT part FROM file_chunks c WHERE c.path = f.path LIMIT 1) AS part FROM files f "
+                    "WHERE path NOT LIKE '%://%'")}
+        known = await asyncio.to_thread(read_known)
 
         def walk():
             changed, seen, identities = [], set(), []

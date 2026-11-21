@@ -301,8 +301,7 @@ class CheckJob:
                 found = await files.search("dishwasher warranty", None, 8)
                 if any(str(item.get("path", "")).startswith(str(documents.resolve())) for item in found or []):
                     return True
-            files.wake.set()
-            await asyncio.sleep(3)
+            await asyncio.sleep(3)          # sharing the folder woke the indexer; waking it again only rescans
         return False
 
     async def _one(self, check: Check, row: dict, run: Run) -> None:
