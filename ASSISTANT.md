@@ -709,6 +709,14 @@ their steps as they happen, approvals, and the sandbox computer's screen to watc
 (`cd app && npm install && npm start`), finds the daemon of `CODERUNNER_HOME` and starts it with `coderunner up`
 when it is not running; the daemon keeps running after the app quits.
 
+Where no model is set up yet, the app opens on a first-run screen instead of tasks: this computer, the model
+the plan picks for it and why, what will be downloaded with sizes against the free disk, and the plan's notes
+(a pick the disk has no room for, a runtime setup will fetch). "Download and set up" runs the same setup as
+`coderunner setup` in the daemon and shows its progress; it carries on if the window is closed. When it is
+done the daemon starts again in place with the new model and the page reloads. The API behind it, on the
+owner surface: `GET /api/setup` (state, progress lines, the last plan), `POST /api/setup` with
+`{"action": "plan"}` or `{"action": "start", "model": ..., "accept_license": ...}`.
+
 ## Everyday commands
 
 ```bash

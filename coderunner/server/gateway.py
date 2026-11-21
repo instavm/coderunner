@@ -251,6 +251,26 @@ def admin_app(svc, daemon) -> Starlette:
     async def status(request: Request):
         return JSONResponse(await daemon.status())
 
+    async def setup(request: Request):
+        """What `coderunner setup` does, for the app: its state, the plan for this machine, and starting it."""
+        job = getattr(daemon, "setup", None)
+        if job is None:
+            return JSONResponse({"error": "setup is not available here"}, status_code=503)
+        if request.method == "GET":
+            return JSONResponse(job.public())
+        body = await request.json()
+        if body.get("action") == "plan":
+            try:
+                return JSONResponse(await asyncio.to_thread(job.plan))
+            except Exception as exc:
+                return JSONResponse({"error": f"The plan could not be made: {exc}"}, status_code=500)
+        if body.get("action") == "start":
+            started = job.start(model=str(body.get("model") or "") or None,
+                                accept_license=bool(body.get("accept_license")))
+            svc.audit.write("setup.started" if started else "setup.already_running", origin=principal(request))
+            return JSONResponse({**job.public(), "started": started}, status_code=200 if started else 409)
+        return JSONResponse({"error": "action must be plan or start"}, status_code=400)
+
     async def approvals(request: Request):
         return JSONResponse([a.public() for a in svc.policy.pending()])
 
@@ -580,6 +600,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/health", health, methods=["GET"]),
         Route("/pair", pair, methods=["GET", "POST"]),
         Route("/api/status", status, methods=["GET"]),
+        Route("/api/setup", setup, methods=["GET", "POST"]),
         Route("/api/approvals", approvals, methods=["GET"]),
         Route("/api/approvals/{id}", decide, methods=["POST"]),
         Route("/api/grants", grants, methods=["GET"]),

@@ -358,6 +358,7 @@ async function loadConversations() {
 }
 
 async function openConversation(id, title) {
+  if (state.setup) return;        // the first-run screen holds the page until a model is set up
   state.conversation = id;
   state.views.clear();
   $("thread").replaceChildren();
@@ -524,6 +525,112 @@ async function loadModels() {
   } catch { /* shown once the daemon answers */ }
 }
 
+// ---- first run: no model yet ----------------------------------------------------------
+// What `coderunner setup` does in a terminal, from here: the plan for this computer and what it downloads, then
+// setup itself with its progress. The daemon starts again with the model when setup is done.
+
+const gb = (n) => n == null ? "size not known" : n < 0.1 ? `${Math.round(n * 1000)} MB` : `${n >= 10 ? n.toFixed(0) : n.toFixed(1)} GB`;
+let setupTimer = null;
+let setupDone = 0;
+
+function setupCard(title) {
+  state.setup = true;
+  const card = el("section", "setup");
+  card.appendChild(el("h1", "", title));
+  $("thread").replaceChildren(card);
+  $("composer").hidden = true;
+  $("title").textContent = "Set up";
+  showComputer(false);            // nothing runs on the computer until there is a model
+  return card;
+}
+
+function setupButton(label, action) {
+  const button = el("button", "btn primary setup-go", label);
+  button.onclick = () => { button.disabled = true; action(); };
+  return button;
+}
+
+async function showPlan() {
+  const card = setupCard("Set up your assistant");
+  card.appendChild(el("p", "muted", "Looking at this computer and the models that suit it. The first look of a day takes about half a minute…"));
+  try { renderPlan(await api("/api/setup", {method: "POST", body: JSON.stringify({action: "plan"})})); }
+  catch (err) { card.append(el("p", "setup-error", err.message), setupButton("Look again", showPlan)); }
+}
+
+function renderPlan(plan) {
+  const card = setupCard("Set up your assistant");
+  const hw = plan.hardware;
+  card.appendChild(el("p", "muted", `This computer: ${hw.chip}, ${hw.ram_gb} GB of memory${hw.gpu === "none" ? ", no graphics processor found" : ""}. ` +
+                                    "The assistant's models run on it; nothing you ask is sent anywhere else."));
+  if (!plan.model) {
+    card.append(el("p", "setup-error", plan.notes.join(" ") || "No model fits this computer."), setupButton("Look again", showPlan));
+    return;
+  }
+  const pick = el("div", "setup-box");
+  pick.append(el("div", "section-title", "The model for this computer"), el("div", "setup-model", plan.model.id),
+              el("div", "muted small", plan.model.reasons.join(" · ")));
+  const list = el("div", "setup-box");
+  list.appendChild(el("div", "section-title", "To download"));
+  for (const item of plan.downloads) {
+    const row = el("div", "setup-row");
+    row.append(el("span", "", item.what), el("span", "muted", gb(item.gb)));
+    list.appendChild(row);
+  }
+  const total = el("div", "setup-row total");
+  total.append(el("span", "", plan.downloads.length ? "In all" : "Nothing: everything it needs is already here"),
+               el("span", "", `${plan.downloads.length ? gb(plan.download_gb) + " · " : ""}${gb(plan.free_gb)} free on the disk`));
+  list.appendChild(total);
+  card.append(pick, list);
+  for (const note of plan.notes) card.appendChild(el("p", "setup-note", note));
+  card.appendChild(setupButton(plan.downloads.length ? "Download and set up" : "Set up", async () => {
+    await api("/api/setup", {method: "POST", body: JSON.stringify({action: "start"})}).catch(() => {});   // 409: one is running
+    watchSetup();
+  }));
+}
+
+function renderProgress(job) {
+  const title = job.state === "running" ? "Setting up…" : job.state === "done" ? "Ready" : "Setup did not finish";
+  const card = setupCard(title);
+  if (job.state === "running") {
+    card.appendChild(el("p", "muted", "Downloading the model and testing it on this computer. It carries on if you close this window."));
+  }
+  const log = el("div", "setup-log");
+  for (const line of job.lines) log.appendChild(el("div", "", line));
+  card.appendChild(log);
+  log.scrollTop = log.scrollHeight;
+  if (job.state === "failed") {
+    card.append(el("p", "setup-error", job.result?.error || "Setup failed."), setupButton("Look again", showPlan));
+  } else if (job.state === "done") {
+    card.appendChild(el("p", "muted", "Starting the assistant with its model…"));
+  }
+}
+
+async function watchSetup() {
+  clearTimeout(setupTimer);
+  let job;
+  try { job = await api("/api/setup"); }
+  catch { setupTimer = setTimeout(watchSetup, 1500); return; }      // the daemon is starting again
+  if (job.state === "failed") { renderProgress(job); return; }
+  if (job.state === "running" || (job.state === "done" && setupDone++ < 40)) {
+    renderProgress(job);
+    setupTimer = setTimeout(watchSetup, 1500);
+    return;
+  }
+  location.reload();              // set up, and the daemon that answers now was started with the model
+}
+
+// True when the page shows the first-run screen instead of tasks.
+async function checkSetup() {
+  let job;
+  try { job = await api("/api/setup"); } catch { return false; }
+  if (job.state === "running") { renderProgress(job); watchSetup(); return true; }
+  if (job.configured) return false;
+  if (job.state === "failed") renderProgress(job);
+  else if (job.plan) renderPlan(job.plan);
+  else showPlan();
+  return true;
+}
+
 // ---- start -------------------------------------------------------------------------
 
 setInterval(() => state.views.forEach((v) => v.tick()), 1000);
@@ -531,6 +638,6 @@ setInterval(pollApprovals, 2500);
 if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
 pollApprovals();
 loadModels();
-openConversation(null);
+checkSetup().then((firstRun) => { if (!firstRun) openConversation(null); });
 listen();
 connectScreen();

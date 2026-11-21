@@ -98,6 +98,48 @@ def _download_gb(entry: dict, cand: dict, rt: Runtime) -> float:
     return float(art.get("size_gb") or 0) + (float(art.get("mmproj_gb") or 0) if cand.get("vision") else 0.0)
 
 
+# Decimal GB of the runtime archives setup may fetch (the pinned releases' own sizes).
+RUNTIME_GB = {"ollama-darwin.tgz": 0.17, "ollama-linux-amd64.tar.zst": 1.44, "ollama-linux-arm64.tar.zst": 1.56,
+              "llama.cpp": 0.03, "prism": 0.01, "coreml": 0.12}
+
+
+def downloads(config, planned: dict, hw: hardware.Hardware | None = None) -> list[dict]:
+    """What setup still has to fetch for this plan, as [{"what", "gb"}]: runtimes that are not here, then the
+    assistant's model, the embedding builds and the decision model. gb is None where the catalog has no size
+    (a discovered model's is in its reasons)."""
+    from . import coreml
+    hw = _hardware(config, hw)
+    found: list[dict] = []
+    ollama = OllamaRuntime(config)
+    if (ollama.binary() is None or ollama.outdated()) and ollama.can_install():
+        found.append({"what": f"Ollama {ollama.RELEASE}", "gb": RUNTIME_GB.get(ollama.build()[0])})
+    local = {"ollama": ollama, "llama.cpp": LlamaCppRuntime(config), "prism": PrismRuntime(config, hw=hw)}
+    name = (planned.get("model") or {}).get("runtime") or ""
+    if name in ("llama.cpp", "prism") and local[name].binary() is None:
+        found.append({"what": "llama.cpp" if name == "llama.cpp" else "Prism's llama.cpp build", "gb": RUNTIME_GB[name]})
+    for role, key in (("assistant model", "model"), ("embedding model (Ollama)", "embedding"),
+                      ("decision model", "decision")):
+        cand = planned.get(key)
+        if not cand:
+            continue
+        rt = local.get(cand.get("runtime") or "ollama", ollama)
+        try:
+            entry = catalog.get(cand["id"])
+        except KeyError:
+            found.append({"what": f"{role}: {cand['id']}", "gb": None})
+            continue
+        if not rt.installed(entry):
+            found.append({"what": f"{role}: {cand['id']}", "gb": round(_download_gb(entry, cand, rt), 2) or None})
+    if coreml.supported() and (config.get("models.embedding_runtime") or "auto") != "gpu":
+        core = coreml.CoreMLRuntime(config)
+        entry = next((e for e in catalog.by_role("embedding") if core.artifact(e)), None)
+        if entry and not core.installed(entry):
+            found.append({"what": f"embedding model (Core ML): {entry['id']}", "gb": core.artifact(entry).get("size_gb")})
+        if entry and core.python() is None:
+            found.append({"what": "Core ML packages", "gb": RUNTIME_GB["coreml"]})
+    return found
+
+
 def _embedding_download_gb(config, hw, embedder: Runtime | None) -> float:
     """Decimal GB the embedding models still need: the build in Ollama and, on Apple silicon, the Core ML one.
     An Ollama that is not running yet cannot say what it has, and counts as having nothing."""

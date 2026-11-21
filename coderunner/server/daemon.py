@@ -8,6 +8,7 @@ import logging
 import os
 import platform
 import signal
+import sys
 import socket
 import subprocess
 import time
@@ -92,6 +93,9 @@ async def notify_desktop(title: str, text: str) -> None:
         await asyncio.wait_for(process.wait(), 10)
 
 
+RESTART_AFTER_S = 4         # after setup from the app: time for the app to read the outcome
+
+
 class Daemon:
     def __init__(self, config: Config | None = None):
         paths.ensure_dirs()
@@ -101,7 +105,19 @@ class Daemon:
         self._servers: list[uvicorn.Server] = []
         self._tasks: list[asyncio.Task] = []
         self._stop: asyncio.Event | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self.restart_requested = False
         self.svc = self._build()
+        from .setup import SetupJob
+        self.setup = SetupJob(self.config, self.svc.audit, on_done=self._after_setup)
+
+    def _after_setup(self, result: dict) -> None:
+        """Setup from the app chose a model. Everything here was built for the configuration before it, so the
+        daemon starts again with the new one, a few seconds on, once the app has read the outcome. Called from
+        the setup job's thread."""
+        self.restart_requested = True
+        if self._loop is not None and self._stop is not None:
+            self._loop.call_soon_threadsafe(self._loop.call_later, RESTART_AFTER_S, self._stop.set)
 
     async def _warm(self) -> None:
         """Let the model read the instructions and tool list now, not when the first task arrives."""
@@ -385,7 +401,7 @@ class Daemon:
 
     async def run(self) -> None:
         cfg, svc = self.config, self.svc
-        loop = asyncio.get_running_loop()
+        loop = self._loop = asyncio.get_running_loop()
         stop = self._stop = asyncio.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError, RuntimeError):
@@ -456,7 +472,12 @@ class Daemon:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    asyncio.run(Daemon().run())
+    daemon = Daemon()
+    asyncio.run(daemon.run())
+    if daemon.restart_requested:
+        # In place, so a login service or `coderunner up` keeps the process it started.
+        log.info("starting again with the new configuration")
+        os.execv(sys.executable, [sys.executable, "-m", "coderunner", "daemon"])
 
 
 if __name__ == "__main__":

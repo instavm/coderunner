@@ -159,58 +159,6 @@ def clean_home():
         shutil.rmtree(folder, ignore_errors=True)
 
 
-def _size_gb(url: str) -> float | None:
-    try:
-        response = httpx.head(url, follow_redirects=True, timeout=15)
-        return int(response.headers["content-length"]) / 1e9 if response.status_code == 200 else None
-    except (httpx.HTTPError, KeyError, ValueError):
-        return None
-
-
-def downloads(plan: dict, hw: hardware.Hardware, config) -> list[dict]:
-    """Everything a first run of setup fetches for this plan, with sizes in GB (None where unknown)."""
-    found: list[dict] = []
-    ollama = runtimes.OllamaRuntime(config)
-    if (ollama.binary() is None or ollama.outdated()) and ollama.can_install():
-        asset = ollama.build()[0]
-        found.append({"what": f"Ollama {ollama.RELEASE}", "gb": _size_gb(
-            f"https://github.com/ollama/ollama/releases/download/v{ollama.RELEASE}/{asset}")})
-    model = plan.get("model") or {}
-    name = model.get("runtime") or ""
-    if name == "prism" and runtimes.PrismRuntime(config, hw=hw).binary() is None:
-        build = runtimes.PrismRuntime.build_for(hw)
-        if build:
-            release = runtimes.PrismRuntime.RELEASE
-            found.append({"what": "Prism's llama.cpp build", "gb": _size_gb(
-                f"https://github.com/PrismML-Eng/llama.cpp/releases/download/{release}/llama-{release}-bin-{build[0]}.tar.gz")})
-    if name == "llama.cpp" and runtimes.LlamaCppRuntime(config).binary() is None:
-        build = qwen.QwenASR.build_for_host()
-        if build:
-            found.append({"what": "llama.cpp build", "gb": _size_gb(
-                f"https://github.com/ggml-org/llama.cpp/releases/download/{qwen.LLAMA_RELEASE}/"
-                f"llama-{qwen.LLAMA_RELEASE}-bin-{build[0]}.tar.gz")})
-    for role, key in (("assistant model", "model"), ("embedding model (Ollama)", "embedding"),
-                      ("decision model", "decision")):
-        cand = plan.get(key)
-        if not cand:
-            continue
-        try:
-            art = catalog.artifact(catalog.get(cand["id"]), cand.get("runtime")) or {}
-        except KeyError:
-            art = {}                    # a discovered model: its size is in the plan's reasons only
-        size = art.get("size_gb")
-        if size is not None and cand.get("vision"):
-            size += art.get("mmproj_gb", 0.0)
-        found.append({"what": f"{role}: {cand['id']}", "gb": size, "art": art})
-    if coreml.supported():
-        entry = next((e for e in catalog.by_role("embedding") if coreml.CoreMLRuntime.artifact(e)), None)
-        if entry:
-            found.append({"what": f"embedding model (Core ML): {entry['id']}",
-                          "gb": coreml.CoreMLRuntime.artifact(entry).get("size_gb")})
-            found.append({"what": "Core ML packages", "gb": 0.12})
-    return found
-
-
 def speed_mb_s(art: dict) -> float | None:
     """The connection's speed, from a few seconds of the assistant model's download in as many streams as setup
     uses (nothing is kept)."""
@@ -284,11 +232,14 @@ def run(args) -> dict:
                           "model": plan["model"] and {k: plan["model"][k] for k in
                                                      ("id", "runtime", "ctx", "need_gb", "step_s", "ability")},
                           "next": [c["id"] for c in plan["alternatives"][:3]]}
-        items = downloads(plan, hw, config)
-        report["downloads"] = [{"what": i["what"], "gb": i["gb"]} for i in items]
+        items = manager.downloads(config, plan, hw)
+        report["downloads"] = items
         report["download_gb"] = round(sum(i["gb"] or 0 for i in items), 2)
         report["free_gb"] = round(shutil.disk_usage(home).free / 1e9, 1)
-        art = next((i.get("art") for i in items if i["what"].startswith("assistant model")), None) or {}
+        try:
+            art = catalog.artifact(catalog.get(plan["model"]["id"]), plan["model"].get("runtime")) or {}
+        except (KeyError, TypeError):
+            art = {}                # no model, or a discovered one: nothing to sample the speed with
         speed = None if args.no_speed else speed_mb_s(art)
         if speed:
             report["speed_mb_s"] = round(speed, 1)

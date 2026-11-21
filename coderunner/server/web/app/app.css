@@ -139,3 +139,19 @@ button { font: inherit; color: inherit; cursor: pointer; }
   #sidebar, #computer { display: none; }
   #shell.expanded #computer { display: flex; }
 }
+
+/* First run: the plan for this computer, then setup's progress. */
+#composer[hidden] { display: none; }
+.setup { padding-top: 8vh !important; }
+.setup h1 { font-size: 26px; letter-spacing: -0.02em; margin: 0 0 6px; }
+.setup-box { border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 14px 16px; margin-top: 14px; }
+.setup-model { font-size: 17px; font-weight: 600; margin: 4px 0; }
+.setup-row { display: flex; justify-content: space-between; gap: 16px; padding: 6px 0; border-top: 1px solid var(--line); }
+.setup-box .section-title + .setup-row { border-top: 0; }
+.setup-row.total { font-weight: 600; }
+.setup-note { color: var(--warn); background: var(--warn-soft); border-radius: 10px; padding: 9px 12px; margin: 12px 0 0; }
+.setup-error { color: var(--danger); margin: 14px 0 0; }
+.setup-go { margin-top: 18px; padding: 9px 18px; font-size: 15px; }
+.setup-go:disabled { opacity: 0.6; }
+.setup-log { margin-top: 14px; border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 12px 14px;
+  max-height: 46vh; overflow: auto; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
