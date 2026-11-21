@@ -786,6 +786,7 @@ setup_host_runtime() {
     fi
     echo
     echo "Next steps:"
+    echo "  coderunner app                      open the app: tasks, the computer's screen, and setup if it did not finish"
     echo "  coderunner chat                     talk to your assistant (approvals are asked in the terminal)"
     echo "  coderunner status                   check the sandbox, model and daemon"
     echo "  coderunner remote enable            reach it privately from your phone over Tailscale"

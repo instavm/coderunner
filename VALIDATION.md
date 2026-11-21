@@ -26,6 +26,7 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
 | Discovery (`test_discover.py`) | Hugging Face listings, configs and file trees from a fake hub: filters, sharded builds, KV and MoE sizes, build choice per machine, known breakages, stale caches; builds read from the Hub's list of a model's quantized builds with no guessed names, a rate limit ending discovery so the catalog alone is used; published scores read from eval results, ranking by them (a model scored like Granite 4.2 30B ranks below Qwen3.5-9B), quantization losses, GPU-limit notes |
 | Files (`test_files.py`) | Only shared, non-secret files; iCloud-only files named but not read (read once on the Mac or with `files.cloud_files`); bundles, libraries and code in source checkouts skipped; half-precision vectors and sign codes; embedding batched across files (153 files in at most 12 requests); a new embedding model means indexing again; file events bring changes in first; pausing on a low battery or Low Power Mode; figures matched by words only; passages with lines; ranking on a calibrated corpus (a picture ranks by its own scale, a kind hint, weak results cut, codes lean on words); the first pass finds the closest codes; `coderunner find` output and direct fallback. With the Swift compiler: PDFs by page, OCR of a screenshot, FSEvents within seconds |
 | Voice (`test_voice.py`) | Engine order (Parakeet on Core ML where setup did not measure it noticeably slower than Apple speech on this machine, Apple speech, Qwen3-ASR, installed engines), Parakeet only on Apple silicon with macOS 15+ and for its 25 languages, languages an engine lacks and failing engines handing over, 16 kHz mono WAV for every engine, the Apple helper built once per source, FluidAudio and llama.cpp checked against their checksums before use, Parakeet's licence checked before its pinned files are downloaded and only its helper kept after the build, Qwen3-ASR downloaded only when neither Parakeet nor Apple can serve the language; the web page's voice upload (size limit, temporary files removed) |
+| The app from the command line (`test_appshell.py`) | The pinned Electron is the one `app/package.json` names, with a build for Macs and Linux and none for Windows; the checkout's own Electron is used before CodeRunner's copy; a download that does not match its checksum is refused; a zip is unpacked with its links and executable bits and cannot write outside its folder; the app is started on this home in a process of its own |
 | Setup from the app (`test_setup_api.py`) | The plan as the app shows it (downloads, free disk, notes); setup as a background job with its progress kept, one at a time, a failure reported without restarting; the owner-only route; the daemon stopping shortly after a finished setup and starting again in place |
 | Memory, scheduler, connectors, channels, service, remote | Unit tests with fakes; see each test file |
 
@@ -320,6 +321,9 @@ five downloads with sizes and the note that the pick does not fit the disk; "Dow
 setup's lines as they came and ended on "Setup did not finish" with the disk message and a way to look again.
 A setup that succeeds, and the daemon starting again after it, were not run live (tests only).
 
+`coderunner app`: Electron 45.2.3 downloaded into a throwaway home in 81 s (121 MB, checksum checked, 259 MB
+unpacked) and answered `--version`; the app's window was not opened from it.
+
 Not run: a model download and everything after it in a clean home (disk space, and every home uses the same
 ports, so a second home would talk to the first one's servers); the installer end to end; voice setup; the
 sandbox image build.
@@ -330,7 +334,10 @@ sandbox image build.
   was read from the first megabytes of each and unpacking a zstd archive is tested, but the 1.4 GB download was
   not run and nothing was started on Linux. AMD's ROCm libraries are not fetched.
 * The app starting the daemon: its logic was run with Electron replaced by a stand-in (daemon down and
-  `coderunner up` working, failing, missing; daemon already up), not in the app's own window.
+  `coderunner up` working, failing, missing; daemon already up), not in the app's own window. `coderunner app`
+  on Linux, where Electron's sandbox helper may need setting up, has not been run.
+* `tests/test_files.py`'s OCR test failed twice while the owner's assistant was indexing PDFs on the same Mac
+  (the picture's text was not read in time) and passed once that load had dropped.
 
 * Voice: Qwen3-ASR on Linux and NVIDIA machines; the 🎤 button in a real browser and
   `coderunner chat --voice` with a real microphone (both ask for microphone permission); setup's

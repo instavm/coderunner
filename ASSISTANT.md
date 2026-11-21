@@ -333,6 +333,10 @@ declares success. If a model fails the test, the next candidate is tried.
   copy, leaving the Ollama app alone; if the app is serving an older
   version, setup asks you to update or quit it. AMD's ROCm libraries (a
   separate archive) are not fetched, and Windows has no build.
+* A machine with no GPU CodeRunner can use (no Apple silicon, no NVIDIA or
+  AMD card) is told so before anything is downloaded, with the speed to
+  expect: in `coderunner models plan`, on the app's first-run screen and as
+  setup's first line. Setup then goes on, on the processor.
 * Downloads never take the disk under `files.min_free_gb` (5 GB, the floor
   file indexing also pauses at). A first run on an 18 GB Mac fetches 11 GB:
   the assistant's model, the two embedding builds and the runtimes. Setup
@@ -705,9 +709,11 @@ policy.
 
 `app/` is a desktop shell (Electron, macOS and Linux) around the page the daemon serves at `/app/`: tasks and
 their steps as they happen, approvals, and the sandbox computer's screen to watch or take over
-(`coderunner browser computer` gives the sandbox that screen). It runs from the checkout for now
-(`cd app && npm install && npm start`), finds the daemon of `CODERUNNER_HOME` and starts it with `coderunner up`
-when it is not running; the daemon keeps running after the app quits.
+(`coderunner browser computer` gives the sandbox that screen). `coderunner app` opens it: with the checkout's
+own Electron where `npm install` was run in `app/`, and otherwise with Electron 45.2.3 downloaded once into
+`~/.coderunner/runtime` (121 MB, checked against the release's checksums), so no Node is needed. The app finds
+the daemon of `CODERUNNER_HOME` and starts it with `coderunner up` when it is not running; the daemon keeps
+running after the app quits. It is not a packaged application yet: it runs from the checkout.
 
 Where no model is set up yet, the app opens on a first-run screen instead of tasks: this computer, the model
 the plan picks for it and why, what will be downloaded with sizes against the free disk, and the plan's notes
@@ -720,6 +726,7 @@ owner surface: `GET /api/setup` (state, progress lines, the last plan), `POST /a
 ## Everyday commands
 
 ```bash
+coderunner app                       # the desktop app: tasks, the computer's screen, first-run setup
 coderunner status | doctor | audit
 coderunner chat ["one-off question"]
 coderunner approvals [approve|deny <id> --scope once|session|day|always]

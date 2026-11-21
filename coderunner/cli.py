@@ -221,6 +221,14 @@ def cmd_sandbox(args, config: Config) -> int:
     return subprocess.call([str(installer), *options], cwd=installer.parent, env=env)
 
 
+def cmd_app(args, config: Config) -> int:
+    """Open the desktop app (it starts the daemon itself when that is not running)."""
+    from . import appshell
+    process = appshell.launch(progress=print)
+    print(f"Opened the CodeRunner app (process {process.pid}); its log is {paths.assistant_dir() / 'logs' / 'app.log'}.")
+    return 0
+
+
 def cmd_daemon(args, config: Config) -> int:
     from .server.daemon import main
     main()
@@ -870,6 +878,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--network", choices=["default", "none", "proxy"])
     sp.add_argument("--build", action="store_true", help="Build the image from this checkout")
     p.set_defaults(func=cmd_sandbox)
+    sub.add_parser("app", help="Open the desktop app: tasks, the computer's screen, and first-run setup"
+                   ).set_defaults(func=cmd_app)
     sub.add_parser("daemon", help="Run the daemon in the foreground").set_defaults(func=cmd_daemon)
     sub.add_parser("status").set_defaults(func=cmd_status)
     sub.add_parser("doctor", help="Show hardware and environment checks").set_defaults(func=cmd_doctor)
