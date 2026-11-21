@@ -1,6 +1,19 @@
 #!/bin/bash
 set -u
 
+# The macOS backend owns its own VM, credentials and localhost endpoint.
+# Route before the Linux installer generates credentials or changes host settings.
+if [ "${1:-}" = "--guest" ]; then
+    case "${2:-}" in
+        macos)
+            shift 2
+            exec python3 "$(cd "$(dirname "$0")" && pwd)/macos_vm.py" "$@"
+            ;;
+        linux) shift 2 ;;
+        *) echo "Error: --guest must be linux or macos." >&2; exit 2 ;;
+    esac
+fi
+
 # Run as yourself: under sudo, HOME is root's, so the token, the venv and the assets would land in /var/root and
 # the clients run as you would never find them. The steps that need root ask for sudo themselves.
 if [ "$(id -u)" = "0" ]; then
@@ -58,6 +71,7 @@ VOLUME_ARGS=()
 usage() {
     cat <<'EOF'
 Usage: ./install.sh [options]
+       ./install.sh --guest macos [global options] create|start|stop|status|smoke|ssh
 
 Options:
   --cpus N                  CPU count (default: 8)

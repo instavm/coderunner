@@ -26,9 +26,9 @@ jobs:
       - name: Lint
         run: |
           pip install ruff==0.15.6
-          ruff check --select E9,F,B --ignore B008 server.py tests examples
+          ruff check --select E9,F,B --ignore B008 server.py macos_vm.py macos tests examples
           sudo apt-get install -y shellcheck
-          shellcheck -S warning install.sh entrypoint.sh test-e2e.sh cleanup.sh
-          bash -n install.sh entrypoint.sh test-e2e.sh cleanup.sh test-build.sh
+          shellcheck -S warning install.sh entrypoint.sh test-e2e.sh cleanup.sh macos/guest.sh
+          bash -n install.sh entrypoint.sh test-e2e.sh cleanup.sh test-build.sh macos/guest.sh
       - name: Unit tests
         run: python -m unittest discover -s tests -v

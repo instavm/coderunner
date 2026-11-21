@@ -955,8 +955,8 @@ async def _read_skill_file(skill_name: str, filename: str) -> tuple[str, str, st
         async with aiofiles.open(skill_file_path) as f:
             content = await f.read()
 
-        # Replace all occurrences of /mnt/user-data with /app/uploads
-        content = content.replace('/mnt/user-data', '/app/uploads')
+        # Skills must refer to the configured shared directory on every guest OS.
+        content = content.replace('/mnt/user-data', str(SHARED_DIR))
 
         return content, skill_type, None
 
@@ -983,7 +983,7 @@ async def get_skill_info(skill_name: str) -> str:
 
     # Add header with skill type
     header = f"Skill: {skill_name} ({skill_type})\n"
-    header += f"Location: /app/uploads/skills/{skill_type}/{skill_name}/\n"
+    header += f"Location: {SKILLS_DIR}/{skill_type}/{skill_name}/\n"
     header += "=" * 80 + "\n\n"
 
     return header + content
@@ -1000,7 +1000,7 @@ async def get_skill_file(skill_name: str, filename: str) -> str:
         filename: The name of the markdown file to read (e.g., 'EXAMPLES.md', 'API.md', 'README.md')
 
     Returns:
-        The content of the requested file with /mnt/user-data paths replaced with /app/uploads.
+        The content of the requested file with paths pointing to the shared directory.
 
     Example:
         get_skill_file('pdf-text-replace', 'EXAMPLES.md')
@@ -1013,7 +1013,7 @@ async def get_skill_file(skill_name: str, filename: str) -> str:
     # Add header with file info
     header = f"Skill: {skill_name} ({skill_type})\n"
     header += f"File: {filename}\n"
-    header += f"Location: /app/uploads/skills/{skill_type}/{skill_name}/{filename}\n"
+    header += f"Location: {SKILLS_DIR}/{skill_type}/{skill_name}/{filename}\n"
     header += "=" * 80 + "\n\n"
 
     return header + content

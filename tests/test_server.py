@@ -70,6 +70,18 @@ class BrowserUrlTests(unittest.TestCase):
         self.assertIn("not a public address", asyncio.run(server.checked_url("http://127.0.0.1:8888/")))
 
 
+class SkillPathTests(unittest.IsolatedAsyncioTestCase):
+    async def test_skill_paths_use_the_configured_guest_directory(self):
+        skill = server.PUBLIC_SKILLS_DIR / "macos-path-test"
+        skill.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(shutil.rmtree, skill)
+        (skill / "SKILL.md").write_text("Write to /mnt/user-data/result.txt")
+        text = await server.get_skill_info("macos-path-test")
+        self.assertIn(str(server.SHARED_DIR / "result.txt"), text)
+        self.assertIn(str(skill), text)
+        self.assertNotIn("/app/uploads", text)
+
+
 class SkillArchiveTests(unittest.TestCase):
     def setUp(self):
         server.USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
