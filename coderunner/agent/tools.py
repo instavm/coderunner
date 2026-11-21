@@ -516,10 +516,33 @@ def schedule_tools(svc) -> list[Tool]:
 # ---- the owner's files ---------------------------------------------------
 
 def file_tools(svc) -> list[Tool]:
-    """Search and use files in the folders the owner shared: text, code, documents, images, audio, video."""
+    """Search and use files in the folders the owner shared: text, code, documents, images, audio, video; and the
+    owner's Mail, Messages, Notes and Calendar entries where those sources are indexed."""
     import base64
     from ..files import kind_of
+    from ..files.sources import CONNECTOR_SOURCES, SOURCE_OF_KIND, is_source_path
     files = svc.files
+
+    def hold_sources(ctx, found: list[dict]) -> None:
+        """What the results hold: the owner's files, and the app sources among them (mail, notes...)."""
+        ctx.holds("files")
+        for item in found:
+            source = SOURCE_OF_KIND.get(item.get("kind", ""))
+            if source:
+                ctx.holds(source)
+
+    async def read_entry(path: str, source: str, ctx) -> str:
+        """An indexed Mail, Messages, Notes or Calendar entry, as indexed: the source must be chosen (and its
+        connector enabled), the read is checked like the connector's own reads, and the task then holds it."""
+        if source not in files.sources.chosen():
+            raise PermissionError(f"{source} is not an indexed source (coderunner files sources add {source})")
+        kind = "connector.read" if source in CONNECTOR_SOURCES else "files.read"
+        if not await svc.policy.check(Action(kind, source if kind == "connector.read" else path, f"Read {path}",
+                                             tainted=ctx.tainted), origin=ctx.origin):
+            raise PermissionError(f"reading {path} is not allowed")
+        ctx.holds(source)
+        text = files.sources.text(path)
+        return f"{path}:\n{text}" if text else f"{path} holds no text."
 
     async def open_file(args, ctx, verb: str):
         path = files.resolve(args["path"])          # only shared folders; never secrets or app data
@@ -544,10 +567,13 @@ def file_tools(svc) -> list[Tool]:
             found = await files.search(query, None, limit)
             note = f"No {kind} files matched; these files of other kinds do."
         if found:
-            ctx.holds("files")
+            hold_sources(ctx, found)
         return ({"note": note, "files": found} if note else found) if found else "No matching files in the shared folders."
 
     async def read(args, ctx):
+        source = is_source_path(str(args.get("path") or ""))
+        if source:
+            return await read_entry(str(args["path"]), source, ctx)
         path = await open_file(args, ctx, "Read")
         lines = (await files.media.text(path)).splitlines()
         start = max(1, int(args.get("start_line", 1)))
@@ -576,13 +602,19 @@ def file_tools(svc) -> list[Tool]:
             return "Speech to text is not set up yet; the owner can run `coderunner voice setup`."
         return f"Transcript of {path.name}:\n" + await svc.voice.transcribe(path)
 
-    kinds = {"type": "string", "enum": ["text", "doc", "image", "audio", "video"]}
+    kinds = {"type": "string", "enum": ["text", "doc", "image", "audio", "video", "folder", "mail", "message", "note",
+                                        "event"]}
+    sources = files.sources.chosen() if getattr(files, "sources", None) else []
+    with_sources = (" The owner's " + ", ".join(sources) + " are indexed too (kinds mail, message, note, event; "
+                    "addresses like mail://inbox/12, readable with file_read).") if sources else ""
     return [
         Tool("files_search", "Search the owner's shared folders by meaning or words. kind narrows it: text (notes, "
-             "text and code files), doc (PDF, Word, RTF), image, audio or video; leave it out to search everything. "
-             "An empty query lists recent files. Returns paths; then use file_read, file_view or file_listen.",
+             "text and code files), doc (PDF, Word, RTF, spreadsheets, slides), image, audio, video or folder; leave it "
+             "out to search everything. Folders are results too, found by name and by what they hold." + with_sources +
+             " An empty query lists recent files. Returns paths; then use file_read, file_view or file_listen.",
              _params({"query": STR, "kind": kinds, "limit": INT}, ["query"]), search, untrusted=True),
-        Tool("file_read", "Read a text, code or document file (PDF, Word, RTF) from the shared folders.",
+        Tool("file_read", "Read a text, code or document file (PDF, Word, RTF) from the shared folders, or an indexed "
+             "mail, message, note or event by its address.",
              _params({"path": STR, "start_line": INT, "lines": INT}, ["path"]), read, untrusted=True),
         Tool("file_view", "Look at an image, or a video frame at `at` seconds, from the shared folders.",
              _params({"path": STR, "at": {"type": "number"}}, ["path"]), view, untrusted=True),

@@ -35,6 +35,13 @@ SCHEMA = [
     """CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY, conversation TEXT, role TEXT, content TEXT, created REAL)""",
     "CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation, id)",
+    # Tasks started from the app and what happened during each (steps, notes, approvals, the answer).
+    """CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY, conversation TEXT, prompt TEXT, status TEXT, reply TEXT, created REAL, finished REAL)""",
+    "CREATE INDEX IF NOT EXISTS tasks_conversation ON tasks(conversation, created)",
+    """CREATE TABLE IF NOT EXISTS task_events (
+        seq INTEGER PRIMARY KEY, task TEXT, conversation TEXT, ts REAL, data TEXT)""",
+    "CREATE INDEX IF NOT EXISTS task_events_conversation ON task_events(conversation, seq)",
     """CREATE TABLE IF NOT EXISTS devices (
         id TEXT PRIMARY KEY, name TEXT, created REAL, last_seen REAL)""",
     "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)",
@@ -51,6 +58,18 @@ SCHEMA = [
         INSERT INTO file_chunks_fts(rowid, text) VALUES (new.id, new.text); END""",
     """CREATE TRIGGER IF NOT EXISTS file_chunks_ad AFTER DELETE ON file_chunks BEGIN
         INSERT INTO file_chunks_fts(file_chunks_fts, rowid, text) VALUES ('delete', old.id, old.text); END""",
+    # Each file's and folder's own name and kind, for the ranking by names (id: the name piece's id).
+    "CREATE TABLE IF NOT EXISTS file_names_src (id INTEGER PRIMARY KEY, text TEXT)",
+    """CREATE VIRTUAL TABLE IF NOT EXISTS file_names USING fts5(
+        text, content='file_names_src', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2')""",
+    """CREATE TRIGGER IF NOT EXISTS file_names_ai AFTER INSERT ON file_names_src BEGIN
+        INSERT INTO file_names(rowid, text) VALUES (new.id, new.text); END""",
+    """CREATE TRIGGER IF NOT EXISTS file_names_ad AFTER DELETE ON file_names_src BEGIN
+        INSERT INTO file_names(file_names, rowid, text) VALUES ('delete', old.id, old.text); END""",
+    """CREATE TRIGGER IF NOT EXISTS file_chunks_names_ad AFTER DELETE ON file_chunks BEGIN
+        DELETE FROM file_names_src WHERE id = old.id; END""",
+    "CREATE INDEX IF NOT EXISTS files_digest ON files(digest)",
+    "CREATE INDEX IF NOT EXISTS files_inode ON files(inode)",
 ]
 # Columns added after a table was first created; they fail harmlessly once present.
 MIGRATIONS = [
@@ -58,6 +77,11 @@ MIGRATIONS = [
     "ALTER TABLE file_chunks ADD COLUMN code BLOB",
     "ALTER TABLE file_chunks ADD COLUMN modality TEXT DEFAULT ''",
     "ALTER TABLE file_chunks ADD COLUMN loc REAL",
+    "ALTER TABLE files ADD COLUMN digest BLOB",            # the contents' fingerprint: a copy takes its twin's pieces
+    "ALTER TABLE files ADD COLUMN device INTEGER",         # identity on its volume: a moved file keeps its pieces
+    "ALTER TABLE files ADD COLUMN inode INTEGER",
+    "ALTER TABLE files ADD COLUMN profile TEXT DEFAULT ''",  # what the pieces depend on (a folder: the kinds in it)
+    "ALTER TABLE files ADD COLUMN holds TEXT DEFAULT ''",    # a folder: the kinds of file directly in it
 ]
 
 
@@ -78,12 +102,17 @@ class Store:
         self._conn.execute("PRAGMA foreign_keys=ON")
         with self._lock:
             for statement in SCHEMA:
+                if statement.startswith("CREATE INDEX IF NOT EXISTS files_"):
+                    continue
                 self._conn.execute(statement)
             for statement in MIGRATIONS:
                 try:
                     self._conn.execute(statement)
                 except sqlite3.OperationalError:  # duplicate column
                     pass
+            for statement in SCHEMA:
+                if statement.startswith("CREATE INDEX IF NOT EXISTS files_"):
+                    self._conn.execute(statement)
 
     def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self._lock:

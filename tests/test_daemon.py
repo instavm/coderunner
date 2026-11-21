@@ -241,3 +241,14 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+class SearchModeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_says_there_is_no_model_in_search_mode(self):
+        from coderunner.core.config import Config
+        from coderunner.server.daemon import Daemon
+        daemon = Daemon.__new__(Daemon)
+        daemon.config = Config({"models": {"chat": ""}, "sandbox": {"driver": "none"}}, path=None)
+        daemon._locks = {}
+        reply = await daemon.handle_message("web", "w1", "what is on my calendar")
+        self.assertIn("search mode", reply)
+        self.assertIn("coderunner mcp --tools search", reply)

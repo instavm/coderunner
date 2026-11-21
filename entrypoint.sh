@@ -5,7 +5,7 @@ set -u
 # sandbox fits in about 1 GB. The assistant browses with the owner's browser on the host.
 if [ "${CODERUNNER_PROFILE:-full}" = "lite" ]; then
     mkdir -p /app/uploads/work
-    exec uvicorn server:app --host 0.0.0.0 --port 8222 --workers 1 --no-access-log
+    exec uvicorn server:app --host 0.0.0.0 --port 8222 --workers 1 --no-access-log --ws-ping-interval 30 --ws-ping-timeout 600
 fi
 
 # Start Jupyter server. It has no authentication, so it must only listen on
@@ -55,4 +55,4 @@ echo "$kernel_id" > /app/uploads/python_kernel_id.txt
 node /usr/lib/node_modules/playwright/cli.js run-server --port 3000 --host 127.0.0.1 &
 
 # Start FastAPI application
-exec uvicorn server:app --host 0.0.0.0 --port 8222 --workers 1 --no-access-log
+exec uvicorn server:app --host 0.0.0.0 --port 8222 --workers 1 --no-access-log --ws-ping-interval 30 --ws-ping-timeout 600

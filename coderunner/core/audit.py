@@ -29,6 +29,7 @@ class AuditLog:
     def __init__(self, path=None):
         self.path = path or paths.audit_path()
         self._lock = threading.Lock()
+        self.listeners: list = []       # called with each record, e.g. to show a task's steps as they happen
 
     def write(self, event: str, **fields: Any) -> dict:
         record = {"ts": time.time(), "event": event, **_scrub(fields)}
@@ -38,6 +39,11 @@ class AuditLog:
             fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             with os.fdopen(fd, "a") as handle:
                 handle.write(line + "\n")
+        for listener in list(self.listeners):
+            try:
+                listener(record)
+            except Exception:       # a listener must never break the audit trail
+                pass
         return record
 
     def tail(self, limit: int = 100) -> list[dict]:

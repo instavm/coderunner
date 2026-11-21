@@ -1373,6 +1373,11 @@ app.add_route("/v1/sessions/session", api_get_session, methods=["GET"])
 app.add_route("/v1/sessions/session", api_stop_session, methods=["DELETE"])
 app.add_route("/v1/browser/interactions/navigate", api_browser_navigate, methods=["POST"])
 app.add_route("/v1/browser/interactions/content", api_browser_extract_content, methods=["POST"])
+# The sandbox's own computer: its screen (VNC details) and Chrome on it, driven by the daemon's browser broker.
+import desktop  # noqa: E402
+app.add_route("/v1/desktop", desktop.api_desktop, methods=["GET", "POST"])
+from starlette.routing import WebSocketRoute  # noqa: E402
+app.router.routes.append(WebSocketRoute("/v1/browser/cdp", desktop.cdp_socket))
 
 # Wrap the app last so validation covers every route
 app = HostOriginValidator(BearerAuthentication(app))

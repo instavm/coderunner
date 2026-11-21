@@ -104,6 +104,43 @@ class AdminGatewayTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await client.post("/api/voice", content=b"12345", headers=admin)).status_code, 413)
             self.assertEqual(len(self.svc.voice.seen), 1)
 
+    async def test_mcp_over_http_offers_the_tools_behind_the_owner_token(self):
+        from mcp.client.session import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+        from coderunner.agent.memory import Memory
+        self.svc.memory = Memory(self.svc.store, self.svc.audit)      # the fake has no memory of its own
+        self.svc.registry = build_registry(self.svc)
+        self.app = app = admin_app(self.svc, self.daemon)
+
+        def factory(headers=None, timeout=None, auth=None, **_):
+            return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8224",
+                                     headers={**(headers or {}), "Authorization": "Bearer " + ADMIN}, timeout=30)
+
+        async def names(path: str) -> set[str]:
+            async with streamablehttp_client(f"http://127.0.0.1:8224{path}", httpx_client_factory=factory) as (r, w, _):
+                async with ClientSession(r, w) as session:
+                    await session.initialize()
+                    return {t.name for t in (await session.list_tools()).tools}
+
+        async with app.app.router.lifespan_context(app.app):        # OwnerAuth wraps the Starlette app
+            everything, search = await names("/mcp"), await names("/mcp/search")
+            self.assertTrue(search <= everything)
+            self.assertIn("memory_search", search)
+            self.assertTrue(everything - search)                          # the full endpoint offers more
+            self.assertFalse({n for n in search if n.startswith("browser_") or n.startswith("schedule_")})
+            async with streamablehttp_client("http://127.0.0.1:8224/mcp/search", httpx_client_factory=factory) as (r, w, _):
+                async with ClientSession(r, w) as session:
+                    await session.initialize()
+                    saved = await session.call_tool("memory_save", {"text": "the owner likes window seats"})
+                    self.assertFalse(saved.isError, saved)
+                    found = await session.call_tool("memory_search", {"query": "window seats"})
+                    self.assertIn("window seats", found.content[0].text)
+            # Without the token the endpoint answers nothing.
+            async with self.client() as client:
+                response = await client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                                             headers={"Accept": "application/json, text/event-stream"})
+                self.assertEqual(response.status_code, 401)
+
     async def test_requires_admin_token(self):
         async with self.client() as client:
             self.assertEqual((await client.get("/api/approvals")).status_code, 401)

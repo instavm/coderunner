@@ -20,7 +20,7 @@ the task as holding private data and as having read untrusted content.
 
 from .discover import FileAccessError, Folders, in_cloud_only, is_secret
 from .embed import Embedder
-from .extract import NAME_ONLY, Extractor, Media, Piece
+from .extract import NAME_ONLY, Extractor, Media, Piece, Skipped
 from .index import FileIndex
 from .kinds import PROFILES, embedding_profile, kind_of
 from .vectors import pack, unpack

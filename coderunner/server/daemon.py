@@ -105,6 +105,8 @@ class Daemon:
 
     async def _warm(self) -> None:
         """Let the model read the instructions and tool list now, not when the first task arrives."""
+        if not self.config.get("models.chat"):      # search mode: no chat model to warm
+            return
         try:
             await self.svc.agent.warm()
             self.svc.audit.write("model.warmed")
@@ -117,12 +119,22 @@ class Daemon:
         up` was run by hand. A sandbox never installed (missing) or without a runtime (unavailable) is left alone."""
         try:
             state = await asyncio.to_thread(self.driver.status)
-            if state in ("running", "missing", "unavailable"):
+            if state in ("missing", "unavailable"):
                 return
-            await asyncio.to_thread(self.driver.start)
-            self.svc.audit.write("sandbox.started", driver=self.driver.name, was=state)
+            if state != "running":
+                await asyncio.to_thread(self.driver.start)
+                self.svc.audit.write("sandbox.started", driver=self.driver.name, was=state)
         except Exception as exc:              # the tools then say the sandbox is not running, as before
             self.svc.audit.write("sandbox.start_failed", driver=self.driver.name, error=str(exc)[:200])
+            return
+        if self.config.get("browser.mode") == "computer":
+            # The owner sees the computer's screen as soon as the app opens, not only once a task needs it.
+            for _ in range(30):
+                if await self.svc.sandbox.health():
+                    break
+                await asyncio.sleep(2)
+            with contextlib.suppress(Exception):
+                await self.svc.sandbox.desktop(start=True)
 
     async def _restart_embedding(self) -> bool:
         """Start the embedding server again when it has gone (one restart at a time)."""
@@ -183,7 +195,8 @@ class Daemon:
             except OSError as exc:
                 audit.write("browser.extension_update_failed", error=str(exc)[:200])
         svc.browser = BrowserBroker(self.config, svc.policy, audit,
-                                    decider=ActionCheck.from_config(self.config, audit, **runtime), chrome=svc.chrome)
+                                    decider=ActionCheck.from_config(self.config, audit, **runtime), chrome=svc.chrome,
+                                    sandbox=(url, paths.api_token()))
 
         from ..agent.memory import Memory
         # Embeddings can come from a different runtime than the chat model, e.g. EmbeddingGemma in
@@ -255,12 +268,15 @@ class Daemon:
 
     async def handle_message(self, channel: str, chat_id: str, text: str, *, origin: str = "",
                              sender_is_owner: bool = True, images: list | None = None,
-                             tainted: bool = False) -> str:
+                             tainted: bool = False, events=None, task: str = "") -> str:
         conversation = f"{channel}:{chat_id}"
+        if not self.config.get("models.chat"):
+            return ("No local chat model is set up (search mode). Use the search tools from your own agent over "
+                    "MCP (`coderunner mcp --tools search`), or run `coderunner setup` to add a model.")
         lock = self._locks.setdefault(conversation, asyncio.Lock())
         async with lock:
             ctx = RunContext(conversation=conversation, origin=origin or conversation, channel=channel,
-                             chat_id=chat_id, origin_is_owner=sender_is_owner)
+                             chat_id=chat_id, origin_is_owner=sender_is_owner, events=events)
             if tainted:
                 ctx.taint()
             return await self.svc.agent.run(ctx, text, images=images)
@@ -308,6 +324,10 @@ class Daemon:
             "uptime": round(time.time() - self.started),
             "model": {"base_url": svc.llm.base_url, "model": svc.llm.model, "vision": svc.vision,
                       "embedding": svc.embedding_model},
+            "models": {"chat": self.config.get("models.chat") or svc.llm.model,
+                       "driver": (self.config.get("models.driver") or {}).get("model") or "",
+                       "decision": self.config.get("models.decision") or "",
+                       "embedding": self.config.get("models.embedding") or svc.embedding_model},
             "sandbox": {"driver": self.driver.name, "url": svc.sandbox.base_url, "healthy": await svc.sandbox.health()},
             "network": self.config.get("sandbox.network"),
             "channels": sorted(svc.channels),
@@ -379,6 +399,9 @@ class Daemon:
         self._tasks.append(asyncio.create_task(self._warm()))
         self._tasks.append(asyncio.create_task(self._start_sandbox()))
 
+        from .tasks import EventBus, Tasks
+        self.bus = EventBus(svc.store)
+        self.tasks = Tasks(self, self.bus)
         admin = admin_app(svc, self)
         self._tasks.append(asyncio.create_task(self._serve_with_retry(
             admin, lambda: cfg.get("gateway.admin_bind", "127.0.0.1"), int(cfg.get("gateway.admin_port")), "admin")))

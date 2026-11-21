@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeRunner</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="shell">
+  <aside id="sidebar">
+    <div class="side-head">
+      <div class="brand"><span class="logo" aria-hidden="true"></span>CodeRunner</div>
+      <button id="newTask" class="icon-btn" title="New task (⌘N)" aria-label="New task">＋</button>
+    </div>
+    <nav id="conversations" aria-label="Tasks"></nav>
+    <div class="side-foot">
+      <div id="modelsLine" class="muted small"></div>
+    </div>
+  </aside>
+
+  <main id="main">
+    <header id="mainHead">
+      <div id="title" class="title">New task</div>
+      <div class="head-actions">
+        <button id="toggleComputer" class="pill" title="Show the computer">Computer</button>
+      </div>
+    </header>
+    <section id="thread" aria-live="polite">
+      <div id="empty" class="empty">
+        <h1>What should I get done?</h1>
+        <p class="muted">Tasks run on your own computer: local models, and a private Linux machine with its own browser that you can watch and take over.</p>
+        <div class="examples">
+          <button class="example">Find the cheapest Pixel 8 on Amazon.in and Flipkart and compare sellers</button>
+          <button class="example">Search my files for the latest rental agreement and summarise the notice period</button>
+          <button class="example">Check tomorrow's weather in Bengaluru and suggest what to wear</button>
+        </div>
+      </div>
+    </section>
+    <form id="composer" autocomplete="off">
+      <textarea id="input" rows="1" placeholder="Describe a task…" aria-label="Task"></textarea>
+      <button id="send" class="send" type="submit" aria-label="Start task">↑</button>
+    </form>
+  </main>
+
+  <aside id="computer" aria-label="Computer">
+    <div class="panel-head">
+      <div>
+        <div class="panel-title">Computer</div>
+        <div id="computerState" class="muted small">Starting…</div>
+      </div>
+      <div class="panel-actions">
+        <button id="expand" class="icon-btn" title="Expand" aria-label="Expand the screen">⤢</button>
+        <button id="closeComputer" class="icon-btn" title="Hide" aria-label="Hide the computer">✕</button>
+      </div>
+    </div>
+    <div id="screenWrap">
+      <div id="screen"></div>
+      <div id="screenNote" class="screen-note">Connecting to the screen…</div>
+      <div id="control" class="control">
+        <button id="watching" class="seg on" type="button">Watching</button>
+        <button id="takeControl" class="seg" type="button">Take control</button>
+      </div>
+    </div>
+    <div class="panel-section">
+      <div class="section-title">Now</div>
+      <div id="nowLine" class="muted small">Idle</div>
+    </div>
+    <div class="panel-section">
+      <div class="section-title">Models</div>
+      <dl id="models" class="models"></dl>
+    </div>
+  </aside>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

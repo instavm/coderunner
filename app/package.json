@@ -1,0 +1,15 @@
+{
+  "name": "coderunner-app",
+  "productName": "CodeRunner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop app for the CodeRunner assistant: tasks, their live steps, and the sandbox computer's screen",
+  "main": "main.js",
+  "license": "Apache-2.0",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "45.2.3"
+  }
+}

@@ -26,6 +26,7 @@ install_container_tool() {
 CPUS="${CODERUNNER_CPUS:-4}"
 MEMORY="${CODERUNNER_MEMORY:-}"
 PROFILE="${CODERUNNER_PROFILE:-auto}"
+SEARCH="${CODERUNNER_SEARCH:-0}"
 MOUNT_SPECS=()
 VOLUME_ARGS=()
 NETWORK_MODE="${CODERUNNER_NETWORK:-default}"
@@ -58,6 +59,8 @@ Options:
   --image NAME              Use a specific sandbox image
   --model ID                Use this model instead of the hardware-based pick
   --no-assistant            Install the sandbox and the coderunner CLI only (no model setup or login service)
+  --search                  Search mode: the file index and the search tools for Claude Code, Codex and other
+                            agents over MCP. No sandbox VM, no chat model (about 1.5 GB, a few minutes).
   -y, --yes                 Answer yes to installing a model runtime
   -h, --help                Show this help
 EOF
@@ -101,6 +104,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --build)
             BUILD_IMAGE=1
+            shift
+            ;;
+        --search)
+            SEARCH=1
             shift
             ;;
         --no-assistant)
@@ -689,6 +696,25 @@ setup_host_runtime() {
     esac
     [ "$ASSISTANT" = "1" ] || return 0
 
+    if [ "$SEARCH" = "1" ]; then
+        if ! "$venv_dir/bin/coderunner" setup --search --no-voice; then
+            echo "⚠️  Search setup did not finish. Fix the issue above and run: coderunner setup --search"
+            return 0
+        fi
+        if "$venv_dir/bin/coderunner" service install; then
+            echo "✅ CodeRunner installed as a login service (search mode)."
+        else
+            echo "⚠️  Could not install the login service; start it with: coderunner up"
+        fi
+        echo
+        echo "Next steps:"
+        echo "  coderunner files add ~/Documents                  index a folder (more with further adds)"
+        echo "  coderunner files sources add mail                 also messages, notes, calendar"
+        echo "  claude mcp add coderunner-search -- coderunner mcp --tools search"
+        echo "  coderunner find \"the lease for the apartment\"      search from the terminal"
+        return 0
+    fi
+
     if ! command -v ollama &> /dev/null && ! command -v llama-server &> /dev/null; then
         local answer="n"
         if [[ "$OSTYPE" == "darwin"* ]] && command -v brew &> /dev/null; then
@@ -726,12 +752,17 @@ setup_host_runtime() {
     echo "  See ASSISTANT.md for channels, connectors and the safety model."
 }
 
-case "$OSTYPE" in
-    darwin*) install_sandbox_macos ;;
-    linux*) install_sandbox_linux ;;
-    *)
-        echo "❌ Unsupported system: $OSTYPE. Use macOS, Linux or Windows with WSL2."
-        exit 1
-        ;;
-esac
+if [ "$SEARCH" = "1" ]; then
+    ASSISTANT=1
+    echo "Search mode: no sandbox VM is installed."
+else
+    case "$OSTYPE" in
+        darwin*) install_sandbox_macos ;;
+        linux*) install_sandbox_linux ;;
+        *)
+            echo "❌ Unsupported system: $OSTYPE. Use macOS, Linux or Windows with WSL2."
+            exit 1
+            ;;
+    esac
+fi
 setup_host_runtime

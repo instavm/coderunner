@@ -31,7 +31,7 @@ except ImportError:                           # pragma: no cover
     def dot(a, b) -> float:
         return sum(map(operator.mul, a, b))
 
-FORMAT = "f16-signs-1"      # changes force a re-index
+FORMAT = "f16-signs-2"      # changes force a re-index (2: names read with their kind, empty passages unembedded)
 MODALITIES = ("name", "text", "image", "audio")
 SAMPLE = 400                # full vectors kept per modality for calibration
 MIN_GROUP = 20              # a modality with fewer pieces is calibrated with all of them

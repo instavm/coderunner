@@ -7,7 +7,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from ..browser.broker import NO_CHANGE
 from ..core import paths
@@ -99,6 +99,15 @@ class RunContext:
     shared: set[str] = field(default_factory=set)
     images: list[tuple[str, str]] = field(default_factory=list)
     plan: list[dict] = field(default_factory=list)      # written by the model with plan_update
+    # Called with each step as it happens (tool calls, notes, the plan), for an app showing the task live.
+    events: Callable[[dict], None] | None = None
+
+    def emit(self, event: dict) -> None:
+        if self.events is not None:
+            try:
+                self.events(event)
+            except Exception:       # showing progress must never stop the task
+                pass
 
     def taint(self, content: bool = True) -> None:
         self.tainted = True
@@ -261,6 +270,8 @@ class Agent:
                 final = reply["content"] or "(no response)"
                 break
             messages.append({"role": "assistant", "content": reply["content"], "tool_calls": reply["tool_calls"]})
+            if (reply["content"] or "").strip():
+                ctx.emit({"type": "note", "text": reply["content"].strip()})
             failed = False
             for call in reply["tool_calls"]:
                 function = call.get("function", {})
@@ -273,8 +284,14 @@ class Agent:
                     # Its error is not repeated here: it can be page text, which stays inside its own result.
                     result, failed = REPEATED, True
                 else:
+                    plan_before = [dict(item) for item in ctx.plan]
+                    ctx.emit({"type": "tool", "id": call.get("id", ""), "name": name, "arguments": arguments})
                     result = await self.registry.invoke(name, arguments, ctx)
                     failed = result.startswith("Error:") or "\nError:" in result[:200]
+                    ctx.emit({"type": "tool_done", "id": call.get("id", ""), "name": name, "ok": not failed,
+                              "preview": result[:300]})
+                    if ctx.plan != plan_before:
+                        ctx.emit({"type": "plan", "steps": ctx.plan})
                     if failed:
                         just_failed[key] = just_failed.get(key, 0) + 1
                     else:

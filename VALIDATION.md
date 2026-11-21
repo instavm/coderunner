@@ -239,6 +239,54 @@ going round in circles is told, then stopped; and actions and messages follow Mi
 where pointed, double and triple clicks, key combinations, the wheel where the mouse is, no note after an
 action that worked, popups followed).
 
+### File search measured on ori's bench corpus (November 4, same Mac)
+
+The search and indexing changes made in Ori (the Swift menu-bar search app, github.com/instavm/ori) after the
+two diverged on October 16 were brought over and measured on Ori's reproducible corpus (`bench/make-corpus.sh`:
+389 files with noise, 85 folders; 108 file questions, 42 folder questions used to choose and 45 held out),
+indexed by CodeRunner with EmbeddingGemma 2 on the Neural Engine (FluidInference build, 280-token pictures, sound
+windows, no transcription). MRR@10:
+
+| Ranking | files (108) | R@1 | folders v2 (42) | held-out v3 (45) | index time |
+| --- | --- | --- | --- | --- | --- |
+| before (meaning standardised per modality, kind bonus, words for codes) | 0.927 | 0.898 | 0.000 | 0.000 | 224 s |
+| hybrid: plain cosine, every-word BM25, names, named kinds, folders, clusters; code prompt on | 0.945 | 0.935 | 0.649 | 0.603 | 116 s |
+| the same without the code-retrieval prompt (shipped) | **0.957** | **0.944** | **0.695** | **0.742** | 116 s |
+| shipped, but similarities standardised per modality | 0.939 | 0.907 | 0.685 | 0.750 | |
+| the old ranker without the code prompt | 0.931 | 0.917 | 0.256 | 0.272 | |
+
+Per kind, shipped: documents 0.97, notes 1.00, code 0.89, photos 1.00, screenshots 1.00, video 0.93, audio 0.86,
+lookups 1.00 (0.58 before: "invoice INV-2024-0117" needed every word, not the meaning), names 1.00; folders by
+name 0.93 / 0.96, by what they hold 0.49 / 0.54. Ori's own engine scores 0.978 / 0.715 / 0.703 on the same sets.
+Indexing halved because the noise's copies are read once (a copy takes its twin's pieces). The code-retrieval
+prompt is off: under plain cosine every code passage scored high against any question, which put scripts first
+for "when should I plant garlic" and "frog croaking sound". A search takes 19 ms (median). The owner's real
+Downloads folder (the 64 + 25 private questions above) was not measured again: a fresh index of its 64,207
+files was started (`--cloud-mb 0`, code in checkouts off) and reached 2,486 text files, 103 documents, 18
+pictures and 1,085 folders before it was stopped, slowed by the Messages indexing sharing the embedding server;
+indexed alone it needs a few hours with pictures and video.
+
+The Mail, Messages, Notes and Calendar sources are covered by `tests/test_sources.py` with fake apps, and were
+run once against the owner's real apps from a search-mode daemon on this Mac (November 4): Messages indexed
+5,592 conversation-days in 14.7 minutes (200 an index pass, from 24,147 of 145,125 rows) while a Downloads
+index shared the Neural Engine; the listings that start the other sources took 0.4 s for 1,357 notes, 19.4 s
+for the 112,435 ids and dates of the inbox, 0.4 s for the sent mailbox, and 131 s for 249 events over two years
+of ten calendars (Calendar's scripting interface is slow; the range is listed once per `files.sources_interval`).
+The run was stopped before Mail, Notes and Calendar entries were written, so their reading rate is not measured;
+at 40 mails a script run, a 112,000-message inbox will take hours on its first pass and is read newest first.
+
+### Search mode from Claude Code (November 4, same Mac)
+
+A daemon in search mode (`sandbox.driver` none, no chat model, EmbeddingGemma 2 on the Neural Engine) over
+Ori's corpus, started on a dev home, answered the search tools over the stdio bridge in 63-100 ms a query
+including the bridge hop (`files_search` for "what time is our pena palace entry", "zen garden photo",
+"freelance invoices folder"; the itinerary, the Japanese Garden folder and the Invoices folder first). A real
+Claude Code session (`claude -p --model sonnet --strict-mcp-config --mcp-config ... --allowedTools
+mcp__coderunner-search__files_search,mcp__coderunner-search__file_read`) asked for the Pena Palace entry time
+called `files_search`, answered from the snippet of "Lisbon trip itinerary.pdf" and named the file, in 6.4 s
+wall time including the model. The bridge must be able to import the package: the `coderunner` command the
+installer links does that; a bare `python -m coderunner` from another directory does not.
+
 ## Not yet validated
 
 * Voice: Qwen3-ASR on Linux and NVIDIA machines; the 🎤 button in a real browser and

@@ -256,6 +256,8 @@ def driver_for(config: Config) -> Driver:
     candidates = {"apple": AppleDriver, "docker": DockerDriver}
     if choice in candidates:
         return candidates[choice](config)
+    if choice == "none":                      # search mode: no sandbox was installed
+        return Driver(config)
     for cls in (AppleDriver, DockerDriver):
         driver = cls(config)
         if driver.available():

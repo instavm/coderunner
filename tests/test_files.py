@@ -78,7 +78,9 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         outside.write_text("private invoice elsewhere")
         (self.docs / "link.txt").symlink_to(outside)
         # OCR needs the macOS helper (built in its own test); the others read without it.
-        self.config = Config({"files": {"roots": [str(self.docs)], "ocr": False}}, path=self.tmp / "config.json")
+        # cloud_file_mb 0: files only iCloud holds are named, not downloaded (the download path has its own test).
+        self.config = Config({"files": {"roots": [str(self.docs)], "ocr": False, "cloud_file_mb": 0}},
+                             path=self.tmp / "config.json")
         self.store = Store(":memory:")
         self.audit = AuditLog(self.tmp / "audit.jsonl")
 
@@ -97,8 +99,10 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         index = self.index()
         result = await index.index_once()
         self.assertEqual(result["indexed"], 3)
-        paths = {pathlib.Path(r["path"]).name for r in self.store.query("SELECT path FROM files")}
+        paths = {pathlib.Path(r["path"]).name for r in self.store.query("SELECT path FROM files WHERE kind != 'folder'")}
         self.assertEqual(paths, {"invoice-2026.txt", "notes.md", "code.py"})
+        self.assertEqual([r["path"] for r in self.store.query("SELECT path FROM files WHERE kind = 'folder'")],
+                         [str((self.docs / "taxes").resolve())])                # the folder, by its name
         self.assertEqual(index.resolve(str(self.docs / "notes.md")).name, "notes.md")
         for path in (self.docs / ".env", self.docs / "server.pem", self.docs / ".hidden" / "notes.txt",
                      self.docs / "link.txt", self.tmp / "outside.txt", self.home / "api-token", self.docs):
@@ -144,17 +148,17 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         cloud = mock.patch("coderunner.files.discover.in_cloud_only", lambda stat: stat.st_size == 7)
         with cloud:
             await index._scan()
-            self.assertEqual([f.remote for f in index._queue], [False] * 3 + [True] * 5)    # local first
-            first = await index.index_once(budget=4)
+            self.assertEqual([f.remote for f in index._queue if not f.folder], [False] * 3 + [True] * 5)  # local first
+            first = await index.index_once(budget=5)
         self.assertTrue(first["more"])
         # Named in the keyword index straight away, before any vector exists for them.
         self.assertEqual(self.store.one("SELECT COUNT(*) AS n FROM file_chunks WHERE modality = 'name' "
-                                        "AND code IS NULL")["n"], 1)      # 3 local files + 1 name
+                                        "AND code IS NULL")["n"], 1)      # 3 local files, the taxes folder + 1 name
         with cloud:
             while (await index.index_once(budget=4))["more"]:
                 pass
-        self.assertEqual(self.store.one("SELECT COUNT(*) AS n FROM file_chunks WHERE code IS NULL")["n"], 0)
-        self.assertTrue(any(isinstance(item, str) and item.endswith("scan 3") for item in seen))
+        self.assertEqual(self.store.one("SELECT COUNT(*) AS n FROM file_chunks WHERE modality = 'name' AND code IS NULL")["n"], 0)
+        self.assertTrue(any(isinstance(item, str) and "scan 3 (PDF document)" in item for item in seen))
         await embedder.aclose()
 
     async def test_vectors_are_half_precision_with_sign_codes(self):
@@ -188,8 +192,8 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         result = await index.index_once()
         self.assertEqual((result["indexed"], result["removed"]), (1, 1))
         self.assertEqual([pathlib.Path(r["path"]).name for r in await index.search("total due")], ["notes.md"])
-        # Unsharing a folder forgets what was indexed from it.
-        self.assertEqual(index.remove_root(str(self.docs)), 2)
+        # Unsharing a folder forgets what was indexed from it (two files and the taxes folder).
+        self.assertEqual(index.remove_root(str(self.docs)), 3)
         self.assertEqual(await index.search("dentist"), [])
 
     async def test_copies_of_a_file_count_once(self):
@@ -219,16 +223,20 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(isinstance(item, str) and item.startswith("title: notes.md | text: ") for item in seen))
         found = await index.search("when is my dentist")
         self.assertEqual(pathlib.Path(found[0]["path"]).name, "notes.md")
-        # The question goes once as a search and once as Google's code retrieval prompt, for code passages.
-        self.assertEqual(seen[-2:], ["task: search result | query: when is my dentist",
-                                     "task: code retrieval | query: when is my dentist"])
+        # The question goes as a search; Google's code retrieval prompt only when CODE_PROMPT is on (under plain
+        # cosine it scored every code passage high against any question, so it is off).
+        self.assertEqual(seen[-1], "task: search result | query: when is my dentist")
+        with mock.patch.object(search, "CODE_PROMPT", True):
+            await index.search("when is my dentist tomorrow")
+        self.assertEqual(seen[-2:], ["task: search result | query: when is my dentist tomorrow",
+                                     "task: code retrieval | query: when is my dentist tomorrow"])
         from coderunner.files.kinds import is_code
         self.assertTrue(is_code("tools/build.rs") and is_code("App.SWIFT") and not is_code("notes.md"))
         await embedder.aclose()
 
     async def test_many_files_are_embedded_in_few_requests(self):
         for n in range(150):
-            (self.docs / f"note-{n}.txt").write_text(f"holiday plan {n}")
+            (self.docs / f"note-{n}.txt").write_text(f"holiday plan for day {n}")
         embedder, seen, transport = self.embedder()
         await self.index(embedder).index_once(budget=1000)
         # 153 files, each a name and a passage: about 306 inputs, sent 64 at a time.
@@ -292,7 +300,7 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         (self.docs / "photo.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 64)
         index = self.index()
         await index._scan()
-        order = [f.path.name for f in index._queue]
+        order = [f.path.name for f in index._queue if not f.folder]
         self.assertEqual(set(order[:2]), {"invoice-2026.txt", "notes.md"})
         self.assertEqual(order[2:], ["photo.png", "code.py", "README.md"])
 
@@ -518,14 +526,22 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
         for n in range(80):
             self.add(f"/d/note{n}.txt", "text", "from line 1", f"note {n}", self.noise(), "text")
             self.add(f"/d/photo{n}.jpg", "image", "image", f"photo{n}.jpg", self.noise(), "image")
-        # Pictures score low against a text query, so one that matches stands out only on the image scale.
         self.add("/d/beach.jpg", "image", "image", "beach.jpg", self.topic(0, 0.8), "image")
         self.add("/d/beach-notes.txt", "text", "from line 1", "trip", self.topic(0, 0.6), "text")
         query = self.topic(0, 3.0)
+        found = await self.search(query, "beach trip")
+        names = [pathlib.Path(r["path"]).name for r in found]
+        self.assertEqual(names[:2], ["beach.jpg", "beach-notes.txt"])    # plain cosine across media
+        # A question that names a kind ("photo") ranks files of that kind once more: the photos lead.
         found = await self.search(query, "beach trip photo")
         names = [pathlib.Path(r["path"]).name for r in found]
-        self.assertEqual(names[0], "beach.jpg")                       # the photo, helped by "photo" in the query
-        self.assertEqual(names[1], "beach-notes.txt")
+        self.assertEqual(names[0], "beach.jpg")
+        self.assertTrue(all(name.endswith(".jpg") for name in names[:5]))
+        self.assertEqual(search.named_kinds("photo of a zebra"), {"image"})
+        self.assertEqual(search.named_kinds("a script that blurs names in screenshots"), {"code"})
+        self.assertEqual(search.named_kinds("the slides about pricing"), {"doc"})
+        self.assertTrue(search.asks_for_many("flower photos"))
+        self.assertFalse(search.asks_for_many("videos with birds in them"))
 
     async def test_codes_and_numbers_are_found_by_their_words(self):
         for n in range(80):

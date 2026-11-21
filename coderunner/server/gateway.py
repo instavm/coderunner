@@ -13,6 +13,7 @@ remote access through a private tailnet). Approvals are only decided here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -27,7 +28,9 @@ import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route, WebSocketRoute
+from starlette.staticfiles import StaticFiles
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..safety.egress import EgressDenied, fetch
 from ..safety.policy import current_run
@@ -138,13 +141,22 @@ def sandbox_app(svc) -> Starlette:
         except httpx.HTTPError as exc:
             return JSONResponse({"error": f"Upstream error: {exc}"}, status_code=502)
 
-    app = Starlette(routes=[
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app):          # on_shutdown is gone from Starlette 1.x; a lifespan works on every version
+        try:
+            yield
+        finally:
+            await upstream.aclose()
+
+    app = Starlette(lifespan=lifespan, routes=[
         Route("/health", health, methods=["GET", "HEAD"]),
         Route("/v1/models", models, methods=["GET"]),
         Route("/v1/chat/completions", chat, methods=["POST"]),
         Route("/v1/embeddings", embeddings, methods=["POST"]),
         Route("/v1/egress/fetch", egress_fetch, methods=["POST"]),
-    ], on_shutdown=[upstream.aclose])
+    ])
     return TokenAuth(app, svc.api_token)
 
 
@@ -180,10 +192,12 @@ class OwnerAuth:
         return row["id"]
 
     async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            return await self._websocket(scope, receive, send)
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         request = Request(scope)
-        if (request.method, request.url.path) in self.OPEN:
+        if (request.method, request.url.path) in self.OPEN or request.url.path.startswith("/app/"):
             return await self.app(scope, receive, send)
         if _equal(_bearer(request), self.svc.admin_token()):
             scope.setdefault("state", {})["principal"] = "admin-token"
@@ -197,6 +211,20 @@ class OwnerAuth:
             return await self.app(scope, receive, send)
         response = JSONResponse({"error": "Authentication required"}, status_code=401)
         return await response(scope, receive, send)
+
+    async def _websocket(self, scope, receive, send):
+        """The same rule for websockets: the admin token, or a paired device's cookie from this origin."""
+        request = Request({**scope, "type": "http", "method": "GET"})
+        if _equal(_bearer(request), self.svc.admin_token()):
+            scope.setdefault("state", {})["principal"] = "admin-token"
+            return await self.app(scope, receive, send)
+        origin = request.headers.get("origin")
+        same_origin = origin is not None and origin.split("://", 1)[-1] == request.headers.get("host", "")
+        device = self._device(request)
+        if device and same_origin:
+            scope.setdefault("state", {})["principal"] = f"device:{device[:8]}"
+            return await self.app(scope, receive, send)
+        await send({"type": "websocket.close", "code": 1008})
 
 
 MCP_TAINT_SECONDS = 1800
@@ -290,17 +318,16 @@ def admin_app(svc, daemon) -> Starlette:
     async def tools(request: Request):
         return JSONResponse(svc.registry.describe())
 
-    async def call_tool(request: Request):
-        """Lets local MCP clients use the assistant's guarded tools.
+    async def invoke_for_client(client: str, who: str, name: str, arguments: Any) -> tuple[Any, list[dict]]:
+        """A guarded tool call on behalf of an MCP client.
 
         Each call is separate, so what a client has read is remembered for a while: after it
         reads untrusted content, its sensitive actions need fresh approval, and after it also
         reads private data, sharing that data somewhere new needs approval.
         """
         from ..agent import RunContext
-        body = await request.json()
-        client = str(body.get("client", "local"))[:64]
-        ctx = RunContext(conversation=f"mcp:{client}", origin=f"mcp:{principal(request)}")
+        client = str(client or "local")[:64]
+        ctx = RunContext(conversation=f"mcp:{client}", origin=f"mcp:{who}")
         tainted_until, content_until = mcp_taint.get(client, (0.0, 0.0))
         private_until, sources, shared = mcp_private.get(client, (0.0, set(), set()))
         now = time.time()
@@ -309,7 +336,7 @@ def admin_app(svc, daemon) -> Starlette:
             ctx.private_sources, ctx.shared = set(sources), set(shared)
         token = current_run.set(ctx)
         try:
-            result = await svc.registry.invoke(request.path_params["name"], body.get("arguments", {}), ctx)
+            result = await svc.registry.invoke(name, arguments or {}, ctx)
         finally:
             current_run.reset(token)
         if ctx.tainted:
@@ -317,7 +344,13 @@ def admin_app(svc, daemon) -> Starlette:
                                  now + MCP_TAINT_SECONDS if ctx.content_tainted else content_until)
         if ctx.private_sources:
             mcp_private[client] = (now + MCP_TAINT_SECONDS, ctx.private_sources, ctx.shared)
-        images = [{"mime": mime, "data_b64": data} for mime, data in ctx.images]
+        return result, [{"mime": mime, "data_b64": data} for mime, data in ctx.images]
+
+    async def call_tool(request: Request):
+        """Lets local MCP clients (the stdio bridge) use the assistant's guarded tools."""
+        body = await request.json()
+        result, images = await invoke_for_client(body.get("client", "local"), principal(request),
+                                                 request.path_params["name"], body.get("arguments", {}))
         return JSONResponse({"result": result, "images": images})
 
     async def files(request: Request):
@@ -339,6 +372,18 @@ def admin_app(svc, daemon) -> Starlette:
                 return JSONResponse({"added": index.add_root(str(body["add"])), **index.status()})
             if body.get("remove"):
                 return JSONResponse({"forgotten": index.remove_root(str(body["remove"])), **index.status()})
+            if body.get("source_add"):
+                index.sources.add(str(body["source_add"]))
+                index.wake.set()
+                return JSONResponse(index.sources.status())
+            if body.get("source_remove"):
+                source = str(body["source_remove"])
+                index.sources.remove(source)
+                from ..files.sources import SCHEMES
+                if source in SCHEMES:
+                    index._drop([r["path"] for r in svc.store.query("SELECT path FROM files WHERE path LIKE ?",
+                                                                     (SCHEMES[source] + "://%",))])
+                return JSONResponse(index.sources.status())
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(await index.index_once(int(body.get("budget", 200))))
@@ -415,7 +460,122 @@ def admin_app(svc, daemon) -> Starlette:
         response.delete_cookie(DEVICE_COOKIE)
         return response
 
-    app = Starlette(routes=[
+
+    # ---- the app: tasks in the background, their live activity, and the sandbox's own computer ----------
+
+    async def app_page(request: Request):
+        return RedirectResponse("/app/", status_code=307)
+
+    async def start_task(request: Request):
+        body = await request.json()
+        message = str(body.get("message", "")).strip()
+        if not message:
+            return JSONResponse({"error": "message is required"}, status_code=400)
+        if not svc.config.get("models.chat"):
+            return JSONResponse({"error": "No local chat model is set up. Run `coderunner setup`."}, status_code=409)
+        conversation = str(body.get("conversation") or "")
+        if not conversation.startswith("app:"):
+            conversation = "app:" + secrets.token_hex(6)
+        return JSONResponse(daemon.tasks.start(conversation, message, principal(request)))
+
+    async def cancel_task(request: Request):
+        return JSONResponse({"cancelled": daemon.tasks.cancel(request.path_params["id"])})
+
+    async def conversations(request: Request):
+        return JSONResponse(daemon.tasks.conversations())
+
+    async def conversation(request: Request):
+        name = request.path_params["conversation"]
+        return JSONResponse({"conversation": name, "tasks": daemon.tasks.tasks(name),
+                             "events": daemon.bus.since(0, conversation=name)})
+
+    async def events(request: Request):
+        """Server-sent events: what every task does, as it happens (after `since`, so a reconnect misses none)."""
+        try:
+            since = int(request.query_params.get("since") or request.headers.get("last-event-id") or 0)
+        except ValueError:
+            since = 0
+        if since < 0:                       # only what happens from now on
+            since = daemon.bus.latest()
+        queue = daemon.bus.subscribe()
+
+        async def stream():
+            try:
+                last = since
+                for event in daemon.bus.since(since):
+                    last = event["seq"]
+                    yield f"id: {event['seq']}\ndata: {json.dumps(event, default=str)}\n\n"
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), 15)
+                    except asyncio.TimeoutError:
+                        yield ": keep-alive\n\n"
+                        continue
+                    if event["seq"] <= last:
+                        continue
+                    last = event["seq"]
+                    yield f"id: {event['seq']}\ndata: {json.dumps(event, default=str)}\n\n"
+            finally:
+                daemon.bus.unsubscribe(queue)
+        return StreamingResponse(stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+    async def computer(request: Request):
+        """The sandbox's screen; POST brings it up. The password opens the screen through /api/computer/screen."""
+        info = await svc.sandbox.desktop(start=request.method == "POST")
+        info["mode"] = svc.browser.mode
+        info["browser_running"] = svc.browser.running()
+        return JSONResponse(info)
+
+    async def computer_screen(websocket: WebSocket):
+        """The VM's VNC server, relayed as a binary websocket for the app's viewer (noVNC)."""
+        from urllib.parse import urlsplit
+        offered = websocket.scope.get("subprotocols") or []
+        await websocket.accept(subprotocol="binary" if "binary" in offered else None)
+        host = urlsplit(svc.sandbox.base_url).hostname or "127.0.0.1"
+        try:
+            info = await svc.sandbox.desktop(start=True)
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, int(info.get("port") or 5900)), 10)
+        except Exception as exc:
+            await websocket.close(code=1011, reason=f"The computer's screen is not reachable: {exc}"[:120])
+            return
+        svc.audit.write("computer.screen_opened", by=websocket.scope.get("state", {}).get("principal", "?"))
+
+        async def upstream():
+            try:
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        return
+                    data = message.get("bytes") or (message.get("text") or "").encode()
+                    writer.write(data)
+                    await writer.drain()
+            except (WebSocketDisconnect, ConnectionError, RuntimeError):
+                return
+
+        async def downstream():
+            try:
+                while chunk := await reader.read(65536):
+                    await websocket.send_bytes(chunk)
+            except (ConnectionError, RuntimeError):
+                return
+
+        tasks = [asyncio.create_task(upstream()), asyncio.create_task(downstream())]
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in tasks:
+            task.cancel()
+        writer.close()
+        with contextlib.suppress(Exception):
+            await websocket.close()
+
+    mcp_all, mcp_search, mcp_lifespan = mcp_apps(svc, invoke_for_client)
+    app = Starlette(lifespan=mcp_lifespan, routes=[
+        # Routes with ASGI endpoints rather than mounts: a mount redirects /mcp to /mcp/, which MCP clients do
+        # not follow.
+        Route("/mcp", mcp_all),
+        Route("/mcp/", mcp_all),
+        Route("/mcp/search", mcp_search),
+        Route("/mcp/search/", mcp_search),
         Route("/", index, methods=["GET"]),
         Route("/health", health, methods=["GET"]),
         Route("/pair", pair, methods=["GET", "POST"]),
@@ -437,8 +597,78 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/devices", devices, methods=["GET"]),
         Route("/api/devices/{id}", remove_device, methods=["DELETE"]),
         Route("/logout", logout, methods=["POST"]),
+        Route("/app", app_page, methods=["GET"]),
+        Mount("/app/", app=StaticFiles(directory=WEB_DIR / "app", html=True, check_dir=False)),
+        Route("/api/tasks", start_task, methods=["POST"]),
+        Route("/api/tasks/{id}/cancel", cancel_task, methods=["POST"]),
+        Route("/api/conversations", conversations, methods=["GET"]),
+        Route("/api/conversations/{conversation}", conversation, methods=["GET"]),
+        Route("/api/events", events, methods=["GET"]),
+        Route("/api/computer", computer, methods=["GET", "POST"]),
+        WebSocketRoute("/api/computer/screen", computer_screen),
     ])
     return OwnerAuth(app, svc)
+
+
+def mcp_apps(svc, invoke):
+    """The assistant's tools as an MCP server over Streamable HTTP (stateless: every request carries the token),
+    at /mcp with every tool and /mcp/search with search, reading and memory only, for agents that run elsewhere
+    (OpenClaw, LM Studio, a tool on another machine over the tailnet). Each principal is its own client for the
+    taint and private-data memory."""
+    import contextlib
+
+    from mcp import types
+    from mcp.server.lowlevel import Server
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+
+    from .mcp_bridge import tool_names
+
+    def build(name: str, selection: str) -> Server:
+        server = Server(name)
+
+        @server.list_tools()
+        async def list_tools() -> list[types.Tool]:
+            return [types.Tool(name=t["name"], description=t["description"], inputSchema=t["parameters"])
+                    for t in tool_names(selection, svc.registry.describe())]
+
+        @server.call_tool()
+        async def call_tool(name: str, arguments: dict) -> list:
+            if selection == "search" and name not in {t["name"] for t in tool_names("search", svc.registry.describe())}:
+                raise ValueError(f"{name} is not offered on this endpoint")
+            ctx = server.request_context
+            who = "unknown"
+            try:
+                who = ctx.request.scope.get("state", {}).get("principal", "unknown") if ctx.request else "unknown"
+            except Exception:
+                pass
+            result, images = await invoke(f"http:{who}:{selection}", who, name, arguments or {})
+            text = result if isinstance(result, str) else json.dumps(result)
+            content: list = [types.TextContent(type="text", text=text)]
+            content += [types.ImageContent(type="image", data=image["data_b64"], mimeType=image["mime"])
+                        for image in images]
+            return content
+        return server
+
+    managers = [StreamableHTTPSessionManager(app=build("coderunner", "all"), stateless=True, json_response=True),
+                StreamableHTTPSessionManager(app=build("coderunner-search", "search"), stateless=True,
+                                             json_response=True)]
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app):
+        async with contextlib.AsyncExitStack() as stack:
+            for manager in managers:
+                await stack.enter_async_context(manager.run())
+            yield
+
+    class Endpoint:
+        """An ASGI app (not a function, so Starlette's Route passes the connection through untouched)."""
+
+        def __init__(self, manager):
+            self.manager = manager
+
+        async def __call__(self, scope, receive, send):
+            await self.manager.handle_request(scope, receive, send)
+    return Endpoint(managers[0]), Endpoint(managers[1]), lifespan
 
 
 def admin_request(method: str, path: str, *, base_url: str, token: str, json_body: Any = None,

@@ -387,6 +387,36 @@ def setup_coreml_embedding(config, hw: hardware.Hardware | None = None, progress
     return "gpu"
 
 
+def setup_search(config, hw: hardware.Hardware | None = None, progress: Callable[[str], None] = print) -> dict:
+    """Search mode: only the embedding model, for the file index and the search tools over MCP. On Apple silicon
+    EmbeddingGemma 2 runs on the Neural Engine (Core ML); elsewhere Ollama serves it. No chat model, no sandbox."""
+    from . import coreml
+    config.set("models.chat", "")
+    config.set("sandbox.driver", "none")
+    config.set("assistant.mode", "search")
+    if coreml.supported():
+        config.set("models.embedding_runtime", config.get("models.embedding_runtime") or "coreml")
+        where = setup_coreml_embedding(config, hw, progress)
+        if where == "coreml":
+            config.save()
+            return {"ok": True, "mode": "search", "embedding": config.get("models.embedding"),
+                    "embedding_url": config.get("models.embedding_url"), "runtime": "coreml"}
+    rt = _runtime(config, _hardware(config, hw), "ollama")
+    if rt is None or not rt.available():
+        return {"ok": False, "error": "Search mode needs the Core ML runtime (Apple silicon, macOS 15+) or Ollama "
+                                      "for the embedding model. Install Ollama (https://ollama.com/download) and run "
+                                      "`coderunner setup --search` again."}
+    if not rt.running():
+        rt.start()
+    tag = _setup_embedding(config, rt, _hardware(config, hw), progress)
+    if not tag:
+        return {"ok": False, "error": "No embedding model could be set up in Ollama."}
+    config.set("models.embedding", tag)
+    config.set("models.embedding_url", rt.base_url)
+    config.save()
+    return {"ok": True, "mode": "search", "embedding": tag, "embedding_url": rt.base_url, "runtime": "ollama"}
+
+
 def _external(config, rt: Runtime, model_id: str | None, progress, smoke) -> dict:
     model = model_id or config.get("models.chat") or ""
     if not model:

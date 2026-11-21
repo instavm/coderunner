@@ -60,6 +60,16 @@ def cmd_setup(args, config: Config) -> int:
         print("Skipped model setup. Run `coderunner models setup` later.")
         return 0
     from .models import manager
+    if args.search:
+        result = manager.setup_search(config, progress=print)
+        _print(result)
+        if not result.get("ok"):
+            return 1
+        print("\nSearch mode is set up: the file index and the search tools, no chat model and no sandbox.\n"
+              "Next:\n  coderunner up\n  coderunner files add ~/Documents\n"
+              "  coderunner files sources add mail        # also messages, notes, calendar\n"
+              "  claude mcp add coderunner-search -- coderunner mcp --tools search")
+        return 0
     result = manager.setup(config, model_id=args.model, runtime=args.runtime, accept_license=args.accept_license,
                            progress=print)
     _print(result)
@@ -89,7 +99,7 @@ def cmd_up(args, config: Config) -> int:
     if state not in ("running", "missing", "unavailable"):
         print(f"Starting sandbox ({driver.name})…")
         driver.start()
-    elif state == "missing":
+    elif state == "missing" and config.get("sandbox.driver") != "none":
         print(NO_SANDBOX)
     if _daemon_up(config):
         print("Daemon already running.")
@@ -135,7 +145,7 @@ def cmd_down(args, config: Config) -> int:
 
 
 BUILD_SPACE_GB = 20                          # as install.sh checks
-NO_SANDBOX = "No sandbox is installed. Run ./install.sh to create one."
+NO_SANDBOX = "No sandbox is installed. Run ./install.sh (without --search) to create one."
 
 
 def cmd_sandbox(args, config: Config) -> int:
@@ -268,8 +278,45 @@ see and use the tabs in that group: drag a tab out to take it back, or in to han
 Check the connection with: coderunner browser status"""
 
 
+def _computer_setup(config: Config) -> int:
+    """Give the sandbox VM its own desktop and Chrome, and let the assistant browse there."""
+    import pathlib
+    import subprocess
+    from .sandbox import driver_for
+    driver = driver_for(config)
+    if driver.status() != "running" and not driver.start():
+        print("Error: the sandbox is not running and did not start. Check: coderunner sandbox status")
+        return 1
+    checkout = pathlib.Path(__file__).resolve().parent.parent
+    script = checkout / "desktop-setup.sh"
+    if not script.exists():
+        print("Error: desktop-setup.sh was not found next to this copy of CodeRunner; run this from a checkout.")
+        return 1
+    print("Installing the desktop (Xfce, a VNC screen and Google Chrome) in the sandbox; this takes a few minutes...")
+    for name, target in (("desktop.py", "/app/desktop.py"), ("server.py", "/app/server.py"),
+                         ("entrypoint.sh", "/entrypoint.sh")):     # the sandbox server's desktop and browser routes
+        with open(checkout / name, "rb") as source:
+            if subprocess.run(driver.exec_argv(["sh", "-c", f"cat > {target}"], tty=False), stdin=source).returncode:
+                print(f"Error: could not copy {name} into the sandbox.")
+                return 1
+    with open(script, "rb") as source:
+        if subprocess.run(driver.exec_argv(["bash", "-s"], tty=False), stdin=source).returncode:
+            print("Error: the desktop did not install; see the output above.")
+            return 1
+    print("Restarting the sandbox so its server picks up the desktop...")
+    driver.stop()
+    driver.start()
+    config.set("browser.mode", "computer")
+    config.save()
+    print("Done. The assistant now browses on the sandbox's own computer, which you can watch and take over in the "
+          "app. Restart the assistant: coderunner down && coderunner up")
+    return 0
+
+
 def cmd_browser(args, config: Config) -> int:
     from .browser import extension
+    if args.action == "computer":
+        return _computer_setup(config)
     if args.action == "connect":
         try:
             result = extension.install(args.browser or None)
@@ -669,6 +716,16 @@ def cmd_files(args, config: Config) -> int:
         _print(_admin(config, "POST", "/api/files", {"add": os.path.abspath(os.path.expanduser(target))}))
     elif args.action == "remove":
         _print(_admin(config, "POST", "/api/files", {"remove": os.path.abspath(os.path.expanduser(target))}))
+    elif args.action == "sources":
+        # coderunner files sources [add|remove <mail|messages|notes|calendar>]
+        words = args.target or []
+        if len(words) == 2 and words[0] in ("add", "remove"):
+            _print(_admin(config, "POST", "/api/files", {f"source_{words[0]}": words[1]}))
+        elif words:
+            print("Usage: coderunner files sources [add|remove mail|messages|notes|calendar]")
+            return 2
+        else:
+            _print((_admin(config, "GET", "/api/files") or {}).get("sources", {}))
     elif args.action == "index":
         _print(_admin(config, "POST", "/api/files", {"budget": 100000}, timeout=86400))
     else:
@@ -708,6 +765,9 @@ def _find(config: Config, query: str, kind: str | None, limit: int, as_json: boo
         if item.get("copies"):
             print("    same file at " + ", ".join("~" + p[len(home):] if p.startswith(home + os.sep) else p
                                                 for p in item["copies"]))
+        if item.get("versions"):
+            print("    also at " + ", ".join("~" + p[len(home):] if p.startswith(home + os.sep) else p
+                                           for p in item["versions"]))
         if item.get("snippet"):
             print(f"    {item['snippet'][:160]}")
     print("Nothing matched in the shared folders." if not found else "", f"({(time.monotonic() - start) * 1000:.0f} ms)")
@@ -765,7 +825,7 @@ def cmd_token(args, config: Config) -> int:
 
 def cmd_mcp(args, config: Config) -> int:
     from .server.mcp_bridge import main
-    main()
+    main(tools=args.tools)
     return 0
 
 
@@ -783,6 +843,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--accept-license", action="store_true")
     p.add_argument("--no-models", action="store_true")
     p.add_argument("--no-voice", action="store_true", help="Skip speech-to-text setup")
+    p.add_argument("--search", action="store_true",
+                   help="Search mode: the embedding model and the file index only (no chat model, no sandbox)")
     p.set_defaults(func=cmd_setup)
 
     p = sub.add_parser("up", help="Start the sandbox and the assistant daemon")
@@ -882,15 +944,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--id", type=int)
     p.set_defaults(func=cmd_schedule)
 
-    p = sub.add_parser("browser", help="Use a CodeRunner tab group in your everyday Chrome, or a separate profile")
-    p.add_argument("action", choices=["status", "connect", "disconnect"], nargs="?", default="status")
+    p = sub.add_parser("browser", help="Browse on the sandbox's own computer, in a CodeRunner tab group in your everyday "
+                                       "Chrome, or with a separate profile")
+    p.add_argument("action", choices=["status", "computer", "connect", "disconnect"], nargs="?", default="status")
     p.add_argument("--browser", action="append", help="chrome, brave, edge, chromium... (default: all installed)")
     p.set_defaults(func=cmd_browser)
 
     kinds = ["text", "doc", "image", "audio", "video"]
     p = sub.add_parser("files", help="Folders the assistant may search and read (text, code, images, audio, video)")
-    p.add_argument("action", choices=["status", "add", "remove", "index", "search"], nargs="?", default="status")
-    p.add_argument("target", nargs="*", help="folder to add or remove, or what to search for")
+    p.add_argument("action", choices=["status", "add", "remove", "sources", "index", "search"], nargs="?",
+                   default="status")
+    p.add_argument("target", nargs="*", help="folder to add or remove, a source (sources add mail), or what to search for")
     p.add_argument("--kind", choices=kinds)
     p.add_argument("--limit", type=int, default=8)
     p.add_argument("--json", action="store_true")
@@ -913,7 +977,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("token", help="Print the sandbox API token (or --admin)")
     p.add_argument("--admin", action="store_true")
     p.set_defaults(func=cmd_token)
-    sub.add_parser("mcp", help="MCP stdio bridge to the assistant's guarded tools").set_defaults(func=cmd_mcp)
+    p = sub.add_parser("mcp", help="MCP stdio bridge to the assistant's guarded tools")
+    p.add_argument("--tools", choices=["all", "search"], default="all",
+                   help="all of the assistant's tools, or only search, reading and memory")
+    p.set_defaults(func=cmd_mcp)
     return parser
 
 

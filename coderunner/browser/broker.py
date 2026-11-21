@@ -150,8 +150,9 @@ def _fingerprint(plan: dict) -> tuple:
 # ---- broker ---------------------------------------------------------------
 
 class BrowserBroker:
-    def __init__(self, config, policy, audit, launcher=None, decider=None, chrome=None):
+    def __init__(self, config, policy, audit, launcher=None, decider=None, chrome=None, sandbox=None):
         self.config = config
+        self.sandbox = sandbox      # (url, credential) of the sandbox VM, for browser.mode "computer"
         self.policy = policy
         self.audit = audit
         self.launcher = launcher    # None: chosen by browser.mode each time the browser starts
@@ -193,11 +194,14 @@ class BrowserBroker:
         self._new_tabs: dict[str, list[str]] = {}         # tab -> popups it opened during the action
         self._screens_only = 0          # while a model that reads screenshots acts: no page text after actions
         self._dns: dict[str, tuple[float, str | None]] = {}
+        self._fronted: str | None = None            # the tab last brought to the front of the screen
 
     @property
     def mode(self) -> str:
-        """dedicated: a browser with the assistant's own profile; chrome: a tab group in the owner's browser."""
-        return "chrome" if self.config.get("browser.mode") == "chrome" else "dedicated"
+        """dedicated: a browser with the assistant's own profile; chrome: a tab group in the owner's browser;
+        computer: Chrome on the sandbox VM's own desktop, which the owner watches and can take over."""
+        mode = self.config.get("browser.mode")
+        return mode if mode in ("chrome", "computer") else "dedicated"
 
     @property
     def headless(self) -> bool:
@@ -211,6 +215,11 @@ class BrowserBroker:
                 raise BrowserError("browser.mode is chrome, but the extension bridge is not running")
             from .extension import ExtensionLauncher
             return ExtensionLauncher(self.chrome)
+        if self.mode == "computer":
+            if self.sandbox is None:
+                raise BrowserError("browser.mode is computer, but no sandbox is set up")
+            from .vm import VMLauncher
+            return VMLauncher(*self.sandbox)
         return default_launcher
 
     def running(self) -> bool:
@@ -256,7 +265,7 @@ class BrowserBroker:
                                lambda: self._snapshot(tab, max_chars, tainted, start=str(start or "")))
 
     async def click(self, ref: int, tab: str | None = None, tainted: bool = False) -> dict:
-        return await self._run("click", {"ref": ref, "tab": tab, "tainted": tainted},
+        return await self._run("click", {"ref": ref, "label": self._label(ref, tab), "tab": tab, "tainted": tainted},
                                lambda: self._click(ref, tab, tainted))
 
     async def type(self, ref: int, text: str, submit: bool = False, tab: str | None = None,
@@ -268,7 +277,8 @@ class BrowserBroker:
             with contextlib.suppress(BrowserError, CDPError):
                 target = await self._target(tab)
                 seen = list(self._lines.get(target) or [])
-        result = await self._run("type", {"ref": ref, "chars": len(str(text)), "submit": submit, "tab": tab,
+        result = await self._run("type", {"ref": ref, "label": self._label(ref, tab), "chars": len(str(text)),
+                                          "submit": submit, "tab": tab,
                                           "tainted": tainted},
                                  lambda: self._type(ref, text, submit, tab, tainted, clear))
         if target is None or result.get("ok") is False:
@@ -385,7 +395,8 @@ class BrowserBroker:
                                lambda: self._find(str(text), tab, tainted))
 
     async def select(self, ref: int, option: str, tab: str | None = None, tainted: bool = False) -> dict:
-        return await self._run("select", {"ref": ref, "option": str(option)[:200], "tab": tab, "tainted": tainted},
+        return await self._run("select", {"ref": ref, "label": self._label(ref, tab), "option": str(option)[:200],
+                                          "tab": tab, "tainted": tainted},
                                lambda: self._select(ref, str(option), tab, tainted))
 
     async def press(self, key: str, tab: str | None = None, tainted: bool = False) -> dict:
@@ -489,7 +500,8 @@ class BrowserBroker:
 
     async def _shutdown(self) -> None:
         process, cdp = self._process, self._cdp
-        if cdp is not None and not cdp.closed:
+        # The sandbox's Chrome stays open on its screen with the owner's tabs; only the connection ends.
+        if cdp is not None and not cdp.closed and self.mode != "computer":
             with contextlib.suppress(CDPError):
                 await cdp.send("Browser.close", timeout=5)
             with contextlib.suppress(subprocess.TimeoutExpired):
@@ -659,6 +671,11 @@ class BrowserBroker:
 
     @contextlib.asynccontextmanager
     async def _acting(self, target: str, sid: str, tainted: bool = False):
+        if self.mode == "computer" and self._fronted != target:
+            # The owner watches the computer's screen: the tab being worked in is the one shown.
+            with contextlib.suppress(CDPError):
+                await self._send(sid, "Page.bringToFront", timeout=5)
+                self._fronted = target
         self._busy[target] = tainted
         self._blocked.pop(target, None)
         self._new_tabs.pop(target, None)
@@ -1102,6 +1119,15 @@ class BrowserBroker:
             return backend if field_kind(node) == "password" else None
 
         return {backend for backend in await asyncio.gather(*map(check, candidates)) if backend}
+
+    def _label(self, ref: Any, tab: str | None) -> str:
+        """What element [ref] says on screen ("button Add to Cart"), for the activity log; never typed text."""
+        target = self._tab_targets.get(tab) if tab else self._active
+        try:
+            node = self._refs[target][int(ref)]
+        except (KeyError, ValueError, TypeError):
+            return ""
+        return squash(f"{node.get('role', '')} {node.get('name', '')}")[:100]
 
     def _ref(self, target: str, ref: Any) -> dict:
         try:

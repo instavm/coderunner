@@ -78,5 +78,19 @@ class SandboxClient:
         response.raise_for_status()
         return response.json()
 
+    async def desktop(self, start: bool = False, chrome: bool = False) -> dict:
+        """The VM's screen: whether it has one, whether it runs, and its VNC port and password."""
+        if start:
+            response = await self._client.post("/v1/desktop", json={"chrome": chrome}, timeout=90)
+        else:
+            response = await self._client.get("/v1/desktop", timeout=10)
+        if response.status_code == 404:
+            return {"available": False, "running": False, "error": "This sandbox predates the desktop."}
+        data = response.json()
+        if response.status_code >= 400:
+            data.setdefault("available", response.status_code != 409)
+            data.setdefault("running", False)
+        return data
+
     async def aclose(self) -> None:
         await self._client.aclose()

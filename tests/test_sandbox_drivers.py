@@ -52,6 +52,14 @@ class AppleDriverTests(unittest.TestCase):
 
 
 
+class NoneDriverTests(unittest.TestCase):
+    def test_search_mode_has_no_sandbox(self):
+        """sandbox.driver none (search mode): a driver that is never available, so nothing is started."""
+        from coderunner.core.config import Config
+        from coderunner.sandbox.drivers import Driver, driver_for
+        driver = driver_for(Config({"sandbox": {"driver": "none"}}, path=None))
+        self.assertIs(type(driver), Driver)
+        self.assertEqual((driver.name, driver.available(), driver.status()), ("none", False, "unavailable"))
 
 
 class FakeDriver:

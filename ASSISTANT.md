@@ -11,6 +11,14 @@ git clone https://github.com/instavm/coderunner.git && cd coderunner
 coderunner chat       # talk to it; approvals are asked right in the terminal
 ```
 
+## Search mode
+
+`./install.sh --search` (or `coderunner setup --search`) installs the index and the search tools only: the
+embedding model on the Neural Engine (Ollama on Linux), the daemon as a login service, no sandbox VM and no
+chat model. It is for an agent you already use, over MCP (below); `coderunner chat` says so and stops. Add a
+local model later with `coderunner setup`, or the sandbox with `./install.sh`. `sandbox.driver` is `none` and
+`models.chat` empty in this mode.
+
 ## What runs where
 
 ```
@@ -518,68 +526,147 @@ mail and message bodies, contact lookup. Writes: calendar events (without
 invitations), reminders, notes, and mail drafts saved to Drafts; they ask first
 only after the task has read untrusted content. There is no send tool. Calendar queries miss recurring series that started before the range.
 
-## Your files
+## Your files, mail, messages, notes and calendar: one index
 
 `coderunner files add ~/Documents` shares a folder with the assistant. The
 daemon indexes it in the background and keeps it current, and
 `coderunner find "boarding pass for the Delhi trip"` searches it from the
-terminal by describing what you want.
+terminal by describing what you want. `coderunner files sources add mail`
+(and `messages`, `notes`, `calendar`) adds the owner's apps to the same index.
 
 * One multimodal embedding model (`files.embedding`, EmbeddingGemma 2 on
   the Neural Engine or in Ollama) places names, text, pictures and sound in
-  one space. Every file is findable by its name; text by passage (with its
-  line); PDFs page by page, scanned pages read with on-device OCR; pictures
-  by what they show and by the text in them (screenshots, photos of
-  documents); audio in overlapping 30-second windows (silence skipped);
-  video by a frame a second (up to 32, spread evenly over a longer video),
-  by the whole video (the mean of its frames) and by its sound. Results
-  point at the page, line or moment that matched. Source code is searched
-  with the model's code-retrieval prompt.
-* Search reads each similarity against its kind for that query (names,
-  passages, pictures, sound), so a photo that matches well is not buried under
-  text that matches a little, and a file ranks by its best piece; asking for a
-  kind ("photo of...", "...in a video") favours it.
-* Words (a full-text index, BM25) find what an embedding cannot read: a
-  question made of codes and numbers ("HX-55821") is answered by words alone,
-  and text made mostly of figures (data exports) is found by its words.
-  Mixing word matches into descriptive questions was measured and dropped: it
-  did not help, and fusing the two rankings buried pictures and video under
-  text that shared a word with the question.
+  one space. Every file is findable by its name, read with its kind ("HEIF
+  image", "QuickTime movie"); text by passage (with its line); PDFs page by
+  page, scanned pages read with on-device OCR; CSV and TSV files and Excel
+  sheets as tables, their rows with their columns named and their columns of
+  numbers totalled; PowerPoint by slide; Numbers, Keynote and Pages through
+  the preview they carry; pictures by what they show and by the text in them
+  (screenshots, photos of documents); audio in overlapping 30-second windows
+  (silence skipped); video by a frame a second (up to 32, spread evenly over
+  a longer video), by the whole video (the mean of its frames) and by its
+  sound. Results point at the page, line or moment that matched. A passage
+  with nothing to say (a note that reads "Untitled", the residue of markup,
+  base64) keeps its words for keyword search but gets no vector: in a large
+  index such passages sat near every question. Generated and minified code,
+  lock files and source files over 350 KB are skipped, as code search engines
+  do.
+* Folders are results too: each is found by its name and the kinds of file
+  in it ("Garden, a folder of images"), by the mean similarity of every file
+  under it ("budget and tax stuff" finds Finance), and the folder the best
+  results gather in is shown after the first of them, or first when the
+  question asks for a group of things ("flower photos"). A name search that
+  finds nothing tries the folder's parent ("audio downloads"), drops words
+  for kinds of file ("costa rica pics"), then the nearest name word for a
+  misspelt one ("personel").
+* Search is hybrid, fused by reciprocal rank with nothing to tune: meaning
+  (plain cosine across media; EmbeddingGemma 2's space is aligned, so a photo
+  that matches well is not buried under text that matches a little, and a
+  file ranks by its best piece), words (BM25 over the pieces holding *every*
+  word of the question, which finds codes and numbers such as "HX-55821" and
+  stays quiet for plain language), names (the same over each file's or
+  folder's own name and kind), and the kind the question names ("photo
+  of...", "the slides about...", "emails about..."), as one more ranking over
+  files of that kind. Exact copies count once ("same file at ..."); a
+  document saved twice and changed since, found by the same passage, is shown
+  once with the other under "also at".
+* Each file's contents are indexed once: a byte-identical copy (a second
+  checkout, "name (1).pdf", an export unpacked twice) takes the pieces and
+  vectors of the file already read, and only its name is embedded. A file
+  that moved or was renamed keeps its pieces; only its name is embedded
+  again when that changed.
 * Fast: the daemon keeps a compact code of every piece in memory (about 100
   bytes each) and the model loads on demand (it is freed after
   `models.idle_unload_minutes`); a search compares the query with all of them,
   then scores the closest few hundred exactly. Vectors are stored at half
   precision. Without the daemon, `coderunner find` searches directly.
 * Kept current: on macOS new and changed files are picked up within seconds
-  (file events); elsewhere the folders are walked every `files.scan_interval`.
-  Indexing waits on a battery below `files.min_battery` (30%) and in Low
-  Power Mode; on battery, pictures, sound and video wait for the charger
-  while text goes on (`files.media_on_battery`; `files.media_waits` holds
+  (file events; a folder that appears is walked on its own); elsewhere the
+  folders are walked every `files.scan_interval`. Indexing waits on a
+  battery below `files.min_battery` (30%) and in Low Power Mode; on battery,
+  pictures, sound, video and iCloud downloads wait for the charger while text
+  and screenshots go on (`files.media_on_battery`; `files.media_waits` holds
   them whatever the power). A different embedding model means indexing
   again; a new picture or sound encoder for the same text model re-embeds
   only pictures, sound and video.
-* Files kept only in iCloud are indexed by name and never downloaded (set
-  `files.cloud_files` to read them); folders kept only in iCloud are not
-  listed. Source code in git checkouts is left to code tools
-  (`files.code_in_repos`). Spoken words in recordings become searchable text
-  with `files.transcribe` (slow; uses the speech-to-text engine).
+* Files kept only in iCloud are downloaded to be read when they are under
+  `files.cloud_file_mb` (20 MB; `files.cloud_files` reads them all, 0 reads
+  none) and given back to iCloud about a minute later, so the Mac's storage
+  stays as it was; larger ones are indexed by name. Source code in git
+  checkouts is left to code tools (`files.code_in_repos`); code that is
+  indexed is titled with its path inside the checkout. Spoken words in
+  recordings become searchable text with `files.transcribe` (slow; uses the
+  speech-to-text engine).
 * On macOS, PDF pages, OCR and file events come from a small Swift helper
   built on first use (Xcode Command Line Tools); without it PDFs need
   poppler's `pdftotext`, and there is no OCR. Word, RTF and Pages use macOS
-  `textutil`; media use ffmpeg.
+  `textutil`; Excel and PowerPoint are read from their zipped parts; media
+  use ffmpeg.
+
+### Mail, Messages, Notes and Calendar
+
+`coderunner files sources add mail|messages|notes|calendar` indexes the
+owner's apps as entries beside the files, each with an address instead of a
+path: `mail://inbox/4120`, `message://12/2026-11-02` (one conversation, one
+day), `note://...`, `event://...`. Mail, Notes and Calendar are read through
+the connectors (JavaScript for Automation; the connector must be enabled),
+Messages through its database (`~/Library/Messages/chat.db`, which needs
+Full Disk Access for the process that runs the daemon). Mail is read from
+the inbox and sent mailboxes (`files.mail_mailboxes`), Calendar a year back
+and ahead (`files.calendar_days`); the apps are listed again every
+`files.sources_interval` seconds (900). One-time codes and sign-in links are
+redacted before mail is indexed, as the mail tools do. The entries are found
+by `files_search` (kinds `mail`, `message`, `note`, `event`) and read with
+`file_read` by their address, from the index, without going back to the app.
+
+What these entries hold is the owner's private data and third-party text:
+a task that searches or reads them counts as holding that source (mail,
+messages, notes, calendar) and as having read untrusted content, so the
+leak rule above applies before anything leaves the Mac, and a read is
+checked as the connector's own reads are (disabled connector: refused).
+`coderunner files sources remove mail` forgets the entries.
 
 The assistant finds files with `files_search`, then uses them with `file_read`,
 `file_view` (images and video frames, for vision models) and `file_listen`
 (speech, once voice is set up). Rules:
 
 * Only shared folders are read. Hidden folders, `~/Library`, key, certificate
-  and credential files, `.env` files and CodeRunner's own state are never
-  indexed or read, and symlinks out of a shared folder are not followed.
+  and credential files, `.env` files, `*.noindex` folders and CodeRunner's own
+  state are never indexed or read, and symlinks out of a shared folder are not
+  followed.
 * File contents are your private data and can contain third-party text, so a
   task that reads files counts as holding private data and as having read
   untrusted content (see the leak rule above).
-* `coderunner files status | index | search "query" | remove <folder>`;
-  `coderunner find "query" [--kind image] [--json]`.
+* `coderunner files status | index | search "query" | remove <folder> | sources`;
+  `coderunner find "query" [--kind image|folder|mail|...] [--json]`.
+
+### From Claude Code, Codex, Cowork, OpenClaw and LM Studio
+
+The same index, memory and guarded tools are an MCP server, so an agent you
+already use can find and read local things, under the same approvals and
+leak rule (what a client reads taints its later calls for 30 minutes):
+
+* `coderunner mcp` is a stdio server with every tool; `coderunner mcp --tools
+  search` offers only `files_search`, `file_read`, `file_view`,
+  `file_listen`, `memory_search`, `memory_save` and `memory_forget`, for an
+  agent that should find local things and nothing more.
+* The daemon serves the same two sets over Streamable HTTP at
+  `http://127.0.0.1:8224/mcp` and `/mcp/search` with the admin token as a
+  bearer (`coderunner token --admin`), for clients that only speak HTTP and,
+  over the tailnet, from another machine.
+
+```bash
+# Claude Code (and Claude Desktop / Cowork through claude_desktop_config.json)
+claude mcp add coderunner-search -- coderunner mcp --tools search
+# Codex CLI
+codex mcp add coderunner-search -- coderunner mcp --tools search
+# OpenClaw, LM Studio or anything with a remote MCP client: ~/.config/.../mcp.json
+{"mcpServers": {"coderunner-search": {"url": "http://127.0.0.1:8224/mcp/search",
+                                      "headers": {"Authorization": "Bearer <admin token>"}}}}
+```
+
+The stdio bridge holds the admin token, so configure it only for clients
+you run yourself; the HTTP endpoint answers nothing without the token.
 
 ## Remote access
 
@@ -598,13 +685,15 @@ coderunner approvals [approve|deny <id> --scope once|session|day|always]
 coderunner grants [revoke <id>]
 coderunner secrets set github --host api.github.com
 coderunner connectors enable calendar && coderunner connectors test calendar
+coderunner setup --search            # index and search tools only (no model, no sandbox)
 coderunner files add ~/Documents     # let it find and use your files
+coderunner files sources add mail    # index Mail (also messages, notes, calendar)
 coderunner browser connect           # browse in a CodeRunner tab group in your own Chrome
 coderunner channels enable telegram && coderunner channels pair telegram
 coderunner remote enable --owner you@example.com && coderunner remote pair
 coderunner schedule add --name brief --spec "weekdays 08:00" --prompt "Summarise my day"
 coderunner service install            # start at login
-coderunner mcp                        # use the guarded tools from Claude Code / Claude Desktop
+coderunner mcp [--tools search]       # the guarded tools (or only search and memory) from Claude Code, Codex...
 ```
 
 Configuration lives in `~/.coderunner/assistant/config.json`; state, logs and

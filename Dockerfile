@@ -102,6 +102,12 @@ RUN npx playwright@1.53.0 install
 COPY ./server.py /app/server.py
 COPY ./auth.py /app/auth.py
 COPY ./shell_session.py /app/shell_session.py
+COPY ./desktop.py /app/desktop.py
+# The sandbox's own computer (Xfce on a VNC screen, and Google Chrome): build with --build-arg DESKTOP=1, or add it
+# to a sandbox later with `coderunner browser computer`.
+ARG DESKTOP=0
+COPY ./desktop-setup.sh /tmp/desktop-setup.sh
+RUN if [ "$DESKTOP" = "1" ]; then bash /tmp/desktop-setup.sh; fi && rm /tmp/desktop-setup.sh
 # Public skills are baked into the image
 COPY ./skills/public /app/uploads/skills/public
 

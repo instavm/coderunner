@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.27",
     "starlette>=0.37",
     "uvicorn>=0.30",
+    "websockets>=13",
 ]
 
 [project.optional-dependencies]
@@ -38,7 +39,7 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-"coderunner.server" = ["web/*.html"]
+"coderunner.server" = ["web/*.html", "web/app/*", "web/app/novnc/*", "web/app/novnc/**/*"]
 "coderunner.models" = ["catalog.json", "evidence.json", "measured.json"]
 "coderunner.browser" = ["extension/*.json", "extension/*.js"]
 "coderunner.files" = ["helper.swift"]
