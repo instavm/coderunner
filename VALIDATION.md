@@ -367,9 +367,14 @@ a 3,999-token prompt and 11.6 writing: 19.8 s for an agent step against 19.3 s e
 apps' idle memory. The catalog now carries the two factors (0.87 reading, 1.07 writing); with them a 16 GB M2
 goes back to Qwen3.5-9B (Bonsai's steps there would take 28 s).
 
-Still open: no task has been run in the app with this model, the measurement was taken with swap in use, and
-a second daemon started on a home whose daemon is already running is not refused (a stray test daemon answered
-on the same port for an hour).
+Setup then finished (file search on Core ML, the voice model), the daemon started again in place and the app
+moved to its task screen. One task was given there, a rent increase to work out: the status line read
+"Thinking" with a running clock and "Stop", and the answer (three correct figures) came after 2 minutes 15
+seconds, most of it the first read of the system prompt at 69 tokens a second.
+
+Still open: tasks that use the browser or files have not been run in the app with this model, the measurement
+was taken with swap in use, and a second daemon started on a home whose daemon is already running is not
+refused (a stray test daemon answered on the same port for an hour).
 
 ## Not yet validated
 
