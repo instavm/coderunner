@@ -215,7 +215,9 @@ def run(args) -> dict:
     report: dict = {"mode": "bare" if args.bare else "as is", "download": args.download}
     if args.served:
         report["served"] = served()
-    busy = [f"{name} on {port}" for port, name in PORTS.items()
+    shift = (args.port_base or runtimes.PORT_BASE) - runtimes.PORT_BASE
+    ports = {port + (shift if port != 11434 else 0): name for port, name in PORTS.items()}
+    busy = [f"{name} on {port}" for port, name in ports.items()
             if runtimes._ok(f"http://127.0.0.1:{port}/health") or runtimes._ok(f"http://127.0.0.1:{port}/api/version")]
     if busy:
         report["warning"] = ("already answering here, so the run would use them instead of starting its own: "
@@ -227,6 +229,9 @@ def run(args) -> dict:
             config.set("files.min_free_gb", args.min_free)
         if args.no_discover:
             config.set("models.discover", False)
+        if args.port_base:
+            config.set("models.port_base", args.port_base)
+            config.save()               # the runtimes this run stops at the end read it from the file
         start, calls = time.monotonic(), hub_module.Hub.calls
         plan = manager.plan(config)
         report["plan_s"] = round(time.monotonic() - start, 1)
@@ -318,6 +323,8 @@ def main() -> int:
     parser.add_argument("--min-free", type=float, help="GB of disk downloads must leave free (files.min_free_gb)")
     parser.add_argument("--no-discover", action="store_true", help="the catalog only: no model discovery")
     parser.add_argument("--home", help="run in this folder and keep it, instead of a throwaway one")
+    parser.add_argument("--port-base", type=int, help="models.port_base for the run, so its model servers stand "
+                                                      "beside those of an assistant already running here")
     parser.add_argument("--json", help="also write the report to this file")
     args = parser.parse_args()
     report = run(args)

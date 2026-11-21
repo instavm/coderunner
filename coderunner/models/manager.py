@@ -39,10 +39,14 @@ def _pinned(config) -> str | None:
 
 
 def _main_runtime(config, hw, runtime: str | Runtime | None) -> Runtime | None:
-    """The given or pinned runtime, else the one CodeRunner would pick (Ollama, else llama.cpp), else the
-    one setup picked last time, else Ollama where setup can install its own copy (_own_ollama)."""
+    """The given or pinned runtime. Else, on Apple silicon, CodeRunner's own llama.cpp server (_chat_on_llama):
+    one runtime for every model there, as in Ori, with embeddings on Core ML and no Ollama. Elsewhere the one
+    CodeRunner would pick (Ollama, else llama.cpp), else the one setup picked last time, else Ollama where
+    setup can install its own copy (_own_ollama)."""
     if runtime is not None:
         return _runtime(config, hw, runtime)
+    if _chat_on_llama(hw):
+        return LlamaCppRuntime(config)
     found = choose_runtime(config, hw, "auto") or choose_runtime(config, hw)
     if found is None:
         own = OllamaRuntime(config)
@@ -121,10 +125,11 @@ def downloads(config, planned: dict, hw: hardware.Hardware | None = None) -> lis
     hw = _hardware(config, hw)
     found: list[dict] = []
     ollama = OllamaRuntime(config)
-    if (ollama.binary() is None or ollama.outdated()) and ollama.can_install():
+    name = (planned.get("model") or {}).get("runtime") or ""
+    uses_ollama = name == "ollama" or planned.get("embedding") or planned.get("decision")
+    if uses_ollama and (ollama.binary() is None or ollama.outdated()) and ollama.can_install():
         found.append({"what": f"Ollama {ollama.RELEASE}", "gb": RUNTIME_GB.get(ollama.build()[0])})
     local = {"ollama": ollama, "llama.cpp": LlamaCppRuntime(config), "prism": PrismRuntime(config, hw=hw)}
-    name = (planned.get("model") or {}).get("runtime") or ""
     if name in ("llama.cpp", "prism") and local[name].binary() is None:
         found.append({"what": "llama.cpp" if name == "llama.cpp" else "Prism's llama.cpp build", "gb": RUNTIME_GB[name]})
     for role, key in (("assistant model", "model"), ("embedding model (Ollama)", "embedding"),
@@ -177,10 +182,12 @@ def _prism(config, hw: hardware.Hardware, rt: Runtime | None) -> PrismRuntime | 
 
 
 def _chat_on_llama(hw) -> bool:
-    """On Apple silicon chat models run on CodeRunner's own llama.cpp server, Ollama keeping the embedding and
-    decision models: Ollama's server keeps up to 8 GB of earlier prompts in memory, with no setting for it (2.4
-    GB in one sample-task run on an 18 GB Mac, which then wrote 0.06 tokens/s), where CodeRunner's keeps none
-    and sleeps when idle. Elsewhere llama.cpp's official build runs on the CPU only, so Ollama serves them."""
+    """On Apple silicon every model runs on CodeRunner's own llama.cpp server, and embeddings on Core ML; Ollama
+    is used only when the owner names it (--runtime ollama). Ollama's server keeps up to 8 GB of earlier prompts
+    in memory, with no setting for it (2.4 GB in one sample-task run on an 18 GB Mac, which then wrote 0.06
+    tokens/s), where CodeRunner's keeps none and sleeps when idle; and a first run fetched Ollama (0.17 GB) and
+    a second copy of the embedding model through it (1.33 GB) that Core ML does not need. Elsewhere llama.cpp's
+    official build runs on the CPU only, so Ollama serves the models."""
     return hw is not None and hw.gpu == "apple" and hw.arch == "arm64"
 
 
@@ -213,7 +220,8 @@ def _discovered(config, hw, rt: Runtime | None, progress: Callable[[str], None] 
             entry, on = discover.best_build(model, hw, config, "llama.cpp"), "llama.cpp"
         if entry:
             entry["runtime"] = on
-            entry["missing_runtime"] = on == "llama.cpp" and llama is None     # worth installing llama.cpp
+            # Worth installing llama.cpp for, where Ollama is the main runtime and llama.cpp is not beside it.
+            entry["missing_runtime"] = on == "llama.cpp" and llama is None and rt.name != "llama.cpp"
             entries.append(entry)
     return discover.place(entries, catalog.models())
 
@@ -255,7 +263,9 @@ def _ranked(hw, config, rt: Runtime | None, prism: Runtime | None, extra: list[d
     """Chat candidates for the main runtime, Prism's build and discovered models, best first."""
     found = fit.recommend(hw, config, "chat", _artifact_runtime(rt), include_rejected=True)
     if prism is not None:
-        found += fit.recommend(hw, config, "chat", "prism")
+        # Prism's fork only for what the main runtime cannot serve: Bonsai 2 27B runs on llama.cpp itself.
+        served = {c["id"] for c in found if c["ok"]}
+        found += [c for c in fit.recommend(hw, config, "chat", "prism") if c["id"] not in served]
     if llama is not None:
         on_llama = fit.recommend(hw, config, "chat", "llama.cpp")
         if _chat_on_llama(hw):
@@ -346,6 +356,8 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
     notes = []
     if isinstance(rt, OllamaRuntime) and not rt.available() and rt.can_install():
         notes.append(f"No model runtime is installed here: setup fetches its own copy of Ollama {rt.RELEASE}.")
+    elif isinstance(rt, LlamaCppRuntime) and not rt.available() and rt.can_install():
+        pass                                # setup fetches llama.cpp's build; it is among the downloads
     elif rt is None or not rt.available():
         notes.append(install_hint(hw, rt.name if rt else None))
     if _cpu_note(hw, chosen):
@@ -479,7 +491,8 @@ def setup_coreml_embedding(config, hw: hardware.Hardware | None = None, progress
     rt = rt or coreml.CoreMLRuntime(config)
     if (config.get("models.embedding_url") or "").rstrip("/") != rt.base_url:     # a fresh setup: Ollama's build
         media = config.get("models.embedding") or ""
-        media_url = config.get("models.embedding_url") or config.get("models.base_url") or ""
+        # No build in Ollama (the default on Apple silicon): Core ML's own encoders read pictures and sound.
+        media_url = (config.get("models.embedding_url") or config.get("models.base_url") or "") if media else ""
     entry = next((e for e in catalog.by_role("embedding") if rt.artifact(e)
                   and (not media or (e["artifacts"].get("ollama") or {}).get("tag") == media.split(":")[0])), None)
     if wanted == "gpu" or not coreml.supported() or entry is None or licenses.check(entry, config)[0] != "allow":
@@ -609,7 +622,7 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
     error = _own_ollama(rt, hw, progress)
     if error:
         return {"ok": False, "error": error}
-    if not rt.available():
+    if not rt.available() and not (isinstance(rt, LlamaCppRuntime) and rt.can_install()):   # pull fetches llama.cpp
         return {"ok": False, "error": f"{rt.name} is not available. {install_hint(hw, rt.name)}"}
     if rt.name not in LOCAL:
         return _external(config, rt, model_id, progress, smoke)

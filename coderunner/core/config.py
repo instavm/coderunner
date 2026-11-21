@@ -32,6 +32,7 @@ DEFAULTS: dict[str, Any] = {
     "models": {
         "runtime": "auto",           # auto | ollama | llama.cpp | prism | mlx | openai (setup writes its pick here)
         "runtime_pinned": False,     # true: the owner chose models.runtime; plans stop comparing other runtimes
+        "port_base": 8081,           # llama.cpp's port; Prism's build, the browser driver and Core ML follow it
         "base_url": "",              # OpenAI-compatible endpoint when runtime is external
         "api_key": "",               # only for external endpoints that need one
         "chat": "",                  # model id served for the assistant

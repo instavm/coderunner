@@ -142,6 +142,12 @@ def candidate(entry: dict, hw: Hardware, config, role: str = "chat", runtime: st
     ok = est["fit"] != "no" and decision != "block" and catalog.artifact(entry, runtime) is not None
     if runtime and catalog.artifact(entry, runtime) is None:
         reasons.insert(0, f"no {runtime} build")
+    only = (catalog.artifact(entry, runtime) or {}).get("gpu")
+    if only and hw.gpu not in only:
+        # A build measured on some accelerators only (Bonsai 2 27B's Q2_0 packing on Apple silicon) is not
+        # offered where nobody has run it.
+        ok = False
+        reasons.insert(0, f"this build has only been run on {' and '.join(only)} GPUs")
     if role == "chat" and entry["params_b"] < MIN_CHAT_PARAMS_B:
         ok = False
         reasons.insert(0, f"below {MIN_CHAT_PARAMS_B:.0f}B parameters")

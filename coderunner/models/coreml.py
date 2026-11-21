@@ -24,7 +24,7 @@ import time
 from ..core import paths
 from .hardware import Hardware
 from .hub import Hub
-from .runtimes import Progress, Runtime, _ok, _spawn, _terminate, _wait_ready, idle_seconds
+from .runtimes import PORT_BASE, Progress, Runtime, _ok, _spawn, _terminate, _wait_ready, idle_seconds, server_port
 
 PORT = 8084
 PACKAGES = ["coremltools==9.0", "tokenizers==0.23.3", "numpy>=2,<3", "pillow>=11,<13"]
@@ -48,9 +48,9 @@ class CoreMLRuntime(Runtime):
     """The Core ML embedding server: Ollama's and OpenAI's embedding APIs on 127.0.0.1."""
     name = "coreml"
 
-    def __init__(self, config=None, port: int = PORT, hub: Hub | None = None):
+    def __init__(self, config=None, port: int | None = None, hub: Hub | None = None):
         super().__init__(config)
-        self.port = port
+        self.port = port = port or server_port(config, PORT - PORT_BASE)
         self.base_url = f"http://127.0.0.1:{port}/v1"
         self.hub = hub
         self.root = paths.assistant_dir() / "models" / "coreml"

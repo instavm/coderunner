@@ -244,14 +244,23 @@ class DiscoveryTests(unittest.TestCase):
         with mock.patch.object(discover, "cached", return_value=list(self.models.values())), \
                 mock.patch.object(manager, "choose_runtime", return_value=FakeRuntime()), \
                 mock.patch.object(manager, "_prism", return_value=None):
-            with mock.patch.object(manager, "_llama", return_value=FakeLlama()):
-                result = manager.plan(cfg, hw=studio)
+            # On Apple silicon every model runs on CodeRunner's own llama.cpp server, Ollama or not.
+            result = manager.plan(cfg, hw=studio)
             found = {c["id"]: c for c in [result["model"], *result["alternatives"]]}
+            self.assertEqual(result["runtime"]["name"], "llama.cpp")
             self.assertEqual(found["hf-lab-big-300b-a30b"]["runtime"], "llama.cpp")
-            # On Apple silicon chat models run on CodeRunner's llama.cpp server; on NVIDIA, Ollama's CUDA build.
             self.assertEqual(found["hf-lab-agent-27b"]["runtime"], "llama.cpp")
             self.assertTrue(manager._chat_on_llama(studio))
             self.assertFalse(manager._chat_on_llama(nvidia(32, name="NVIDIA GeForce RTX 5090")))
+            # Where Ollama is the main runtime (anything but Apple silicon), a model it cannot serve goes to
+            # llama.cpp beside it, and is worth installing llama.cpp for when that is missing.
+            elsewhere = mock.patch.object(manager, "_chat_on_llama", return_value=False)
+            elsewhere.start()
+            self.addCleanup(elsewhere.stop)
+            with mock.patch.object(manager, "_llama", return_value=FakeLlama()):
+                result = manager.plan(cfg, hw=studio)
+            found = {c["id"]: c for c in [result["model"], *result["alternatives"]]}
+            self.assertEqual((result["runtime"]["name"], found["hf-lab-big-300b-a30b"]["runtime"]), ("llama.cpp", "llama.cpp"))
             with mock.patch.object(manager, "_llama", return_value=None):
                 result = manager.plan(cfg, hw=studio)
             rejected = {c["id"]: c for c in result["rejected"]}

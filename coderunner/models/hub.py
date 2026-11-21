@@ -190,21 +190,36 @@ class Hub:
             sib = next((s for s in self.model_info(repo, revision).get("siblings", []) if s["rfilename"] == file), {})
             sha256 = (sib.get("lfs") or {}).get("sha256")
             size = size or sib.get("size")
+        return self._fetch(f"{endpoint()}/{repo}/resolve/{revision}/{quote(file)}", repo, file, dest, sha256, size,
+                           progress, self._auth())
+
+    def fetch(self, url: str, dest: pathlib.Path | str, sha256: str, size: int | None = None,
+              progress: Callable[[str], None] | None = None, parallel: int | None = None) -> pathlib.Path:
+        """A file at any address, fetched as download() fetches one from the Hub: in ranges, resumable, checked
+        against its SHA-256 before it is moved into place. The Hub's token is not sent. `parallel` is how many
+        ranges come at once, for a host that is slow by the connection: Ollama's registry gave 0.15 MB/s each
+        on a line that carries 3 MB/s (November 2026), so four ranges took hours for 7.6 GB."""
+        dest = pathlib.Path(dest)
+        if dest.exists() and (size is None or dest.stat().st_size == size):
+            return dest
+        return self._fetch(url, httpx.URL(url).host, dest.name, dest, sha256, size, progress, {}, parallel or PARALLEL)
+
+    def _fetch(self, url: str, repo: str, file: str, dest: pathlib.Path, sha256: str | None, size: int | None,
+               progress: Callable[[str], None] | None, auth: dict, parallel: int = PARALLEL) -> pathlib.Path:
         dest.parent.mkdir(parents=True, exist_ok=True)
         part = dest.with_name(dest.name + ".part")
         state = part.with_name(part.name + ".json")            # what each range has so far
-        url = f"{endpoint()}/{repo}/resolve/{revision}/{quote(file)}"
         digest = None
         # A .part without its ranges is an earlier one-stream download: that carries on as it was.
         if size and size >= PARALLEL_MIN and (state.exists() or not part.exists()):
             try:
-                self._ranges(url, repo, file, part, state, size, progress)
+                self._ranges(url, repo, file, part, state, size, progress, auth, parallel)
                 digest = _sha256(part)
             except _NoRanges:
                 part.unlink(missing_ok=True)
                 state.unlink(missing_ok=True)
         if digest is None:
-            digest = self._stream(url, repo, file, part, size, progress)
+            digest = self._stream(url, repo, file, part, size, progress, auth)
         if size and part.stat().st_size != size:
             raise HubError(f"{file}: expected {size} bytes, got {part.stat().st_size}; run again to resume")
         if sha256 and digest.hexdigest() != sha256:
@@ -214,7 +229,7 @@ class Hub:
         return dest
 
     def _stream(self, url: str, repo: str, file: str, part: pathlib.Path, size: int | None,
-                progress: Callable[[str], None] | None) -> "hashlib._Hash":
+                progress: Callable[[str], None] | None, auth: dict | None = None) -> "hashlib._Hash":
         """One stream from the start, or from where an earlier one stopped; hashed as it comes."""
         digest, offset = hashlib.sha256(), 0
         if part.exists():
@@ -224,7 +239,7 @@ class Hub:
                     offset += len(block)
         last, resumes = 0.0, 0
         while True:
-            headers = {**self._auth(), **({"Range": f"bytes={offset}-"} if offset else {})}
+            headers = {**(self._auth() if auth is None else auth), **({"Range": f"bytes={offset}-"} if offset else {})}
             before = offset
             try:
                 with self.client.stream("GET", url, headers=headers, timeout=httpx.Timeout(30, read=300)) as response:
@@ -260,7 +275,7 @@ class Hub:
                 time.sleep(min(30, 2 * resumes))
 
     def _ranges(self, url: str, repo: str, file: str, part: pathlib.Path, state: pathlib.Path, size: int,
-                progress: Callable[[str], None] | None) -> None:
+                progress: Callable[[str], None] | None, auth: dict | None = None, parallel: int = PARALLEL) -> None:
         """PARALLEL ranges at once, each written into its place in the .part file. What each has so far is
         kept beside it (.part.json, only ever behind what is written), so an interrupted download carries on."""
         try:
@@ -270,7 +285,9 @@ class Hub:
         except (OSError, ValueError, KeyError, TypeError):
             ranges = None
         if not ranges:
-            ranges = [[size * i // PARALLEL, size * (i + 1) // PARALLEL, 0] for i in range(PARALLEL)]
+            ranges = [[size * i // parallel, size * (i + 1) // parallel, 0] for i in range(parallel)]
+        elif len(ranges) < parallel:
+            ranges = _resplit(ranges, parallel)             # taken up again with more streams than it began with
         lock, stop, last = threading.Lock(), threading.Event(), [0.0]
 
         def save() -> None:
@@ -280,7 +297,7 @@ class Hub:
             start, end, resumes = r[0], r[1], 0
             while r[2] < end - start and not stop.is_set():
                 before = r[2]
-                headers = {**self._auth(), "Range": f"bytes={start + r[2]}-{end - 1}"}
+                headers = {**(self._auth() if auth is None else auth), "Range": f"bytes={start + r[2]}-{end - 1}"}
                 try:
                     with self.client.stream("GET", url, headers=headers,
                                             timeout=httpx.Timeout(30, read=300)) as response:
@@ -312,7 +329,7 @@ class Hub:
 
         fd = os.open(part, os.O_RDWR | os.O_CREAT, 0o644)
         try:
-            with ThreadPoolExecutor(PARALLEL) as pool:
+            with ThreadPoolExecutor(parallel) as pool:
                 futures = [pool.submit(fetch, r) for r in ranges]
                 errors = []
                 for future in futures:
@@ -330,6 +347,22 @@ class Hub:
         state.unlink(missing_ok=True)
         if progress:
             progress(_progress(file, size, size))
+
+
+def _resplit(ranges: list[list[int]], parallel: int) -> list[list[int]]:
+    """Ranges of an interrupted download cut finer: what each has stays as a finished range, and what it still
+    lacks is divided so that about `parallel` are left to fetch."""
+    unfinished = sum(1 for start, end, done in ranges if done < end - start)
+    pieces = max(1, parallel // max(1, unfinished))
+    out: list[list[int]] = []
+    for start, end, done in ranges:
+        if done:
+            out.append([start, start + done, done])
+        base, left = start + done, end - start - done
+        if left > 0:
+            cut = min(pieces, left)
+            out += [[base + left * i // cut, base + left * (i + 1) // cut, 0] for i in range(cut)]
+    return out
 
 
 def _sha256(path: pathlib.Path) -> "hashlib._Hash":

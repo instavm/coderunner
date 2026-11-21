@@ -435,6 +435,34 @@ class HubTests(TempHome):
         self.assertIn("No model could be set up: Hugging Face is limiting requests", result["error"])
         self.assertEqual(rt.pulled, [])
 
+    def test_a_file_at_a_plain_address_comes_in_as_many_ranges_as_asked_and_resumes_with_more(self):
+        blob = os.urandom(hub_module.PARALLEL_MIN + 12_345)
+        seen = []
+
+        def serve(request):
+            self.assertNotIn("authorization", request.headers)             # the Hub's token stays with the Hub
+            first, last = request.headers["range"][6:].split("-")
+            seen.append(int(first))
+            return httpx.Response(206, content=blob[int(first):int(last) + 1])
+
+        transport = httpx.MockTransport(lambda request: serve(request))
+        dest = self.home / "models" / "registry" / "model.gguf"
+        part, state = dest.with_name("model.gguf.part"), dest.with_name("model.gguf.part.json")
+        dest.parent.mkdir(parents=True)
+        half = len(blob) // 2
+        part.write_bytes(blob[:1000] + bytes(half - 1000) + blob[half:half + 5000])      # two ranges, both begun
+        state.write_text(json.dumps({"size": len(blob), "ranges": [[0, half, 1000], [half, len(blob), 5000]]}))
+        with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_secret"}):
+            got = Hub(httpx.Client(transport=transport), cache_dir=False).fetch(
+                "https://registry.example/v2/blobs/sha256:abc", dest, hashlib.sha256(blob).hexdigest(), len(blob),
+                parallel=8)
+        self.assertEqual(got.read_bytes(), blob)
+        self.assertEqual(len(seen), 8)                                    # four pieces of each unfinished half
+        self.assertEqual(sorted(seen)[:2], [1000, 1000 + (half - 1000) // 4])
+        self.assertFalse(part.exists() or state.exists())
+        self.assertEqual(hub_module._resplit([[0, 10, 10], [10, 20, 4]], 3), [[0, 10, 10], [10, 14, 4], [14, 16, 0],
+                                                                              [16, 18, 0], [18, 20, 0]])
+
     def test_resumable_download_verifies_sha256(self):
         blob = os.urandom(300_000)
         digest = hashlib.sha256(blob).hexdigest()
@@ -766,6 +794,15 @@ class RuntimeTests(TempHome):
             rt.prepare(entry, 32768)
         with mock.patch.object(rt, "binary", return_value="llama-server"):
             self.assertNotIn("--cpu-moe", rt.command(rt._state()["active"]))
+
+    def test_a_second_home_can_serve_its_models_on_other_ports(self):
+        from coderunner.models import coreml
+        ports = lambda cfg: [runtimes.LlamaCppRuntime(cfg).port, runtimes.PrismRuntime(cfg).port,  # noqa: E731
+                             runtimes.DriverRuntime(cfg).port, coreml.CoreMLRuntime(cfg).port]
+        self.assertEqual(ports(self.config()), [8081, 8082, 8083, 8084])
+        self.assertEqual(ports(self.config(port_base=8181)), [8181, 8182, 8183, 8184])
+        self.assertEqual(runtimes.LlamaCppRuntime(self.config(port_base=8181)).base_url, "http://127.0.0.1:8181/v1")
+        self.assertEqual(runtimes.LlamaCppRuntime(self.config(), port=9000).port, 9000)
 
     def test_choose_runtime(self):
         self.assertIsInstance(runtimes.choose_runtime(self.config(runtime="llama.cpp")), runtimes.LlamaCppRuntime)

@@ -109,6 +109,18 @@ def _throttled(progress: Progress | None, every: float = 2.0) -> Progress:
     return emit
 
 
+PORT_BASE = 8081
+
+
+def server_port(config, offset: int) -> int:
+    """The loopback port of a model server CodeRunner runs: llama.cpp at models.port_base (8081), Prism's build,
+    the browser driver and the Core ML embedding server on the three after it. Another base lets a second
+    CodeRunner home (a test run, a bench) serve its own models beside the first instead of talking to its
+    servers."""
+    base = config.get("models.port_base", PORT_BASE) if config is not None else PORT_BASE
+    return int(base or PORT_BASE) + offset
+
+
 def idle_seconds(config) -> int:
     """How long a model may sit unused before its runtime frees its memory (models.idle_unload_minutes)."""
     minutes = 10 if config is None else config.get("models.idle_unload_minutes", 10)
@@ -438,9 +450,11 @@ class OllamaRuntime(Runtime):
 class LlamaCppRuntime(Runtime):
     name = "llama.cpp"
 
-    def __init__(self, config=None, port: int = 8081, hub: Hub | None = None):
+    PORT_OFFSET = 0
+
+    def __init__(self, config=None, port: int | None = None, hub: Hub | None = None):
         super().__init__(config)
-        self.port = port
+        self.port = port = port or server_port(config, self.PORT_OFFSET)
         self.base_url = f"http://127.0.0.1:{port}/v1"
         self.hub = hub
         self.root = paths.assistant_dir() / "models"
@@ -456,6 +470,11 @@ class LlamaCppRuntime(Runtime):
 
     def available(self) -> bool:
         return self.binary() is not None
+
+    def can_install(self) -> bool:
+        """Whether llama.cpp publishes a build for this platform (pull fetches it when no llama-server is here)."""
+        from ..voice.qwen import QwenASR
+        return QwenASR.build_for_host() is not None
 
     def running(self) -> bool:
         return _ok(f"http://127.0.0.1:{self.port}/health")
@@ -475,6 +494,20 @@ class LlamaCppRuntime(Runtime):
             self.install(progress)
         art = entry["artifacts"]["gguf"]
         hub = self.hub or Hub()
+        if art.get("url"):
+            # A file named by its address and checksum, not by a Hub repository: Bonsai 2 27B in the packing
+            # llama.cpp itself reads (Q2_0) is published only in Ollama's registry, which serves it as a plain
+            # download. Its vision projector is the maker's, from the Hub.
+            folder = self.root / art["folder"]
+            record = {"repo": art["folder"], "commit": art["sha256"][:12], "mmproj": None, "model": str(hub.fetch(
+                art["url"], folder / art["file"], art["sha256"], art.get("bytes"), progress, art.get("streams")))}
+            if art.get("mmproj") and catalog.has_vision(entry, self.name):
+                record["mmproj"] = str(hub.download(art["mmproj_repo"], art["mmproj"], folder / art["mmproj"],
+                                                    sha256=art.get("mmproj_sha256"), progress=progress))
+            state = self._state()
+            state.setdefault("models", {})[entry["id"]] = record
+            self._save(state)
+            return
         commit = hub.model_info(art["repo"]).get("sha") or "main"
         files = hub.gguf_files(art["repo"], art["quant"], vision=catalog.has_vision(entry, self.name))
         folder = self.root / art["repo"].replace("/", "--")
@@ -509,8 +542,8 @@ class LlamaCppRuntime(Runtime):
         # An interrupted download of this build, kept for a resume that will not come.
         art = (entry.get("artifacts") or {}).get(catalog.ARTIFACT.get(self.name, "gguf")) or {}
         name = art.get("file") or art.get("quant")
-        if art.get("repo") and name:
-            folder = self.root / art["repo"].replace("/", "--")
+        if (art.get("repo") or art.get("folder")) and name:
+            folder = self.root / (art.get("folder") or art["repo"].replace("/", "--"))
             for part in [*folder.glob(f"*{name}*.part"), *folder.glob(f"*{name}*.part.json")]:
                 part.unlink(missing_ok=True)
         if (state.get("active") or {}).get("id") == entry["id"]:
@@ -522,8 +555,10 @@ class LlamaCppRuntime(Runtime):
         record = state.get("models", {}).get(entry["id"])
         if not record:
             raise RuntimeError(f"{entry['id']} has not been downloaded for llama.cpp")
+        art = (entry.get("artifacts") or {}).get(catalog.ARTIFACT.get(self.name, "gguf")) or {}
         active = {"id": entry["id"], "alias": self.model_id(entry), "ctx": ctx,
-                  "model": record["model"], "mmproj": record.get("mmproj"), "offload": offload}
+                  "model": record["model"], "mmproj": record.get("mmproj"), "offload": offload,
+                  **({"args": list(art["server_args"])} if art.get("server_args") else {})}
         if state.get("active") != active:
             self.stop()  # restarts with the new model on the next start()
         state["active"] = active
@@ -554,6 +589,7 @@ class LlamaCppRuntime(Runtime):
             cmd += ["--sleep-idle-seconds", str(idle)]
         if active.get("offload"):
             cmd += ["--cpu-moe"]          # experts in system RAM, the rest on the GPU
+        cmd += active.get("args") or []   # what this build needs, from the catalog (server_args)
         peers = [node for node in (self.config.get("models.cluster") or []) if node.get("host")] if self.config else []
         if peers:
             # Other machines running llama.cpp's rpc-server (models.cluster); layers are spread across them.
@@ -598,7 +634,9 @@ class PrismRuntime(LlamaCppRuntime):
                                    "ee4cb83a2985572459a5686ef175503d4e526b46b97c7fcc7152e868169b3060"),
     }
 
-    def __init__(self, config=None, port: int = 8082, hub: Hub | None = None, hw: Hardware | None = None):
+    PORT_OFFSET = 1
+
+    def __init__(self, config=None, port: int | None = None, hub: Hub | None = None, hw: Hardware | None = None):
         super().__init__(config, port, hub)
         self.state_path = self.root / "prism.json"
         self.bin_dir = paths.assistant_dir() / "runtimes" / self.RELEASE
@@ -700,7 +738,9 @@ class DriverRuntime(LlamaCppRuntime):
 
     name = "driver"
 
-    def __init__(self, config=None, port: int = 8083, hub: Hub | None = None):
+    PORT_OFFSET = 2
+
+    def __init__(self, config=None, port: int | None = None, hub: Hub | None = None):
         super().__init__(config, port, hub)
         self.state_path = self.root / "driver.json"
 
