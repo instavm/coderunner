@@ -585,6 +585,60 @@ const gb = (n) => n == null ? "size not known" : n < 0.1 ? `${Math.round(n * 100
 let setupTimer = null;
 let setupDone = 0;
 
+// Behind the setup screens: the owner's own things, drawn small in hairlines and laid at three depths, as if on a
+// desk seen from above. A document with the one line that was looked for, a web page, a day in the calendar, a
+// voice memo, a conversation, a sheet, a photo, a letter. The near ones are sharp and at the edges, the far ones
+// small and out of focus; all drift slowly and lean a little with the pointer. The middle, where the words are,
+// is left clear. Each drawing: [width, height, the lines, what is marked in the brand colour].
+const SHEETS = {
+  doc: [60, 76, "M12 16h22 M12 27h36 M12 49h36 M12 60h20", "M12 38h30"],
+  page: [84, 60, "M0 14h84 M9 7h.01 M15 7h.01 M21 7h.01 M34 7h38 M10 24h28v24h-28z M46 26h28 M46 34h22", "M46 46h16"],
+  day: [64, 64, "M0 16h64 M18 5v6 M46 5v6 M14 28h.01 M26 28h.01 M38 28h.01 M50 28h.01 M14 40h.01 M26 40h.01 M50 40h.01 M14 52h.01 M26 52h.01 M38 52h.01", "M38 40h.01"],
+  wave: [84, 44, "M12 18v8 M20 12v20 M28 16v12 M44 14v16 M52 10v24 M60 17v10 M68 14v16", "M36 8v28"],
+  chat: [76, 60, "M10 10h34v15h-34z M16 17.5h20", "M34 35h32v15h-32z"],
+  sheet: [76, 60, "M0 15h76 M0 30h76 M0 45h76 M25 0v60 M50 0v60", "M30 22.5h14"],
+  photo: [76, 60, "M8 48l18-22l12 14l8-8l22 16 M56 13a5 5 0 1 0 .01 0", ""],
+  mail: [76, 54, "M0 0l38 27l38-27", ""],
+};
+// [layer, left %, top %, width px, tilt deg, drawing]
+const FLOATS = [
+  ["near", 6.5, 15, 104, -9, "doc"], ["near", 84, 9, 132, 7, "page"], ["near", 8, 70, 96, 8, "day"], ["near", 85, 73, 116, -6, "chat"],
+  ["mid", 19.5, 7, 66, 12, "wave"], ["mid", 78.5, 40, 54, -12, "sheet"], ["mid", 17, 47, 50, -6, "photo"], ["mid", 78, 91, 58, 9, "mail"],
+  ["mid", 3, 45, 38, 16, "doc"], ["mid", 94.5, 44, 44, -10, "day"],
+  ["far", 14, 35, 20, 20, "doc"], ["far", 40, 2, 22, -12, "sheet"], ["far", 62, 4, 22, 26, "doc"], ["far", 34, 95, 24, -18, "page"],
+  ["far", 59, 96, 18, 8, "doc"], ["far", 2, 6, 24, -22, "mail"], ["far", 97, 28, 18, 14, "doc"], ["far", 3, 92, 20, 30, "photo"],
+  ["far", 96, 94, 22, -10, "sheet"], ["far", 16, 64, 16, 12, "doc"], ["far", 84, 57, 20, -26, "wave"], ["far", 73, 24, 14, 16, "doc"],
+];
+
+function floatField() {
+  const NS = "http://www.w3.org/2000/svg";
+  const field = el("div", "float-bg"), layers = {};
+  field.setAttribute("aria-hidden", "true");
+  for (const name of ["far", "mid", "near"]) field.appendChild(layers[name] = el("div", `float-layer ${name}`));
+  FLOATS.forEach(([layer, left, top, width, tilt, kind], i) => {
+    const [w, h, lines, mark] = SHEETS[kind], sheet = el("div", "ft"), svg = document.createElementNS(NS, "svg");
+    sheet.style.cssText = `left:${left}%;top:${top}%;width:${width}px;--r:${tilt}deg;--dr:${i % 2 ? 4 : -4}deg;` +
+      `--dx:${(i % 3 - 1) * 6}px;--dy:${i % 2 ? 12 : -10}px;--d:${17 + (i * 7) % 12}s;--delay:${-((i * 5) % 17)}s`;
+    svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    for (const [d, cls] of [[lines, "ink"], [mark, "mark"]]) {
+      if (!d) continue;
+      const path = document.createElementNS(NS, "path");
+      path.setAttribute("d", d);
+      path.setAttribute("class", cls);
+      svg.appendChild(path);
+    }
+    sheet.appendChild(svg);
+    layers[layer].appendChild(sheet);
+  });
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    addEventListener("pointermove", (event) => {
+      field.style.setProperty("--px", (event.clientX / innerWidth - 0.5).toFixed(3));
+      field.style.setProperty("--py", (event.clientY / innerHeight - 0.5).toFixed(3));
+    }, {passive: true});
+  }
+  return field;
+}
+
 // The first-run screens have the page to themselves: no task list, no computer panel, one thing to read.
 function setupCard(title, lead) {
   state.setup = true;
@@ -596,6 +650,7 @@ function setupCard(title, lead) {
   $("composer").hidden = true;
   $("title").textContent = "";
   $("shell").classList.add("first-run");
+  if (!$("main").querySelector(".float-bg")) $("main").prepend(floatField());
   showComputer(false);            // nothing runs on the computer until there is a model
   return card;
 }

@@ -759,7 +759,10 @@ line shown; when it is done the daemon starts again with the browser on that com
 browser does not pair an old page with a new script.
 
 Where no model is set up yet, the app opens on a setup screen instead of tasks, with the window to itself (no
-task list, no computer panel). Before anything is fetched it shows, on one screen:
+task list, no computer panel). Behind it, small hairline drawings of the owner's own things (a document with one line marked, a web page,
+a day in the calendar, a voice memo, a conversation, a sheet, a photo, a letter) lie at three depths, the far
+ones small and out of focus; they drift slowly and lean a little with the pointer, keep still for whoever
+asks for reduced motion, and are left out of a narrow window. Before anything is fetched it shows, on one screen:
 
 * this computer in four figures: chip, memory, graphics, and the seconds a step of a task will take
   (estimated from the chip until setup measures it);
