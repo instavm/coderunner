@@ -57,7 +57,9 @@ or Signal to reach it from your phone. Needs macOS 26 on Apple silicon, or Linux
 needs installing first: on a Mac setup fetches llama.cpp's server and runs embeddings on Core ML (no Ollama), and
 it checks the disk before it downloads a model. `coderunner app` opens the desktop app; where no model is set
 up yet it shows what it found on the computer, the model for each job, the size of the download and the folder
-it goes to (which can be changed), and sets everything up from one button.
+it goes to (which can be changed), and sets everything up from one button. Files can be attached to a task
+(pictures, videos, recordings, documents) and show in its thread. `coderunner check` does each kind of task
+once on your install and says which worked.
 [ASSISTANT.md](ASSISTANT.md) has the architecture, the safety model and every command.
 
 For managed cloud VMs for agents, see [InstaVM](https://instavm.io).

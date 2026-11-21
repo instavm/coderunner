@@ -831,11 +831,49 @@ the recommended one), `{"action": "location", "path": ..., "model": ...}` (an em
 Until setup has chosen a model the daemon starts no model runtime: an Ollama installed for something else is
 left alone on a Mac that will use llama.cpp.
 
+## Checking an install
+
+`coderunner check` does each kind of task once on this install and checks the answer, so "does it work here"
+has an answer that nobody has to read a transcript for. Every task goes the way one typed in the app goes: the
+daemon's task runner, the model that is set up, the sandbox, the browser the assistant really uses (the
+sandbox's own computer, or Chrome), with test files and test websites made for the run.
+
+| Check | What it does | Passes when |
+|---|---|---|
+| `answer` | a plain question | the number is right |
+| `picture` | a photo of a receipt, attached | the total is read off it |
+| `document` | a PDF, attached | the lease's end date and notice period are given |
+| `video` | a video with speech, attached | what was said is given, and `file_listen` was used |
+| `code` | a sheet worked on in the sandbox, attached | the best month and the total are right, and `run_python` was used |
+| `files` | two test documents shared and indexed for the run | both facts are found by search |
+| `website` | facts from two pages of a test website | both facts are given |
+| `flights` (long) | a flight search through forms, a calendar and sorting | the three cheapest fares are named |
+| `booking` (long) | a booking taken to the page before payment | the cheapest flight's passenger page was reached, the payment page never |
+| `appliance` (long) | a document, then the maker's website | the answer is the guide's, and the guide was opened |
+| `errands` (long) | three errands in one request: a flight search, a website, the documents | all three are answered |
+
+`coderunner check` runs the first seven (about five minutes with Qwen3.5 9B on an 18 GB M3 Pro), `--long`
+adds the rest, names run only those, and `--last` prints the last result (kept in `assistant/check.json`). A
+task whose need is not met here is skipped with the reason (a model that reads text only, no speech to text,
+the sandbox down, no browser, no file search). The exit code is 0 when everything that ran passed. In the app
+the same thing is "Check" at the foot of the task list: one line per task with a tick or a cross and the time
+it took, and a click on a line opens that task's thread.
+
+For the run only, and put back at the end: a folder of test documents is shared and indexed; the address the
+test sites are served on (the sandbox's gateway address when the browser is the sandbox's computer) is added to
+`browser.allow`; and approvals asked by the check's own tasks are answered for the owner, allowed unless the
+step would pay. Approvals of any other task are left alone. A check does not start while a task is running.
+The API: `GET /api/check`, `POST /api/check` with `{"names": [...], "long": ...}` or `{"action": "stop"}`.
+
+`coderunner models bench --tasks` is a different measurement: it times a model on the same test sites in a
+throwaway home with a headless browser, to compare models. `check` asks whether this install works.
+
 ## Everyday commands
 
 ```bash
 coderunner app                       # the desktop app: tasks, the computer's screen, first-run setup
 coderunner status | doctor | audit
+coderunner check [--long]            # do each kind of task once here and say which worked
 coderunner chat ["one-off question"]
 coderunner approvals [approve|deny <id> --scope once|session|day|always]
 coderunner grants [revoke <id>]

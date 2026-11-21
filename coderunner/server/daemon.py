@@ -111,6 +111,8 @@ class Daemon:
         from .setup import ComputerJob, SetupJob
         self.setup = SetupJob(self.config, self.svc.audit, on_done=self._after_setup)
         self.computer_setup = ComputerJob(self.config, self.svc.audit, on_done=self._after_setup)
+        from .check import CheckJob
+        self.check = CheckJob(self)             # `coderunner check`: the core tasks, done once and checked
 
     def _after_setup(self, result: dict) -> None:
         """Setup from the app chose a model, or gave the sandbox its computer. Everything here was built for the

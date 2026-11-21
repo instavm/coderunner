@@ -257,6 +257,7 @@ class Sites:
     def __init__(self, today: datetime.date | None = None):
         self.today = today or datetime.date.today()
         self.visits: list[str] = []
+        self.host = "127.0.0.1"         # the address they are served on (the sandbox's gateway, for its browser)
         self.port = 0
         self.app = Starlette(routes=[
             Route("/", lambda r: RedirectResponse("/flights/")),
@@ -270,7 +271,7 @@ class Sites:
 
     @property
     def base(self) -> str:
-        return f"http://127.0.0.1:{self.port}"
+        return f"http://{self.host}:{self.port}"
 
     async def start(self):
         """Serve in this event loop; returns the server task (cancel it to stop)."""
@@ -279,9 +280,9 @@ class Sites:
         import uvicorn
 
         with socket.socket() as sock:
-            sock.bind(("127.0.0.1", 0))
+            sock.bind((self.host, 0))
             self.port = sock.getsockname()[1]
-        server = uvicorn.Server(uvicorn.Config(self.app, host="127.0.0.1", port=self.port, log_level="warning",
+        server = uvicorn.Server(uvicorn.Config(self.app, host=self.host, port=self.port, log_level="warning",
                                                access_log=False, lifespan="off"))
         server.capture_signals = lambda: __import__("contextlib").nullcontext()
         task = asyncio.create_task(server.serve())

@@ -381,6 +381,74 @@ async function openConversation(id, title) {
   scrollDown();
 }
 
+// ---- check: each kind of task done once on this computer --------------------------
+
+let checkTimer = null;
+const CHECK_MARKS = {passed: "✓", failed: "✕", skipped: "–", waiting: "", running: ""};
+
+async function showCheck() {
+  if (state.setup) return;
+  state.conversation = "check";             // not a conversation: no task's events belong to it
+  state.views.clear();
+  $("title").textContent = "Check";
+  loadConversations();
+  const box = el("section", "checkup"), lead = "Each kind of task, done once on this computer and checked.";
+  box.append(el("h1", "", "Check"), el("p", "muted", lead));
+  $("thread").replaceChildren(box);
+  const run = async (body) => {
+    try { draw(await api("/api/check", {method: "POST", body: JSON.stringify(body)})); }
+    catch (err) { await poll(); box.appendChild(el("p", "setup-error", err.message)); return; }
+    poll();
+  };
+  const draw = (data) => {
+    const running = data.state === "running", result = data.result;
+    const rows = running ? data.tasks : result ? result.tasks :
+      data.names.filter((n) => !n.long).map((n) => ({...n, state: "waiting"}));
+    box.replaceChildren(el("h1", "", "Check"), el("p", "muted", lead));
+    const list = el("div", "check-list");
+    for (const task of rows) {
+      const row = el(task.conversation ? "button" : "div", "check-row " + task.state);
+      const what = el("span", "check-what", task.what.charAt(0).toUpperCase() + task.what.slice(1));
+      if (task.why && task.state !== "passed") what.appendChild(el("span", "check-why", task.why));
+      row.append(el("span", "check-mark", CHECK_MARKS[task.state]), what,
+                 el("span", "check-time", task.seconds != null ? clock(task.seconds) : ""));
+      row.title = task.why || "";
+      if (task.conversation) { row.type = "button"; row.onclick = () => openConversation(task.conversation, task.what); }
+      list.appendChild(row);
+    }
+    box.appendChild(list);
+    const foot = el("div", "check-foot");
+    if (running) {
+      const stop = el("button", "btn", "Stop");
+      stop.onclick = () => { stop.disabled = true; run({action: "stop"}); };
+      foot.append(el("span", "muted", "Running. You can leave this screen."), stop);
+    } else {
+      if (result) {
+        const when = new Date(result.date).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+        foot.appendChild(el("span", "muted", `${result.passed} of ${result.ran} passed` +
+                                              (result.skipped ? `, ${result.skipped} skipped` : "") + ` · ${when}`));
+      }
+      const go = el("button", "btn primary", result ? "Run again" : "Run check"), more = el("button", "linkish", "Include the long tasks");
+      go.onclick = () => { go.disabled = true; run({}); };
+      more.type = "button"; more.title = "A flight search, a booking up to payment, and two more: about 20 minutes";
+      more.onclick = () => { more.disabled = true; run({long: true}); };
+      foot.append(go, more);
+    }
+    box.appendChild(foot);
+  };
+  const poll = async () => {
+    clearTimeout(checkTimer);
+    if (state.conversation !== "check") return;
+    let data;
+    try { data = await api("/api/check"); } catch { checkTimer = setTimeout(poll, 4000); return; }
+    if (state.conversation !== "check") return;
+    draw(data);
+    if (data.state === "running") checkTimer = setTimeout(poll, 2000);
+  };
+  await poll();
+}
+$("openCheck").onclick = showCheck;
+
 function scrollDown() { const t = $("thread"); t.scrollTop = t.scrollHeight; }
 
 // ---- live events ---------------------------------------------------------------

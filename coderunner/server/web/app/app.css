@@ -47,7 +47,29 @@ button { font: inherit; color: inherit; cursor: pointer; transition: background 
 .dot.failed { background: var(--danger); }
 .dot.done { background: var(--ok); opacity: .55; }
 @keyframes pulse { 50% { opacity: .35; } }
-.side-foot { padding: 12px 14px; border-top: 1px solid var(--line); }
+.side-foot { padding: 12px 14px; border-top: 1px solid var(--line); display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.side-foot #modelsLine { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Check: each kind of task, one line each. */
+.checkup { padding-top: 8vh !important; }
+.checkup h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; margin: 0 0 6px; }
+.check-list { margin-top: 20px; border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 3px 14px; }
+.check-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; width: 100%; padding: 9px 0; border: 0; border-top: 1px solid var(--line);
+  background: none; font: inherit; color: var(--text); text-align: left; }
+.check-row:first-child { border-top: 0; }
+button.check-row { cursor: pointer; }
+button.check-row:hover .check-what { color: var(--accent); }
+.check-mark { font-weight: 700; text-align: center; }
+.check-row.passed .check-mark { color: var(--ok); }
+.check-row.failed .check-mark { color: var(--danger); }
+.check-row.skipped, .check-row.waiting { color: var(--muted); }
+.check-row.running .check-mark { width: 9px; height: 9px; margin: 0 auto; border-radius: 50%; background: var(--fill); align-self: center; animation: pulse 1.2s ease-in-out infinite; }
+.check-row.waiting .check-mark { width: 9px; height: 9px; margin: 0 auto; border-radius: 50%; border: 1.5px solid var(--line); align-self: center; }
+.check-why { display: block; font-size: 12.5px; color: var(--muted); }
+.check-row.failed .check-why { color: var(--danger); }
+.check-time { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.check-foot { display: flex; align-items: center; gap: 14px; margin-top: 16px; }
+.check-foot .muted { margin-right: auto; }
 
 /* ---- main ---- */
 #main { display: flex; flex-direction: column; min-width: 0; }

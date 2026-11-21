@@ -42,7 +42,7 @@ packages = [
 
 [tool.setuptools.package-data]
 "coderunner.server" = ["web/*.html", "web/app/*", "web/app/novnc/*", "web/app/novnc/**/*"]
-"coderunner.models" = ["catalog.json", "evidence.json", "measured.json"]
+"coderunner.models" = ["catalog.json", "evidence.json", "measured.json", "fixtures/*"]
 "coderunner.browser" = ["extension/*.json", "extension/*.js"]
 "coderunner.files" = ["helper.swift"]
 "coderunner.voice" = ["apple_speech.swift", "parakeet_speech.swift"]

@@ -246,6 +246,55 @@ def cmd_status(args, config: Config) -> int:
     return 1
 
 
+def cmd_check(args, config: Config) -> int:
+    """Run the core tasks on this install, as the app would, and say which worked (server/check.py)."""
+    if not _daemon_up(config):
+        print("The assistant is not running. Start it with `coderunner up`, then run this again.")
+        return 1
+    if args.last:
+        result = _admin(config, "GET", "/api/check").get("result")
+        if not result:
+            print("No check has been run yet.")
+            return 1
+        return _print_check(result)
+    try:
+        _admin(config, "POST", "/api/check", {"names": args.names, "long": args.long})
+    except RuntimeError as exc:
+        try:
+            print(json.loads(str(exc).split(": ", 1)[1])["error"])
+        except (ValueError, KeyError, IndexError):
+            print(exc)
+        return 1
+    shown = 0
+    try:
+        while True:
+            try:
+                state = _admin(config, "GET", "/api/check", timeout=30)
+            except Exception:           # the daemon is busy for a moment (a scan of the shared folders, say)
+                time.sleep(2)
+                continue
+            for line in state["lines"][shown:]:
+                print(line, flush=True)
+            shown = len(state["lines"])
+            if state["state"] != "running":
+                break
+            time.sleep(2)
+    except KeyboardInterrupt:
+        _admin(config, "POST", "/api/check", {"action": "stop"})
+        print("\nStopping the check…")
+        return 130
+    return 0 if (state.get("result") or {}).get("ok") else 1
+
+
+def _print_check(result: dict) -> int:
+    print(f"{result['date']}  {result['model']}")
+    for task in result["tasks"]:
+        took = f"{task['seconds']} s" if task.get("seconds") is not None else ""
+        print(f"  {task['state']:<8}{task['name']:<11}{took:>7}  {task['why']}")
+    print(f"{result['passed']} of {result['ran']} passed" + (f", {result['skipped']} skipped" if result["skipped"] else ""))
+    return 0 if result.get("ok") else 1
+
+
 def cmd_doctor(args, config: Config) -> int:
     from .models import hardware
     from .sandbox import driver_for
@@ -858,6 +907,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("daemon", help="Run the daemon in the foreground").set_defaults(func=cmd_daemon)
     sub.add_parser("status").set_defaults(func=cmd_status)
     sub.add_parser("doctor", help="Show hardware and environment checks").set_defaults(func=cmd_doctor)
+    p = sub.add_parser("check", help="Do the core tasks once on this install, as the app would, and say which worked")
+    p.add_argument("names", nargs="*", help="only these (answer, picture, document, video, code, files, website, "
+                                            "flights, booking, appliance, errands)")
+    p.add_argument("--long", action="store_true", help="also the long ones: flights, booking, appliance, errands")
+    p.add_argument("--last", action="store_true", help="show the last run's result instead of running")
+    p.set_defaults(func=cmd_check)
 
     p = sub.add_parser("chat", help="Talk to the assistant; approvals are asked here")
     p.add_argument("message", nargs="*")

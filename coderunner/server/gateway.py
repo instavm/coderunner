@@ -523,6 +523,24 @@ def admin_app(svc, daemon) -> Starlette:
             conversation = "app:" + secrets.token_hex(6)
         return JSONResponse(daemon.tasks.start(conversation, message, principal(request), attachments=files))
 
+    async def check(request: Request):
+        """`coderunner check`: the core tasks run on this install and checked (server/check.py)."""
+        job = getattr(daemon, "check", None)
+        if job is None:
+            return JSONResponse({"error": "the check is not available here"}, status_code=503)
+        if request.method == "GET":
+            return JSONResponse(job.public())
+        body = await request.json()
+        if body.get("action") == "stop":
+            job.stop()
+            return JSONResponse(job.public())
+        names = [str(n) for n in body.get("names") or []] if isinstance(body.get("names"), list) else []
+        problem = job.start(names or None, long=bool(body.get("long")))
+        if problem:
+            return JSONResponse({**job.public(), "error": problem}, status_code=409)
+        svc.audit.write("check.started", origin=principal(request), names=names, long=bool(body.get("long")))
+        return JSONResponse(job.public())
+
     async def upload(request: Request):
         """A file the owner attaches to a task: the body is the file, X-File-Name its name (URL-encoded). It is kept where the
         file tools and the sandbox can reach it (files/attached.py), and named in a task by the id returned."""
@@ -703,6 +721,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/tasks", start_task, methods=["POST"]),
         Route("/api/tasks/{id}/cancel", cancel_task, methods=["POST"]),
         Route("/api/shots/{name}", shot, methods=["GET"]),
+        Route("/api/check", check, methods=["GET", "POST"]),
         Route("/api/uploads", upload, methods=["POST"]),
         Route("/api/uploads/{id}", uploaded, methods=["GET"]),
         Route("/api/conversations", conversations, methods=["GET"]),
