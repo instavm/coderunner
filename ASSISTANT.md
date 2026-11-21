@@ -771,7 +771,8 @@ task list, no computer panel). Before anything is fetched it shows, on one scree
 * one button, "Download and set up". "How these were chosen" opens the reasons, the speed estimate, the
   memory budget, the other models that fit and the list of downloads.
 
-Setup then shows the stages it has reached, the running one with a bar, in the words of that first screen
+Setup then shows the stages it has reached, the running one with a bar (a download with its percentage and
+the time it has left, from how fast it has been going), in the words of that first screen
 (downloading the planning model, testing tools and vision, measuring speed, file search, voice) and never a
 file's name; setup's own lines are under "Details". Below them a small animation goes through what the
 assistant is for. It is the same setup as `coderunner setup`, run in the daemon, and it carries on if the

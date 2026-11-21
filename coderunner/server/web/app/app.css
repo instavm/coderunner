@@ -233,11 +233,11 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .stage.done .stage-mark { color: var(--ok); }
 .stage.failed .stage-mark { color: var(--danger); font-weight: 700; }
 .stage.running .stage-mark { border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: spin .9s linear infinite; }
-.stage-head { display: flex; justify-content: space-between; gap: 12px; }
 .stage.done .stage-label { color: var(--muted); }
 .stage.running .stage-label { font-weight: 600; }
-.stage-amount { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.bar { height: 5px; border-radius: 3px; background: var(--surface-2); margin: 7px 0 3px; overflow: hidden; }
+.stage-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.stage-meta[hidden] { display: none; }
+.bar { height: 5px; border-radius: 3px; background: var(--surface-2); margin: 7px 0 5px; overflow: hidden; }
 .bar[hidden] { display: none; }
 .bar span { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .6s; }
 .bar.busy span { width: 32%; animation: bar-slide 1.5s ease-in-out infinite; }

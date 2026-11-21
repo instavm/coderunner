@@ -747,6 +747,21 @@ function renderPlan(plan, problem) {
   card.appendChild(why);
 }
 
+// How long a download has left, from how its percentage has moved: [[seconds, percent], ...] at each change,
+// oldest first, and the time now. Nothing until it has moved for a while, so the first guess is not a wild
+// one; a download that stalls is given longer as it stalls.
+function timeLeft(seen, now) {
+  if (seen.length < 2) return "";
+  const [t0, p0] = seen[0], p1 = seen[seen.length - 1][1];
+  if (p1 >= 100 || p1 - p0 < 2 || now - t0 < 20) return "";
+  const seconds = (100 - p1) * (now - t0) / (p1 - p0);
+  if (seconds < 50) return "less than a minute left";
+  if (seconds < 3300) return `about ${Math.max(1, Math.round(seconds / 60))} min left`;
+  const hours = seconds / 3600;
+  if (hours >= 24) return "more than a day left";
+  return `about ${hours < 9.5 ? Math.round(hours * 2) / 2 : Math.round(hours)} hr left`;
+}
+
 // The stages of a setup, one row each, kept and filled in as setup goes on (so a bar moves instead of being
 // drawn again): done, running (with a bar, counted while something downloads) or failed.
 function showStages(box, job) {
@@ -754,12 +769,13 @@ function showStages(box, job) {
   for (const stage of job.stages || []) {
     let r = rows.get(stage.key);
     if (!r) {
-      r = {row: el("div", "stage"), mark: el("span", "stage-mark"), label: el("span", "stage-label"), amount: el("span", "stage-amount"),
-           bar: el("div", "bar"), fill: el("span"), detail: el("div", "muted small")};
-      const head = el("div", "stage-head"), body = el("div", "stage-body");
-      head.append(r.label, r.amount);
+      r = {row: el("div", "stage"), mark: el("span", "stage-mark"), label: el("div", "stage-label"), amount: el("span"),
+           left: el("span"), meta: el("div", "stage-meta"), bar: el("div", "bar"), fill: el("span"),
+           detail: el("div", "muted small"), seen: []};
+      const body = el("div", "stage-body");
+      r.meta.append(r.amount, r.left);
       r.bar.appendChild(r.fill);
-      body.append(head, r.bar, r.detail);
+      body.append(r.label, r.bar, r.meta, r.detail);
       r.row.append(r.mark, body);
       box.appendChild(r.row);
       rows.set(stage.key, r);
@@ -767,8 +783,18 @@ function showStages(box, job) {
     const running = stage.state === "running", counted = running && stage.percent != null;
     r.row.className = "stage " + stage.state;
     r.mark.textContent = stage.state === "done" ? "✓" : stage.state === "failed" ? "!" : "";
-    if (r.label.textContent !== stage.label) r.label.textContent = stage.label;
+    if (r.label.textContent !== stage.label) { r.label.textContent = stage.label; r.seen = []; }   // another download
+    let left = "";
+    if (counted) {
+      const now = Date.now() / 1000, last = r.seen[r.seen.length - 1];
+      if (last && stage.percent < last[1]) r.seen = [];
+      if (!last || stage.percent !== last[1]) r.seen.push([now, stage.percent]);
+      while (r.seen.length > 2 && now - r.seen[1][0] > 180) r.seen.shift();     // the last three minutes' pace
+      left = timeLeft(r.seen, now);
+    }
     r.amount.textContent = counted ? `${stage.percent}%` + (stage.of_gb ? ` of ${gb(stage.of_gb)}` : "") : "";
+    r.left.textContent = left;
+    r.meta.hidden = !counted;
     r.bar.hidden = !running;
     r.bar.classList.toggle("busy", running && !counted);
     r.fill.style.width = counted ? `${stage.percent}%` : "";
