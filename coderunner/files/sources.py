@@ -272,7 +272,10 @@ class Sources:
         gone: list[str] = []
         now = time.monotonic()
         for source in self.enabled():
-            if now - self._last.get(source, 0.0) < every and not self._more.get(source):
+            # A source never listed is listed now: counted from zero, the clock (time since boot) kept every
+            # source waiting for the first quarter of an hour after a restart.
+            last = self._last.get(source)
+            if last is not None and now - last < every and not self._more.get(source):
                 continue
             try:
                 found, dropped = await getattr(self, f"_{source}")(budget - len(items))

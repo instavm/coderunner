@@ -163,6 +163,19 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("mail", index.sources.enabled())
         await embedder.aclose()
 
+    async def test_sources_are_listed_at_once_on_a_machine_that_has_just_started(self):
+        # The clock counts from boot: with "never listed" kept as time zero, nothing was listed for the first
+        # quarter of an hour after a restart (and never in a container started for a test run).
+        index, embedder, _ = self.index()
+        try:
+            with mock.patch("coderunner.files.sources.time.monotonic", return_value=30.0):
+                items, _ = await index.sources.index_once()
+                self.assertTrue(any(item.path.startswith("mail://") for item in items))
+                again, _ = await index.sources.index_once()              # and then not again until it is due
+                self.assertEqual(again, [])
+        finally:
+            await embedder.aclose()
+
     async def test_changes_and_removals_follow_the_apps(self):
         index, embedder, seen = self.index()
         while (await index.index_once())["more"]:
