@@ -113,7 +113,7 @@ class Desktop:
                 return
             account = _account()
             if account is None or not available():
-                raise RuntimeError("This sandbox has no desktop. Run `coderunner computer setup`.")
+                raise RuntimeError("This sandbox has no desktop. Run `coderunner browser computer`.")
             if not _alive(self.server):
                 with contextlib.suppress(FileNotFoundError):       # a stale lock from a server that crashed
                     os.unlink(f"/tmp/.X{DISPLAY_NUMBER}-lock")
@@ -275,7 +275,7 @@ CHROME_RELAY = ChromeRelay(DESKTOP)
 async def api_desktop(request: Request):
     if request.method == "POST":
         if not available():
-            return JSONResponse({"error": "This sandbox has no desktop. Run `coderunner computer setup`."},
+            return JSONResponse({"error": "This sandbox has no desktop. Run `coderunner browser computer`."},
                                 status_code=409)
         try:
             await DESKTOP.ensure()

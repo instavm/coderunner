@@ -63,18 +63,29 @@ def scores_from(eval_results: list[dict]) -> dict[str, float]:
 
 def fetch(hub, repos, progress: Callable[[str], None] | None = None) -> dict[str, dict[str, float]]:
     """Published scores for each repo; repos that cannot be read are left out."""
-    from .hub import HubError, endpoint
-    found = {}
-    for repo in sorted(set(repos)):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .hub import HubError, RateLimited, endpoint
+
+    def read(repo: str):
         try:
-            info = hub._get_json(f"{endpoint()}/api/models/{repo}?expand%5B%5D=evalResults", f"evals-{repo}")
+            return hub._get_json(f"{endpoint()}/api/models/{repo}?expand%5B%5D=evalResults", f"evals-{repo}")
+        except RateLimited:
+            raise
         except HubError as exc:
-            if progress:
-                progress(f"no benchmark scores for {repo}: {exc}")
-            continue
-        scores = scores_from((info or {}).get("evalResults") or [])
-        if scores:
-            found[repo] = scores
+            return exc
+
+    found = {}
+    wanted = sorted(set(repos))
+    with ThreadPoolExecutor(8) as pool:          # one request a repo, each waiting on the network
+        for repo, info in zip(wanted, pool.map(read, wanted)):
+            if isinstance(info, HubError):
+                if progress:
+                    progress(f"no benchmark scores for {repo}: {info}")
+                continue
+            scores = scores_from((info or {}).get("evalResults") or [])
+            if scores:
+                found[repo] = scores
     return found
 
 

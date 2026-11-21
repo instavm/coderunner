@@ -9,6 +9,7 @@ large files come in several ranges at once.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -59,7 +60,19 @@ class HubError(Exception):
     pass
 
 
+class RateLimited(HubError):
+    """Hugging Face answered 429. Callers without an account get 500 API requests per five minutes for their
+    address (its RateLimit-Policy header, November 2026); `seconds` is when the window starts again."""
+
+    def __init__(self, seconds: int):
+        self.seconds = seconds
+        super().__init__(f"Hugging Face is limiting requests from this connection; try again in "
+                         f"{max(1, round(seconds / 60))} min, or set HF_TOKEN to an account's token")
+
+
 class Hub:
+    calls = 0           # requests made to the Hub's API by this process (setup_eval reports them)
+
     def __init__(self, client: httpx.Client | None = None, cache_dir: pathlib.Path | None | bool = None,
                  ttl: float = 24 * 3600):
         self.client = client or httpx.Client(timeout=httpx.Timeout(30, read=120), follow_redirects=True,
@@ -82,10 +95,17 @@ class Hub:
                 return json.loads(cache.read_text())
             except json.JSONDecodeError:
                 pass
+        Hub.calls += 1
         try:
             response = self.client.get(url, headers={**self._auth(), **(headers or {})})
         except httpx.HTTPError as exc:
             raise HubError(f"Hugging Face is unreachable: {exc}") from exc
+        if response.status_code == 429:
+            if cache and cache.exists():            # yesterday's answer serves better than none
+                with contextlib.suppress(OSError, json.JSONDecodeError):
+                    return json.loads(cache.read_text())
+            found = re.search(r"\bt=(\d+)", response.headers.get("ratelimit", ""))
+            raise RateLimited(int(found.group(1)) if found else int(response.headers.get("retry-after") or 300))
         if response.status_code in (401, 403):
             raise HubError(f"{url} needs access: accept the model terms on Hugging Face and set HF_TOKEN")
         if response.status_code >= 400:

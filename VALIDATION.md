@@ -22,8 +22,8 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
 | Browser (`test_browser.py`) | URL and host rules, policy kinds per action, password and card fields, accessibility snapshots and change detection, plus an end-to-end run against the installed Chrome (headless) including a redirect to a private address being blocked and no leftover processes |
 | Everyday browser (`test_chrome.py`, `test_chrome_e2e.py`) | Extension ID pinned by its key; the native host relays both ways, answers commands too large for the browser and refuses other extensions; the daemon socket is 0600 and refuses a wrong token or origin and a second browser; the broker drives a fake extension through the bridge, says how to connect when it is missing, and stops when it goes away; `browser connect` registers the host for installed browsers only. With Chromium or Chrome for Testing (`CODERUNNER_CHROME_E2E=/path/to/chrome`): the real extension opens the assistant's tab in a CodeRunner group, types, clicks, answers a confirm(), takes a screenshot, puts a page's popup into the group, blocks a link to a private address and a cross-site frame from a blocked host, hides and refuses the owner's other tab (and the Storage domain), lets go of a tab dragged out of the group and of idle tabs (attaching again on the next step), and leaves the browser open on stop. `CODERUNNER_E2E_HEADFUL=1` adds a normal window with no debugging switches (navigator.webdriver is false); `CODERUNNER_E2E_LIVE=1` adds booking.com's destination suggestions |
 | Daemon (`test_daemon.py`) | Real HTTP servers: owner chat, memory recall across conversations, sandbox model proxy, credential separation, scheduled delivery, and the agent driving the real browser where a "Buy now" click waits for an owner approval over the API |
-| Models (`test_models.py`) | Hardware parsing (Apple, NVIDIA, AMD, CPU, WSL2), budgets, KV-cache sizing, picks per memory tier from 8 GB Macs to 512 GB, expert offload on NVIDIA, runtime routing to llama.cpp, cluster flags, GPU-limit notes, licence resolution through base models, resumable verified downloads, smoke-test pass/fail including the wrong-argument case below; timing a served model (streamed and llama.cpp timings), calibration per machine, setup moving on from a model far slower than estimated and deleting its weights, the shareable report; the decision model only where it fits; published retention for Bonsai 2; Ollama version checks and its own checksum-verified copy |
-| Discovery (`test_discover.py`) | Hugging Face listings, configs and file trees from a fake hub: filters, sharded builds, KV and MoE sizes, build choice per machine, known breakages, stale caches; published scores read from eval results, ranking by them (a model scored like Granite 4.2 30B ranks below Qwen3.5-9B), quantization losses, GPU-limit notes |
+| Models (`test_models.py`) | Hardware parsing (Apple, NVIDIA, AMD, CPU, WSL2), budgets, KV-cache sizing, picks per memory tier from 8 GB Macs to 512 GB, expert offload on NVIDIA, runtime routing to llama.cpp, cluster flags, GPU-limit notes, licence resolution through base models, resumable verified downloads, smoke-test pass/fail including the wrong-argument case below; timing a served model (streamed and llama.cpp timings), calibration per machine, setup moving on from a model far slower than estimated and deleting its weights, the shareable report; the decision model only where it fits; published retention for Bonsai 2; Ollama version checks and its own checksum-verified copy, fetched where no runtime is installed (a build for Macs and Linux, none for Windows; the Linux archive's layout and zstd unpacking); downloads skipped or refused when they would take the disk under its floor, and the plan saying so; a rate limit from Hugging Face named with when to try again, yesterday's cached answer served in its place, and a refused licence lookup failing that model instead of setup |
+| Discovery (`test_discover.py`) | Hugging Face listings, configs and file trees from a fake hub: filters, sharded builds, KV and MoE sizes, build choice per machine, known breakages, stale caches; builds read from the Hub's list of a model's quantized builds with no guessed names, a rate limit ending discovery so the catalog alone is used; published scores read from eval results, ranking by them (a model scored like Granite 4.2 30B ranks below Qwen3.5-9B), quantization losses, GPU-limit notes |
 | Files (`test_files.py`) | Only shared, non-secret files; iCloud-only files named but not read (read once on the Mac or with `files.cloud_files`); bundles, libraries and code in source checkouts skipped; half-precision vectors and sign codes; embedding batched across files (153 files in at most 12 requests); a new embedding model means indexing again; file events bring changes in first; pausing on a low battery or Low Power Mode; figures matched by words only; passages with lines; ranking on a calibrated corpus (a picture ranks by its own scale, a kind hint, weak results cut, codes lean on words); the first pass finds the closest codes; `coderunner find` output and direct fallback. With the Swift compiler: PDFs by page, OCR of a screenshot, FSEvents within seconds |
 | Voice (`test_voice.py`) | Engine order (Parakeet on Core ML where setup did not measure it noticeably slower than Apple speech on this machine, Apple speech, Qwen3-ASR, installed engines), Parakeet only on Apple silicon with macOS 15+ and for its 25 languages, languages an engine lacks and failing engines handing over, 16 kHz mono WAV for every engine, the Apple helper built once per source, FluidAudio and llama.cpp checked against their checksums before use, Parakeet's licence checked before its pinned files are downloaded and only its helper kept after the build, Qwen3-ASR downloaded only when neither Parakeet nor Apple can serve the language; the web page's voice upload (size limit, temporary files removed) |
 | Memory, scheduler, connectors, channels, service, remote | Unit tests with fakes; see each test file |
@@ -287,7 +287,38 @@ called `files_search`, answered from the snippet of "Lisbon trip itinerary.pdf" 
 wall time including the model. The bridge must be able to import the package: the `coderunner` command the
 installer links does that; a bare `python -m coderunner` from another directory does not.
 
+### A first run of setup, measured (November 21, same Mac)
+
+`python tests/setup_eval.py` runs the real setup in a throwaway home and reports what a first run fetches, how
+long each step takes, how many requests it makes to Hugging Face and where it stops; `--bare` hides Ollama,
+llama.cpp and Homebrew, as on a machine nobody developed on. The Mac had 11.4 GB of disk free and the owner's
+assistant running from another home, so no run downloaded a model: runs stop at the first model download, and
+the steps after it were timed on the model that home already serves.
+
+| | Before | After |
+| --- | --- | --- |
+| Bare machine | failed after 0.0 s: "No local model runtime is installed" | setup fetched its own Ollama 0.40.3 (167 MB in 179 s and 289 s on this line, checksum checked), which started and answered as 0.40.3; then llama.cpp b11564 (14 s) or Prism's build (21 s) for the model it chose |
+| Before anything is downloaded | 171 s of model discovery | 21 s |
+| Requests to Hugging Face in discovery | 636, of them 500 to its API: the whole allowance of a caller without an account (500 per five minutes), 240 spent on guessed repository names that do not exist; setup's next request was refused (HTTP 429) and setup ended in a traceback | 427, about 300 of them to the API; a refusal ends discovery (the catalog is used) or fails that model with when to try again |
+| 10.95 GB of downloads with 11.4 GB free | started, with no check | Bonsai 2 27B, its compact build, Qwen3.5-9B and the 1-bit Bonsai skipped (7.2 to 10.7 GB with the embedding models, 6.3 GB usable above the 5 GB floor); Qwen3.5-4B chosen (6.2 GB), with a note on what to free for the better one. With the floor at 0, Bonsai 2 27B as before |
+
+A first run's downloads here: Bonsai 2 27B 7.84 GB, EmbeddingGemma 2 in Ollama 1.33 GB and for Core ML 1.48 GB,
+Ollama 0.17 GB, Core ML packages 0.12 GB, Prism's llama.cpp 0.01 GB; about 57 minutes at the 3 MB/s four
+streams got from Hugging Face. On the model already served (Qwen3.5-9B Q4_K_M, llama.cpp, woken from sleep,
+while files were being indexed): smoke test 17 s with all four checks passing, timing 23 s, 253 tokens/s read
+and 21 written, 10 s a step.
+
+Not run: a model download and everything after it in a clean home (disk space, and every home uses the same
+ports, so a second home would talk to the first one's servers); the installer end to end; voice setup; the
+sandbox image build.
+
 ## Not yet validated
+
+* CodeRunner's own Ollama on Linux: the archives' checksums are the release's own, their layout (`bin/ollama`)
+  was read from the first megabytes of each and unpacking a zstd archive is tested, but the 1.4 GB download was
+  not run and nothing was started on Linux. AMD's ROCm libraries are not fetched.
+* The app starting the daemon: its logic was run with Electron replaced by a stand-in (daemon down and
+  `coderunner up` working, failing, missing; daemon already up), not in the app's own window.
 
 * Voice: Qwen3-ASR on Linux and NVIDIA machines; the 🎤 button in a real browser and
   `coderunner chat --voice` with a real microphone (both ask for microphone permission); setup's
@@ -310,8 +341,8 @@ installer links does that; a bare `python -m coderunner` from another directory 
 * `coderunner models bench` ran end to end against a real server (above); setup's own timing and its
   fallback to the next model were tested with fakes only.
 * tev1 4B as the decision model beside a chat model on a 24 GB or larger Mac.
-* Ollama's own copy (setup downloading 0.40.3 when the installed one is older) was tested with
-  fakes; the download and checksum were not run.
+* Ollama's own copy replacing an older installed one: the download, checksum and start ran on macOS (above, on
+  a machine made to look bare); the case of an older Ollama already serving was tested with fakes only.
 * Pooling several machines (`models.cluster`, llama.cpp RPC), e.g. DGX Sparks, has not been run.
 * Sandbox images: the installer now pulls `instavm/coderunner:0.2.0` and builds from the checkout
   when that tag is not published yet (the published `latest` images ignore the token). Publishing

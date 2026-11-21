@@ -1,9 +1,12 @@
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
 import pathlib
+import shutil
 import struct
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -46,6 +49,12 @@ class TempHome(unittest.TestCase):
         llama = mock.patch.object(manager, "_chat_on_llama", return_value=False)
         llama.start()
         self.addCleanup(llama.stop)
+        # Setup fetches its own Ollama where none is installed, and skips downloads the disk has no room for:
+        # tests about either turn it on, so the others neither download nor depend on this machine's disk.
+        for target, name, value in ((runtimes.OllamaRuntime, "can_install", False), (manager, "_free_gb", 1e6)):
+            patch = mock.patch.object(target, name, return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
 
     def config(self, **models):
         # Tests never reach Hugging Face; discovery has its own tests with a fake hub.
@@ -399,6 +408,32 @@ class HubTests(TempHome):
         self.assertEqual([f["sha256"][0] for f in files], ["1", "2", "3", "m"])
         self.assertEqual(files[-1]["kind"], "mmproj")
         self.assertEqual(len(hub.gguf_files("org/M-GGUF", "Q4_K_M", vision=False)), 3)
+
+    def test_a_rate_limit_says_when_to_try_again_and_yesterdays_answer_still_serves(self):
+        limited = {"/api/models/org/M": lambda request: httpx.Response(
+            429, headers={"ratelimit": '"api";r=0;t=252', "ratelimit-policy": '"fixed window";"api";q=500;w=300'},
+            json={"error": "We had to rate limit your IP"})}
+        hub = Hub(httpx.Client(transport=hf_transport(limited)), cache_dir=self.home / "cache")
+        with self.assertRaises(hub_module.RateLimited) as raised:
+            hub.model_info("org/M")
+        self.assertEqual(raised.exception.seconds, 252)
+        self.assertIn("try again in 4 min, or set HF_TOKEN", str(raised.exception))
+        stale = self.home / "cache" / "info-org_M-main.json"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text(json.dumps({"sha": "from yesterday"}))
+        os.utime(stale, (1, 1))                                       # far older than the cache's day
+        self.assertEqual(hub.model_info("org/M"), {"sha": "from yesterday"})
+
+    def test_a_refused_licence_lookup_is_that_models_failure_not_a_crash(self):
+        class Limited:
+            def resolve_license(self, repo, depth=3):
+                raise hub_module.RateLimited(120)
+        rt = FakeLlama()
+        result = manager.setup(self.config(), model_id="qwen3.5-9b", runtime=rt, hw=apple(18), hub=Limited(),
+                               progress=lambda m: None, embedding=False, decision=False, smoke=fake_smoke({}))
+        self.assertFalse(result["ok"])
+        self.assertIn("No model could be set up: Hugging Face is limiting requests", result["error"])
+        self.assertEqual(rt.pulled, [])
 
     def test_resumable_download_verifies_sha256(self):
         blob = os.urandom(300_000)
@@ -1156,6 +1191,7 @@ class OllamaVersionTests(TempHome):
     def test_an_old_server_someone_else_runs_is_explained(self):
         rt = runtimes.OllamaRuntime(self.config())
         with mock.patch.object(rt, "version", return_value=(0, 32, 15)), \
+                mock.patch.object(rt, "available", return_value=True), \
                 mock.patch.object(rt, "running", return_value=True), \
                 mock.patch.object(rt, "stop", return_value=False), \
                 mock.patch.object(rt, "pull", side_effect=AssertionError("setup must stop before pulling")):
@@ -1169,6 +1205,8 @@ class OllamaVersionTests(TempHome):
         rt = runtimes.OllamaRuntime(self.config())
 
         class Response:
+            headers = {"content-length": "23"}
+
             def raise_for_status(self):
                 pass
 
@@ -1188,6 +1226,144 @@ class OllamaVersionTests(TempHome):
                 rt.install()
         self.assertFalse((rt.managed_dir / "ollama").exists())
         self.assertEqual(list(rt.managed_dir.glob("*.tgz")), [])
+
+    def test_there_is_a_pinned_build_for_macs_and_linux_and_none_for_windows(self):
+        build = runtimes.OllamaRuntime.build
+        self.assertEqual(build("Darwin", "arm64")[0], "ollama-darwin.tgz")
+        self.assertEqual(build("Linux", "x86_64")[0], "ollama-linux-amd64.tar.zst")
+        self.assertEqual(build("Linux", "AMD64")[0], "ollama-linux-amd64.tar.zst")
+        self.assertEqual(build("Linux", "arm64")[0], "ollama-linux-arm64.tar.zst")
+        self.assertIsNone(build("Windows", "AMD64"))
+        for asset, sha256 in runtimes.OllamaRuntime.BUILDS.values():
+            self.assertRegex(sha256, r"^[0-9a-f]{64}$", asset)
+
+    def test_the_linux_archive_keeps_its_binary_under_bin(self):
+        rt = runtimes.OllamaRuntime(self.config())
+        with mock.patch.object(runtimes.shutil, "which", return_value=None), \
+                mock.patch.object(rt, "APP_BINARY", "/nonexistent/ollama"):
+            self.assertIsNone(rt.binary())
+            (rt.managed_dir / "bin").mkdir(parents=True)
+            (rt.managed_dir / "bin" / "ollama").write_text("#!/bin/sh\n")
+            (rt.managed_dir / "bin" / "ollama").chmod(0o755)
+            self.assertEqual(rt.binary(), str(rt.managed_dir / "bin" / "ollama"))
+
+    @unittest.skipUnless(shutil.which("zstd") and shutil.which("tar"), "needs the zstd and tar commands")
+    def test_a_zstd_archive_is_unpacked_as_the_linux_release_is(self):
+        work = self.home / "work"
+        (work / "src" / "bin").mkdir(parents=True)
+        (work / "src" / "bin" / "ollama").write_text("#!/bin/sh\necho ollama version is 0.40.3\n")
+        subprocess.run(["tar", "-cf", str(work / "o.tar"), "-C", str(work / "src"), "bin"], check=True)
+        subprocess.run(["zstd", "-q", str(work / "o.tar"), "-o", str(work / "o.tar.zst")], check=True)
+        (work / "out").mkdir()
+        runtimes._unpack(work / "o.tar.zst", work / "out")
+        self.assertIn("0.40.3", (work / "out" / "bin" / "ollama").read_text())
+        (work / "bad.tar.zst").write_bytes(b"not an archive")
+        with self.assertRaisesRegex(RuntimeError, "install zstd"):
+            runtimes._unpack(work / "bad.tar.zst", work / "out")
+
+
+class OwnRuntimeTests(TempHome):
+    """A machine with nothing to run models with gets CodeRunner's own copy of Ollama."""
+
+    def bare(self, can_install=True):
+        stack = contextlib.ExitStack()
+        for target, name, value in ((runtimes.OllamaRuntime, "available", False),
+                                    (runtimes.LlamaCppRuntime, "available", False),
+                                    (runtimes.OllamaRuntime, "can_install", can_install)):
+            stack.enter_context(mock.patch.object(target, name, return_value=value))
+        return stack
+
+    def test_setup_plans_for_its_own_ollama_and_says_so(self):
+        with self.bare(), mock.patch.object(manager, "_prism", return_value=None):
+            result = manager.plan(self.config(), hw=apple(18))
+        self.assertEqual((result["runtime"]["name"], result["runtime"]["available"]), ("ollama", False))
+        self.assertEqual(result["model"]["id"], "qwen3.5-9b")
+        self.assertIn("setup fetches its own copy of Ollama", result["notes"][0])
+        with self.bare(can_install=False):                               # Windows: no pinned build
+            result = manager.plan(self.config(), hw=apple(18))
+        self.assertIsNone(result["runtime"])
+        self.assertIn("ollama.com/download", " ".join(result["notes"]))
+
+    def test_the_copy_is_installed_once_and_only_where_ollama_is_missing(self):
+        rt, said = runtimes.OllamaRuntime(self.config()), []
+        state = {"installed": False}
+
+        def install(progress=None):
+            state["installed"] = True
+        with mock.patch.object(rt, "available", side_effect=lambda: state["installed"]), \
+                mock.patch.object(rt, "can_install", return_value=True), \
+                mock.patch.object(rt, "install", side_effect=install) as installed:
+            self.assertIsNone(manager._own_ollama(rt, apple(18), said.append))
+            self.assertIsNone(manager._own_ollama(rt, apple(18), said.append))       # there now: nothing to do
+        installed.assert_called_once()
+        self.assertIn("CodeRunner's own copy of Ollama", said[0])
+        llama = FakeLlama()
+        llama.available = lambda: False
+        self.assertIsNone(manager._own_ollama(llama, apple(18), said.append))          # another runtime's business
+
+    def test_a_failed_download_is_reported_with_what_to_do(self):
+        with self.bare(), mock.patch.object(runtimes.OllamaRuntime, "install", side_effect=RuntimeError("offline")):
+            result = manager.setup(self.config(), hw=apple(18), progress=lambda m: None)
+        self.assertFalse(result["ok"])
+        self.assertIn("could not be installed (offline)", result["error"])
+        self.assertIn("brew install ollama", result["error"])
+
+
+class DiskRoomTests(TempHome):
+    """Downloads never take the disk under files.min_free_gb; setup moves on to a model that fits."""
+
+    def free(self, gb):
+        return mock.patch.object(manager, "_free_gb", return_value=gb)
+
+    def test_room_is_what_is_free_less_the_floor(self):
+        with self.free(11.4):
+            self.assertEqual([round(x, 1) for x in manager._room_gb(self.config())], [6.4, 11.4, 5.0])
+            self.assertIsNone(manager._no_room(self.config(), 6.0))
+            self.assertIn("a 7.8 GB download, and 6.4 GB can be used (11.4 GB free, 5 GB kept free)",
+                          manager._no_room(self.config(), 7.8))
+            cfg = Config({"files": {"min_free_gb": 1}}, path=self.home / "config.json")
+            self.assertIsNone(manager._no_room(cfg, 7.8))
+
+    def test_setup_skips_a_model_the_disk_has_no_room_for_and_takes_the_next(self):
+        rt, said = FakeRuntime(), []
+        with self.free(11.0):                 # 6 GB of room: Qwen3.5-9B (6.6 GB) does not fit, the 4B model does
+            result = manager.setup(self.config(), runtime=rt, hw=apple(18), progress=said.append,
+                                   embedding=False, decision=False, smoke=fake_smoke({}), measure=False)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["entry"], rt.pulled), ("qwen3.5-4b", ["qwen3.5-4b"]))
+        self.assertTrue(any(line.startswith("skipping qwen3.5-9b") and "6.0 GB can be used" in line for line in said))
+        self.assertRegex(said[-1], r"qwen3.5-9b ranks higher but the disk has no room for it: free \d\.\d GB more")
+        self.assertIn("qwen3.5-9b", result["skipped_for_disk"][0])
+
+    def test_nothing_is_downloaded_when_no_model_fits_the_disk(self):
+        rt = FakeRuntime()
+        with self.free(6.0):
+            result = manager.setup(self.config(), runtime=rt, hw=apple(18), progress=lambda m: None,
+                                   embedding=False, decision=False, smoke=fake_smoke({}), measure=False)
+            asked = manager.setup(self.config(), model_id="qwen3.5-9b", runtime=rt, hw=apple(18),
+                                  progress=lambda m: None, embedding=False, decision=False, smoke=fake_smoke({}))
+        self.assertEqual(rt.pulled, [])
+        for outcome in (result, asked):
+            self.assertFalse(outcome["ok"])
+            self.assertIn("Not enough free disk", outcome["error"])
+        self.assertIn("qwen3.5-9b", asked["error"])
+        self.assertRegex(asked["error"], r"Free 5\.\d GB more")              # 6.5 GB wanted, 1 GB of room
+        self.assertRegex(result["error"], r"qwen3.5-4b.*Free \d\.\d GB more")   # the least to free is named
+
+    def test_a_model_already_here_needs_no_room(self):
+        rt = FakeRuntime()
+        rt.installed = lambda entry: True
+        with self.free(0.5):
+            result = manager.setup(self.config(), runtime=rt, hw=apple(18), progress=lambda m: None,
+                                   embedding=False, decision=False, smoke=fake_smoke({}), measure=False)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["entry"], rt.pulled), ("qwen3.5-9b", []))
+
+    def test_the_plan_says_when_its_pick_does_not_fit_the_disk(self):
+        with self.free(8.0):
+            notes = manager.plan(self.config(), hw=apple(18), runtime=FakeRuntime())["notes"]
+        self.assertRegex(" ".join(notes), r"qwen3.5-9b is a 6\.\d GB download, and 3\.0 GB can be used \(8\.0 GB free")
+        self.assertEqual(manager.plan(self.config(), hw=apple(18), runtime=FakeRuntime())["notes"], [])
 
 
 @unittest.skipUnless(os.environ.get("CODERUNNER_LIVE_MODELS") == "1", "set CODERUNNER_LIVE_MODELS=1 for live HF calls")

@@ -37,7 +37,6 @@ BUILD_IMAGE=0
 SANDBOX_TAG="0.2.0"
 ASSISTANT=1
 MODEL=""
-ASSUME_YES=0
 
 usage() {
     cat <<'EOF'
@@ -61,7 +60,7 @@ Options:
   --no-assistant            Install the sandbox and the coderunner CLI only (no model setup or login service)
   --search                  Search mode: the file index and the search tools for Claude Code, Codex and other
                             agents over MCP. No sandbox VM, no chat model (about 1.5 GB, a few minutes).
-  -y, --yes                 Answer yes to installing a model runtime
+  -y, --yes                 Accepted for older scripts: the installer no longer asks before fetching a model runtime
   -h, --help                Show this help
 EOF
 }
@@ -115,7 +114,6 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         -y|--yes)
-            ASSUME_YES=1
             shift
             ;;
         -h|--help)
@@ -715,23 +713,8 @@ setup_host_runtime() {
         return 0
     fi
 
-    if ! command -v ollama &> /dev/null && ! command -v llama-server &> /dev/null; then
-        local answer="n"
-        if [[ "$OSTYPE" == "darwin"* ]] && command -v brew &> /dev/null; then
-            if [ "$ASSUME_YES" = "1" ]; then
-                answer="y"
-            elif [ -t 0 ]; then
-                read -r -p "Install Ollama with Homebrew to run local models? [Y/n] " answer
-                answer=${answer:-y}
-            fi
-            if [[ "$answer" =~ ^[Yy] ]]; then
-                brew install ollama || echo "Warning: Ollama installation failed."
-            fi
-        else
-            echo "No local model runtime found. Install Ollama (https://ollama.com/download) or llama.cpp,"
-            echo "then run: coderunner setup"
-        fi
-    fi
+    # No Ollama or llama.cpp here is fine: `coderunner setup` fetches its own pinned copy of Ollama into
+    # $CODERUNNER_HOME/runtime (macOS and Linux), checked against its published checksum.
     check_ollama_version
 
     setup_args=(setup --network "$NETWORK_MODE")

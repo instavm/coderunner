@@ -22,11 +22,12 @@ import json
 import math
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Any, Callable
 
 from ..core import paths
-from .hub import Hub, HubError, endpoint
+from .hub import Hub, HubError, RateLimited, endpoint
 
 PUBLISHERS = ("Qwen", "google", "deepseek-ai", "zai-org", "mistralai", "microsoft", "nvidia", "ibm-granite",
               "openai", "prism-ml", "XiaomiMiMo", "moonshotai", "MiniMaxAI", "tencent", "LGAI-EXAONE", "allenai",
@@ -66,6 +67,8 @@ MAX_USEFUL_BITS = 6.6     # Q6_K: higher precision is barely better and much slo
 FAST_TOK_S = 15.0         # prefer a build at least this fast over a more precise, slower one
 CACHE_TTL = 24 * 3600
 RECENT_DAYS = 120
+WORKERS = 8               # requests to Hugging Face at a time
+MLX_BITS = ("4bit", "mxfp4", "6bit", "8bit", "3bit")      # MLX builds in order of preference
 
 
 def _get(hub: Hub, url: str, key: str) -> Any:
@@ -160,11 +163,19 @@ def builds(tree: list[dict], params_b: float = 0.0) -> tuple[dict[str, dict], di
 # ---- searching ---------------------------------------------------------------------------------------
 
 class Discovery:
+    """Hugging Face allows callers without an account 500 API requests per five minutes, and setup needs some
+    of them after discovery. Guessing where a model's builds live took up to eleven requests a model, most of
+    them answered "not found" (240 of a run's 500 even without the MLX names): a first run used the allowance
+    up and setup's next request was refused. Builds are now read from the Hub's own list of a model's
+    quantized builds, one request a model; names are guessed only when that list cannot be read, and MLX
+    names only on request."""
+
     def __init__(self, hub: Hub | None = None, since_days: int = RECENT_DAYS,
-                 progress: Callable[[str], None] | None = None):
+                 progress: Callable[[str], None] | None = None, guess_mlx: bool = False):
         self.hub = hub or Hub()
         self.since_days = since_days
         self.progress = progress or (lambda message: None)
+        self.guess_mlx = guess_mlx
 
     def recent(self, publisher: str) -> list[dict]:
         rows = _get(self.hub, _api(f"models?author={publisher}&sort=createdAt&direction=-1&limit=60&full=true"),
@@ -185,33 +196,55 @@ class Discovery:
             out.append(row)
         return out
 
-    def gguf_repo(self, repo: str) -> tuple[str, list[dict]] | None:
-        """The model's own -GGUF repo, else one from a well-known quantizer, with its file tree."""
-        name = repo.split("/", 1)[1]
-        owner = repo.split("/", 1)[0]
-        candidates = [f"{owner}/{name}-GGUF"] + [f"{q}/{name}-GGUF" for q in GGUF_PUBLISHERS] + \
-                     [f"bartowski/{owner}_{name}-GGUF"]
+    def quantized(self, repo: str) -> list[dict] | None:
+        """Repos that declare themselves quantized builds of `repo`, most downloaded first; None when the Hub
+        does not say (then names are guessed, as before)."""
+        try:
+            rows = _get(self.hub, _api(f"models?filter=base_model:quantized:{repo}&sort=downloads&direction=-1"
+                                       "&limit=100"), f"quantized:{repo}")
+        except RateLimited:
+            raise
+        except HubError:
+            return None
+        return [row for row in rows if isinstance(row, dict) and row.get("id")] if isinstance(rows, list) else None
+
+    def _tree(self, candidate: str) -> list[dict]:
+        try:
+            tree = _get(self.hub, _api(f"models/{candidate}/tree/main?recursive=true"), f"tree:{candidate}")
+        except RateLimited:
+            raise
+        except HubError:
+            return []
+        return tree if isinstance(tree, list) else []
+
+    def gguf_repo(self, repo: str, listed: list[dict] | None = None) -> tuple[str, list[dict]] | None:
+        """The model's own GGUF repo, else one from a well-known quantizer, with its file tree."""
+        owner, name = repo.split("/", 1)
+        known = [row["id"] for row in listed or [] if "gguf" in (row.get("tags") or [])
+                 and not AUXILIARY.search(row["id"].split("/", 1)[1].lower().replace(name.lower(), ""))]
+        candidates = [found for author in (owner, *GGUF_PUBLISHERS) for found in known
+                      if found.split("/", 1)[0] == author]
+        if listed is None:
+            candidates = [f"{owner}/{name}-GGUF"] + [f"{q}/{name}-GGUF" for q in GGUF_PUBLISHERS] + \
+                [f"bartowski/{owner}_{name}-GGUF"]
         for candidate in candidates:
-            try:
-                tree = _get(self.hub, _api(f"models/{candidate}/tree/main?recursive=true"), f"tree:{candidate}")
-            except HubError:
-                continue
-            if isinstance(tree, list) and any(str(item.get("path", "")).endswith(".gguf") for item in tree):
+            tree = self._tree(candidate)
+            if any(str(item.get("path", "")).endswith(".gguf") for item in tree):
                 return candidate, tree
         return None
 
-    def mlx_repo(self, repo: str) -> dict | None:
+    def mlx_repo(self, repo: str, listed: list[dict] | None = None) -> dict | None:
         name = repo.split("/", 1)[1]
-        for suffix in ("4bit", "mxfp4", "6bit", "8bit", "3bit"):
-            candidate = f"mlx-community/{name}-{suffix}"
-            try:
-                tree = _get(self.hub, _api(f"models/{candidate}/tree/main?recursive=true"), f"tree:{candidate}")
-            except HubError:
-                continue
-            weights = [item for item in tree or [] if str(item.get("path", "")).endswith(".safetensors")]
+        wanted = re.compile(rf"(?i)^mlx-community/{re.escape(name)}(?:-MLX)?-({'|'.join(MLX_BITS)})$")
+        known = {m.group(1).lower(): row["id"] for row in listed or [] if (m := wanted.match(row["id"]))}
+        candidates = [(bits, known[bits]) for bits in MLX_BITS if bits in known]
+        if not candidates and self.guess_mlx:
+            candidates = [(bits, f"mlx-community/{name}-{bits}") for bits in MLX_BITS]
+        for bits, candidate in candidates:
+            weights = [item for item in self._tree(candidate) if str(item.get("path", "")).endswith(".safetensors")]
             if weights:
                 size = sum((item.get("lfs") or {}).get("size") or item.get("size") or 0 for item in weights)
-                return {"repo": candidate, "size_gb": round(size / 1e9, 2), "bits": suffix}
+                return {"repo": candidate, "size_gb": round(size / 1e9, 2), "bits": bits}
         return None
 
     def describe(self, row: dict) -> dict | None:
@@ -220,15 +253,18 @@ class Discovery:
         try:
             info = self.hub.model_info(repo)
             config = _get(self.hub, f"{endpoint()}/{repo}/resolve/main/config.json", f"config:{repo}")
+        except RateLimited:
+            raise
         except HubError:
             return None
         total = ((info.get("safetensors") or {}).get("total") or 0) / 1e9
         if total < MIN_PARAMS_B or not isinstance(config, dict):
             return None                       # too small to drive the assistant reliably
         license_info = self.hub.resolve_license(repo)
-        found = self.gguf_repo(repo)
+        listed = self.quantized(repo)
+        found = self.gguf_repo(repo, listed)
         quants, mmproj = builds(found[1], total) if found else ({}, None)
-        mlx = self.mlx_repo(repo)
+        mlx = self.mlx_repo(repo, listed)
         if not quants and not mlx:
             return None
         vision = bool(mmproj) or row.get("pipeline_tag") == "image-text-to-text"
@@ -249,15 +285,25 @@ class Discovery:
         }
 
     def run(self, publishers: tuple[str, ...] = PUBLISHERS) -> list[dict]:
-        models = []
-        for publisher in publishers:
+        """Every request waits on Hugging Face, several hundred in all, so they go WORKERS at a time: one after
+        another they took 171 s on a first run (M3 Pro, a home line), before setup had done anything else."""
+        def listed(publisher: str) -> list[dict] | HubError:
             try:
-                rows = self.recent(publisher)
+                return self.recent(publisher)
+            except RateLimited:
+                raise                       # every later request would be refused too: the run ends here
             except HubError as exc:
-                self.progress(f"skipping {publisher}: {exc}")
-                continue
-            for row in rows:
-                entry = self.describe(row)
+                return exc
+
+        models = []
+        with ThreadPoolExecutor(WORKERS) as pool:
+            rows = []
+            for publisher, found in zip(publishers, pool.map(listed, publishers)):
+                if isinstance(found, HubError):
+                    self.progress(f"skipping {publisher}: {found}")
+                else:
+                    rows += found
+            for entry in pool.map(self.describe, rows):
                 if entry:
                     models.append(entry)
                     self.progress(f"found {entry['repo']} ({entry['params_b']}B, {len(entry['quants'])} GGUF builds)")
@@ -341,7 +387,8 @@ def usable(model: dict) -> bool:
     return not (NOT_CHAT.search(name) or SPECIALIST.search(name)) and model.get("params_b", 0) >= MIN_PARAMS_B
 
 
-def cached(progress: Callable[[str], None] | None = None, refresh: bool = False, hub: Hub | None = None) -> list[dict]:
+def cached(progress: Callable[[str], None] | None = None, refresh: bool = False, hub: Hub | None = None,
+           guess_mlx: bool = False) -> list[dict]:
     path = paths.assistant_dir() / "models" / "discovered.json"
     if not refresh and path.exists() and time.time() - path.stat().st_mtime < CACHE_TTL:
         try:
@@ -349,7 +396,7 @@ def cached(progress: Callable[[str], None] | None = None, refresh: bool = False,
         except (OSError, json.JSONDecodeError):
             pass
     try:
-        models = Discovery(hub, progress=progress).run()
+        models = Discovery(hub, progress=progress, guess_mlx=guess_mlx).run()
     except Exception as exc:          # offline or rate-limited: the catalog still works
         if progress:
             progress(f"model discovery unavailable: {exc}")

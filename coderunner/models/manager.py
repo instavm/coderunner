@@ -10,17 +10,21 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import os
+import pathlib
+import shutil
 import threading
 from typing import Callable
 
+from ..core import paths
 from ..core.llm import LLM
 from . import bench, catalog, fit, hardware, licenses, smoketest
-from .hub import Hub
+from .hub import Hub, HubError
 from .runtimes import LlamaCppRuntime, OllamaRuntime, PrismRuntime, Runtime, choose_runtime, install_hint
 
 MAX_FALLBACKS = 2
 WORTH_A_NOTE = 0.2          # utility gain (fit.utility) worth suggesting a change to the machine
 SLOWER_THAN_ESTIMATED = 1.5     # measured step time / estimate past which setup looks at the next model
+MIN_FREE_GB = 5.0           # disk kept free by downloads unless files.min_free_gb says otherwise
 LOCAL = ("ollama", "llama.cpp", "prism")
 
 
@@ -36,10 +40,79 @@ def _pinned(config) -> str | None:
 
 def _main_runtime(config, hw, runtime: str | Runtime | None) -> Runtime | None:
     """The given or pinned runtime, else the one CodeRunner would pick (Ollama, else llama.cpp), else the
-    one setup picked last time."""
+    one setup picked last time, else Ollama where setup can install its own copy (_own_ollama)."""
     if runtime is not None:
         return _runtime(config, hw, runtime)
-    return choose_runtime(config, hw, "auto") or choose_runtime(config, hw)
+    found = choose_runtime(config, hw, "auto") or choose_runtime(config, hw)
+    if found is None:
+        own = OllamaRuntime(config)
+        return own if own.can_install() else None
+    return found
+
+
+def _own_ollama(rt: Runtime, hw, progress: Callable[[str], None]) -> str | None:
+    """A machine with nothing to run models with gets CodeRunner's own copy of Ollama: a pinned release,
+    checked against its published checksum, under CODERUNNER_HOME/runtime. Returns what went wrong, if
+    anything."""
+    if rt.available() or not isinstance(rt, OllamaRuntime):
+        return None
+    if not rt.can_install():
+        return f"Ollama is not installed. {install_hint(hw, 'ollama')}"
+    progress(f"no model runtime is installed here: fetching CodeRunner's own copy of Ollama {rt.RELEASE}")
+    try:
+        rt.install(progress)
+    except Exception as exc:
+        return f"Ollama {rt.RELEASE} could not be installed ({exc}). {install_hint(hw, 'ollama')}"
+    return None
+
+
+def _free_gb(path) -> float:
+    """Decimal GB free on the disk that holds `path` (or will, once it exists)."""
+    path = pathlib.Path(path).expanduser()
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    return shutil.disk_usage(path).free / 1e9
+
+
+def _room_gb(config) -> tuple[float, float, float]:
+    """(GB downloads may take, GB free, GB kept free) where CodeRunner keeps models. The floor is
+    files.min_free_gb, the one file indexing pauses at: a full disk stops macOS swapping, and on a small Mac
+    the model with it."""
+    floor = float(config.get("files.min_free_gb", MIN_FREE_GB) or 0)
+    free = _free_gb(paths.assistant_dir())
+    return free - floor, free, floor
+
+
+def _no_room(config, need_gb: float) -> str | None:
+    """Why a download of this size may not start (it would take the disk under its floor); None when it may."""
+    room, free, floor = _room_gb(config)
+    if need_gb <= room:
+        return None
+    return (f"a {need_gb:.1f} GB download, and {max(room, 0):.1f} GB can be used ({free:.1f} GB free, "
+            f"{floor:.0f} GB kept free)")
+
+
+def _download_gb(entry: dict, cand: dict, rt: Runtime) -> float:
+    """Decimal GB of this model's files for this runtime (its vision projector included when it is used)."""
+    art = catalog.artifact(entry, rt.name if rt.name in catalog.ARTIFACT else None) or {}
+    return float(art.get("size_gb") or 0) + (float(art.get("mmproj_gb") or 0) if cand.get("vision") else 0.0)
+
+
+def _embedding_download_gb(config, hw, embedder: Runtime | None) -> float:
+    """Decimal GB the embedding models still need: the build in Ollama and, on Apple silicon, the Core ML one.
+    An Ollama that is not running yet cannot say what it has, and counts as having nothing."""
+    total = 0.0
+    if embedder is not None and embedder.name == "ollama":
+        pick = next((c for c in fit.recommend(hw, config, "embedding", "ollama") if c["license"] == "allow"), None)
+        if pick and not embedder.installed(catalog.get(pick["id"])):
+            total += _download_gb(catalog.get(pick["id"]), pick, embedder)
+    from . import coreml
+    if coreml.supported() and (config.get("models.embedding_runtime") or "auto") != "gpu":
+        core = coreml.CoreMLRuntime(config)
+        entry = next((e for e in catalog.by_role("embedding") if core.artifact(e)), None)
+        if entry and not core.installed(entry):
+            total += float(core.artifact(entry).get("size_gb") or 0)
+    return total
 
 
 def _prism(config, hw: hardware.Hardware, rt: Runtime | None) -> PrismRuntime | None:
@@ -219,8 +292,20 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
     viable = [c for c in candidates if c["ok"]]
     chosen = viable[0] if viable else None
     notes = []
-    if rt is None or not rt.available():
+    if isinstance(rt, OllamaRuntime) and not rt.available() and rt.can_install():
+        notes.append(f"No model runtime is installed here: setup fetches its own copy of Ollama {rt.RELEASE}.")
+    elif rt is None or not rt.available():
         notes.append(install_hint(hw, rt.name if rt else None))
+    if chosen is not None:
+        room = _room_gb(config)[0]
+        chosen_on = prism if chosen.get("runtime") == "prism" and prism is not None else \
+            llama if chosen.get("runtime") == "llama.cpp" and llama is not None else rt
+        local = chosen_on is not None and chosen_on.name in LOCAL       # an endpoint the owner runs has its model
+        entry = _entry(chosen["id"], extra) if local else None
+        need = _download_gb(entry, chosen, chosen_on) if local and not chosen_on.installed(entry) else 0.0
+        if need > room:
+            notes.append(f"{chosen['id']} is {_no_room(config, need)}: setup uses the best model that fits the "
+                         "disk, so free some space first for this one.")
     if chosen is None:
         notes.append(f"No chat model of at least {fit.MIN_CHAT_PARAMS_B:.0f}B parameters fits the "
                      f"{hw.budget_gb:.1f} GB budget. Free memory, lower sandbox.memory_gb, or point "
@@ -309,6 +394,9 @@ def _setup_embedding(config, rt: Runtime, hw, progress) -> str:
         tag = entry["artifacts"]["ollama"]["tag"]
         try:
             if not rt.installed(entry):
+                short = _no_room(config, _download_gb(entry, cand, rt))
+                if short:
+                    raise RuntimeError(short)
                 rt.pull(entry, progress)
 
             async def probe():
@@ -349,6 +437,9 @@ def setup_coreml_embedding(config, hw: hardware.Hardware | None = None, progress
         return "gpu"
     try:
         if not rt.installed(entry):
+            short = _no_room(config, float(rt.artifact(entry).get("size_gb") or 0))
+            if short:
+                raise RuntimeError(short)
             rt.pull(entry, progress)
         elif not rt.available():
             rt.install(progress)
@@ -402,10 +493,11 @@ def setup_search(config, hw: hardware.Hardware | None = None, progress: Callable
             return {"ok": True, "mode": "search", "embedding": config.get("models.embedding"),
                     "embedding_url": config.get("models.embedding_url"), "runtime": "coreml"}
     rt = _runtime(config, _hardware(config, hw), "ollama")
-    if rt is None or not rt.available():
+    error = _own_ollama(rt, _hardware(config, hw), progress)
+    if error or not rt.available():
         return {"ok": False, "error": "Search mode needs the Core ML runtime (Apple silicon, macOS 15+) or Ollama "
-                                      "for the embedding model. Install Ollama (https://ollama.com/download) and run "
-                                      "`coderunner setup --search` again."}
+                                      f"for the embedding model. {error or ''} Install Ollama "
+                                      "(https://ollama.com/download) and run `coderunner setup --search` again."}
     if not rt.running():
         rt.start()
     tag = _setup_embedding(config, rt, _hardware(config, hw), progress)
@@ -460,6 +552,9 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
     rt = _main_runtime(config, hw, runtime)
     if rt is None:
         return {"ok": False, "error": "No local model runtime is installed. " + install_hint(hw)}
+    error = _own_ollama(rt, hw, progress)
+    if error:
+        return {"ok": False, "error": error}
     if not rt.available():
         return {"ok": False, "error": f"{rt.name} is not available. {install_hint(hw, rt.name)}"}
     if rt.name not in LOCAL:
@@ -488,13 +583,16 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
             progress(f"warning: {model_id} {cand['reasons'][0]}; trying anyway because it was requested")
         queue = [cand]  # an explicit choice is never silently replaced
     else:
-        queue = [c for c in _ranked(hw, config, rt, prism, extra, llama) if c["ok"]][:1 + MAX_FALLBACKS]
+        queue = [c for c in _ranked(hw, config, rt, prism, extra, llama) if c["ok"]]
         if not queue:
             return {"ok": False, "error": plan(config, hw, rt)["notes"][-1]}
 
     attempts = []
     main = rt
+    tried, too_big, others = 0, [], None
     for index, cand in enumerate(queue):
+        if tried > MAX_FALLBACKS:
+            break
         if cand.get("runtime") == "prism" and prism is not None:
             rt = prism
         elif cand.get("runtime") == "llama.cpp" and llama is not None:
@@ -502,9 +600,15 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
         else:
             rt = main
         entry = _entry(cand["id"], extra)
+        tried += 1
         if not cand.get("vision") and "vision" in entry.get("roles", []):
             entry = {**entry, "roles": [r for r in entry["roles"] if r != "vision"]}    # projector does not fit
-        verdict, why, link = _license_gate(entry, rt, config, accept_license, hub)
+        try:
+            verdict, why, link = _license_gate(entry, rt, config, accept_license, hub)
+        except HubError as exc:                 # Hugging Face out of reach, or limiting this connection
+            attempts.append({"model": entry["id"], "error": str(exc)})
+            progress(f"{entry['id']}: its licence could not be read: {exc}")
+            continue
         if verdict == "ask":
             return {"ok": False, "needs_license": {"model": entry["id"], "reason": why, "link": link},
                     "attempts": attempts,
@@ -519,6 +623,19 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
             if rt.name == "ollama":
                 rt.start()  # the Ollama API does the pulling
             if not rt.installed(entry):
+                # A download that would fill the disk is not started; the next model that fits is tried (a first
+                # run on an 18 GB Mac fetches 11 GB, and the Mac this was measured on had 11.4 GB free).
+                if others is None:
+                    others = _embedding_download_gb(config, hw, main) if embedding else 0.0
+                need = _download_gb(entry, cand, rt) + others
+                short = _no_room(config, need)
+                if short:
+                    too_big.append((need, f"{entry['id']} with its embedding models is {short}"))
+                    progress(f"skipping {entry['id']}: with its embedding models it is {short}")
+                    tried -= 1                      # not an attempt: the next candidates still get theirs
+                    continue
+                progress(f"{entry['id']}: {need:.1f} GB to download with its embedding models, "
+                         f"{_room_gb(config)[1]:.1f} GB free")
                 rt.pull(entry, progress)
                 # Only a finished download is deleted when the model is then rejected: an interrupted one
                 # stays, so running setup again resumes it (7 GB over a flaky connection).
@@ -594,9 +711,21 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
             judge_rt = main if main is not None and main.name == "ollama" else rt
             _setup_decision(config, judge_rt, rt, hw, cand["need_gb"] + _embedding_need(config, hw), progress)
         config.save()
+        if too_big:
+            # The owner should know the assistant could be better here, and what it takes.
+            need, better = too_big[0][0], too_big[0][1].split(" with its", 1)[0]
+            progress(f"{better} ranks higher but the disk has no room for it: free "
+                     f"{need - _room_gb(config)[0]:.1f} GB more, then run `coderunner models setup` to move to it")
         return {"ok": True, "runtime": rt.name, "base_url": rt.base_url, "model": model, "entry": entry["id"],
                 "ctx": cand["ctx"], "vision": vision, "embedding": config.get("models.embedding") or "",
-                "smoke": result, "attempts": attempts}
+                "smoke": result, "attempts": attempts, "skipped_for_disk": [why for _, why in too_big]}
+    if too_big and not any("smoke" in a for a in attempts):
+        need, smallest = min(too_big)             # the least there is to free
+        return {"ok": False, "attempts": attempts, "too_big": [why for _, why in too_big],
+                "error": f"Not enough free disk for a model that suits this machine: {smallest}. Free "
+                         f"{need - _room_gb(config)[0]:.1f} GB more (or lower files.min_free_gb) and run setup again."}
+    if attempts and not any("smoke" in a for a in attempts):
+        return {"ok": False, "error": f"No model could be set up: {attempts[-1].get('error')}", "attempts": attempts}
     return {"ok": False, "error": "No model passed the tool-calling smoke test", "attempts": attempts}
 
 
@@ -651,6 +780,9 @@ def _setup_decision(config, rt: Runtime | None, chat_rt: Runtime, hw, used_gb: f
     tag = entry["artifacts"]["ollama"]["tag"]
     try:
         if not rt.installed(entry):
+            short = _no_room(config, _download_gb(entry, pick, rt))
+            if short:
+                raise RuntimeError(short)
             rt.pull(entry, progress)
         from ..safety.decision import COMMIT_CRITERIA, COMMIT_QUESTION, DecisionModel
 

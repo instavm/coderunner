@@ -53,7 +53,9 @@ What stays on your side:
 `./install.sh` without `--search` also builds the sandbox VM, picks the strongest local model your hardware can
 run (benchmarked on the machine, not guessed), and starts an assistant you can talk to: your own Chrome behind
 approvals, Calendar, Reminders, Notes, Mail drafts and Contacts, voice, scheduled tasks, and Telegram, iMessage
-or Signal to reach it from your phone. Needs macOS 26 on Apple silicon, or Linux with Docker.
+or Signal to reach it from your phone. Needs macOS 26 on Apple silicon, or Linux with Docker. No model runtime
+needs installing first: setup fetches its own copy of Ollama where there is none, and checks the disk before it
+downloads a model.
 [ASSISTANT.md](ASSISTANT.md) has the architecture, the safety model and every command.
 
 For managed cloud VMs for agents, see [InstaVM](https://instavm.io).

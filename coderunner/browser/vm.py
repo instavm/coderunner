@@ -18,7 +18,7 @@ from .cdp import CDPError, CDPPipe
 
 log = logging.getLogger(__name__)
 
-NOT_READY = ("The sandbox has no desktop yet. Run `coderunner computer setup`, or set browser.mode back to "
+NOT_READY = ("The sandbox has no desktop yet. Run `coderunner browser computer`, or set browser.mode back to "
              "dedicated or chrome.")
 
 

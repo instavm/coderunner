@@ -461,7 +461,7 @@ async function connectScreen() {
   try { info = await api("/api/computer", {method: "POST", body: "{}"}); }
   catch (err) { setNote(`The computer is not reachable: ${err.message}`); retry = setTimeout(connectScreen, 5000); return; }
   if (!info.available) {
-    setNote(info.error || "This computer has no screen yet. Run `coderunner computer setup`.");
+    setNote(info.error || "This computer has no screen yet. Run `coderunner browser computer`.");
     $("computerState").textContent = "No screen";
     return;
   }

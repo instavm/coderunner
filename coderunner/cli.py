@@ -511,7 +511,7 @@ def cmd_models(args, config: Config) -> int:
     elif args.action == "discover":
         from .models import discover, evidence, hardware
         hw = hardware.detect(float(config.get("sandbox.memory_gb") or 1))
-        models = discover.cached(progress=print, refresh=True)
+        models = discover.cached(progress=print, refresh=True, guess_mlx=hw.gpu == "apple")
         rows = []
         for model in models:
             for runtime in ("ollama", "llama.cpp", "mlx") if hw.gpu == "apple" else ("ollama", "llama.cpp"):

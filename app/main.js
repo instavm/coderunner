@@ -1,10 +1,11 @@
 // CodeRunner's desktop shell (macOS and Linux). The interface itself is served by the local daemon at /app/, so
 // the same page works here and, once paired, in a browser on another device. This shell only:
-//   - finds the daemon (CODERUNNER_HOME, default ~/.coderunner) and adds the owner's admin token to requests made
-//     to it, and to nothing else;
+//   - finds the daemon (CODERUNNER_HOME, default ~/.coderunner), starts it with `coderunner up` when it is not
+//     running, and adds the owner's admin token to requests made to it, and to nothing else;
 //   - opens every other address in the default browser, never inside the app;
 //   - denies the page every permission except notifications.
 const {app, BrowserWindow, Menu, session, shell} = require("electron");
+const {execFile} = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -30,16 +31,43 @@ function adminToken() {
 const ADDRESS = daemonAddress();
 const ORIGIN = `http://${ADDRESS}`;
 
-function waitingPage(message) {
+const escapeHtml = (text) => String(text).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+
+function waitingPage(title, message) {
   const html = `<!doctype html><meta charset="utf-8"><title>CodeRunner</title>
   <body style="font:15px -apple-system,system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0;
-  background:#f6f5f2;color:#1d1c1a"><div style="max-width:420px;text-align:center"><h2>CodeRunner is starting</h2>
-  <p style="color:#6f6c64">${message}</p></div></body>`;
+  background:#f6f5f2;color:#1d1c1a"><div style="max-width:460px;text-align:center"><h2>${escapeHtml(title)}</h2>
+  <p style="color:#6f6c64">${escapeHtml(message)}</p></div></body>`;
   return "data:text/html;charset=utf-8," + encodeURIComponent(html);
 }
 
 async function daemonUp() {
   try { return (await fetch(`${ORIGIN}/health`, {signal: AbortSignal.timeout(2000)})).ok; } catch { return false; }
+}
+
+// The `coderunner` command: where the installer puts it, since an app opened from the Dock or a launcher gets a
+// bare PATH.
+function coderunnerCommand() {
+  const places = [path.join(HOME, "venv", "bin", "coderunner"), path.join(os.homedir(), ".local", "bin", "coderunner"),
+                  "/opt/homebrew/bin/coderunner", "/usr/local/bin/coderunner", "/usr/bin/coderunner"];
+  return places.find((file) => { try { fs.accessSync(file, fs.constants.X_OK); return true; } catch { return false; } }) || null;
+}
+
+// `coderunner up` starts the sandbox and the daemon and returns; the daemon keeps running after this app quits,
+// as the login service's does. Started once per launch: `failure` holds what it said when it could not.
+let starting = false;
+let failure = "";
+function startDaemon() {
+  const command = coderunnerCommand();
+  if (!command) return false;
+  if (starting) return true;
+  starting = true;
+  const tools = ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), ".local", "bin")];   // container, docker
+  const env = {...process.env, CODERUNNER_HOME: HOME, PATH: [...tools, process.env.PATH || "/usr/bin:/bin"].join(":")};
+  execFile(command, ["up"], {env, timeout: 180000}, (error, stdout, stderr) => {
+    if (error) failure = `${stdout}${stderr}`.trim().split("\n").slice(-2).join(" ") || String(error.message);
+  });
+  return true;
 }
 
 function createWindow() {
@@ -64,15 +92,24 @@ function createWindow() {
     }
   });
 
-  const load = async (attempt = 0) => {
+  let shown = "";
+  const show = (title, message) => {
+    if (shown !== title + message) win.loadURL(waitingPage(title, message));
+    shown = title + message;
+  };
+  const load = async () => {
     if (await daemonUp()) {
       win.loadURL(`${ORIGIN}/app/`);
       return;
     }
-    if (attempt === 0) {
-      win.loadURL(waitingPage(`Waiting for the assistant at ${ADDRESS}. Start it with <code>coderunner up</code>.`));
+    if (!startDaemon()) {
+      show("CodeRunner is not installed yet", "Run ./install.sh from the CodeRunner checkout, then open this app again.");
+    } else if (failure) {
+      show("The assistant did not start", `${failure} Run \`coderunner up\` in a terminal to see more.`);
+    } else {
+      show("CodeRunner is starting", `Starting the assistant at ${ADDRESS}…`);
     }
-    setTimeout(() => load(attempt + 1), 2000);
+    setTimeout(load, 2000);
   };
   load();
   return win;

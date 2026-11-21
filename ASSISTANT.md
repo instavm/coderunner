@@ -318,12 +318,33 @@ declares success. If a model fails the test, the next candidate is tried.
   measures a judge on 30 labelled browser steps (Bonsai 2 27B: 29 right,
   the miss a flight result's "Select", which asks the owner). There are no
   keyword lists: these judgements come from models.
-* EmbeddingGemma 2 needs Ollama 0.36.0 and decision models 0.35.0. When the
-  installed Ollama is older, the installer upgrades a Homebrew install, and
-  on macOS setup otherwise downloads Ollama 0.40.3 into
-  `~/.coderunner/runtime` (checked against its published checksum) and
-  leaves the Ollama app alone; if the app is serving an older version, setup
-  asks you to update or quit it.
+* Nothing to run models with needs installing first. Where neither Ollama
+  nor llama.cpp is installed, setup downloads its own copy of Ollama 0.40.3
+  into `~/.coderunner/runtime`, checked against its published checksum (167
+  MB on macOS; 1.4 GB on Linux, where the archive carries NVIDIA's CUDA
+  libraries and unpacking it needs `zstd`); llama.cpp's and Prism's builds
+  come the same way when a model needs them. EmbeddingGemma 2 needs Ollama
+  0.36.0 and decision models 0.35.0: when the installed Ollama is older, the
+  installer upgrades a Homebrew install and setup otherwise fetches the same
+  copy, leaving the Ollama app alone; if the app is serving an older
+  version, setup asks you to update or quit it. AMD's ROCm libraries (a
+  separate archive) are not fetched, and Windows has no build.
+* Downloads never take the disk under `files.min_free_gb` (5 GB, the floor
+  file indexing also pauses at). A first run on an 18 GB Mac fetches 11 GB:
+  the assistant's model, the two embedding builds and the runtimes. Setup
+  says what a model takes before it starts, skips one that would not leave
+  the floor free and takes the best that fits, and says how much to free
+  when none does; `coderunner models plan` notes when its pick does not fit
+  the disk.
+* Discovery reads each model's builds from Hugging Face's own list of its
+  quantized builds, one request a model, and guesses the usual repository
+  names only for a model that list does not know. Hugging Face allows 500
+  API requests per five minutes to callers without an account, and setup
+  needs some after discovery: when the limit is reached discovery stops and
+  the catalog alone is used, and a request setup itself needs says when to
+  try again (or set `HF_TOKEN`). `tests/setup_eval.py` measures a first run:
+  what it fetches, how long each step takes, how many requests it makes and
+  where it stops.
 
 ## Safety model
 
@@ -675,6 +696,14 @@ the owner UI on this machine's tailnet name (never Funnel) and prints the URL.
 `coderunner remote pair` prints a single-use code to pair a phone or laptop
 browser. Restrict tcp:443 on this device to your own login in your tailnet
 policy.
+
+## The app
+
+`app/` is a desktop shell (Electron, macOS and Linux) around the page the daemon serves at `/app/`: tasks and
+their steps as they happen, approvals, and the sandbox computer's screen to watch or take over
+(`coderunner browser computer` gives the sandbox that screen). It runs from the checkout for now
+(`cd app && npm install && npm start`), finds the daemon of `CODERUNNER_HOME` and starts it with `coderunner up`
+when it is not running; the daemon keeps running after the app quits.
 
 ## Everyday commands
 

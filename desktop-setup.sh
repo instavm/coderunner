@@ -1,6 +1,6 @@
 #!/bin/bash
 # Installs the sandbox's desktop: Xfce on TigerVNC's Xvnc, and Google Chrome, run by the unprivileged user "box".
-# Used by the Dockerfile (DESKTOP=1) and by `coderunner computer setup` on a sandbox that already exists.
+# Used by the Dockerfile (DESKTOP=1) and by `coderunner browser computer` on a sandbox that already exists.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 USER_NAME="${CODERUNNER_DESKTOP_USER:-box}"

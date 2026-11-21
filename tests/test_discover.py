@@ -7,7 +7,7 @@ from unittest import mock
 
 from coderunner.core import paths
 from coderunner.core.config import Config
-from coderunner.models import catalog, discover, evidence, manager
+from coderunner.models import catalog, discover, evidence, manager, runtimes
 from test_models import FakeLlama, FakeRuntime, apple, linux, nvidia
 
 GiB = 1e9
@@ -80,9 +80,14 @@ class DiscoveryTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.env = mock.patch.dict(os.environ, {"CODERUNNER_HOME": self.tmp.name})
         self.env.start()
+        # As in test_models.TempHome: no Ollama of CodeRunner's own, and a disk with room for any model.
+        for target, name, value in ((runtimes.OllamaRuntime, "can_install", False), (manager, "_free_gb", 1e6)):
+            patch = mock.patch.object(target, name, return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
         self.config = Config({}, path=pathlib.Path(self.tmp.name) / "config.json")
         with mock.patch.object(discover.time, "time", return_value=1791700000):     # 2026-10-11
-            self.models = {m["repo"]: m for m in discover.Discovery(hub()).run(("lab",))}
+            self.models = {m["repo"]: m for m in discover.Discovery(hub(), guess_mlx=True).run(("lab",))}
 
     def tearDown(self):
         self.env.stop()
@@ -171,6 +176,54 @@ class DiscoveryTests(unittest.TestCase):
                  {**self.models["lab/Agent-27B"], "repo": "lab/Tiny-1B", "params_b": 1.0}]
         path.write_text(json.dumps(stale))
         self.assertEqual({m["repo"] for m in discover.cached()}, set(self.models))
+
+    def test_builds_come_from_the_hubs_list_of_a_models_quantized_builds(self):
+        # One request a model instead of up to eleven guessed names: a first run spent Hugging Face's 500
+        # requests per five minutes on names that did not exist, and setup's next request was refused.
+        asked = []
+
+        class Listing(FakeHub):
+            def _get_json(self, url, key, headers=None):
+                asked.append(url)
+                return super()._get_json(url, key, headers)
+
+        data = dict(hub().data)
+        data.pop("models/mlx-community/Agent-27B-4bit/tree")
+        data.update({
+            "base_model:quantized:lab/Agent-27B": [
+                {"id": "someone/Agent-27B-GGUF", "tags": ["gguf"]},                # not a publisher CodeRunner trusts
+                {"id": "unsloth/Agent-27B-MTP-GGUF", "tags": ["gguf"]},             # a draft head, not the model
+                {"id": "unsloth/Agent-27B-GGUF", "tags": ["gguf"]},
+                {"id": "mlx-community/Agent-27B-MLX-4bit", "tags": ["mlx"]},
+                {"id": "mlx-community/Agent-27B-OptiQ-4bit", "tags": ["mlx"]}],
+            "base_model:quantized:lab/Big-300B-A30B": [],                           # the Hub knows of no builds
+            "models/mlx-community/Agent-27B-MLX-4bit/tree": [{"path": "model.safetensors", "size": int(16 * GiB)}],
+        })
+        with mock.patch.object(discover.time, "time", return_value=1791700000):
+            found = {m["repo"]: m for m in discover.Discovery(Listing(data)).run(("lab",))}
+        self.assertEqual(set(found), {"lab/Agent-27B"})
+        self.assertEqual(found["lab/Agent-27B"]["gguf_repo"], "unsloth/Agent-27B-GGUF")
+        self.assertEqual(found["lab/Agent-27B"]["mlx"]["repo"], "mlx-community/Agent-27B-MLX-4bit")
+        trees = [url.split("/api/models/")[1].split("/tree")[0] for url in asked if "/tree/" in url]
+        self.assertEqual(sorted(trees), ["mlx-community/Agent-27B-MLX-4bit", "unsloth/Agent-27B-GGUF"])   # no guesses
+
+    def test_a_rate_limit_ends_discovery_and_the_catalog_is_used(self):
+        class Limited(FakeHub):
+            def _get_json(self, url, key, headers=None):
+                if "/tree/" in url:
+                    raise discover.RateLimited(75)
+                return super()._get_json(url, key, headers)
+
+        with mock.patch.object(discover.time, "time", return_value=1791700000):
+            with self.assertRaisesRegex(discover.HubError, "try again in 1 min, or set HF_TOKEN"):
+                discover.Discovery(Limited(hub().data)).run(("lab",))
+
+        class Refused(FakeHub):                 # the allowance is already spent when discovery starts
+            def _get_json(self, url, key, headers=None):
+                raise discover.RateLimited(75)
+        said = []
+        self.assertEqual(discover.cached(said.append, refresh=True, hub=Refused({})), [])
+        self.assertIn("model discovery unavailable: Hugging Face is limiting requests", said[-1])
 
     def test_models_ollama_cannot_serve_and_known_breakages(self):
         big, studio = self.models["lab/Big-300B-A30B"], apple(512, "Apple M3 Ultra", sandbox=1)

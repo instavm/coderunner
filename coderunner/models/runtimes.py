@@ -169,11 +169,31 @@ def parse_version(text: str) -> tuple[int, int, int] | None:
     return tuple(int(part) for part in match.groups()) if match else None   # type: ignore[return-value]
 
 
-class OllamaRuntime(Runtime):
-    """Ollama, preferring CodeRunner's own copy (installed when the owner's is too old) over the system one.
+def _unpack(archive: pathlib.Path, into: pathlib.Path) -> None:
+    """Unpack a release archive whose checksum was checked. Python reads .tar.zst from 3.14; before that the
+    system's tar does, which needs zstd installed."""
+    import tarfile
+    try:
+        with tarfile.open(archive) as tar:
+            tar.extractall(into, filter="data")     # refuses absolute paths, links out, devices
+        return
+    except tarfile.ReadError:
+        if not archive.name.endswith(".zst"):
+            raise
+    tar = shutil.which("tar")
+    done = subprocess.run([tar, "--zstd", "-xf", str(archive), "-C", str(into)], capture_output=True,
+                          text=True) if tar else None
+    if done is None or done.returncode != 0:
+        raise RuntimeError(f"{archive.name} could not be unpacked: install zstd (for example `sudo apt install "
+                           f"zstd`) and run setup again{': ' + done.stderr.strip()[-200:] if done else ''}")
 
-    EmbeddingGemma 2 needs Ollama 0.36.0 and decision models (/v1/systemone) 0.35.0. When the installed
-    Ollama is older, macOS gets a pinned release, checked against its published SHA-256, under
+
+class OllamaRuntime(Runtime):
+    """Ollama, preferring CodeRunner's own copy (installed when the owner has none, or one too old) over the
+    system one.
+
+    EmbeddingGemma 2 needs Ollama 0.36.0 and decision models (/v1/systemone) 0.35.0. Where no Ollama is
+    installed, or an older one, setup downloads a pinned release, checked against its published SHA-256, into
     CODERUNNER_HOME/runtime; the owner's own Ollama app is left alone.
     """
 
@@ -181,7 +201,16 @@ class OllamaRuntime(Runtime):
     APP_BINARY = "/Applications/Ollama.app/Contents/Resources/ollama"
     MIN_VERSION = (0, 36, 0)
     RELEASE = "0.40.3"
-    BUILDS = {"darwin": ("ollama-darwin.tgz", "a2d1d906a2c8febd9cb18f5c183854d0a6db5dc522940d68b0c0ed048e8dfdea")}
+    # (os, arch) -> (asset, sha256), from the release's own checksums. The Linux archives carry NVIDIA's CUDA
+    # libraries (1.4 GB); AMD's ROCm libraries are a separate archive, which is not fetched.
+    BUILDS = {
+        ("darwin", "arm64"): ("ollama-darwin.tgz", "a2d1d906a2c8febd9cb18f5c183854d0a6db5dc522940d68b0c0ed048e8dfdea"),
+        ("darwin", "x86_64"): ("ollama-darwin.tgz", "a2d1d906a2c8febd9cb18f5c183854d0a6db5dc522940d68b0c0ed048e8dfdea"),
+        ("linux", "x86_64"): ("ollama-linux-amd64.tar.zst",
+                              "ce6f8b671a699bf1ebafb28d60dbbabf4f37b30b499145fa308a8ba72de021d6"),
+        ("linux", "aarch64"): ("ollama-linux-arm64.tar.zst",
+                               "5754700747a93ea14db88888f08072386d2da6fbf7dd75be19a684348b9f28b8"),
+    }
 
     def __init__(self, config=None, host: str = "127.0.0.1:11434"):
         super().__init__(config)
@@ -190,9 +219,16 @@ class OllamaRuntime(Runtime):
         self.base_url = f"{self.api}/v1"
         self.managed_dir = paths.home() / "runtime" / f"ollama-{self.RELEASE}"
 
+    def _managed(self) -> pathlib.Path | None:
+        """CodeRunner's own copy: at the top of the macOS archive, under bin/ in the Linux ones."""
+        for found in (self.managed_dir / "ollama", self.managed_dir / "bin" / "ollama"):
+            if found.is_file() and os.access(found, os.X_OK):
+                return found
+        return None
+
     def binary(self) -> str | None:
-        managed = self.managed_dir / "ollama"
-        if managed.is_file() and os.access(managed, os.X_OK):
+        managed = self._managed()
+        if managed:
             return str(managed)
         return shutil.which("ollama") or (self.APP_BINARY if os.path.exists(self.APP_BINARY) else None)
 
@@ -229,38 +265,51 @@ class OllamaRuntime(Runtime):
         found = self.version()
         return found is not None and found < self.MIN_VERSION
 
+    @classmethod
+    def build(cls, system: str | None = None, machine: str | None = None) -> tuple[str, str] | None:
+        """The pinned release's archive for a platform (this one by default), or None where there is none."""
+        system = (system or platform.system()).lower()
+        machine = (machine or platform.machine()).lower().replace("amd64", "x86_64").replace("arm64e", "arm64")
+        if system == "linux" and machine == "arm64":
+            machine = "aarch64"
+        return cls.BUILDS.get((system, machine))
+
     def can_install(self, system: str | None = None) -> bool:
-        return (system or platform.system().lower()) in self.BUILDS
+        return self.build(system) is not None
 
     def install(self, progress: Progress | None = None) -> str:
-        """Download the pinned Ollama release into CODERUNNER_HOME/runtime (macOS)."""
+        """Download the pinned Ollama release into CODERUNNER_HOME/runtime (macOS and Linux)."""
         import hashlib
-        import tarfile
-        system = platform.system().lower()
-        if system not in self.BUILDS:
+        build = self.build()
+        if build is None:
             raise RuntimeError(f"Update Ollama to {'.'.join(map(str, self.MIN_VERSION))} or later. "
                                f"{install_hint(runtime='ollama')}")
-        asset, sha256 = self.BUILDS[system]
+        asset, sha256 = build
         url = f"https://github.com/ollama/ollama/releases/download/v{self.RELEASE}/{asset}"
         self.managed_dir.mkdir(parents=True, exist_ok=True)
         archive = self.managed_dir / asset
-        if progress:
-            progress(f"downloading Ollama {self.RELEASE}")
-        digest = hashlib.sha256()
+        emit = _throttled(progress, every=5)
+        emit(f"downloading Ollama {self.RELEASE}", True)
+        digest, done = hashlib.sha256(), 0
         with httpx.stream("GET", url, follow_redirects=True, timeout=httpx.Timeout(30, read=300)) as response:
             response.raise_for_status()
+            total = int(response.headers.get("content-length") or 0)
             with open(archive, "wb") as handle:
                 for chunk in response.iter_bytes(1 << 20):
                     handle.write(chunk)
                     digest.update(chunk)
+                    done += len(chunk)
+                    if total:
+                        emit(f"downloading Ollama {self.RELEASE}: {100 * done / total:.0f}% of {total / 1e9:.2f} GB")
         if digest.hexdigest() != sha256:
             archive.unlink()
             raise RuntimeError(f"Ollama {self.RELEASE} ({asset}) does not match its published checksum")
-        with tarfile.open(archive) as tar:
-            tar.extractall(self.managed_dir, filter="data")     # refuses absolute paths, links out, devices
-        archive.unlink()
-        binary = self.managed_dir / "ollama"
-        if not binary.is_file():
+        try:
+            _unpack(archive, self.managed_dir)
+        finally:
+            archive.unlink(missing_ok=True)
+        binary = self._managed()
+        if binary is None:
             raise RuntimeError(f"Ollama {self.RELEASE} has no ollama binary")
         return str(binary)
 
