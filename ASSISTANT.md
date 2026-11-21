@@ -318,6 +318,10 @@ declares success. If a model fails the test, the next candidate is tried.
   measures a judge on 30 labelled browser steps (Bonsai 2 27B: 29 right,
   the miss a flight result's "Select", which asks the owner). There are no
   keyword lists: these judgements come from models.
+* The installer needs Python 3.10 or later for the host assistant and macOS
+  ships 3.9: where no newer one is found it downloads Python 3.12.16
+  (python-build-standalone's build, the one uv installs; pinned and checked
+  against the release's checksums) into `~/.coderunner/runtime`, 67 MB.
 * Nothing to run models with needs installing first. Where neither Ollama
   nor llama.cpp is installed, setup downloads its own copy of Ollama 0.40.3
   into `~/.coderunner/runtime`, checked against its published checksum (167

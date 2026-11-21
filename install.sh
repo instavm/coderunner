@@ -669,17 +669,74 @@ check_ollama_version() {
     fi
 }
 
+# The host assistant needs Python 3.10 or later. macOS ships 3.9 with its command line tools and many Linux
+# systems none at all, so where no newer one is found the installer fetches python-build-standalone's build
+# (the one uv installs), pinned to a release and checked against that release's checksums.
+PYTHON_VERSION="3.12.16"
+PYTHON_RELEASE="20261110"
+
+python_build() {          # "<platform> <sha256>" of the pinned build for this machine
+    case "$(uname -s)-$(uname -m)" in
+        Darwin-arm64)   echo "aarch64-apple-darwin 2f11b8aa3726bdbd87dd9eb76568412faddf4f47e26913fa45d6a2e424972acd" ;;
+        Darwin-x86_64)  echo "x86_64-apple-darwin b78a4c479f1964ec484880bee567568266f68da102269fb93a05fe8716b45f91" ;;
+        Linux-x86_64)   echo "x86_64-unknown-linux-gnu 6a9e62dad033790aef722dbd370e0ce76ce17b73627ba3ae679f537049350b39" ;;
+        Linux-aarch64|Linux-arm64)
+                        echo "aarch64-unknown-linux-gnu b6a41defec4975d94b4ff1950236e7383e5c02ba40ea48c9ec33c66087a35aab" ;;
+    esac
+}
+
+find_python() {           # a Python 3.10+ already on this machine
+    local candidate
+    for candidate in python3 python3.13 python3.12 python3.11 python3.10 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+        if command -v "$candidate" &> /dev/null \
+            && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2> /dev/null; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+fetch_python() {          # CodeRunner's own Python, under $CODERUNNER_HOME/runtime
+    local build platform sha dir archive found
+    build=$(python_build)
+    [ -n "$build" ] || return 1
+    platform=${build% *}
+    sha=${build#* }
+    dir="$CODERUNNER_HOME/runtime/python-$PYTHON_VERSION"
+    if [ ! -x "$dir/python/bin/python3" ]; then
+        archive="cpython-$PYTHON_VERSION+$PYTHON_RELEASE-$platform-install_only_stripped.tar.gz"
+        echo "No Python 3.10 or later here: downloading Python $PYTHON_VERSION into $dir ..." >&2
+        mkdir -p "$dir"
+        if ! curl -fL --retry 3 -sS -o "$dir/$archive" \
+            "https://github.com/astral-sh/python-build-standalone/releases/download/$PYTHON_RELEASE/${archive/+/%2B}"; then
+            rm -f "$dir/$archive"
+            return 1
+        fi
+        found=$( (shasum -a 256 "$dir/$archive" 2> /dev/null || sha256sum "$dir/$archive") | awk '{print $1}')
+        if [ "$found" != "$sha" ]; then
+            echo "❌ Python $PYTHON_VERSION ($archive) does not match its published checksum." >&2
+            rm -f "$dir/$archive"
+            return 1
+        fi
+        tar -xzf "$dir/$archive" -C "$dir" || return 1
+        rm -f "$dir/$archive"
+    fi
+    [ -x "$dir/python/bin/python3" ] && echo "$dir/python/bin/python3"
+}
+
 # A dedicated virtualenv holds the host assistant (`coderunner` CLI and
 # daemon) and the Claude Desktop stdio proxy, independent of system Python.
 setup_host_runtime() {
-    local venv_dir="$CODERUNNER_HOME/venv" bin
-    if ! command -v python3 &> /dev/null || ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
-        echo "Python 3.10+ is needed for the host assistant; the sandbox is ready on its own."
-        return 0
-    fi
+    local venv_dir="$CODERUNNER_HOME/venv" bin python
     if [ ! -x "$venv_dir/bin/python" ]; then
-        echo "Creating Python virtualenv at $venv_dir ..."
-        python3 -m venv "$venv_dir" || { echo "Warning: could not create virtualenv."; return 0; }
+        if ! python=$(find_python) && ! python=$(fetch_python); then
+            echo "Python 3.10+ is needed for the host assistant and could not be downloaded; the sandbox is ready"
+            echo "on its own. Install Python 3.10 or later and run ./install.sh again."
+            return 0
+        fi
+        echo "Creating Python virtualenv at $venv_dir (from $python) ..."
+        "$python" -m venv "$venv_dir" || { echo "Warning: could not create virtualenv."; return 0; }
     fi
     if ! "$venv_dir/bin/pip" install --quiet --upgrade "fastmcp==3.4.7" -e "${SCRIPT_DIR}[mcp]"; then
         echo "Warning: failed to install the host assistant into $venv_dir."

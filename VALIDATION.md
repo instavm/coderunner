@@ -308,6 +308,11 @@ streams got from Hugging Face. On the model already served (Qwen3.5-9B Q4_K_M, l
 while files were being indexed): smoke test 17 s with all four checks passing, timing 23 s, 253 tokens/s read
 and 21 written, 10 s a step.
 
+The installer's own Python, on a PATH like a stock Mac's (`python3` is 3.9.6 from the command line tools):
+Python 3.12.16 downloaded in 90 s, checksum checked, 67 MB; a virtualenv made from it took the assistant's
+packages in 46 s and ran `coderunner --version` and `coderunner doctor`. The functions were run on their own,
+not the whole installer.
+
 Not run: a model download and everything after it in a clean home (disk space, and every home uses the same
 ports, so a second home would talk to the first one's servers); the installer end to end; voice setup; the
 sandbox image build.
