@@ -329,6 +329,14 @@ the app's files are served to be revalidated.
 `coderunner app`: Electron 45.2.3 downloaded into a throwaway home in 81 s (121 MB, checksum checked, 259 MB
 unpacked) and answered `--version`; the app's window was not opened from it.
 
+The whole suite on Linux, in a throwaway container made from the sandbox image on this Mac (aarch64, Python
+3.13.3, no zstd command): 571 tests pass, 18 skipped. The first run there failed three, each a fault outside
+the tests: the pinned Ollama and Electron builds were not found when a Mac's chip was named the Linux way
+(aarch64); a minimal Debian has no zstd, which unpacking Ollama's Linux archive needed, so the zstandard
+package now comes with CodeRunner on Linux and does it; and Mail, Messages, Notes and Calendar were not
+listed for the first quarter of an hour after any start of the machine (the clock counts from boot, and
+"never listed" was kept as time zero). No GPU, no Ollama download and no sandbox were part of that run.
+
 Not run: a model download and everything after it in a clean home (disk space, and every home uses the same
 ports, so a second home would talk to the first one's servers); the installer end to end; voice setup; the
 sandbox image build.
@@ -336,8 +344,9 @@ sandbox image build.
 ## Not yet validated
 
 * CodeRunner's own Ollama on Linux: the archives' checksums are the release's own, their layout (`bin/ollama`)
-  was read from the first megabytes of each and unpacking a zstd archive is tested, but the 1.4 GB download was
-  not run and nothing was started on Linux. AMD's ROCm libraries are not fetched.
+  was read from the first megabytes of each and unpacking a zstd archive is tested (with the zstd command on
+  macOS, with the zstandard package on Linux), but the 1.4 GB download was not run and nothing was started on
+  Linux. AMD's ROCm libraries are not fetched.
 * The app starting the daemon: its logic was run with Electron replaced by a stand-in (daemon down and
   `coderunner up` working, failing, missing; daemon already up), not in the app's own window. `coderunner app`
   on Linux, where Electron's sandbox helper may need setting up, has not been run.

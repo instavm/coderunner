@@ -32,6 +32,7 @@ class AppShellTests(unittest.TestCase):
         self.assertEqual(appshell.build("Darwin", "arm64")[0], "darwin-arm64")
         self.assertEqual(appshell.build("Linux", "AMD64")[0], "linux-x64")
         self.assertEqual(appshell.build("Linux", "arm64")[0], "linux-arm64")
+        self.assertEqual(appshell.build("Darwin", "aarch64")[0], "darwin-arm64")
         self.assertIsNone(appshell.build("Windows", "AMD64"))
         for asset, sha256 in appshell.BUILDS.values():
             self.assertRegex(sha256, r"^[0-9a-f]{64}$", asset)

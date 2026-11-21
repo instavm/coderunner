@@ -40,8 +40,8 @@ def app_dir() -> pathlib.Path | None:
 def build(system: str | None = None, machine: str | None = None) -> tuple[str, str] | None:
     system = (system or platform.system()).lower()
     machine = (machine or platform.machine()).lower().replace("amd64", "x86_64").replace("arm64e", "arm64")
-    if system == "linux" and machine == "arm64":
-        machine = "aarch64"
+    if machine in ("arm64", "aarch64"):         # one chip, named differently by each system
+        machine = "aarch64" if system == "linux" else "arm64"
     return BUILDS.get((system, machine))
 
 

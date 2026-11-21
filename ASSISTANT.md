@@ -326,7 +326,8 @@ declares success. If a model fails the test, the next candidate is tried.
   nor llama.cpp is installed, setup downloads its own copy of Ollama 0.40.3
   into `~/.coderunner/runtime`, checked against its published checksum (167
   MB on macOS; 1.4 GB on Linux, where the archive carries NVIDIA's CUDA
-  libraries and unpacking it needs `zstd`); llama.cpp's and Prism's builds
+  libraries; it is a zstd archive, unpacked by the zstandard package that
+  comes with CodeRunner on Linux, so no `zstd` command is needed); llama.cpp's and Prism's builds
   come the same way when a model needs them. EmbeddingGemma 2 needs Ollama
   0.36.0 and decision models 0.35.0: when the installed Ollama is older, the
   installer upgrades a Homebrew install and setup otherwise fetches the same

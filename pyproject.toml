@@ -14,6 +14,8 @@ dependencies = [
     "starlette>=0.37",
     "uvicorn>=0.30",
     "websockets>=13",
+    # Ollama's Linux archives are .tar.zst, which Python reads by itself only from 3.14.
+    "zstandard>=0.22; sys_platform == 'linux' and python_version < '3.14'",
 ]
 
 [project.optional-dependencies]

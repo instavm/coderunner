@@ -170,8 +170,9 @@ def parse_version(text: str) -> tuple[int, int, int] | None:
 
 
 def _unpack(archive: pathlib.Path, into: pathlib.Path) -> None:
-    """Unpack a release archive whose checksum was checked. Python reads .tar.zst from 3.14; before that the
-    system's tar does, which needs zstd installed."""
+    """Unpack a release archive whose checksum was checked. Python reads .tar.zst itself from 3.14; before that
+    the zstandard package does (installed with CodeRunner on Linux), and failing that the system's tar, which
+    needs zstd installed (a minimal Debian has neither)."""
     import tarfile
     try:
         with tarfile.open(archive) as tar:
@@ -180,6 +181,18 @@ def _unpack(archive: pathlib.Path, into: pathlib.Path) -> None:
     except tarfile.ReadError:
         if not archive.name.endswith(".zst"):
             raise
+    try:
+        import zstandard
+    except ImportError:
+        zstandard = None
+    if zstandard is not None:
+        try:
+            with open(archive, "rb") as raw, zstandard.ZstdDecompressor().stream_reader(raw) as stream, \
+                    tarfile.open(fileobj=stream, mode="r|") as tar:
+                tar.extractall(into, filter="data")
+            return
+        except (zstandard.ZstdError, tarfile.ReadError) as exc:
+            raise RuntimeError(f"{archive.name} could not be unpacked: {exc}") from exc
     tar = shutil.which("tar")
     done = subprocess.run([tar, "--zstd", "-xf", str(archive), "-C", str(into)], capture_output=True,
                           text=True) if tar else None
@@ -270,8 +283,8 @@ class OllamaRuntime(Runtime):
         """The pinned release's archive for a platform (this one by default), or None where there is none."""
         system = (system or platform.system()).lower()
         machine = (machine or platform.machine()).lower().replace("amd64", "x86_64").replace("arm64e", "arm64")
-        if system == "linux" and machine == "arm64":
-            machine = "aarch64"
+        if machine in ("arm64", "aarch64"):         # one chip, named differently by each system
+            machine = "aarch64" if system == "linux" else "arm64"
         return cls.BUILDS.get((system, machine))
 
     def can_install(self, system: str | None = None) -> bool:

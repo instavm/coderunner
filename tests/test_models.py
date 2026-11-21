@@ -1233,6 +1233,7 @@ class OllamaVersionTests(TempHome):
         self.assertEqual(build("Linux", "x86_64")[0], "ollama-linux-amd64.tar.zst")
         self.assertEqual(build("Linux", "AMD64")[0], "ollama-linux-amd64.tar.zst")
         self.assertEqual(build("Linux", "arm64")[0], "ollama-linux-arm64.tar.zst")
+        self.assertEqual(build("Darwin", "aarch64")[0], "ollama-darwin.tgz")
         self.assertIsNone(build("Windows", "AMD64"))
         for asset, sha256 in runtimes.OllamaRuntime.BUILDS.values():
             self.assertRegex(sha256, r"^[0-9a-f]{64}$", asset)
@@ -1260,6 +1261,31 @@ class OllamaVersionTests(TempHome):
         (work / "bad.tar.zst").write_bytes(b"not an archive")
         with self.assertRaisesRegex(RuntimeError, "install zstd"):
             runtimes._unpack(work / "bad.tar.zst", work / "out")
+
+
+    def test_a_zstd_archive_is_unpacked_without_the_systems_zstd(self):
+        try:
+            import zstandard
+        except ImportError:
+            self.skipTest("needs the zstandard package (installed with CodeRunner on Linux before Python 3.14)")
+        import io
+        import tarfile
+        work = self.home / "work2"
+        work.mkdir()
+        packed = io.BytesIO()
+        with tarfile.open(fileobj=packed, mode="w") as tar:
+            data = b"#!/bin/sh\necho ollama version is 0.40.3\n"
+            info = tarfile.TarInfo("bin/ollama")
+            info.size, info.mode = len(data), 0o755
+            tar.addfile(info, io.BytesIO(data))
+        (work / "o.tar.zst").write_bytes(zstandard.ZstdCompressor().compress(packed.getvalue()))
+        (work / "out").mkdir()
+        with mock.patch.object(runtimes.shutil, "which", return_value=None):          # no tar, no zstd
+            runtimes._unpack(work / "o.tar.zst", work / "out")
+            self.assertTrue(os.access(work / "out" / "bin" / "ollama", os.X_OK))
+            (work / "bad.tar.zst").write_bytes(b"not an archive")
+            with self.assertRaisesRegex(RuntimeError, "could not be unpacked"):
+                runtimes._unpack(work / "bad.tar.zst", work / "out")
 
 
 class OwnRuntimeTests(TempHome):
