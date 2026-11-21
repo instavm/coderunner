@@ -432,6 +432,27 @@ class BrowserBroker:
         return await self._run("screenshot", {"tab": tab, "full_page": full_page, "tainted": tainted},
                                lambda: self._screenshot(tab, full_page, format, quality, tainted))
 
+    async def peek(self, scale: float = 0.6, quality: int = 60) -> tuple[bytes, str] | None:
+        """What the page the assistant is on looks like now, for the owner's own app: a JPEG of what is in view
+        and the page's address, or None when there is no web page open. It is not an action of the assistant's:
+        nothing is asked, judged or written to the audit trail, and no browser is started for it."""
+        target = self._active
+        sid = self._sessions.get(target) if target else None
+        if not sid or self._cdp is None or self._cdp.closed:
+            return None
+        try:
+            url = (await self._info(target)).get("url", "")
+            if page_host(url) in (None, "about:blank"):
+                return None
+            view = (await self._send(sid, "Page.getLayoutMetrics", timeout=5)).get("cssVisualViewport") or {}
+            clip = {"x": view.get("pageX", 0), "y": view.get("pageY", 0), "width": view.get("clientWidth") or 1280,
+                    "height": view.get("clientHeight") or 900, "scale": scale}
+            shot = await self._send(sid, "Page.captureScreenshot",
+                                    {"format": "jpeg", "quality": quality, "clip": clip}, timeout=15)
+            return base64.b64decode(shot["data"]), url
+        except Exception:               # the page went away mid-capture: there is nothing to show
+            return None
+
     async def handoff(self, reason: str, tab: str | None = None, tainted: bool = False) -> dict:
         return await self._run("handoff", {"reason": reason, "tab": tab, "tainted": tainted},
                                lambda: self._handoff_to_owner(reason, tab, tainted))

@@ -31,7 +31,7 @@ function richText(node, text) {
   return node;
 }
 
-// A small, safe subset of Markdown (paragraphs, lists, **bold**, `code`, links), built as DOM nodes.
+// A small, safe subset of Markdown (paragraphs, lists, tables, **bold**, `code`, links), built as DOM nodes.
 function inline(node, text) {
   const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g;
   for (const part of String(text).split(pattern)) {
@@ -49,8 +49,25 @@ function inline(node, text) {
 function markdown(node, text) {
   node.classList.add("md");
   let list = null, para = null;
-  for (const raw of String(text ?? "").split("\n")) {
-    const line = raw.trimEnd();
+  const lines = String(text ?? "").split("\n").map((raw) => raw.trimEnd());
+  const cells = (line) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+  const isRow = (line) => /^\s*\|.*\|\s*$/.test(line || "");
+  const isRule = (line) => isRow(line) && cells(line).every((cell) => /^:?-{2,}:?$/.test(cell));
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (isRow(line) && isRule(lines[i + 1])) {             // a table: its head, a rule, then its rows
+      const table = el("table", "md-table"), head = table.createTHead().insertRow();
+      for (const cell of cells(line)) inline(head.appendChild(el("th")), cell);
+      const body = table.createTBody();
+      for (i += 2; i < lines.length && isRow(lines[i]); i++) {
+        const row = body.insertRow();
+        for (const cell of cells(lines[i])) inline(row.insertCell(), cell);
+      }
+      i -= 1;
+      node.appendChild(el("div", "md-table-wrap")).appendChild(table);
+      list = null; para = null;
+      continue;
+    }
     const bullet = line.match(/^\s*[-*•]\s+(.*)$/), numbered = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
     if (bullet || numbered) {
       const kind = bullet ? "ul" : "ol";
@@ -103,9 +120,9 @@ function describeTool(name, raw) {
     case "browser_screenshot": return "Looking at the screen";
     case "browser_handoff": return "Asking you to take over";
     case "browser_task": return `Working in the browser: ${trunc(a.goal || a.task || "", 90)}`;
-    case "run_shell": return `Running ${trunc(a.command, 70)}`;
-    case "shell_job": return "Checking a running job";
-    case "run_python": return "Running Python";
+    case "run_shell": return "Working on the computer";
+    case "shell_job": return "Waiting for a job on the computer";
+    case "run_python": return "Working something out";
     case "files_search": return `Searching your files for “${trunc(a.query, 50)}”`;
     case "file_read": return `Reading ${base(a.path)}`;
     case "file_view": return `Looking at ${base(a.path)}`;
@@ -115,7 +132,7 @@ function describeTool(name, raw) {
     case "plan_update": return "Updating the plan";
     case "schedule_create": return "Scheduling it";
     case "send_message": return "Sending a message";
-    default: return name.replace(/_/g, " ");
+    default: return "Working";
   }
 }
 
@@ -131,8 +148,8 @@ function describeActivity(e) {
     case "browser.click_at": return "Clicked on the screen";
     case "browser.type_focused": return "Typed";
     case "browser.scroll": case "browser.wheel": return "Scrolled";
-    case "driver.start": return `The browser model (${e.model}) is working`;
-    case "driver.finish": return "The browser model finished";
+    case "driver.start": return "Working through the page";
+    case "driver.finish": return "Reading what came of it";
     default: return null;
   }
 }
@@ -150,6 +167,9 @@ const state = {
 
 // ---- a task in the thread ----------------------------------------------------
 
+// A task reads as a conversation: what the assistant says along the way, one line for what it is doing now, its
+// plan ticking off, a picture of the page where that says more than words, and the answer. The calls it makes
+// (which tool, with what arguments) are not shown; they are in the audit trail for whoever wants them.
 class TaskView {
   constructor(task) {
     this.id = task.id;
@@ -157,71 +177,62 @@ class TaskView {
     this.finished = task.finished || null;
     this.status = task.status || "running";
     this.seq = 0;
+    this.steps = 0;
     this.root = el("article", "task");
     this.root.appendChild(el("div", "bubble-user", task.prompt));
     this.flow = el("div", "flow");
     this.root.appendChild(this.flow);
-    this.segment = null;          // the open group of steps
-    this.steps = new Map();       // tool call id -> step row
-    this.current = null;          // the step activity is attached to
+    this.now = null;              // the line that says what is happening
+    this.plan = null;             // the plan, kept in one place and updated
     $("thread").appendChild(this.root);
+    if (this.status === "running") this.setNow("Thinking");
   }
 
-  workSegment() {
-    if (this.segment) return this.segment;
-    const box = el("div", "work" + (this.status === "running" ? " open" : ""));
-    const head = el("div", "work-head");
-    const chev = el("span", "chev", "›");
-    const what = el("span", "what", "Working");
-    const time = el("span", "time", "");
-    head.append(chev, what, time);
-    const steps = el("div", "steps");
-    box.append(head, steps);
-    head.onclick = () => box.classList.toggle("open");
-    this.flow.appendChild(box);
-    this.segment = {box, what, time, steps, count: 0, began: null};
-    if (this.status === "running") this.addStop(head);
-    return this.segment;
+  // Something to read, placed above the line that says what is happening now.
+  say(node) {
+    if (this.now) this.flow.insertBefore(node, this.now.row); else this.flow.appendChild(node);
+    return node;
   }
 
-  addStop(head) {
-    const stop = el("button", "stop", "Stop");
-    stop.onclick = async (event) => {
-      event.stopPropagation();
-      stop.disabled = true;
-      await api(`/api/tasks/${this.id}/cancel`, {method: "POST", body: "{}"}).catch(() => {});
-    };
-    head.appendChild(stop);
-    this.stopButton = stop;
+  setNow(text) {
+    if (this.status !== "running" || !text) return;
+    if (!this.now) {
+      const row = el("div", "now"), stop = el("button", "stop", "Stop");
+      const what = el("span", "now-what"), time = el("span", "now-time");
+      stop.onclick = async () => {
+        stop.disabled = true;
+        await api(`/api/tasks/${this.id}/cancel`, {method: "POST", body: "{}"}).catch(() => {});
+      };
+      row.append(el("span", "now-dot"), what, time, stop);
+      this.flow.appendChild(row);
+      this.now = {row, what, time};
+    }
+    this.now.what.textContent = text.replace(/…$/, "") + "…";
+    setNow(text);
   }
 
-  closeSegment() {
-    if (!this.segment) return;
-    this.segment.box.classList.remove("open");
-    this.segment.box.querySelector(".stop")?.remove();
-    this.segment = null;
-    this.current = null;
+  showPlan(steps) {
+    if (!Array.isArray(steps) || !steps.length) return;
+    if (!this.plan) this.plan = this.say(el("div", "plan"));
+    this.plan.replaceChildren();
+    for (const item of steps) {
+      const state = item.status === "done" ? "done" : ["doing", "in_progress", "active"].includes(item.status) ? "doing" : "todo";
+      const row = el("div", "plan-step " + state);
+      row.append(el("span", "plan-mark", state === "done" ? "✓" : state === "doing" ? "•" : ""), el("span", "", item.step || item.content || ""));
+      this.plan.appendChild(row);
+    }
   }
 
-  addStep(text, state, key, ts) {
-    const seg = this.workSegment();
-    seg.began ??= ts;
-    const row = el("div", "step " + state);
-    row.append(el("span", "ic", state === "run" ? "•" : state === "ok" ? "✓" : state === "err" ? "!" : "·"),
-               el("div", "txt", text));
-    seg.steps.appendChild(row);
-    seg.count += 1;
-    seg.what.textContent = text;
-    seg.last = ts;
-    if (key) this.steps.set(key, row);
-    seg.steps.scrollTop = seg.steps.scrollHeight;
-    return row;
-  }
-
-  markStep(row, ok, detail) {
-    row.className = "step " + (ok ? "ok" : "err");
-    row.querySelector(".ic").textContent = ok ? "✓" : "!";
-    if (detail) row.querySelector(".txt").appendChild(el("div", "sub", detail));
+  showPicture(e) {
+    const figure = el("figure", "shot"), image = el("img");
+    image.src = `/api/shots/${encodeURIComponent(e.file)}`;
+    image.alt = `The page at ${host(e.page)}`;
+    image.loading = "lazy";
+    figure.append(image, el("figcaption", "muted small", host(e.page)));
+    figure.onclick = () => figure.classList.toggle("large");
+    image.onload = () => { image.style.aspectRatio = `${image.naturalWidth} / ${image.naturalHeight}`; };
+    image.onerror = () => figure.remove();          // a picture cleared away since: the words still stand
+    this.say(figure);
   }
 
   apply(e) {
@@ -229,50 +240,25 @@ class TaskView {
     if (e.seq) this.seq = e.seq;
     switch (e.type) {
       case "started": break;
-      case "note":
-        this.closeSegment();
-        this.flow.appendChild(markdown(el("div", "note"), e.text));
-        break;
-      case "plan":
-        break;
-      case "tool": {
+      case "note": this.say(markdown(el("div", "note"), e.text)); break;
+      case "plan": this.showPlan(e.steps); break;
+      case "tool":
         if (e.name === "plan_update") break;
-        this.current = this.addStep(describeTool(e.name, e.arguments), "run", e.id, e.ts);
-        if (this.status === "running") setNow(this.current.querySelector(".txt").textContent);
+        this.steps += 1;
+        this.setNow(describeTool(e.name, e.arguments));
         break;
-      }
-      case "tool_done": {
-        const row = this.steps.get(e.id);
-        if (row) this.markStep(row, e.ok, e.ok ? "" : trunc(plain(e.preview), 200));
+      case "tool_done": break;
+      case "shot": this.showPicture(e); break;
+      case "activity":
+        if (e.event === "approval.requested") this.ask(e);
+        else if (e.ok !== false) this.setNow(describeActivity(e));
         break;
-      }
-      case "activity": this.activity(e); break;
       case "done": case "failed": case "cancelled": this.finish(e); break;
     }
     this.tick();
   }
 
-  activity(e) {
-    if (e.event === "approval.requested") { this.ask(e); return; }
-    const text = describeActivity(e);
-    if (!text) return;
-    const step = this.current && this.current.classList.contains("run") ? this.current : null;
-    if (step && e.ok !== false && ["browser.click", "browser.type", "browser.select"].includes(e.event) &&
-        !step.dataset.named) {
-      // The step says what it did ("Clicked Add to Cart") rather than "Clicking" with the detail below.
-      step.dataset.named = "1";
-      step.querySelector(".txt").firstChild.textContent = text;
-      if (this.segment) this.segment.what.textContent = text;
-    } else if (step) {
-      step.querySelector(".txt").appendChild(el("div", "sub", text + (e.ok === false && e.error ? ` — ${trunc(e.error, 120)}` : "")));
-    } else {
-      this.addStep(text, e.ok === false ? "err" : "ok", null, e.ts);
-    }
-    if (this.status === "running") setNow(text);
-  }
-
   ask(e) {
-    this.closeSegment();
     const handoff = e.kind === "browser.handoff";
     const card = el("div", "ask");
     card.appendChild(el("div", "ask-title", handoff ? "Your turn on the computer" : "Needs your approval"));
@@ -301,7 +287,8 @@ class TaskView {
       row.append(allow, deny);
     }
     card.appendChild(row);
-    this.flow.appendChild(card);
+    this.say(card);
+    this.setNow("Waiting for you");
     state.approvals.set(e.id, {conversation: state.conversation, card, row});
     if (!state.pending.has(e.id) && e.ts && Date.now() / 1000 - e.ts > 5) closeAsk(e.id, null);
     card.scrollIntoView({block: "nearest", behavior: "smooth"});
@@ -310,20 +297,20 @@ class TaskView {
   finish(e) {
     this.status = e.type;
     this.finished = e.ts;
-    this.closeSegment();
+    this.now?.row.remove();
+    this.now = null;
     const answer = el("div", "answer" + (e.type === "failed" ? " failed" : ""));
     markdown(answer, e.reply || "");
     this.flow.appendChild(answer);
-    this.stopButton?.remove();
+    const took = clock((this.finished || Date.now() / 1000) - this.started);
+    this.flow.appendChild(el("div", "took muted small", e.type === "cancelled" ? `Stopped after ${took}` :
+                             e.type === "failed" ? `Failed after ${took}` : `Done in ${took}`));
     state.running.delete(this.id);
     refreshNow();
   }
 
   tick() {
-    const seg = this.segment;
-    if (!seg) return;
-    const end = this.status === "running" ? Date.now() / 1000 : (this.finished || seg.last);
-    seg.time.textContent = `${seg.count} step${seg.count === 1 ? "" : "s"} · ${clock(end - (seg.began || this.started))}`;
+    if (this.now) this.now.time.textContent = clock(Date.now() / 1000 - this.started);
   }
 }
 
@@ -461,6 +448,13 @@ async function connectScreen() {
   let info;
   try { info = await api("/api/computer", {method: "POST", body: "{}"}); }
   catch (err) { setNote(`The computer is not reachable: ${err.message}`); retry = setTimeout(connectScreen, 5000); return; }
+  if (info.reachable === false) {   // no sandbox running: nothing to set a desktop up in yet
+    setNote(info.error);
+    $("computerState").textContent = "Not running";
+    if (computerBox) computerBox.box.hidden = true;
+    retry = setTimeout(connectScreen, 10000);
+    return;
+  }
   if (!info.available) {
     setNote(info.error || "This computer has no screen yet.");
     $("computerState").textContent = "No screen";
@@ -556,17 +550,30 @@ function refreshNow() {
   $("nowLine").textContent = busy ? (state.nowText || "Working…") : "Idle";
 }
 
+// A model's id as an owner reads it: coderunner-bonsai-2-27b -> Bonsai 2 27B.
+const MODEL_NAMES = {"embeddinggemma-2": "EmbeddingGemma 2", "embeddinggemma-300m": "EmbeddingGemma 300M", "tev1-4b": "tev1 4B"};
+function modelName(id) {
+  if (!id) return "";
+  const base = String(id).split("/").pop().split(":")[0].replace(/^coderunner-/, "").replace(/^hf-/, "");
+  if (MODEL_NAMES[base]) return MODEL_NAMES[base];
+  return base.split("-").filter(Boolean).map((word) => /^[ae]?\d+(\.\d+)?[bm]$/i.test(word) ? word.toUpperCase() :
+    /^\d+bit$/.test(word) ? word.replace("bit", "-bit") : word[0].toUpperCase() + word.slice(1)).join(" ");
+}
+const VOICES = {apple: "Apple's on-device speech", parakeet: "Parakeet", whisper: "Whisper"};
+const BROWSERS = {computer: "The assistant's own computer", chrome: "Your Chrome, in its own tab group", dedicated: "A Chrome window of its own"};
+
 async function loadModels() {
   try {
     const status = await api("/api/status");
     const models = status.models || {};
-    const rows = [["Planning", models.chat || status.model?.model], ["Browser", models.driver],
-                  ["Decisions", models.decision], ["Files", models.embedding || status.model?.embedding],
-                  ["Voice", (status.voice || []).join(", ")], ["Browser runs on", status.browser?.mode === "computer" ? "this computer's VM" : status.browser?.mode]];
+    const rows = [["Planning", modelName(models.chat || status.model?.model)], ["Web pages", modelName(models.driver)],
+                  ["Safety check", modelName(models.decision)], ["File search", modelName(models.embedding || status.model?.embedding)],
+                  ["Voice", (status.voice || []).map((name) => VOICES[name] || name).join(", ")],
+                  ["Browser", BROWSERS[status.browser?.mode] || status.browser?.mode]];
     const dl = $("models");
     dl.replaceChildren();
     for (const [k, v] of rows) if (v) dl.append(el("dt", "", k), el("dd", "", v));
-    $("modelsLine").textContent = models.chat ? `Local · ${models.chat}` : "";
+    $("modelsLine").textContent = models.chat ? `Local · ${modelName(models.chat)}` : "";
   } catch { /* shown once the daemon answers */ }
 }
 

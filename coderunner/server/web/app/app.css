@@ -2,7 +2,7 @@
   --bg: #f6f5f2; --surface: #ffffff; --surface-2: #efeee9; --line: #e2e0d8; --text: #1d1c1a; --muted: #6f6c64;
   --accent: #2b6b5f; --accent-soft: #dcebe6; --accent-text: #ffffff; --warn: #a2551b; --warn-soft: #f8e6d6;
   --danger: #b33a3a; --ok: #2f7d4f; --shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 4px 14px rgb(0 0 0 / 5%);
-  --radius: 14px; --sidebar: 268px; --panel: 400px;
+  --radius: 14px; --sidebar: clamp(220px, 21vw, 268px); --panel: clamp(320px, 32vw, 400px);
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -19,7 +19,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .muted { color: var(--muted); }
 .small { font-size: 12.5px; }
 
-#shell { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr) var(--panel); height: 100vh; }
+/* One row no taller than the window: a long thread scrolls inside itself, and the sidebar and the title stay put. */
+#shell { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr) var(--panel); grid-template-rows: minmax(0, 1fr); height: 100vh; }
 #shell.no-computer { grid-template-columns: var(--sidebar) minmax(0, 1fr) 0; }
 #shell.no-computer #computer { display: none; }
 
@@ -66,28 +67,38 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .answer { margin: 14px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
 .answer.failed { border-color: var(--danger); }
 .answer a, .note a { color: var(--accent); }
+.md-table-wrap { overflow-x: auto; margin: 8px 0; white-space: normal; }
+.md-table { border-collapse: collapse; font-size: 13.5px; }
+.md-table th, .md-table td { text-align: left; padding: 6px 18px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+.md-table th { color: var(--muted); font-weight: 600; font-size: 12.5px; }
+.md-table tr:last-child td { border-bottom: 0; }
 .md { white-space: normal; }
 .md p { margin: 0 0 8px; } .md p:last-child { margin-bottom: 0; }
 .md ul, .md ol { margin: 4px 0 8px; padding-left: 22px; } .md li { margin: 2px 0; }
 .md code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface-2); padding: 1px 5px; border-radius: 5px; }
 .md-h { font-weight: 650; margin: 8px 0 4px; }
 
-.work { margin: 12px 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
-.work-head { display: flex; align-items: center; gap: 10px; padding: 9px 13px; cursor: pointer; user-select: none; }
-.work-head .what { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.work-head .time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12.5px; }
-.work-head .chev { color: var(--muted); transition: transform .15s; }
-.work.open .chev { transform: rotate(90deg); }
+/* A running task: one line for what is happening now, the plan, pictures of the page. */
+.now { display: flex; align-items: center; gap: 10px; margin: 12px 0; color: var(--muted); }
+.now-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; flex: none; }
+.now-what { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.now-time { font-variant-numeric: tabular-nums; font-size: 12.5px; }
+@keyframes pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .now-dot { animation: none; } }
 .stop { border: 1px solid var(--line); background: none; border-radius: 8px; padding: 1px 9px; font-size: 12.5px; }
-.steps { display: none; border-top: 1px solid var(--line); padding: 6px 0; max-height: 420px; overflow-y: auto; }
-.work.open .steps { display: block; }
-.step { display: grid; grid-template-columns: 18px 1fr; gap: 8px; padding: 4px 13px; }
-.step .ic { color: var(--muted); text-align: center; }
-.step.ok .ic { color: var(--ok); }
-.step.err .ic { color: var(--danger); }
-.step.run .ic { color: var(--accent); }
-.step .txt { overflow-wrap: anywhere; }
-.step .sub { color: var(--muted); font-size: 12.5px; }
+.plan { margin: 12px 0; border-left: 2px solid var(--line); padding: 2px 0 2px 12px; }
+.plan-step { display: grid; grid-template-columns: 16px 1fr; gap: 8px; padding: 2px 0; color: var(--muted); }
+.plan-step.doing { color: var(--text); }
+.plan-step.done .plan-mark { color: var(--ok); }
+.plan-step.doing .plan-mark { color: var(--accent); }
+/* A picture of the page: small in the thread (its room is kept before it loads, so the thread does not jump),
+   full width on a click. */
+.shot { margin: 12px 0; max-width: 300px; cursor: zoom-in; transition: max-width .2s; }
+.shot.large { max-width: 100%; cursor: zoom-out; }
+.shot img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
+.shot figcaption { margin-top: 4px; }
+.took { margin-top: 6px; }
 
 .ask { margin: 12px 0; border: 1px solid var(--warn); background: var(--warn-soft); border-radius: var(--radius); padding: 12px 14px; }
 .ask .ask-title { font-weight: 600; }

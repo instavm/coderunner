@@ -11,8 +11,8 @@ import asyncio
 import json
 import secrets
 import time
-from typing import Any
 
+from ..core import paths
 from ..safety.policy import current_run
 
 # Audit events worth showing as a task's activity, and the fields of each that the app may show.
@@ -21,6 +21,17 @@ SHOWN_FIELDS = ("url", "page", "target", "summary", "kind", "status", "ok", "err
                 "ref", "key", "tab", "id", "risk", "action", "step", "thought", "completed", "label", "option",
                 "direction", "submit", "goal", "report", "model", "x", "y")
 FINAL = ("done", "failed", "cancelled")
+# A picture of the page goes into the task's thread where it tells the owner something words do not: a page the
+# assistant has just opened, the page a step it asks approval for is on, and how the page stood at the end.
+SHOT_AFTER = ("browser.open", "browser.navigate")
+SHOT_SETTLE_S = 1.5         # a page just opened is still drawing
+SHOT_APART_S = 20           # the same page is not shown again sooner than this
+MAX_SHOTS = 8               # for one task
+SHOTS_KEPT_DAYS = 14
+
+
+def shots_dir():
+    return paths.assistant_dir() / "shots"
 
 
 class EventBus:
@@ -71,6 +82,9 @@ class Tasks:
         # A daemon that stopped mid-task left it "running" for ever.
         self.store.execute("UPDATE tasks SET status = 'cancelled', finished = ? WHERE status = 'running'",
                            (time.time(),))
+        for old in shots_dir().glob("*.jpg") if shots_dir().exists() else []:
+            if time.time() - old.stat().st_mtime > SHOTS_KEPT_DAYS * 86400:
+                old.unlink(missing_ok=True)
 
     # ---- starting and stopping -------------------------------------------
 
@@ -84,6 +98,8 @@ class Tasks:
         def emit(event: dict) -> None:
             self.bus.publish({**base, **event})
 
+        emit.task = task_id
+        emit.shots = {"count": 0, "page": "", "at": 0.0, "since": 0, "busy": False}
         emit({"type": "started", "prompt": prompt})
         self.running[task_id] = asyncio.create_task(self._run(task_id, conversation, prompt, origin, emit))
         return self.get(task_id)
@@ -100,9 +116,45 @@ class Tasks:
             status, reply = "failed", f"The task failed: {exc}"
         finally:
             self.running.pop(task_id, None)
+            if status == "done" and emit.shots["since"]:
+                await self._capture(emit, 0, again=True)        # how the page stood when it finished
             self.store.execute("UPDATE tasks SET status = ?, reply = ?, finished = ? WHERE id = ?",
                                (status, reply, time.time(), task_id))
             emit({"type": status, "reply": reply})
+
+    # ---- pictures of the page ----------------------------------------------
+
+    def _shoot(self, emit, delay: float, again: bool = False) -> None:
+        state = getattr(emit, "shots", None)
+        if state is None or state["busy"] or state["count"] >= MAX_SHOTS:
+            return
+        state["busy"] = True
+        try:
+            asyncio.get_running_loop().create_task(self._capture(emit, delay, again, held=True))
+        except RuntimeError:            # an audit record written off the event loop: no picture for that one
+            state["busy"] = False
+
+    async def _capture(self, emit, delay: float, again: bool = False, held: bool = False) -> None:
+        state = emit.shots
+        try:
+            await asyncio.sleep(delay)
+            browser = getattr(self.daemon.svc, "browser", None)
+            found = await browser.peek() if browser is not None and state["count"] < MAX_SHOTS else None
+            if not found:
+                return
+            image, page = found
+            if not again and page == state["page"] and time.time() - state["at"] < SHOT_APART_S:
+                return
+            state.update(count=state["count"] + 1, page=page, at=time.time(), since=0)
+            name = f"{emit.task}-{state['count']}.jpg"
+            shots_dir().mkdir(parents=True, exist_ok=True)
+            (shots_dir() / name).write_bytes(image)
+            emit({"type": "shot", "file": name, "page": page})
+        except Exception:               # a picture is an extra: the task goes on without it
+            pass
+        finally:
+            if held:
+                state["busy"] = False
 
     def cancel(self, task_id: str) -> bool:
         task = self.running.get(task_id)
@@ -142,3 +194,12 @@ class Tasks:
             elif isinstance(value, (dict, list)):
                 fields[key] = json.dumps(value, default=str)[:300]
         emit({"type": "activity", "event": event, **fields})
+        state = getattr(emit, "shots", None)
+        if state is None:
+            return
+        if event.startswith("browser."):
+            state["since"] += 1
+        if event in SHOT_AFTER and record.get("ok", True) is not False:
+            self._shoot(emit, SHOT_SETTLE_S)
+        elif event == "approval.requested" and str(record.get("kind", "")).startswith("browser."):
+            self._shoot(emit, 0, again=True)        # the page the owner is asked about, as it is now

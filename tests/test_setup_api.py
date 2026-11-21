@@ -91,6 +91,104 @@ class SetupJobTests(unittest.TestCase):
         self.assertEqual(finished, [])
 
 
+class PictureTests(unittest.IsolatedAsyncioTestCase):
+    """A task's thread carries pictures of the page where they say more than words."""
+
+    async def asyncSetUp(self):
+        import os
+        import tempfile
+
+        from coderunner.server import tasks as tasks_module
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        env = mock.patch.dict(os.environ, {"CODERUNNER_HOME": self._tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        for name, value in (("SHOT_SETTLE_S", 0.01),):
+            patch = mock.patch.object(tasks_module, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.tasks_module = tasks_module
+        self.svc = Svc()
+        self.page = "https://news.example/front"
+
+        class Browser:
+            async def peek(inner):
+                return (b"\xff\xd8jpeg", self.page) if self.page else None
+
+        self.svc.browser = Browser()
+        self.daemon = FakeDaemon(self.svc)
+        self.bus = tasks_module.EventBus(self.svc.store)
+        self.tasks = tasks_module.Tasks(self.daemon, self.bus)
+
+    def events(self, kind):
+        return [e for e in self.bus.since(0) if e["type"] == kind]
+
+    async def run_task(self, steps):
+        from coderunner.safety.policy import current_run
+
+        async def handle(channel, chat_id, text, origin="", events=None, task=""):
+            from types import SimpleNamespace
+            token = current_run.set(SimpleNamespace(events=events))
+            try:
+                await steps()
+            finally:
+                current_run.reset(token)
+            return "the answer"
+        self.daemon.handle_message = handle
+        task = self.tasks.start("app:one", "find the top story", "owner")
+        await self.tasks.running[task["id"]]
+        return task["id"]
+
+    async def test_a_page_just_opened_is_pictured_once_and_the_last_page_at_the_end(self):
+        import asyncio
+
+        async def steps():
+            self.svc.audit.write("browser.open", url=self.page, ok=True)
+            await asyncio.sleep(0.05)
+            self.svc.audit.write("browser.navigate", url=self.page, ok=True)      # the same page again: no second picture
+            await asyncio.sleep(0.05)
+            self.svc.audit.write("browser.click", label="Next", ok=True)
+            self.page = "https://news.example/page-2"
+        task_id = await self.run_task(steps)
+        shots = self.events("shot")
+        self.assertEqual([(s["file"], s["page"]) for s in shots],
+                         [(f"{task_id}-1.jpg", "https://news.example/front"), (f"{task_id}-2.jpg", "https://news.example/page-2")])
+        self.assertEqual((self.tasks_module.shots_dir() / shots[0]["file"]).read_bytes(), b"\xff\xd8jpeg")
+        kinds = [e["type"] for e in self.bus.since(0)]
+        self.assertLess(kinds.index("shot"), kinds.index("done"))               # the last picture comes before the answer
+
+    async def test_a_task_that_never_opened_a_page_has_no_pictures_and_a_failed_capture_costs_nothing(self):
+        async def steps():
+            self.svc.audit.write("files.search", query="lease")
+        await self.run_task(steps)
+        self.assertEqual(self.events("shot"), [])
+
+        async def opened():
+            import asyncio
+            self.page = ""                              # no web page to show
+            self.svc.audit.write("browser.open", url="https://news.example/front", ok=True)
+            await asyncio.sleep(0.05)
+        await self.run_task(opened)
+        self.assertEqual(self.events("shot"), [])
+        self.assertEqual(self.events("done")[-1]["reply"], "the answer")
+
+    async def test_the_owner_fetches_a_picture_by_its_name_and_nothing_else(self):
+        self.svc.registry = build_registry(self.svc)
+        folder = self.tasks_module.shots_dir()
+        folder.mkdir(parents=True)
+        (folder / "0123456789ab-1.jpg").write_bytes(b"\xff\xd8jpeg")
+        (folder.parent / "admin-token").write_text("secret")
+        admin = {"Authorization": "Bearer " + ADMIN}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=admin_app(self.svc, self.daemon)),
+                                     base_url="http://127.0.0.1:8224") as client:
+            self.assertEqual((await client.get("/api/shots/0123456789ab-1.jpg")).status_code, 401)
+            found = await client.get("/api/shots/0123456789ab-1.jpg", headers=admin)
+            self.assertEqual((found.status_code, found.content, found.headers["content-type"]), (200, b"\xff\xd8jpeg", "image/jpeg"))
+            for name in ("0123456789ab-2.jpg", "..%2Fadmin-token", "admin-token", "0123456789ab-1.png"):
+                self.assertEqual((await client.get(f"/api/shots/{name}", headers=admin)).status_code, 404, name)
+
+
 class SetupRouteTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.svc = Svc()

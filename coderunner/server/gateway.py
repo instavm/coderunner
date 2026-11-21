@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import json
 import pathlib
+import re
 import secrets
 import shutil
 import tempfile
@@ -27,7 +28,7 @@ from typing import Any
 import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
@@ -511,6 +512,15 @@ def admin_app(svc, daemon) -> Starlette:
     async def cancel_task(request: Request):
         return JSONResponse({"cancelled": daemon.tasks.cancel(request.path_params["id"])})
 
+    async def shot(request: Request):
+        """A picture of a page from a task's thread (tasks.py), by the name its event carries."""
+        from .tasks import shots_dir
+        name = request.path_params["name"]
+        path = shots_dir() / name
+        if not re.fullmatch(r"[0-9a-f]{12}-\d{1,2}\.jpg", name) or not path.is_file():
+            return JSONResponse({"error": "no such picture"}, status_code=404)
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
     async def conversations(request: Request):
         return JSONResponse(daemon.tasks.conversations())
 
@@ -555,8 +565,9 @@ def admin_app(svc, daemon) -> Starlette:
         try:
             info = await svc.sandbox.desktop(start=request.method == "POST")
         except Exception as exc:        # no sandbox, or one that is not running: the app says so, not "500"
-            info = {"available": False, "running": False,
-                    "error": f"The sandbox is not reachable ({type(exc).__name__}). Check `coderunner sandbox status`."}
+            info = {"available": False, "running": False, "reachable": False,
+                    "error": "The assistant's computer is not running. `coderunner up` starts it "
+                             f"({type(exc).__name__})."}
         info["mode"] = svc.browser.mode
         info["browser_running"] = svc.browser.running()
         return JSONResponse(info)
@@ -648,6 +659,7 @@ def admin_app(svc, daemon) -> Starlette:
         Mount("/app/", app=_AppFiles(directory=WEB_DIR / "app", html=True, check_dir=False)),
         Route("/api/tasks", start_task, methods=["POST"]),
         Route("/api/tasks/{id}/cancel", cancel_task, methods=["POST"]),
+        Route("/api/shots/{name}", shot, methods=["GET"]),
         Route("/api/conversations", conversations, methods=["GET"]),
         Route("/api/conversations/{conversation}", conversation, methods=["GET"]),
         Route("/api/events", events, methods=["GET"]),

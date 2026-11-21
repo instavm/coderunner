@@ -732,9 +732,15 @@ policy.
 
 ## The app
 
-`app/` is a desktop shell (Electron, macOS and Linux) around the page the daemon serves at `/app/`: tasks and
-their steps as they happen, approvals, and the sandbox computer's screen to watch or take over
-(`coderunner browser computer` gives the sandbox that screen). `coderunner app` opens it: with the checkout's
+`app/` is a desktop shell (Electron, macOS and Linux) around the page the daemon serves at `/app/`: tasks,
+approvals, and the sandbox computer's screen to watch or take over (`coderunner browser computer` gives the
+sandbox that screen).
+
+A task reads as a conversation, not as a list of tool calls: one line says what the assistant is doing now,
+its notes and its plan (a checklist that fills in) are said as it goes, a question waits for an answer, and the
+answer ends with how long it took. Where it works on a web page, a picture of the page is put in the thread
+after it opens one, when it asks for approval on one, and at the end: at most 8 a task and 20 seconds apart,
+kept 14 days in `assistant/shots` and served on the owner surface at `/api/shots/<name>`. `coderunner app` opens it: with the checkout's
 own Electron where `npm install` was run in `app/`, and otherwise with Electron 45.2.3 downloaded once into
 `~/.coderunner/runtime` (121 MB, checked against the release's checksums), so no Node is needed. The app finds
 the daemon of `CODERUNNER_HOME` and starts it with `coderunner up` when it is not running; the daemon keeps
