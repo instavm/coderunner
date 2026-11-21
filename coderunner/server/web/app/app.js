@@ -681,6 +681,43 @@ const ROLE_ICONS = {
   checker: "M12 4l7 3v5c0 4-3 7-7 8c-4-1-7-4-7-8V7z M9 12l2 2l4-4",
 };
 
+// The planning model's name as a button that lists the models that fit, best first: how long a step takes with
+// each, and what it would still download. Choosing one asks for the plan again, made for it.
+function modelPicker(plan, choose) {
+  const box = el("span", "role-model pick"), button = el("button", "pick-button"), menu = el("div", "pick-menu");
+  button.type = "button";
+  button.append(el("span", "", plan.model.name), icon("M7 10l5 5l5-5"));
+  button.setAttribute("aria-haspopup", "listbox");
+  menu.setAttribute("role", "listbox");
+  menu.hidden = true;
+  for (const choice of plan.choices) {
+    const item = el("button", "pick-item" + (choice.id === plan.model.id ? " on" : ""));
+    item.type = "button";
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", String(choice.id === plan.model.id));
+    const name = el("span", "pick-name", choice.name);
+    if (choice.id === plan.recommended) name.appendChild(el("i", "", "Recommended"));
+    item.append(name, el("span", "pick-meta", `~${Math.round(choice.step_s)} s a step`),
+                el("span", "pick-meta", choice.download_gb === 0 ? "Installed" : gb(choice.download_gb)));
+    item.onclick = () => { menu.hidden = true; if (choice.id !== plan.model.id) { button.disabled = true; choose(choice.id); } };
+    menu.appendChild(item);
+  }
+  const close = (event) => {
+    if (box.contains(event.target)) return;
+    menu.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+    document.removeEventListener("click", close);
+  };
+  button.onclick = () => {
+    menu.hidden = !menu.hidden;
+    button.setAttribute("aria-expanded", String(!menu.hidden));
+    if (!menu.hidden) document.addEventListener("click", close);
+  };
+  box.onkeydown = (event) => { if (event.key === "Escape") { menu.hidden = true; button.focus(); } };
+  box.append(button, menu);
+  return box;
+}
+
 async function showPlan() {
   const card = setupCard("Set up your assistant", "Looking at this computer and the models that suit it…");
   const bar = el("div", "bar busy looking");
@@ -715,13 +752,19 @@ function renderPlan(plan, problem) {
     return;
   }
 
-  card.appendChild(el("div", "setup-label", `Recommended for ${here}`));
+  const own = plan.recommended && plan.model.id !== plan.recommended;      // the owner chose another model
+  const replan = async (extra) => {
+    try { renderPlan(await api("/api/setup", {method: "POST", body: JSON.stringify({model: plan.model.id, ...extra})})); }
+    catch (err) { renderPlan(plan, err.message); }
+  };
+  card.appendChild(el("div", "setup-label", own ? `Your choice for ${here}` : `Recommended for ${here}`));
   const roles = el("div", "roles");
   for (const role of plan.roles || []) {
     const row = el("div", "role" + (role.shared ? " shared" : "") + (role.missing ? " missing" : ""));
     row.title = [role.job, role.on].filter(Boolean).join(" · ");
-    row.append(icon(ROLE_ICONS[role.key] || ROLE_ICONS.planner), el("span", "role-job", role.short || role.job),
-               el("span", "role-model", role.shared ? "Same model" : role.model),
+    let model = el("span", "role-model", role.shared ? "Same model" : role.model);
+    if (role.key === "planner" && (plan.choices || []).length > 1) model = modelPicker(plan, (id) => replan({action: "plan", model: id}));
+    row.append(icon(ROLE_ICONS[role.key] || ROLE_ICONS.planner), el("span", "role-job", role.short || role.job), model,
                el("span", "role-size", role.shared || role.missing ? "" : role.download_gb ? gb(role.download_gb) : "Installed"));
     roles.appendChild(row);
   }
@@ -753,10 +796,9 @@ function renderPlan(plan, problem) {
   box.type = "text"; box.value = plan.models_dir; box.setAttribute("aria-label", "Folder for the models"); box.spellcheck = false;
   form.append(box, save);
   form.hidden = true;
-  const move = async (path) => {
+  const move = (path) => {
     change.disabled = save.disabled = standard.disabled = true;
-    try { renderPlan(await api("/api/setup", {method: "POST", body: JSON.stringify({action: "location", path})})); }
-    catch (err) { renderPlan(plan, err.message); }
+    return replan({action: "location", path});
   };
   change.onclick = async () => {
     if (window.coderunnerShell?.pickFolder) {
@@ -780,7 +822,8 @@ function renderPlan(plan, problem) {
   }
   for (const note of plan.notes) card.appendChild(el("p", "setup-note", note));
   const go = setupButton(plan.downloads.length ? "Download and set up" : "Set up", async () => {
-    await api("/api/setup", {method: "POST", body: JSON.stringify({action: "start"})}).catch(() => {});   // 409: one is running
+    await api("/api/setup", {method: "POST", body: JSON.stringify({action: "start", model: own ? plan.model.id : ""})})
+      .catch(() => {});                                                                             // 409: one is running
     watchSetup();
   });
   go.disabled = tight;

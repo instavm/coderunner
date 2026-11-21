@@ -771,7 +771,10 @@ asks for reduced motion, and are left out of a narrow window. Before anything is
 * this computer in four figures: chip, memory, graphics, and the seconds a step of a task will take
   (estimated from the chip until setup measures it);
 * a model for each job, one line each: planning, vision, file search, voice and the safety check, with what
-  each downloads ("Same model" where the planning model does the job, "Installed" where it is here already);
+  each downloads ("Same model" where the planning model does the job, "Installed" where it is here already).
+  The planning model's name opens the list of the models that fit, best first, each with the seconds a step
+  takes and its download ("Installed" for one already here); choosing one makes the plan again for it, and
+  the label above the list changes from "Recommended for this Mac" to "Your choice for this Mac";
 * the download as a share of the free disk, what is left afterwards, and the folder the models go to, with
   "Change" (the system's folder dialog in the app, a path box in a browser). The folder is `models.dir`; a
   download that would take the disk under `files.min_free_gb` is refused here, with what to free;
@@ -785,7 +788,7 @@ Setup looks at memory again before it loads a model (the kernel's own figure of 
 suits the computer but not that moment is not loaded and not replaced for good by a smaller one: the app says
 "Not enough memory free right now" with what it needs and what is free, "Try again", and the next model that
 fits now as a second choice with its download size. Asked for by name (`--model`), a model is loaded anyway,
-with a warning. A setup started from the app also never goes on to download a model the first screen did not
+with a warning (one chosen on the app's first screen is not: the app says the memory is short). A setup started from the app also never goes on to download a model the first screen did not
 show: when the chosen one does not work out it stops, says why in a sentence, and offers the next one.
 `coderunner setup` in a terminal, which prints each step, still moves down its list.
 
@@ -798,8 +801,12 @@ of request (files, the web, a message it asks before sending, the day ahead, voi
 other. It is the same setup as `coderunner setup`, run in the daemon, and it carries on if the
 window is closed. When it is done the daemon starts again in place with the new model and the page reloads.
 The API behind it, on the owner surface: `GET /api/setup` (state, stages, progress lines, the last plan),
-`POST /api/setup` with `{"action": "plan"}`, `{"action": "location", "path": ...}` (an empty path: the usual
-folder) or `{"action": "start", "model": ..., "accept_license": ...}`.
+`POST /api/setup` with `{"action": "plan", "model": ...}` (a model the owner chose among `choices`; without it
+the recommended one), `{"action": "location", "path": ..., "model": ...}` (an empty path: the usual folder) or
+`{"action": "start", "model": ..., "accept_license": ...}`.
+
+Until setup has chosen a model the daemon starts no model runtime: an Ollama installed for something else is
+left alone on a Mac that will use llama.cpp.
 
 ## Everyday commands
 

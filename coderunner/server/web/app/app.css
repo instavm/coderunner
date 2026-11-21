@@ -213,6 +213,20 @@ button { font: inherit; color: inherit; cursor: pointer; transition: background 
 .role-job { color: var(--muted); }
 .role-model { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .role.shared .role-model, .role.missing .role-model { font-weight: 400; color: var(--muted); }
+.role-model.pick { position: relative; overflow: visible; }
+.pick-button { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; border: 0; background: none; padding: 2px 4px 2px 7px; margin: -2px 0 -2px -7px;
+  border-radius: 7px; font: inherit; font-weight: 600; color: var(--text); cursor: pointer; }
+.pick-button:hover, .pick-button[aria-expanded="true"] { background: var(--surface-2); }
+.pick-button .ico { width: 15px; height: 15px; }
+.pick-menu { position: absolute; z-index: 5; top: calc(100% + 7px); left: -8px; min-width: 380px; padding: 5px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 8px 24px rgb(0 0 0 / 12%); }
+.pick-menu[hidden] { display: none; }
+.pick-item { display: grid; grid-template-columns: minmax(0, 1fr) auto 76px; gap: 14px; align-items: baseline; width: 100%; border: 0; background: none;
+  padding: 7px 10px; border-radius: 7px; font: inherit; font-weight: 400; color: var(--text); text-align: left; cursor: pointer; }
+.pick-item:hover, .pick-item:focus-visible { background: var(--surface-2); outline: 0; }
+.pick-item.on .pick-name { font-weight: 600; color: var(--accent); }
+.pick-name i { font-style: normal; font-weight: 400; font-size: 12px; color: var(--muted); margin-left: 8px; }
+.pick-meta { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
 .role-size { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 .roles.license { margin-top: 22px; padding: 14px 16px; display: grid; gap: 8px; }

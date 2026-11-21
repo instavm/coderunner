@@ -44,7 +44,7 @@ RULES = (
 )
 RULES = tuple((stage, re.compile(pattern), within, doing) for stage, pattern, within, doing in RULES)
 ORDER = ("engine", "planner", "check", "speed", "search", "checker", "voice")
-DONE = {"engine": "Model engine ready", "planner": "Planning model downloaded", "check": "Tools and vision work",
+DONE = {"engine": "Model engine ready", "planner": "Planning model ready", "check": "Tools and vision work",
         "speed": "Speed measured", "search": "File search ready", "checker": "Safety check ready", "voice": "Voice ready"}
 PERCENT = re.compile(r"(\d+)% of ([\d.]+) GB")
 MEASURED = re.compile(r"measured ([\d.]+) tok/s reading, ([\d.]+) tok/s writing: ([\d.]+) s per agent step")
@@ -149,6 +149,9 @@ class ComputerJob(Job):
             self.on_done({"ok": True})
 
 
+CHOICES = 5          # how many fitting models the first screen lets the owner choose between
+
+
 class SetupJob(Job):
     def __init__(self, config, audit=None, on_done: Callable[[dict], None] | None = None, plan=None, setup=None,
                  voice: bool = True):
@@ -172,6 +175,8 @@ class SetupJob(Job):
                 self._stage = stage
                 seen = self._seen.setdefault(stage, {"label": doing, "detail": "", "percent": None, "of_gb": None})
                 seen["label"] = doing
+                if stage == "planner" and doing.startswith("Downloading"):
+                    seen["done"] = "Planning model downloaded"         # one that was already here is "ready"
                 break
         if not self._stage:
             return
@@ -209,13 +214,18 @@ class SetupJob(Job):
 
     # ---- the briefing before anything is fetched -------------------------------
 
-    def plan(self) -> dict:
+    def plan(self, model: str | None = None) -> dict:
         """What the app shows before setup starts: this computer, how fast it will be, the model for each job,
         what will be downloaded, where to, and what that leaves on the disk. Slow the first time in a day (model
-        discovery)."""
+        discovery). `model` is the owner's choice among the models that fit; anything else is the plan's own."""
         from ..models import manager
         from ..models.runtimes import models_dir
         planned = self._plan(self.config)
+        ranked = [c for c in (planned.get("model"), *planned.get("alternatives", [])) if c][:CHOICES]
+        recommended = ranked[0]["id"] if ranked else ""
+        chosen = next((c for c in ranked if c["id"] == model), None)
+        if chosen is not None and chosen["id"] != recommended:
+            planned = {**planned, "model": chosen, "alternatives": [c for c in ranked if c is not chosen]}
         items = manager.downloads(self.config, planned)
         roles = self._roles(planned, items)
         for item in items:
@@ -244,6 +254,10 @@ class SetupJob(Job):
                 "need_gb": round(need, 1), "free_gb": round(now, 1), "short": need + manager.MEMORY_MARGIN_GB > now},
             "alternatives": [{"id": c["id"], "name": manager.pretty(c["id"]), "runtime": c.get("runtime"),
                               "step_s": c.get("step_s")} for c in planned.get("alternatives", [])[:4]],
+            # The models the owner can choose between, best first, each with what it would still download.
+            "recommended": recommended,
+            "choices": [{"id": c["id"], "name": manager.pretty(c["id"]), "step_s": c.get("step_s"),
+                         "download_gb": self._model_download(c)} for c in ranked] if len(ranked) > 1 else [],
             "notes": planned.get("notes", []), "downloads": items, "download_gb": total,
             "free_gb": round(free, 1), "room_gb": round(max(room, 0), 1), "floor_gb": floor,
             "after_gb": round(free - total, 1), "disk_gb": round(_disk_gb(models_dir(self.config)), 1),
@@ -253,6 +267,13 @@ class SetupJob(Job):
         with self._lock:
             self.planned = summary
         return summary
+
+    def _model_download(self, cand: dict) -> float | None:
+        """GB still to fetch for this model alone (0: it is here; None: the catalog has no size for it)."""
+        from ..models import manager
+        mine = [item["gb"] for item in manager.downloads(self.config, {"model": cand})
+                if item["what"].startswith("assistant model")]
+        return mine[0] if mine else 0
 
     def _roles(self, planned: dict, items: list[dict]) -> list[dict]:
         """A model for each job the assistant has, as the plan has them for this machine. `items` gains what
@@ -310,7 +331,7 @@ class SetupJob(Job):
             return None
         return None
 
-    def set_location(self, path: str) -> dict:
+    def set_location(self, path: str, model: str | None = None) -> dict:
         """Keep model files in another folder (an empty path: back to the default), then plan again, since the
         free space is that folder's disk's."""
         with self._lock:
@@ -330,7 +351,7 @@ class SetupJob(Job):
             path = str(folder)
         self.config.set("models.dir", path)
         self.config.save()
-        return self.plan()
+        return self.plan(model)
 
     # ---- setup -----------------------------------------------------------------
 
@@ -345,7 +366,7 @@ class SetupJob(Job):
         try:
             # The first screen showed one model and its size: setup does not go on to fetch another by itself.
             result = self._setup(self.config, model_id=model or None, accept_license=accept_license,
-                                 progress=self._say, other_downloads=False)
+                                 progress=self._say, other_downloads=False, insist=False)
         except Exception as exc:        # setup reports its failures; this is one it did not foresee
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         if result.get("ok") and self.voice:

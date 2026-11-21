@@ -272,12 +272,13 @@ def admin_app(svc, daemon) -> Starlette:
         body = await request.json()
         if body.get("action") == "plan":
             try:
-                return JSONResponse(await asyncio.to_thread(job.plan))
+                return JSONResponse(await asyncio.to_thread(job.plan, str(body.get("model") or "") or None))
             except Exception as exc:
                 return JSONResponse({"error": f"The plan could not be made: {exc}"}, status_code=500)
         if body.get("action") == "location":       # where model files are kept; the plan comes back for it
             try:
-                return JSONResponse(await asyncio.to_thread(job.set_location, str(body.get("path") or "")))
+                return JSONResponse(await asyncio.to_thread(job.set_location, str(body.get("path") or ""),
+                                                            str(body.get("model") or "") or None))
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
             except Exception as exc:

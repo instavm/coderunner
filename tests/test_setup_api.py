@@ -67,6 +67,33 @@ class SetupJobTests(unittest.TestCase):
         self.assertEqual(job.public()["plan"], shown)
         self.assertEqual((job.public()["configured"], job.public()["state"]), (False, "idle"))
 
+    def test_the_owner_can_choose_another_model_that_fits_and_the_plan_is_made_for_it(self):
+        sizes = {"qwen3.5-9b": 6.6, "qwen3.5-4b": 0}                    # the smaller one is already here
+        downloads = lambda config, planned, hw=None: (
+            [{"what": f"assistant model: {planned['model']['id']}", "gb": sizes[planned["model"]["id"]]}]
+            if sizes[planned["model"]["id"]] else [])
+        job = SetupJob(self.svc.config, plan=lambda config: PLAN, voice=False)
+        with mock.patch.object(manager, "downloads", side_effect=downloads), \
+                mock.patch("coderunner.models.coreml.supported", return_value=False):
+            first, other, unknown = job.plan(), job.plan("qwen3.5-4b"), job.plan("not-a-model")
+        self.assertEqual((first["model"]["id"], first["recommended"], first["download_gb"]), ("qwen3.5-9b", "qwen3.5-9b", 6.6))
+        self.assertEqual([(c["id"], c["name"], c["download_gb"], c["step_s"]) for c in first["choices"]],
+                         [("qwen3.5-9b", "Qwen3.5 9B", 6.6, 12.0), ("qwen3.5-4b", "Qwen3.5 4B", 0, 7.1)])
+        # The chosen one takes the planner's line, and the downloads and the speed are its own.
+        self.assertEqual((other["model"]["id"], other["recommended"], other["download_gb"], other["speed"]["step_s"]),
+                         ("qwen3.5-4b", "qwen3.5-9b", 0, 7.1))
+        self.assertEqual((other["roles"][0]["model"], other["roles"][0]["download_gb"]), ("Qwen3.5 4B", 0))
+        self.assertEqual([a["id"] for a in other["alternatives"]], ["qwen3.5-9b"])
+        self.assertEqual(other["choices"], first["choices"])
+        self.assertEqual(unknown["model"]["id"], "qwen3.5-9b")          # a name the plan does not have changes nothing
+        # Setup is then asked for that model, and told not to load it into memory that is not free.
+        asked = {}
+        job = SetupJob(self.svc.config, plan=lambda config: PLAN, voice=False,
+                       setup=lambda config, **kw: (asked.update(kw), {"ok": True})[1])
+        job.start(model="qwen3.5-4b")
+        self.assertTrue(until(lambda: job.public()["state"] == "done"))
+        self.assertEqual((asked["model_id"], asked["insist"], asked["other_downloads"]), ("qwen3.5-4b", False, False))
+
     def test_the_first_screen_says_when_memory_is_short_right_now_and_setup_fetches_no_other_model_unasked(self):
         from coderunner.models import hardware
         seen = {}
@@ -222,6 +249,12 @@ class StageTests(unittest.TestCase):
         self.assertEqual([s["label"] for s in shown[:5]], [
             "Model engine ready", "Planning model downloaded", "Tools and vision work",
             "Speed measured: 18 s per step", "File search ready"])
+        # A planning model that was already on the disk is not said to have been downloaded.
+        job = SetupJob(Svc().config, plan=lambda config: PLAN, setup=lambda *a, **k: {"ok": True}, voice=False)
+        job.state = "running"
+        for line in ("qwen3.5-9b via llama.cpp: fits: 8.2 of 12.7 GB at 32K context", "loading qwen3.5-9b into memory"):
+            job._say(line)
+        self.assertEqual(job.public()["stages"][0]["label"], "Planning model ready")
 
     def test_the_last_stage_shows_how_setup_ended_and_a_new_run_starts_clean(self):
         job = self.job(8)

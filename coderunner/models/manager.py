@@ -656,11 +656,12 @@ def _stopped(first: str, why: str, entry: dict | None = None, need: float = 0.0,
 def setup(config, model_id: str | None = None, runtime: str | Runtime | None = None, accept_license: bool = False,
           progress: Callable[[str], None] = print, hw: hardware.Hardware | None = None, embedding: bool = True,
           smoke=smoketest.run, hub: Hub | None = None, measure=None, decision: bool = True,
-          other_downloads: bool = True) -> dict:
+          other_downloads: bool = True, insist: bool = True) -> dict:
     """measure times the model once it passes the smoke test (default bench.measure; False skips it);
     decision also sets up a decision model to judge browser steps when memory allows. With other_downloads
     off (the app: its first screen showed one model and its size), a model that does not work out is not
-    replaced by one that has to be downloaded: setup stops and names it for the owner to choose."""
+    replaced by one that has to be downloaded: setup stops and names it for the owner to choose. With insist
+    off (the app again), a model named by model_id is still not loaded into memory that is not free."""
     hw = _hardware(config, hw)
     runtime = runtime if runtime is not None else _pinned(config)
     rt = _main_runtime(config, hw, runtime)
@@ -776,7 +777,7 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
                                    "its memory was planned for")
             _free_gpu(config, rt)
             short = _memory_short(cand, hw, rt)
-            if short and model_id:
+            if short and model_id and insist:
                 progress(f"warning: {entry['id']} needs {short[0]:.1f} GB of memory and {short[1]:.1f} GB is free "
                          "right now; loading it anyway because it was requested")
             elif short:
@@ -1154,7 +1155,10 @@ def restart_embedding(config) -> bool:
 
 def ensure_running(config) -> Endpoint:
     """Start the configured local runtime if it is down; external endpoints are left alone."""
-    rt = choose_runtime(config)
+    # Before setup has run there is no model to serve: starting whichever runtime happens to be installed (an
+    # Ollama the owner has for something else, on a Mac that will use llama.cpp) only takes its port and memory.
+    set_up = bool(config.get("models.chat") or config.get("models.embedding") or config.get("models.base_url"))
+    rt = choose_runtime(config) if set_up else None
     ep = endpoint(config)
     if rt and rt.name in LOCAL and rt.base_url.rstrip("/") == ep.base_url and not rt.running():
         rt.start()

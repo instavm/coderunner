@@ -980,6 +980,24 @@ class MemoryNowTests(TempHome):
                                   smoke=fake_smoke({}), measure=False, embedding=False, decision=False)
         self.assertTrue(asked["ok"], asked)
         self.assertTrue(any("loading it anyway because it was requested" in line for line in said))
+        # The app names the model the owner chose on the first screen; that is no order to load it regardless.
+        rt = FakeRuntime()
+        with mock.patch.object(hardware, "available_gb", return_value=2.0):
+            chosen = manager.setup(self.config(), model_id=first["id"], runtime=rt, hw=hw, progress=lambda m: None,
+                                   smoke=fake_smoke({}), measure=False, embedding=False, decision=False, insist=False)
+        self.assertEqual((chosen["ok"], chosen["memory_short"]["model"], rt.prepared), (False, first["id"], []))
+
+    def test_nothing_is_started_before_setup_has_chosen_a_model(self):
+        # An Ollama the owner had installed for something else was started by the daemon on a Mac that had not
+        # been set up yet (and would use llama.cpp).
+        rt, cfg = FakeRuntime(), self.config()
+        rt.running, rt.start = (lambda: False), mock.Mock()
+        with mock.patch.object(manager, "choose_runtime", return_value=rt):
+            manager.ensure_running(cfg)
+            rt.start.assert_not_called()
+            cfg.set("models.chat", "coderunner-qwen3.5-9b")
+            manager.ensure_running(cfg)
+            rt.start.assert_called_once()
 
     def test_from_the_app_a_model_that_does_not_work_out_is_not_replaced_by_another_download(self):
         class FirstWillNotStart(FakeLlama):
