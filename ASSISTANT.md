@@ -204,6 +204,10 @@ declares success. If a model fails the test, the next candidate is tried.
   beside the first: `models.port_base` (8081) is llama.cpp's port, and
   Prism's build, the browser driver and the Core ML embedding server take
   the three after it.
+* Model files are kept in `assistant/models` under the CodeRunner home, or
+  in the folder `models.dir` names (another disk, say); the app's setup
+  screen offers the choice before anything is downloaded. Files already
+  downloaded are not moved when the folder changes.
 * Runtimes per model: Ollama serves families whose tool calls it parses;
   others (GLM-5.x, DeepSeek V4, MiMo, Ling...) run on llama.cpp's own server
   next to it. When llama.cpp is missing, the plan says which better model it
@@ -740,7 +744,9 @@ A task reads as a conversation, not as a list of tool calls: one line says what 
 its notes and its plan (a checklist that fills in) are said as it goes, a question waits for an answer, and the
 answer ends with how long it took. Where it works on a web page, a picture of the page is put in the thread
 after it opens one, when it asks for approval on one, and at the end: at most 8 a task and 20 seconds apart,
-kept 14 days in `assistant/shots` and served on the owner surface at `/api/shots/<name>`. `coderunner app` opens it: with the checkout's
+kept 14 days in `assistant/shots` and served on the owner surface at `/api/shots/<name>`.
+
+The window opens at 1152 by 720. `coderunner app` opens it: with the checkout's
 own Electron where `npm install` was run in `app/`, and otherwise with Electron 45.2.3 downloaded once into
 `~/.coderunner/runtime` (121 MB, checked against the release's checksums), so no Node is needed. The app finds
 the daemon of `CODERUNNER_HOME` and starts it with `coderunner up` when it is not running; the daemon keeps
@@ -752,13 +758,27 @@ line shown; when it is done the daemon starts again with the browser on that com
 (`GET` and `POST /api/computer/setup`). The app's files are served with `Cache-Control: no-cache`, so a
 browser does not pair an old page with a new script.
 
-Where no model is set up yet, the app opens on a first-run screen instead of tasks: this computer, the model
-the plan picks for it and why, what will be downloaded with sizes against the free disk, and the plan's notes
-(a pick the disk has no room for, a runtime setup will fetch). "Download and set up" runs the same setup as
-`coderunner setup` in the daemon and shows its progress; it carries on if the window is closed. When it is
-done the daemon starts again in place with the new model and the page reloads. The API behind it, on the
-owner surface: `GET /api/setup` (state, progress lines, the last plan), `POST /api/setup` with
-`{"action": "plan"}` or `{"action": "start", "model": ..., "accept_license": ...}`.
+Where no model is set up yet, the app opens on a setup screen instead of tasks, with the window to itself (no
+task list, no computer panel). Before anything is fetched it shows, on one screen:
+
+* this computer in four figures: chip, memory, graphics, and the seconds a step of a task will take
+  (estimated from the chip until setup measures it);
+* a model for each job, one line each: planning, vision, file search, voice and the safety check, with what
+  each downloads ("Same model" where the planning model does the job, "Installed" where it is here already);
+* the download as a share of the free disk, what is left afterwards, and the folder the models go to, with
+  "Change" (the system's folder dialog in the app, a path box in a browser). The folder is `models.dir`; a
+  download that would take the disk under `files.min_free_gb` is refused here, with what to free;
+* one button, "Download and set up". "How these were chosen" opens the reasons, the speed estimate, the
+  memory budget, the other models that fit and the list of downloads.
+
+Setup then shows the stages it has reached, the running one with a bar, in the words of that first screen
+(downloading the planning model, testing tools and vision, measuring speed, file search, voice) and never a
+file's name; setup's own lines are under "Details". Below them a small animation goes through what the
+assistant is for. It is the same setup as `coderunner setup`, run in the daemon, and it carries on if the
+window is closed. When it is done the daemon starts again in place with the new model and the page reloads.
+The API behind it, on the owner surface: `GET /api/setup` (state, stages, progress lines, the last plan),
+`POST /api/setup` with `{"action": "plan"}`, `{"action": "location", "path": ...}` (an empty path: the usual
+folder) or `{"action": "start", "model": ..., "accept_license": ...}`.
 
 ## Everyday commands
 

@@ -275,12 +275,19 @@ def admin_app(svc, daemon) -> Starlette:
                 return JSONResponse(await asyncio.to_thread(job.plan))
             except Exception as exc:
                 return JSONResponse({"error": f"The plan could not be made: {exc}"}, status_code=500)
+        if body.get("action") == "location":       # where model files are kept; the plan comes back for it
+            try:
+                return JSONResponse(await asyncio.to_thread(job.set_location, str(body.get("path") or "")))
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except Exception as exc:
+                return JSONResponse({"error": f"The plan could not be made: {exc}"}, status_code=500)
         if body.get("action") == "start":
             started = job.start(model=str(body.get("model") or "") or None,
                                 accept_license=bool(body.get("accept_license")))
             svc.audit.write("setup.started" if started else "setup.already_running", origin=principal(request))
             return JSONResponse({**job.public(), "started": started}, status_code=200 if started else 409)
-        return JSONResponse({"error": "action must be plan or start"}, status_code=400)
+        return JSONResponse({"error": "action must be plan, location or start"}, status_code=400)
 
     async def approvals(request: Request):
         return JSONResponse([a.public() for a in svc.policy.pending()])

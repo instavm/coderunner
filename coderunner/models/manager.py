@@ -15,11 +15,10 @@ import shutil
 import threading
 from typing import Callable
 
-from ..core import paths
 from ..core.llm import LLM
 from . import bench, catalog, fit, hardware, licenses, smoketest
 from .hub import Hub, HubError
-from .runtimes import LlamaCppRuntime, OllamaRuntime, PrismRuntime, Runtime, choose_runtime, install_hint
+from .runtimes import LlamaCppRuntime, OllamaRuntime, PrismRuntime, Runtime, choose_runtime, install_hint, models_dir
 
 MAX_FALLBACKS = 2
 WORTH_A_NOTE = 0.2          # utility gain (fit.utility) worth suggesting a change to the machine
@@ -70,6 +69,26 @@ def _own_ollama(rt: Runtime, hw, progress: Callable[[str], None]) -> str | None:
     return None
 
 
+NAMES = {"embeddinggemma-2": "EmbeddingGemma 2", "embeddinggemma-300m": "EmbeddingGemma 300M", "tev1-4b": "tev1 4B",
+         "gpt-oss-20b": "gpt-oss 20B", "gpt-oss-120b": "gpt-oss 120B", "qwen3-embedding-0.6b": "Qwen3 Embedding 0.6B"}
+
+
+def pretty(model_id: str) -> str:
+    """A model's name as an owner reads it: bonsai-2-27b -> Bonsai 2 27B."""
+    import re
+    if model_id in NAMES:
+        return NAMES[model_id]
+    words = []
+    for word in model_id.removeprefix("hf-").split("-"):
+        if re.fullmatch(r"[ae]?\d+(\.\d+)?[bm]", word):
+            words.append(word.upper())                       # 27b, a3b, e4b
+        elif re.fullmatch(r"\d+bit", word):
+            words.append(word.replace("bit", "-bit"))
+        else:
+            words.append(word[:1].upper() + word[1:])
+    return " ".join(words)
+
+
 def _cpu_note(hw, chosen: dict | None = None) -> str | None:
     """What an owner should hear before setting up a machine with no GPU CodeRunner can use: it works, slowly."""
     if hw.gpu != "none":
@@ -93,7 +112,7 @@ def _room_gb(config) -> tuple[float, float, float]:
     files.min_free_gb, the one file indexing pauses at: a full disk stops macOS swapping, and on a small Mac
     the model with it."""
     floor = float(config.get("files.min_free_gb", MIN_FREE_GB) or 0)
-    free = _free_gb(paths.assistant_dir())
+    free = _free_gb(models_dir(config))
     return free - floor, free, floor
 
 

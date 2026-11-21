@@ -109,6 +109,14 @@ def _throttled(progress: Progress | None, every: float = 2.0) -> Progress:
     return emit
 
 
+def models_dir(config=None) -> pathlib.Path:
+    """Where model files are kept: models.dir when the owner chose a folder (another disk, say), else
+    CODERUNNER_HOME/assistant/models. What CodeRunner learns about this machine (measurements, the list of
+    discovered models) stays in the home either way."""
+    chosen = (config.get("models.dir") if config is not None else "") or ""
+    return pathlib.Path(chosen).expanduser() if chosen else paths.assistant_dir() / "models"
+
+
 PORT_BASE = 8081
 
 
@@ -457,7 +465,7 @@ class LlamaCppRuntime(Runtime):
         self.port = port = port or server_port(config, self.PORT_OFFSET)
         self.base_url = f"http://127.0.0.1:{port}/v1"
         self.hub = hub
-        self.root = paths.assistant_dir() / "models"
+        self.root = models_dir(config)
         self.state_path = self.root / "llama.cpp.json"
 
     def binary(self) -> str | None:

@@ -3,8 +3,9 @@
 //   - finds the daemon (CODERUNNER_HOME, default ~/.coderunner), starts it with `coderunner up` when it is not
 //     running, and adds the owner's admin token to requests made to it, and to nothing else;
 //   - opens every other address in the default browser, never inside the app;
-//   - denies the page every permission except notifications.
-const {app, BrowserWindow, Menu, session, shell} = require("electron");
+//   - denies the page every permission except notifications;
+//   - shows the system's folder dialog when the page asks where to keep the models (preload.js).
+const {app, BrowserWindow, Menu, dialog, ipcMain, session, shell} = require("electron");
 const {execFile} = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -72,11 +73,12 @@ function startDaemon() {
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 1440, height: 900, minWidth: 760, minHeight: 520, title: "CodeRunner", show: false,
+    width: 1152, height: 720, minWidth: 760, minHeight: 520, title: "CodeRunner", show: false,
     backgroundColor: "#f6f5f2",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     trafficLightPosition: {x: 16, y: 14},
-    webPreferences: {contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: true},
+    webPreferences: {contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: true,
+                     preload: path.join(__dirname, "preload.js")},
   });
   win.once("ready-to-show", () => win.show());
 
@@ -142,6 +144,18 @@ app.whenReady().then(() => {
     });
   session.defaultSession.setPermissionRequestHandler((contents, permission, callback) => {
     callback(permission === "notifications" && contents.getURL().startsWith(ORIGIN));
+  });
+  // The one thing the page asks of the shell: a folder picked by the owner (where to keep the models). Only the
+  // daemon's own page may ask.
+  ipcMain.handle("pick-folder", async (event, start) => {
+    let asker = "";
+    try { asker = new URL(event.senderFrame.url).origin; } catch { /* no frame, or no address: refused */ }
+    if (asker !== ORIGIN) return null;
+    const picked = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+      title: "Where to keep the models", buttonLabel: "Keep them here", defaultPath: start || undefined,
+      properties: ["openDirectory", "createDirectory"],
+    });
+    return picked.canceled ? null : picked.filePaths[0];
   });
   buildMenu();
   createWindow();

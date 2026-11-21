@@ -37,6 +37,16 @@ class AppShellTests(unittest.TestCase):
         for asset, sha256 in appshell.BUILDS.values():
             self.assertRegex(sha256, r"^[0-9a-f]{64}$", asset)
 
+    def test_the_page_can_ask_the_shell_for_a_folder_and_for_nothing_else(self):
+        import re
+        main, preload = ((appshell.app_dir() / name).read_text() for name in ("main.js", "preload.js"))
+        self.assertIn('preload: path.join(__dirname, "preload.js")', main)
+        self.assertIn("contextIsolation: true, nodeIntegration: false, sandbox: true", main)
+        self.assertEqual(re.findall(r'ipcMain\.(?:handle|on)\("([\w-]+)"', main), ["pick-folder"])
+        self.assertEqual(re.findall(r'ipcRenderer\.\w+\("([\w-]+)"', preload), ["pick-folder"])
+        self.assertEqual(re.findall(r'exposeInMainWorld\("(\w+)"', preload), ["coderunnerShell"])
+        self.assertIn("if (asker !== ORIGIN) return null;", main)        # only the daemon's own page is answered
+
     def test_the_checkouts_own_electron_is_used_before_coderunners_copy(self):
         app = self.home / "checkout" / "app"
         self.assertIsNone(appshell.installed(app))

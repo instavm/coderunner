@@ -151,24 +151,119 @@ button { font: inherit; color: inherit; cursor: pointer; }
   #shell.expanded #computer { display: flex; }
 }
 
-/* First run: the plan for this computer, then setup's progress. */
+/* First run. The setup screens have the window to themselves: no task list, no computer panel, a strip to drag
+   the window by, and one centred column that fits the window without scrolling. */
 #composer[hidden] { display: none; }
-.setup { padding-top: 8vh !important; }
-.setup h1 { font-size: 26px; letter-spacing: -0.02em; margin: 0 0 6px; }
-.setup-box { border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 14px 16px; margin-top: 14px; }
-.setup-model { font-size: 17px; font-weight: 600; margin: 4px 0; }
-.setup-row { display: flex; justify-content: space-between; gap: 16px; padding: 6px 0; border-top: 1px solid var(--line); }
-.setup-box .section-title + .setup-row { border-top: 0; }
-.setup-row.total { font-weight: 600; }
-.setup-note { color: var(--warn); background: var(--warn-soft); border-radius: 10px; padding: 9px 12px; margin: 12px 0 0; }
-.setup-error { color: var(--danger); margin: 14px 0 0; }
-.setup-go { margin-top: 18px; padding: 9px 18px; font-size: 15px; }
-.setup-go:disabled { opacity: 0.6; }
-.setup-log { margin-top: 14px; border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 12px 14px;
-  max-height: 46vh; overflow: auto; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
 #computerSetupBox[hidden] { display: none; }
 .setup-line { margin-top: 8px; word-break: break-word; }
-.setup-why { margin-top: 8px; }
-.setup-why summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
-.setup-why > div { margin-top: 6px; }
+#shell.first-run { grid-template-columns: minmax(0, 1fr); }
+#shell.first-run #sidebar, #shell.first-run #computer { display: none; }
+#shell.first-run #mainHead { border-bottom: 0; padding: 0; min-height: 36px; }
+#shell.first-run #mainHead > * { display: none; }
+#shell.first-run #thread { display: flex; flex-direction: column; padding: 0 0 26px; }
+.setup { margin: auto !important; width: 100%; max-width: 612px !important; text-align: center; }
+.setup-logo { display: inline-block; width: 40px; height: 40px; border-radius: 12px; }
+.setup h1 { font-size: 25px; letter-spacing: -0.02em; margin: 12px 0 4px; }
+.setup-lead { color: var(--muted); margin: 0; }
+.setup-label { font-size: 11.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em;
+  text-align: left; margin: 20px 2px 7px; }
+.setup-note { color: var(--warn); background: var(--warn-soft); border-radius: 10px; padding: 8px 12px; margin: 12px 0 0; font-size: 13px; text-align: left; }
+.setup-error { color: var(--danger); margin: 12px 0 0; }
+.setup-go { margin-top: 20px; padding: 9px 26px; font-size: 15px; font-weight: 600; border-radius: 11px; }
+.setup-go:disabled { opacity: 0.6; }
 
+/* This computer, in four figures. */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 22px; }
+.tile { border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 11px 10px 9px; min-width: 0; }
+.tile-value { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-label { color: var(--muted); font-size: 12px; margin-top: 1px; }
+
+/* A model for each job: one line each. */
+.roles { border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 3px 14px; text-align: left; }
+.role { display: grid; grid-template-columns: 18px 104px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.role:first-child { border-top: 0; }
+.ico { width: 18px; height: 18px; fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.role-job { color: var(--muted); }
+.role-model { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.role.shared .role-model, .role.missing .role-model { font-weight: 400; color: var(--muted); }
+.role.shared .ico, .role.missing .ico { stroke: var(--muted); }
+.role-size { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.roles.license { margin-top: 22px; padding: 14px 16px; display: grid; gap: 8px; }
+.setup-other { margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+
+/* The free space as one bar with what this download takes of it, and where the models go. */
+.disk { margin-top: 16px; text-align: left; }
+.diskbar { height: 7px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.diskbar .take { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.diskbar.tight .take, .dot.tight { background: var(--danger); }
+.disk .setup-error { font-size: 13px; margin-top: 8px; }
+.disk-line { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; margin: 8px 2px 0; font-size: 12.5px; }
+.disk-sizes { white-space: nowrap; }
+.disk-sizes b { font-weight: 600; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: 7px; }
+.place { display: flex; gap: 9px; align-items: baseline; min-width: 0; }
+.place-path { min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.linkish { border: 0; background: none; color: var(--accent); padding: 0; cursor: pointer; font: inherit; }
+.linkish:disabled { opacity: .5; }
+.place-form { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.place-form[hidden] { display: none; }
+.place-form input { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 9px; padding: 6px 10px; }
+
+/* How it was chosen, and what setup printed: a click away. */
+.setup-why { margin-top: 12px; }
+.setup-why[hidden] { display: none; }
+.setup-why summary { cursor: pointer; color: var(--muted); font-size: 12.5px; list-style: none; }
+.setup-why summary::-webkit-details-marker { display: none; }
+.setup-why summary::after { content: " ›"; }
+.setup-why[open] summary::after { content: " ⌄"; }
+.setup-why summary:hover { color: var(--text); }
+.why { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 10px 0 0; text-align: left; font-size: 12.5px;
+  border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 12px 14px; }
+.why dt { color: var(--muted); }
+.why dd { margin: 0; }
+.setup-log { margin-top: 10px; border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 12px 14px; text-align: left;
+  max-height: 34vh; overflow: auto; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+
+/* Setup's progress: the stages reached, the running one with a bar. */
+.stages { display: grid; gap: 9px; margin: 24px auto 0; max-width: 440px; text-align: left; }
+.stages[hidden] { display: none; }
+.stage { display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: start; }
+.stage-mark { width: 16px; height: 16px; margin-top: 2px; text-align: center; line-height: 16px; font-size: 13px; color: var(--muted); }
+.stage.done .stage-mark { color: var(--ok); }
+.stage.failed .stage-mark { color: var(--danger); font-weight: 700; }
+.stage.running .stage-mark { border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: spin .9s linear infinite; }
+.stage-head { display: flex; justify-content: space-between; gap: 12px; }
+.stage.done .stage-label { color: var(--muted); }
+.stage.running .stage-label { font-weight: 600; }
+.stage-amount { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bar { height: 5px; border-radius: 3px; background: var(--surface-2); margin: 7px 0 3px; overflow: hidden; }
+.bar[hidden] { display: none; }
+.bar span { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .6s; }
+.bar.busy span { width: 32%; animation: bar-slide 1.5s ease-in-out infinite; }
+.bar.looking { max-width: 220px; margin: 26px auto 0; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes bar-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(320%); } }
+
+/* While setup runs: what the assistant is for, all of it inside the outline of this computer. */
+.showcase { margin: 22px auto 0; max-width: 520px; }
+.showcase svg { display: block; width: 100%; height: auto; }
+.sc-frame { fill: none; stroke: var(--line); stroke-width: 1.2; }
+.sc-label { fill: var(--muted); font-size: 11.5px; letter-spacing: .04em; }
+.sc-link { stroke: var(--line); stroke-width: 1.2; stroke-linecap: round; transition: stroke .5s; }
+.sc-link.on { stroke: var(--accent); stroke-dasharray: 3 8; animation: sc-flow 1.1s linear infinite; }
+.sc-node circle { fill: var(--surface); stroke: var(--line); stroke-width: 1.2; transition: stroke .5s, fill .5s; }
+.sc-node path { fill: none; stroke: var(--muted); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transition: stroke .5s; }
+.sc-node.on circle { stroke: var(--accent); fill: var(--accent-soft); }
+.sc-node.on path { stroke: var(--accent); }
+.sc-orb { fill: var(--accent); }
+.sc-halo { fill: var(--accent); opacity: .18; transform-box: fill-box; transform-origin: center; animation: sc-breathe 4.2s ease-in-out infinite; }
+.sc-caption { margin: 10px auto 0; max-width: 46ch; min-height: 3em; text-align: center; color: var(--text); transition: opacity .3s; }
+@keyframes sc-flow { to { stroke-dashoffset: -22; } }
+@keyframes sc-breathe { 0%, 100% { transform: scale(1); opacity: .2; } 50% { transform: scale(1.7); opacity: .04; } }
+@media (prefers-reduced-motion: reduce) { .sc-link.on, .sc-halo, .bar.busy span, .stage.running .stage-mark { animation: none; } }
+@media (max-width: 520px) {
+  .role { grid-template-columns: 18px minmax(0, 1fr) auto; }
+  .role-job { display: none; }
+  .disk-line { flex-direction: column; gap: 4px; }
+}

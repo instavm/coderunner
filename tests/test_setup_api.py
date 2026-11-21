@@ -1,5 +1,6 @@
 """Setup from the app: the job that runs `coderunner setup`'s plan and setup in the daemon, and its route."""
 
+import sys
 import threading
 import time
 import unittest
@@ -38,16 +39,69 @@ class SetupJobTests(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def test_the_plan_is_what_the_app_shows_before_anything_is_fetched(self):
-        job = SetupJob(self.svc.config, plan=lambda config: PLAN)
-        shown = job.plan()
-        self.assertEqual(shown["hardware"], {"chip": "Apple M3 Pro", "ram_gb": 18, "gpu": "apple", "measured": ""})
-        self.assertEqual((shown["model"]["id"], len(shown["model"]["reasons"])), ("qwen3.5-9b", 4))
-        self.assertEqual((shown["model"]["need_gb"], shown["model"]["step_s"], shown["model"]["vision"]), (8.2, 12.0, True))
-        self.assertEqual([a["id"] for a in shown["alternatives"]], ["qwen3.5-4b"])
-        self.assertEqual((shown["download_gb"], shown["free_gb"], shown["room_gb"]), (6.77, 11.4, 6.4))
+    def test_the_briefing_is_what_the_app_shows_before_anything_is_fetched(self):
+        plan = {**PLAN, "hardware": {**PLAN["hardware"], "budget_gb": 11.72, "bandwidth_gbs": 150, "unified": True},
+                "model": {**PLAN["model"], "tok_s": 14.5, "read_tok_s": 225.0}, "decision": None}
+        job = SetupJob(self.svc.config, plan=lambda config: plan, voice=False)
+        with mock.patch("coderunner.models.coreml.supported", return_value=False):
+            shown = job.plan()
+        self.assertEqual(shown["hardware"], {"chip": "Apple M3 Pro", "ram_gb": 18, "gpu": "apple", "budget_gb": 11.7,
+                                             "unified": True, "vram_gb": 0, "measured": "",
+                                             "os": "mac" if sys.platform == "darwin" else "linux"})
+        self.assertEqual(shown["speed"], {"measured": False, "read_tok_s": 225.0, "tok_s": 14.5, "step_s": 12.0,
+                                          "bandwidth_gbs": 150, "when": "", "tasks": None})
+        self.assertEqual((shown["model"]["id"], shown["model"]["name"], len(shown["model"]["reasons"])),
+                         ("qwen3.5-9b", "Qwen3.5 9B", 4))
+        # A model for each job: the planner, what reads pictures (the same model), and what checks each step.
+        self.assertEqual([(r["key"], r["short"], r["model"], bool(r.get("shared"))) for r in shown["roles"]],
+                         [("planner", "Planning", "Qwen3.5 9B", False), ("eyes", "Vision", "The planning model", True),
+                          ("checker", "Safety check", "The planning model", True)])
+        self.assertEqual((shown["roles"][0]["on"], shown["roles"][0]["download_gb"]), ("llama.cpp, on the GPU", 6.6))
+        self.assertEqual([a["name"] for a in shown["alternatives"]], ["Qwen3.5 4B"])
+        self.assertEqual((shown["download_gb"], shown["free_gb"], shown["room_gb"], shown["after_gb"]), (6.77, 11.4, 6.4, 4.6))
+        # The list of downloads says what each is for; the names are in the list of jobs.
+        self.assertEqual([d["label"] for d in shown["downloads"]],
+                         ["Model engine (Ollama)", "Planning model", "Planning model"])
+        self.assertTrue(shown["models_dir"].endswith("assistant/models") and shown["models_dir_default"])
+        self.assertTrue(shown["models_dir_short"].endswith("assistant/models") and shown["disk_gb"] > 0)
         self.assertEqual(job.public()["plan"], shown)
         self.assertEqual((job.public()["configured"], job.public()["state"]), (False, "idle"))
+
+    def test_a_model_that_reads_text_only_is_said_so_and_a_long_folder_is_shown_by_its_end(self):
+        import pathlib
+        from coderunner.server.setup import _short_path
+        plan = {**PLAN, "model": {**PLAN["model"], "vision": False}}
+        job = SetupJob(self.svc.config, plan=lambda config: plan, voice=False)
+        with mock.patch("coderunner.models.coreml.supported", return_value=False):
+            eyes = job.plan()["roles"][1]
+        self.assertEqual((eyes["key"], eyes["model"], eyes["shared"], eyes["missing"]),
+                         ("eyes", "Not on this computer", False, True))
+        home = pathlib.Path.home()
+        self.assertEqual(_short_path(home / ".coderunner" / "assistant" / "models"), "~/.coderunner/assistant/models")
+        self.assertEqual(_short_path(pathlib.Path("/Volumes/External Disk/Projects/Local AI/CodeRunner/models")),
+                         "…/CodeRunner/models")
+        self.assertEqual(_short_path(pathlib.Path("/Volumes/Disk/CodeRunner")), "/Volumes/Disk/CodeRunner")
+
+    def test_the_owner_chooses_where_the_models_are_kept(self):
+        import pathlib
+        import tempfile
+        job = SetupJob(self.svc.config, plan=lambda config: PLAN, voice=False)
+        with tempfile.TemporaryDirectory() as disk, mock.patch("coderunner.models.coreml.supported", return_value=False):
+            chosen = pathlib.Path(disk) / "External" / "CodeRunner"
+            shown = job.set_location(str(chosen))
+            self.assertTrue(chosen.is_dir())                                   # made for the owner
+            self.assertEqual((shown["models_dir"], shown["models_dir_default"]), (str(chosen), False))
+            self.assertEqual(self.svc.config.get("models.dir"), str(chosen))
+            from coderunner.models.runtimes import LlamaCppRuntime, models_dir
+            self.assertEqual((models_dir(self.svc.config), LlamaCppRuntime(self.svc.config).root), (chosen, chosen))
+            for bad, why in (("models", "full path"), ("/dev/null/x", "cannot be made")):
+                with self.assertRaisesRegex(ValueError, why):
+                    job.set_location(bad)
+            self.assertEqual(self.svc.config.get("models.dir"), str(chosen))   # a refused folder changes nothing
+            self.assertTrue(job.set_location("")["models_dir_default"])        # back to the usual folder
+        job.state = "running"
+        with self.assertRaisesRegex(ValueError, "Setup is running"):
+            job.set_location("/tmp/elsewhere")
 
     def test_setup_runs_in_the_background_and_its_progress_is_kept(self):
         release, finished = threading.Event(), []
@@ -89,6 +143,78 @@ class SetupJobTests(unittest.TestCase):
         self.assertTrue(until(lambda: job.public()["state"] == "failed"))
         self.assertEqual(job.public()["result"]["error"], "ValueError: unforeseen")
         self.assertEqual(finished, [])
+
+
+class StageTests(unittest.TestCase):
+    """The app shows setup as a few stages that say what is being fetched or done; setup's own lines stay behind
+    them."""
+
+    LINES = ["downloading llama-b11564-bin-macos-arm64.tar.gz",
+             "bonsai-2-27b via llama.cpp: fits: 9.7 of 11.7 GB at 32K context", "bonsai-2-27b: 8.3 GB to download, 18.1 GB free",
+             "downloading bonsai-2-27b-Q2_0.gguf: 61% of 7.63 GB",
+             "downloading Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf: 30% of 0.63 GB", "loading bonsai-2-27b into memory",
+             "smoke testing coderunner-bonsai-2-27b with vision", "  pass tool_arguments: add_numbers(a=3, b=7) (5.95s)",
+             "timing coderunner-bonsai-2-27b on this machine",
+             "measured 80 tok/s reading, 12.0 tok/s writing: 18 s per agent step (estimated 19 s)",
+             "installing Core ML packages (coremltools, tokenizers)", "downloading tokenizer.json: 78% of 0.03 GB",
+             "preparing the embedding model for the Neural Engine (once, about a minute)",
+             "embeddings: no GPU build to compare with", "setting up speech to text",
+             "downloading Decoder.mlmodelc/model.mil: 40% of 0.20 GB", "building the Parakeet helper with SwiftPM (a minute or two)"]
+
+    def job(self, upto):
+        job = SetupJob(Svc().config, plan=lambda config: PLAN, setup=lambda *a, **k: {"ok": True}, voice=False)
+        job.state = "running"
+        for line in self.LINES[:upto]:
+            job._say(line)
+        return job
+
+    def latest(self, upto):
+        stage = self.job(upto).public()["stages"][-1]
+        return stage["key"], stage["label"], stage["percent"], stage["of_gb"]
+
+    def test_each_stage_says_what_is_being_fetched_or_done_and_names_no_file(self):
+        self.assertEqual(self.latest(1), ("engine", "Downloading the model engine", None, None))
+        self.assertEqual(self.latest(4), ("planner", "Downloading the planning model", 61, 7.63))
+        self.assertEqual(self.latest(5), ("planner", "Downloading the vision part", 30, 0.63))
+        self.assertEqual(self.latest(6)[:2], ("check", "Loading the planning model"))
+        self.assertEqual(self.latest(8)[:2], ("check", "Testing tools and vision"))
+        self.assertEqual(self.latest(9)[:2], ("speed", "Measuring speed"))
+        # A download belongs to what is being set up when it happens: the search model's, then the voice model's.
+        self.assertEqual(self.latest(12), ("search", "Downloading the file search model", 78, 0.03))
+        self.assertEqual(self.latest(13)[:2], ("search", "Preparing file search"))
+        self.assertEqual(self.latest(16), ("voice", "Downloading the voice model", 40, 0.2))
+        self.assertEqual(self.latest(17)[:2], ("voice", "Preparing voice"))
+        for upto in range(1, len(self.LINES) + 1):
+            for stage in self.job(upto).public()["stages"]:
+                self.assertNotRegex(stage["label"], r"(?i)gguf|bonsai|mmproj|\.mil|getting the model")
+
+    def test_a_model_that_failed_the_picture_check_is_not_said_to_read_pictures(self):
+        job = self.job(8)
+        job._say("  vision check failed: the model could not read the test picture")
+        job._say("timing coderunner-bonsai-2-27b on this machine")
+        self.assertEqual(job.public()["stages"][2]["label"], "Tools work (text only on this computer)")
+
+    def test_a_finished_stage_says_what_came_of_it(self):
+        shown = self.job(len(self.LINES)).public()["stages"]
+        self.assertEqual([s["key"] for s in shown], ["engine", "planner", "check", "speed", "search", "voice"])
+        self.assertEqual([s["state"] for s in shown], ["done"] * 5 + ["running"])
+        self.assertEqual([s["label"] for s in shown[:5]], [
+            "Model engine ready", "Planning model downloaded", "Tools and vision work",
+            "Speed measured: 18 s per step", "File search ready"])
+
+    def test_the_last_stage_shows_how_setup_ended_and_a_new_run_starts_clean(self):
+        job = self.job(8)
+        job._finish({"ok": False, "error": "the smoke test failed"})
+        self.assertEqual([(s["key"], s["state"]) for s in job.public()["stages"]],
+                         [("engine", "done"), ("planner", "done"), ("check", "failed")])
+        self.assertEqual(job.public()["stages"][-1]["label"], "Testing tools and vision")
+        job = self.job(len(self.LINES))
+        job._finish({"ok": True})
+        self.assertEqual({s["state"] for s in job.public()["stages"]}, {"done"})
+        self.assertEqual(job.public()["stages"][-1]["label"], "Voice ready")
+        self.assertTrue(job.start())
+        self.assertTrue(until(lambda: job.public()["state"] == "done"))
+        self.assertEqual(job.public()["stages"], [])
 
 
 class PictureTests(unittest.IsolatedAsyncioTestCase):
@@ -215,6 +341,9 @@ class SetupRouteTests(unittest.IsolatedAsyncioTestCase):
         async with self.client() as client:
             self.assertEqual((await client.get("/api/setup", headers=admin)).status_code, 503)   # no job here
             self.daemon.setup = SetupJob(self.svc.config, plan=lambda config: PLAN, setup=setup, voice=False)
+            unsupported = mock.patch("coderunner.models.coreml.supported", return_value=False)
+            unsupported.start()
+            self.addCleanup(unsupported.stop)
             self.assertEqual((await client.get("/api/setup")).status_code, 401)
             self.assertEqual((await client.post("/api/setup", json={"action": "start"})).status_code, 401)
             state = (await client.get("/api/setup", headers=admin)).json()
@@ -222,6 +351,10 @@ class SetupRouteTests(unittest.IsolatedAsyncioTestCase):
             planned = await client.post("/api/setup", json={"action": "plan"}, headers=admin)
             self.assertEqual((planned.status_code, planned.json()["model"]["id"]), (200, "qwen3.5-9b"))
             self.assertEqual((await client.post("/api/setup", json={"action": "x"}, headers=admin)).status_code, 400)
+            refused = await client.post("/api/setup", json={"action": "location", "path": "models"}, headers=admin)
+            self.assertEqual((refused.status_code, "full path" in refused.json()["error"]), (400, True))
+            usual = await client.post("/api/setup", json={"action": "location", "path": ""}, headers=admin)
+            self.assertEqual((usual.status_code, usual.json()["models_dir_default"]), (200, True))
             started = await client.post("/api/setup", json={"action": "start"}, headers=admin)
             self.assertEqual((started.status_code, started.json()["started"]), (200, True))
             again = await client.post("/api/setup", json={"action": "start"}, headers=admin)

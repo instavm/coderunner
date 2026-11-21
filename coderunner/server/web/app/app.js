@@ -581,17 +581,21 @@ async function loadModels() {
 // What `coderunner setup` does in a terminal, from here: the plan for this computer and what it downloads, then
 // setup itself with its progress. The daemon starts again with the model when setup is done.
 
-const gb = (n) => n == null ? "size not known" : n < 0.1 ? `${Math.round(n * 1000)} MB` : `${n >= 10 ? n.toFixed(0) : n.toFixed(1)} GB`;
+const gb = (n) => n == null ? "size not known" : n < 0.1 ? `${Math.round(n * 1000)} MB` : `${n >= 100 ? n.toFixed(0) : n.toFixed(1).replace(/\.0$/, "")} GB`;
 let setupTimer = null;
 let setupDone = 0;
 
-function setupCard(title) {
+// The first-run screens have the page to themselves: no task list, no computer panel, one thing to read.
+function setupCard(title, lead) {
   state.setup = true;
-  const card = el("section", "setup");
-  card.appendChild(el("h1", "", title));
+  const card = el("section", "setup"), logo = el("span", "logo setup-logo");
+  logo.setAttribute("aria-hidden", "true");
+  card.append(logo, el("h1", "", title));
+  if (lead) card.appendChild(el("p", "setup-lead", lead));
   $("thread").replaceChildren(card);
   $("composer").hidden = true;
-  $("title").textContent = "Set up";
+  $("title").textContent = "";
+  $("shell").classList.add("first-run");
   showComputer(false);            // nothing runs on the computer until there is a model
   return card;
 }
@@ -602,65 +606,291 @@ function setupButton(label, action) {
   return button;
 }
 
-async function showPlan() {
-  const card = setupCard("Set up your assistant");
-  card.appendChild(el("p", "muted", "Looking at this computer and the models that suit it. The first look of a day takes about half a minute…"));
-  try { renderPlan(await api("/api/setup", {method: "POST", body: JSON.stringify({action: "plan"})})); }
-  catch (err) { card.append(el("p", "setup-error", err.message), setupButton("Look again", showPlan)); }
+// A small line icon, drawn with strokes on a 24 by 24 grid.
+function icon(d) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg"), path = document.createElementNS(NS, "path");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("class", "ico");
+  svg.setAttribute("aria-hidden", "true");
+  path.setAttribute("d", d);
+  svg.appendChild(path);
+  return svg;
 }
 
-function renderPlan(plan) {
-  const card = setupCard("Set up your assistant");
-  const hw = plan.hardware;
-  card.appendChild(el("p", "muted", `This computer: ${hw.chip}, ${hw.ram_gb} GB of memory${hw.gpu === "none" ? ", no graphics processor found" : ""}. ` +
-                                    "The assistant's models run on it; nothing you ask is sent anywhere else."));
+const ROLE_ICONS = {
+  planner: "M12 4l2.1 5.9L20 12l-5.9 2.1L12 20l-2.1-5.9L4 12l5.9-2.1z",
+  eyes: "M3 12s3.5-6 9-6s9 6 9 6s-3.5 6-9 6s-9-6-9-6z M12 9.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5",
+  search: "M11 5a6 6 0 1 0 0 12a6 6 0 1 0 0-12 M20 20l-4.6-4.6",
+  voice: "M6 10v4 M9 7v10 M12 5v14 M15 8v8 M18 10v4",
+  checker: "M12 4l7 3v5c0 4-3 7-7 8c-4-1-7-4-7-8V7z M9 12l2 2l4-4",
+};
+
+async function showPlan() {
+  const card = setupCard("Set up your assistant", "Looking at this computer and the models that suit it…");
+  const bar = el("div", "bar busy looking");
+  bar.appendChild(el("span"));
+  card.appendChild(bar);
+  try { renderPlan(await api("/api/setup", {method: "POST", body: JSON.stringify({action: "plan"})})); }
+  catch (err) { bar.remove(); card.append(el("p", "setup-error", err.message), setupButton("Look again", showPlan)); }
+}
+
+// The one screen before anything is fetched: this computer in four figures, a model for each job, the space it
+// takes and where, and one button. How it was all chosen is a click away, not on the screen.
+function renderPlan(plan, problem) {
+  const hw = plan.hardware, speed = plan.speed, here = hw.os === "mac" ? "this Mac" : "this computer";
+  const card = setupCard("Set up your assistant", `Private AI that runs on ${here}. Nothing you ask leaves it.`);
+
+  const tiles = el("div", "tiles");
+  const tile = (value, label, hint) => {
+    const box = el("div", "tile");
+    box.append(el("div", "tile-value", value), el("div", "tile-label", label));
+    box.title = hint || value;
+    tiles.appendChild(box);
+  };
+  tile(hw.chip, "Chip");
+  tile(`${hw.ram_gb} GB`, "Memory", hw.budget_gb ? `${hw.budget_gb} GB of it can go to models` : "");
+  tile(hw.gpu === "apple" ? "Apple GPU" : hw.gpu === "none" ? "None" : `${hw.gpu === "nvidia" ? "NVIDIA" : "AMD"} ${hw.vram_gb} GB`, "Graphics",
+       hw.gpu === "apple" ? "Apple GPU and Neural Engine, sharing the memory" : hw.gpu === "none" ? "Models will run on the processor, slowly" : "");
+  if (speed) tile(`~${Math.round(speed.step_s)} s`, speed.measured ? "Per step, measured" : "Per step, estimated",
+                  "How long each step of a task takes here");
+  card.appendChild(tiles);
   if (!plan.model) {
     card.append(el("p", "setup-error", plan.notes.join(" ") || "No model fits this computer."), setupButton("Look again", showPlan));
     return;
   }
-  const pick = el("div", "setup-box"), model = plan.model;
-  // In a sentence first; the planner's own reasons stay a click away.
-  const facts = [model.need_gb ? `uses ${model.need_gb.toFixed(1)} of this computer's ${hw.ram_gb} GB of memory` : "",
-                 model.step_s ? `about ${Math.round(model.step_s)} seconds for each step of a task` : "",
-                 model.vision ? "reads pictures and screenshots" : "text only"].filter(Boolean).join(" · ");
-  const why = el("details", "setup-why");
-  why.append(el("summary", "", "Why this one"), el("div", "muted small", model.reasons.join(" · ")));
-  pick.append(el("div", "section-title", "The model for this computer"), el("div", "setup-model", model.id),
-              el("div", "muted small", facts.charAt(0).toUpperCase() + facts.slice(1)), why);
-  const list = el("div", "setup-box");
-  list.appendChild(el("div", "section-title", "To download"));
-  for (const item of plan.downloads) {
-    const row = el("div", "setup-row");
-    row.append(el("span", "", item.what), el("span", "muted", gb(item.gb)));
-    list.appendChild(row);
+
+  card.appendChild(el("div", "setup-label", `Recommended for ${here}`));
+  const roles = el("div", "roles");
+  for (const role of plan.roles || []) {
+    const row = el("div", "role" + (role.shared ? " shared" : "") + (role.missing ? " missing" : ""));
+    row.title = [role.job, role.on].filter(Boolean).join(" · ");
+    row.append(icon(ROLE_ICONS[role.key] || ROLE_ICONS.planner), el("span", "role-job", role.short || role.job),
+               el("span", "role-model", role.shared ? "Same model" : role.model),
+               el("span", "role-size", role.shared || role.missing ? "" : role.download_gb ? gb(role.download_gb) : "Installed"));
+    roles.appendChild(row);
   }
-  const total = el("div", "setup-row total");
-  total.append(el("span", "", plan.downloads.length ? "In all" : "Nothing: everything it needs is already here"),
-               el("span", "", `${plan.downloads.length ? gb(plan.download_gb) + " · " : ""}${gb(plan.free_gb)} free on the disk`));
-  list.appendChild(total);
-  card.append(pick, list);
+  card.appendChild(roles);
+
+  // The free space as one bar, with what this takes of it. Then where it all goes.
+  const disk = el("div", "disk"), line = el("div", "disk-line"), sizes = el("span", "disk-sizes");
+  const tight = plan.download_gb > plan.room_gb;          // it would take the disk under what is always left free
+  if (plan.download_gb && plan.free_gb > 0) {
+    const bar = el("div", "diskbar" + (tight ? " tight" : "")), take = el("span", "take");
+    take.style.width = `${Math.min(plan.download_gb / plan.free_gb * 100, 100)}%`;
+    bar.appendChild(take);
+    bar.title = `${gb(plan.free_gb)} free` + (plan.disk_gb ? ` of ${gb(plan.disk_gb)}` : "");
+    disk.appendChild(bar);
+  }
+  sizes.append(el("i", "dot" + (tight ? " tight" : "")),
+               el("b", "", plan.downloads.length ? `${gb(plan.download_gb)} to download` : "Nothing to download"),
+               el("span", "muted", tight ? ` · ${gb(plan.free_gb)} free` : ` · ${gb(Math.max(plan.after_gb, 0))} free afterwards`));
+  const place = el("span", "place"), change = el("button", "linkish", "Change"), standard = el("button", "linkish", "Reset");
+  change.type = standard.type = "button";
+  standard.title = "Use the usual folder";
+  const path = el("span", "place-path", plan.models_dir_short || plan.models_dir);
+  path.title = plan.models_dir;
+  place.append(path, change);
+  if (!plan.models_dir_default) place.appendChild(standard);
+  line.append(sizes, place);
+  disk.appendChild(line);
+  const form = el("form", "place-form"), box = el("input"), save = el("button", "btn", "Keep them here");
+  box.type = "text"; box.value = plan.models_dir; box.setAttribute("aria-label", "Folder for the models"); box.spellcheck = false;
+  form.append(box, save);
+  form.hidden = true;
+  const move = async (path) => {
+    change.disabled = save.disabled = standard.disabled = true;
+    try { renderPlan(await api("/api/setup", {method: "POST", body: JSON.stringify({action: "location", path})})); }
+    catch (err) { renderPlan(plan, err.message); }
+  };
+  change.onclick = async () => {
+    if (window.coderunnerShell?.pickFolder) {
+      const picked = await window.coderunnerShell.pickFolder(plan.models_dir);
+      if (picked) move(picked);
+    } else { form.hidden = !form.hidden; if (!form.hidden) box.focus(); }
+  };
+  form.onsubmit = (event) => { event.preventDefault(); move(box.value); };
+  standard.onclick = () => move("");
+  disk.appendChild(form);
+  if (problem) disk.appendChild(el("p", "setup-error", problem));
+  if (tight) {
+    disk.appendChild(el("p", "setup-error", `Not enough room here: ${gb(plan.floor_gb)} is always left free. ` +
+                                            `Free ${gb(plan.download_gb - plan.room_gb)} or keep the models on another disk.`));
+  }
+  card.appendChild(disk);
+
   for (const note of plan.notes) card.appendChild(el("p", "setup-note", note));
-  card.appendChild(setupButton(plan.downloads.length ? "Download and set up" : "Set up", async () => {
+  const go = setupButton(plan.downloads.length ? "Download and set up" : "Set up", async () => {
     await api("/api/setup", {method: "POST", body: JSON.stringify({action: "start"})}).catch(() => {});   // 409: one is running
     watchSetup();
-  }));
+  });
+  go.disabled = tight;
+  card.appendChild(go);
+
+  const why = el("details", "setup-why"), list = el("dl", "why");
+  const say = (name, text) => list.append(el("dt", "", name), el("dd", "", text));
+  say(plan.model.name, plan.model.reasons.join(" · "));
+  if (speed) {
+    const rates = `reads ${Math.round(speed.read_tok_s)} and writes ${Math.round(speed.tok_s)} tokens a second`;
+    const tasks = speed.tasks ? ` It finished ${speed.tasks.passed} of ${speed.tasks.total} sample tasks.` : "";
+    say("Speed", speed.measured ? `Measured here${speed.when ? ` (${speed.when})` : ""}: it ${rates}.${tasks}` :
+        `Estimated from this chip's memory speed (${Math.round(speed.bandwidth_gbs)} GB/s): it ${rates}. ` +
+        "Setup measures it for real, and picks a smaller model if this one is too slow.");
+  }
+  if (hw.budget_gb) say("Memory", `${hw.budget_gb} of ${hw.ram_gb} GB can go to models; the rest stays with the system and your apps.`);
+  const others = (plan.alternatives || []).map((a) => `${a.name} (${Math.round(a.step_s)} s a step)`).join(", ");
+  if (others) say("Also fit", others);
+  if (plan.downloads.length) say("Downloads", plan.downloads.map((d) => `${d.label || d.what} ${gb(d.gb)}`).join(" · "));
+  say("Disk", `${gb(plan.free_gb)} free now; ${plan.floor_gb} GB is always left free.`);
+  why.append(el("summary", "", "How these were chosen"), list);
+  why.addEventListener("toggle", () => { if (why.open) why.scrollIntoView({behavior: "smooth", block: "end"}); });
+  card.appendChild(why);
 }
 
+// The stages of a setup, one row each, kept and filled in as setup goes on (so a bar moves instead of being
+// drawn again): done, running (with a bar, counted while something downloads) or failed.
+function showStages(box, job) {
+  const rows = box.rows || (box.rows = new Map());
+  for (const stage of job.stages || []) {
+    let r = rows.get(stage.key);
+    if (!r) {
+      r = {row: el("div", "stage"), mark: el("span", "stage-mark"), label: el("span", "stage-label"), amount: el("span", "stage-amount"),
+           bar: el("div", "bar"), fill: el("span"), detail: el("div", "muted small")};
+      const head = el("div", "stage-head"), body = el("div", "stage-body");
+      head.append(r.label, r.amount);
+      r.bar.appendChild(r.fill);
+      body.append(head, r.bar, r.detail);
+      r.row.append(r.mark, body);
+      box.appendChild(r.row);
+      rows.set(stage.key, r);
+    }
+    const running = stage.state === "running", counted = running && stage.percent != null;
+    r.row.className = "stage " + stage.state;
+    r.mark.textContent = stage.state === "done" ? "✓" : stage.state === "failed" ? "!" : "";
+    if (r.label.textContent !== stage.label) r.label.textContent = stage.label;
+    r.amount.textContent = counted ? `${stage.percent}%` + (stage.of_gb ? ` of ${gb(stage.of_gb)}` : "") : "";
+    r.bar.hidden = !running;
+    r.bar.classList.toggle("busy", running && !counted);
+    r.fill.style.width = counted ? `${stage.percent}%` : "";
+    r.detail.textContent = stage.state === "failed" ? stage.detail || "" : "";
+    r.detail.hidden = !r.detail.textContent;
+  }
+  box.hidden = !rows.size;
+}
+
+// While setup runs there is time to say what this is for. One picture: the assistant in the middle of this
+// computer, reaching in turn for the things it works with, and a line for each. Everything stays inside the
+// outline; that is the point, and it is not said twice.
+const SHOWCASE = [
+  ["Your files", "M8 4h6l4 4v12H8z M14 4v4h4", "Finds the lease you signed two years ago, and the clause you were looking for."],
+  ["The web", "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16 M4 12h16 M12 4c3 3 3 13 0 16 M12 4c-3 3-3 13 0 16", "Looks across a few shops and tells you where the price is real."],
+  ["Its own computer", "M5 6h14v9H5z M9 19h6 M12 15v4", "Works on a computer of its own, where you can watch, or take the mouse."],
+  ["Your voice", "M6 10v4 M9 7v10 M12 5v14 M15 8v8 M18 10v4", "Listens when you would rather say it than type it."],
+  ["Your say", "M12 4l7 3v5c0 4-3 7-7 8c-4-1-7-4-7-8V7z M9 12l2 2l4-4", "Stops and asks before it pays, books, sends or deletes anything."],
+  ["Your day", "M5 7h14v12H5z M5 10h14 M9 5v3 M15 5v3", "Knows what is on tomorrow, and drafts the note that moves it."],
+];
+let showcaseTimer = null;
+
+function showcase() {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = (tag, attrs, parent) => {
+    const node = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    parent?.appendChild(node);
+    return node;
+  };
+  const box = el("div", "showcase");
+  const art = svg("svg", {viewBox: "0 0 640 236", role: "img", "aria-label": "What the assistant does, all of it on this computer"});
+  svg("rect", {class: "sc-frame", x: 8, y: 8, width: 624, height: 220, rx: 22}, art);
+  svg("text", {class: "sc-label", x: 30, y: 36}, art).textContent = "On this computer";
+  const centre = [320, 122], links = [], nodes = [];
+  SHOWCASE.forEach(([name, icon], i) => {
+    const angle = (i / SHOWCASE.length) * 2 * Math.PI - Math.PI / 2 + Math.PI / SHOWCASE.length;
+    const x = centre[0] + 232 * Math.cos(angle), y = centre[1] + 70 * Math.sin(angle);
+    links.push(svg("line", {class: "sc-link", x1: centre[0], y1: centre[1], x2: x, y2: y}, art));
+    const node = svg("g", {class: "sc-node", transform: `translate(${x - 21} ${y - 21})`});
+    svg("circle", {cx: 21, cy: 21, r: 21}, node);
+    svg("path", {d: icon, transform: "translate(9 9)"}, node);
+    svg("title", {}, node).textContent = name;
+    nodes.push(node);
+  });
+  nodes.forEach((node) => art.appendChild(node));            // above the lines
+  svg("circle", {class: "sc-halo", cx: centre[0], cy: centre[1], r: 22}, art);
+  svg("circle", {class: "sc-orb", cx: centre[0], cy: centre[1], r: 13}, art);
+  const caption = el("p", "sc-caption");
+  box.append(art, caption);
+  let at = -1;
+  const next = () => {
+    if (!box.isConnected && at >= 0) { clearInterval(showcaseTimer); return; }
+    at = (at + 1) % SHOWCASE.length;
+    nodes.forEach((n, i) => n.classList.toggle("on", i === at));
+    links.forEach((l, i) => l.classList.toggle("on", i === at));
+    caption.style.opacity = 0;
+    setTimeout(() => { caption.textContent = SHOWCASE[at][2]; caption.style.opacity = 1; }, 320);
+  };
+  clearInterval(showcaseTimer);
+  next();
+  showcaseTimer = setInterval(next, 4200);
+  return box;
+}
+
+// While setup runs the same card is kept and only what changed is filled in, so what is on it does not flicker.
+let progressView = null;
+
 function renderProgress(job) {
-  const title = job.state === "running" ? "Setting up…" : job.state === "done" ? "Ready" : "Setup did not finish";
-  const card = setupCard(title);
-  if (job.state === "running") {
-    card.appendChild(el("p", "muted", "Downloading the model and testing it on this computer. It carries on if you close this window."));
+  const running = job.state === "running";
+  if (running && progressView?.card.isConnected) {
+    showStages(progressView.stages, job);
+    progressView.log.replaceChildren(...job.lines.map((line) => el("div", "", line)));
+    progressView.details.hidden = !job.lines.length;
+    if (progressView.details.open) progressView.log.scrollTop = progressView.log.scrollHeight;
+    return;
   }
-  const log = el("div", "setup-log");
-  for (const line of job.lines) log.appendChild(el("div", "", line));
-  card.appendChild(log);
-  log.scrollTop = log.scrollHeight;
-  if (job.state === "failed") {
-    card.append(el("p", "setup-error", job.result?.error || "Setup failed."), setupButton("Look again", showPlan));
-  } else if (job.state === "done") {
-    card.appendChild(el("p", "muted", "Starting the assistant with its model…"));
+  const license = job.state === "failed" ? job.result?.needs_license : null;
+  if (license) { progressView = null; renderLicense(license); return; }
+  const card = setupCard(running ? "Setting up your assistant" : job.state === "done" ? "Ready" : "Setup did not finish",
+                         running ? "This takes a while the first time. It keeps going if you close the window." :
+                         job.state === "done" ? "Starting the assistant with its model…" : "");
+  const stages = el("div", "stages");
+  showStages(stages, job);
+  // What setup itself printed, for whoever wants it; open when there are no stages to show instead.
+  const details = el("details", "setup-why"), log = el("div", "setup-log");
+  details.open = !stages.children.length && job.lines.length > 0;
+  details.hidden = !job.lines.length;
+  log.append(...job.lines.map((line) => el("div", "", line)));
+  details.append(el("summary", "", "Details"), log);
+  card.appendChild(stages);
+  if (running) {
+    card.append(showcase(), details);
+    progressView = {card, stages, details, log};
+    return;
   }
+  progressView = null;
+  if (job.state === "failed") card.append(el("p", "setup-error", job.result?.error || "Setup failed."), setupButton("Look again", showPlan));
+  card.appendChild(details);
+}
+
+// Setup stopped at a model whose licence asks to be agreed to: say which and why, link to it, and go on from
+// here on a yes.
+function renderLicense(license) {
+  const card = setupCard("One thing to agree to", `${modelName(license.model)} comes with a licence that asks for your agreement.`);
+  const box = el("div", "roles license");
+  const reason = (license.reason || "").replace(/;?\s*review \S+ and accept it once/, "");
+  box.appendChild(el("div", "", reason ? `${reason}.` : "Its licence has terms to accept before it is downloaded."));
+  if (/^https?:\/\//.test(license.link || "")) {
+    const link = el("a", "linkish", "Read the licence");
+    link.href = license.link; link.target = "_blank"; link.rel = "noopener";
+    box.appendChild(link);
+  }
+  card.appendChild(box);
+  const agree = setupButton("Agree and continue", async () => {
+    await api("/api/setup", {method: "POST", body: JSON.stringify({action: "start", model: license.model, accept_license: true})}).catch(() => {});
+    watchSetup();
+  });
+  const other = el("button", "linkish setup-other", "Choose again");
+  other.type = "button";
+  other.onclick = showPlan;
+  card.append(agree, el("div", "", ""), other);
 }
 
 async function watchSetup() {
