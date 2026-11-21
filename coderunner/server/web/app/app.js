@@ -619,7 +619,7 @@ function icon(d) {
 }
 
 const ROLE_ICONS = {
-  planner: "M12 4l2.1 5.9L20 12l-5.9 2.1L12 20l-2.1-5.9L4 12l5.9-2.1z",
+  planner: "M9 7h10 M9 12h10 M9 17h10 M5 7h.01 M5 12h.01 M5 17h.01",
   eyes: "M3 12s3.5-6 9-6s9 6 9 6s-3.5 6-9 6s-9-6-9-6z M12 9.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5",
   search: "M11 5a6 6 0 1 0 0 12a6 6 0 1 0 0-12 M20 20l-4.6-4.6",
   voice: "M6 10v4 M9 7v10 M12 5v14 M15 8v8 M18 10v4",
@@ -804,60 +804,143 @@ function showStages(box, job) {
   box.hidden = !rows.size;
 }
 
-// While setup runs there is time to say what this is for. One picture: the assistant in the middle of this
-// computer, reaching in turn for the things it works with, and a line for each. Everything stays inside the
-// outline; that is the point, and it is not said twice.
-const SHOWCASE = [
-  ["Your files", "M8 4h6l4 4v12H8z M14 4v4h4", "Finds the lease you signed two years ago, and the clause you were looking for."],
-  ["The web", "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16 M4 12h16 M12 4c3 3 3 13 0 16 M12 4c-3 3-3 13 0 16", "Looks across a few shops and tells you where the price is real."],
-  ["Its own computer", "M5 6h14v9H5z M9 19h6 M12 15v4", "Works on a computer of its own, where you can watch, or take the mouse."],
-  ["Your voice", "M6 10v4 M9 7v10 M12 5v14 M15 8v8 M18 10v4", "Listens when you would rather say it than type it."],
-  ["Your say", "M12 4l7 3v5c0 4-3 7-7 8c-4-1-7-4-7-8V7z M9 12l2 2l4-4", "Stops and asks before it pays, books, sends or deletes anything."],
-  ["Your day", "M5 7h14v12H5z M5 10h14 M9 5v3 M15 5v3", "Knows what is on tomorrow, and drafts the note that moves it."],
+// While setup runs: the app itself, in small. A request is typed and sent, the assistant says what it is doing,
+// what it found and its answer come in as they would in a real task, and the next request slides over. What it
+// shows is what the assistant is for; none of it is said in a caption.
+const DEMOS = [
+  {title: "Your files", icon: "M8 4h6l4 4v12H8z M14 4v4h4", ask: "When does my lease end?", doing: ["Searching your files", "Reading Lease-2024.pdf"],
+   show: [{file: "Lease-2024.pdf", where: "Documents › Home"}],
+   answer: "It ends on **31 March 2027**. Notice is two months, so tell them by 31 January."},
+  {title: "The web", icon: "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16 M4 12h16 M12 4c3 3 3 13 0 16 M12 4c-3 3-3 13 0 16",
+   ask: "Cheapest Pixel 8 on Amazon or Flipkart?", doing: ["Opening amazon.in", "Opening flipkart.com"],
+   show: [{page: "flipkart.com", rows: [["Flipkart", "₹47,999", "4.8★"], ["Amazon.in", "₹49,999", "4.6★"]]}],
+   answer: "**Flipkart**, by ₹2,000. The same 128 GB model, a year's warranty on both."},
+  {title: "Asks before it sends", icon: "M12 4l7 3v5c0 4-3 7-7 8c-4-1-7-4-7-8V7z M9 12l2 2l4-4",
+   ask: "Email Sam that I'll be ten minutes late", doing: ["Writing the email"],
+   show: [{approve: "Send this to Sam Lee?", text: "Running ten minutes late, please start without me."}],
+   answer: "Sent to Sam."},
+  {title: "Your day", icon: "M5 7h14v12H5z M5 10h14 M9 5v3 M15 5v3", ask: "What's on tomorrow?", doing: ["Checking your calendar"],
+   show: [{list: [["10:00", "Design review"], ["13:00", "Lunch with Priya"], ["17:30", "Dentist"]]}],
+   answer: "Three things. The dentist runs into your 5 pm call: shall I move the call?"},
+  {title: "By voice", icon: "M6 10v4 M9 7v10 M12 5v14 M15 8v8 M18 10v4", voice: true, ask: "Remind me to call mum at six", doing: ["Setting a reminder"], show: [],
+   answer: "Done. I'll remind you at **6:00 pm**."},
 ];
-let showcaseTimer = null;
+
+function demoItem(item) {
+  if (item.file) {
+    const row = el("div", "demo-file");
+    const text = el("div", "");
+    text.append(el("div", "demo-strong", item.file), el("div", "muted", item.where));
+    row.append(icon("M8 4h6l4 4v12H8z M14 4v4h4"), text);
+    return row;
+  }
+  const table = (rows) => {
+    const made = el("table", "md-table demo-table");
+    rows.forEach((cells, i) => {
+      const row = made.insertRow();
+      if (i === 0) row.className = "best";
+      for (const cell of cells) row.insertCell().textContent = cell;
+    });
+    return made;
+  };
+  if (item.page) {            // a page's picture, as a task's thread carries one, beside what was read off it
+    const row = el("div", "demo-page"), figure = el("div", ""), sheet = el("div", "demo-sheet");
+    sheet.append(el("i", "bar-a"), el("i", "tile"), el("i", "tile"), el("i", "tile"), el("i", "line"), el("i", "line short"));
+    figure.append(sheet, el("div", "demo-host muted", item.page));
+    row.append(figure, table(item.rows));
+    return row;
+  }
+  if (item.list) {
+    const list = el("div", "demo-list");
+    for (const [time, what] of item.list) { const row = el("div", ""); row.append(el("span", "muted", time), el("span", "", what)); list.appendChild(row); }
+    return list;
+  }
+  const card = el("div", "ask demo-ask"), row = el("div", "row");
+  row.append(el("span", "btn primary", "Allow"), el("span", "btn", "Deny"));
+  card.append(el("div", "ask-title", item.approve), el("div", "muted", `“${item.text}”`), row);
+  return card;
+}
 
 function showcase() {
-  const NS = "http://www.w3.org/2000/svg";
-  const svg = (tag, attrs, parent) => {
-    const node = document.createElementNS(NS, tag);
-    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
-    parent?.appendChild(node);
-    return node;
-  };
-  const box = el("div", "showcase");
-  const art = svg("svg", {viewBox: "0 0 640 236", role: "img", "aria-label": "What the assistant does, all of it on this computer"});
-  svg("rect", {class: "sc-frame", x: 8, y: 8, width: 624, height: 220, rx: 22}, art);
-  svg("text", {class: "sc-label", x: 30, y: 36}, art).textContent = "On this computer";
-  const centre = [320, 122], links = [], nodes = [];
-  SHOWCASE.forEach(([name, icon], i) => {
-    const angle = (i / SHOWCASE.length) * 2 * Math.PI - Math.PI / 2 + Math.PI / SHOWCASE.length;
-    const x = centre[0] + 232 * Math.cos(angle), y = centre[1] + 70 * Math.sin(angle);
-    links.push(svg("line", {class: "sc-link", x1: centre[0], y1: centre[1], x2: x, y2: y}, art));
-    const node = svg("g", {class: "sc-node", transform: `translate(${x - 21} ${y - 21})`});
-    svg("circle", {cx: 21, cy: 21, r: 21}, node);
-    svg("path", {d: icon, transform: "translate(9 9)"}, node);
-    svg("title", {}, node).textContent = name;
-    nodes.push(node);
-  });
-  nodes.forEach((node) => art.appendChild(node));            // above the lines
-  svg("circle", {class: "sc-halo", cx: centre[0], cy: centre[1], r: 22}, art);
-  svg("circle", {class: "sc-orb", cx: centre[0], cy: centre[1], r: 13}, art);
-  const caption = el("p", "sc-caption");
-  box.append(art, caption);
-  let at = -1;
-  const next = () => {
-    if (!box.isConnected && at >= 0) { clearInterval(showcaseTimer); return; }
-    at = (at + 1) % SHOWCASE.length;
-    nodes.forEach((n, i) => n.classList.toggle("on", i === at));
-    links.forEach((l, i) => l.classList.toggle("on", i === at));
-    caption.style.opacity = 0;
-    setTimeout(() => { caption.textContent = SHOWCASE[at][2]; caption.style.opacity = 1; }, 320);
-  };
-  clearInterval(showcaseTimer);
-  next();
-  showcaseTimer = setInterval(next, 4200);
-  return box;
+  const wrap = el("div", "showcase"), box = el("div", "demo"), stage = el("div", "demo-stage");
+  const composer = el("div", "demo-composer"), typed = el("span", "demo-typed"), send = el("span", "demo-send", "↑");
+  const mic = el("span", "demo-mic"), dots = el("div", "demo-dots");
+  for (let i = 0; i < 4; i++) mic.appendChild(el("i"));
+  composer.append(mic, typed, el("span", "demo-caret"), send);
+  DEMOS.forEach(() => dots.appendChild(el("i")));
+  const bar = el("div", "demo-bar"), label = el("span", "demo-label");
+  bar.appendChild(label);
+  box.append(bar, stage, composer);
+  wrap.append(box, dots);
+  wrap.setAttribute("aria-hidden", "true");       // decoration: setup's progress above is what is read out
+  const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const add = (panel, node) => { if (!calm) node.classList.add("demo-in"); panel.appendChild(node); return node; };
+
+  // The answer comes in word by word; **bold** is made as it arrives, not shown as asterisks first.
+  async function stream(node, text) {
+    const parts = text.split("**");
+    for (let i = 0; i < parts.length; i++) {
+      const into = i % 2 ? node.appendChild(el("strong")) : node;
+      for (const word of parts[i].split(/(?<= )/)) {
+        if (!word) continue;
+        into.appendChild(document.createTextNode(word));
+        if (!calm) await wait(55);
+      }
+    }
+  }
+
+  async function play(index) {
+    const demo = DEMOS[index], panel = el("div", "demo-panel enter"), before = stage.firstElementChild;
+    [...dots.children].forEach((dot, i) => dot.classList.toggle("on", i === index));
+    label.replaceChildren(icon(demo.icon), el("span", "", demo.title));
+    stage.appendChild(panel);
+    if (before) { before.classList.add("leave"); setTimeout(() => before.remove(), 650); }
+    panel.getBoundingClientRect();                 // placed off to the right first, so that it slides in
+    panel.classList.remove("enter");
+    composer.classList.toggle("voice", Boolean(demo.voice));
+    typed.textContent = "";
+    await wait(calm ? 200 : 500);
+    for (const piece of demo.voice ? demo.ask.split(/(?<= )/) : demo.ask) {       // spoken: a word at a time
+      typed.textContent += piece;
+      if (!calm) await wait(demo.voice ? 190 : 24 + Math.random() * 34);
+      if (!wrap.isConnected) return;
+    }
+    await wait(420);
+    send.classList.add("go");
+    await wait(170);
+    send.classList.remove("go");
+    typed.textContent = "";
+    composer.classList.remove("voice");
+    add(panel, el("div", "bubble-user", demo.ask));
+    await wait(520);
+    const now = add(panel, el("div", "now"));
+    now.append(el("span", "now-dot"), el("span", "now-what"));
+    for (const doing of demo.doing) { now.lastChild.textContent = `${doing}…`; await wait(1150); }
+    for (const item of demo.show) {
+      const node = add(panel, demoItem(item));
+      panel.insertBefore(node, now);                // what is found goes above the line that says what is happening
+      await wait(850);
+      if (item.approve) {                           // the owner's yes, before anything is sent
+        now.lastChild.textContent = "Waiting for you…";
+        await wait(900);
+        node.querySelector(".btn.primary").classList.add("pressed");
+        await wait(380);
+        node.classList.add("closed");
+        node.querySelector(".row").replaceChildren(el("span", "muted", "Allowed"));
+        await wait(350);
+      }
+    }
+    now.remove();
+    await stream(add(panel, el("div", "answer")), demo.answer);
+    await wait(3600);
+  }
+
+  (async () => {
+    await wait(80);                                 // the card is on the page by now
+    for (let i = 0; wrap.isConnected; i = (i + 1) % DEMOS.length) await play(i);
+  })();
+  return wrap;
 }
 
 // While setup runs the same card is kept and only what changed is filled in, so what is on it does not flicker.

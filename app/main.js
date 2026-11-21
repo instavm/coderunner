@@ -5,7 +5,7 @@
 //   - opens every other address in the default browser, never inside the app;
 //   - denies the page every permission except notifications;
 //   - shows the system's folder dialog when the page asks where to keep the models (preload.js).
-const {app, BrowserWindow, Menu, dialog, ipcMain, session, shell} = require("electron");
+const {app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, session, shell} = require("electron");
 const {execFile} = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -34,11 +34,21 @@ const ORIGIN = `http://${ADDRESS}`;
 
 const escapeHtml = (text) => String(text).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 
+// What the window shows until the daemon answers: the same look as the page's own setup screens, light or dark
+// with the system.
 function waitingPage(title, message) {
-  const html = `<!doctype html><meta charset="utf-8"><title>CodeRunner</title>
-  <body style="font:15px -apple-system,system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0;
-  background:#f6f5f2;color:#1d1c1a"><div style="max-width:460px;text-align:center"><h2>${escapeHtml(title)}</h2>
-  <p style="color:#6f6c64">${escapeHtml(message)}</p></div></body>`;
+  const html = `<!doctype html><meta charset="utf-8"><title>CodeRunner</title><style>
+  :root { color-scheme: light dark; --bg: #f6f6f7; --text: #17181c; --muted: #696c76; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #101114; --text: #e9eaee; --muted: #9093a0; } }
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; display: grid; place-items: center;
+    height: 100vh; margin: 0; background: var(--bg); color: var(--text); -webkit-app-region: drag; }
+  div { max-width: 460px; padding: 0 24px; text-align: center; }
+  i { display: inline-block; width: 44px; height: 44px; border-radius: 11px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 8l4 4-4 4M13 16h4'/%3E%3C/svg%3E") center / 74% no-repeat,
+      #2563eb; }
+  h1 { font-size: 25px; font-weight: 650; letter-spacing: -0.02em; margin: 14px 0 4px; }
+  p { color: var(--muted); margin: 0; }
+  </style><body><div><i></i><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></div></body>`;
   return "data:text/html;charset=utf-8," + encodeURIComponent(html);
 }
 
@@ -74,7 +84,7 @@ function startDaemon() {
 function createWindow() {
   const win = new BrowserWindow({
     width: 1152, height: 720, minWidth: 760, minHeight: 520, title: "CodeRunner", show: false,
-    backgroundColor: "#f6f5f2",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#101114" : "#f6f6f7",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     trafficLightPosition: {x: 16, y: 14},
     webPreferences: {contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: true,

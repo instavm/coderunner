@@ -774,8 +774,10 @@ task list, no computer panel). Before anything is fetched it shows, on one scree
 Setup then shows the stages it has reached, the running one with a bar (a download with its percentage and
 the time it has left, from how fast it has been going), in the words of that first screen
 (downloading the planning model, testing tools and vision, measuring speed, file search, voice) and never a
-file's name; setup's own lines are under "Details". Below them a small animation goes through what the
-assistant is for. It is the same setup as `coderunner setup`, run in the daemon, and it carries on if the
+file's name; setup's own lines are under "Details". Below them the app plays itself in small: a request is
+typed and sent, the assistant says what it is doing, and what it found and its answer come in, for five kinds
+of request (files, the web, a message it asks before sending, the day ahead, voice), one sliding in after the
+other. It is the same setup as `coderunner setup`, run in the daemon, and it carries on if the
 window is closed. When it is done the daemon starts again in place with the new model and the page reloads.
 The API behind it, on the owner surface: `GET /api/setup` (state, stages, progress lines, the last plan),
 `POST /api/setup` with `{"action": "plan"}`, `{"action": "location", "path": ...}` (an empty path: the usual
