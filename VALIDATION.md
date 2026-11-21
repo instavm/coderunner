@@ -359,9 +359,17 @@ model; the first screen says when it is short; a setup started from the app does
 did not show; errors are one or two short sentences. With 7.2 GB free the app then refused the load at once
 ("Not enough memory free right now", nothing started) and offered the next model that fits.
 
-Still open: Bonsai 2 27B's speed on llama.cpp is not measured (it needs about 11 GB free on this 18 GB Mac),
-no task has been run in the app with a model, and a second daemon started on a home whose daemon is already
-running is not refused (a stray test daemon answered on the same port for an hour).
+With 71% of memory counted free (12.8 GB) the same button then went through, in the app: the model loaded on
+the pinned llama.cpp build, passed all four checks (a tool call with arguments in 14.7 s, choosing a tool 6.2 s,
+answering without one 4.8 s, naming the colour of a picture 9.2 s) and was timed at 69.4 tokens a second reading
+a 3,999-token prompt and 11.6 writing: 19.8 s for an agent step against 19.3 s estimated. Swap grew by about
+2.6 GB while it was loaded and free memory stayed between 8% and 17%: it runs on this Mac, at the cost of other
+apps' idle memory. The catalog now carries the two factors (0.87 reading, 1.07 writing); with them a 16 GB M2
+goes back to Qwen3.5-9B (Bonsai's steps there would take 28 s).
+
+Still open: no task has been run in the app with this model, the measurement was taken with swap in use, and
+a second daemon started on a home whose daemon is already running is not refused (a stray test daemon answered
+on the same port for an hour).
 
 ## Not yet validated
 

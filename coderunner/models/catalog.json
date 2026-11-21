@@ -139,7 +139,9 @@
           "gpu": [
             "apple"
           ],
-          "streams": 12
+          "streams": 12,
+          "tok_s_factor": 1.07,
+          "read_factor": 0.87
         },
         "prism": {
           "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",

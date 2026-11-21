@@ -746,7 +746,9 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
                 need = _download_gb(entry, cand, rt) + others
                 short = _no_room(config, need)
                 if not other_downloads and (attempts or too_big):
-                    why = attempts[-1]["error"] if attempts else too_big[-1][1]
+                    # An attempt that ran its checks and failed them carries no error of its own.
+                    why = (attempts[-1].get("error") or "it did not pass its checks on this computer") if attempts \
+                        else too_big[-1][1]
                     return _stopped(queue[0]["id"], why, None if short else entry, need, attempts)
                 if short and not other_downloads:
                     room = max(_room_gb(config)[0], 0)

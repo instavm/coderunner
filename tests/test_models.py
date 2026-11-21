@@ -222,8 +222,8 @@ class FitTests(TempHome):
         # Ranked by published benchmarks first, then speed: on 64-128 GB Macs Qwen3.8-27B's scores outweigh
         # the 35B-A3B's faster steps. llama.cpp also reads Bonsai 2 27B's Q2_0 file (the ternary Qwen3.8-27B:
         # 98.2% of its scores in 7.6 GB), which Ollama's catalog entry here does not: from 24 GB up it leads
-        # there, on 64-128 GB by a tie with Qwen3.8-27B that its faster steps decide. Its speed on llama.cpp is
-        # still the estimate from memory bandwidth (not yet timed with this runtime).
+        # there, on 64-128 GB by a tie with Qwen3.8-27B that its faster steps decide. Its speed on llama.cpp was
+        # timed on an 18 GB M3 Pro: 69 tok/s reading, 11.6 writing, 20 s a step (0.87 and 1.07 of the estimate).
         expected = {"ollama": {16: "qwen3.5-4b", 18: "qwen3.5-9b", 24: "qwen3.5-9b", 64: "qwen3.8-27b", 128: "qwen3.8-27b"},
                     "llama.cpp": {16: "qwen3.5-4b", 18: "qwen3.5-9b", 24: "bonsai-2-27b", 64: "bonsai-2-27b",
                                   128: "bonsai-2-27b"}}
@@ -241,14 +241,14 @@ class FitTests(TempHome):
                         self.assertEqual(picks[0]["id"], expected[runtime][ram])
                     self.assertTrue(picks[0]["vision"])
                     self.assertEqual(picks[0]["fit"], "good")
-        # Across runtimes, Bonsai 2 27B leads on 16-24 GB Macs with the lite sandbox: Prism measured it at
-        # 98.2% of Qwen3.8-27B's scores, far above Qwen3.5-9B, which outweighs its slower steps (19 s against
-        # 12 s on an M3 Pro, 28 s against 17 s on a 16 GB M2). The 64-128 GB tie with Qwen3.8-27B is a tie in
-        # utility to one decimal, decided by the faster steps.
+        # Across runtimes, Bonsai 2 27B leads on 18-24 GB Macs with the lite sandbox: Prism measured it at
+        # 98.2% of Qwen3.8-27B's scores, far above Qwen3.5-9B, which outweighs its slower steps (20 s against
+        # 12 s on an M3 Pro). On a 16 GB M2 its steps would take 28 s: the two tie, the faster wins. The
+        # 64-128 GB tie with Qwen3.8-27B is the same kind, a tie in utility to one decimal.
         two = fit.recommend(apple(16, "Apple M2", sandbox=1), cfg)
-        self.assertEqual([c["id"] for c in two[:2]], ["bonsai-2-27b", "qwen3.5-9b"])
-        self.assertGreater(two[0]["step_s"], two[1]["step_s"])
-        self.assertGreater(fit.utility(two[0]), fit.utility(two[1]))
+        self.assertEqual([c["id"] for c in two[:2]], ["qwen3.5-9b", "bonsai-2-27b"])
+        self.assertEqual(round(fit.utility(two[0]), 1), round(fit.utility(two[1]), 1))
+        self.assertLess(two[0]["step_s"], two[1]["step_s"])
         big = fit.recommend(apple(64, "Apple M1 Max"), cfg, runtime="llama.cpp")
         self.assertEqual([c["id"] for c in big[:2]], ["bonsai-2-27b", "qwen3.8-27b"])
         self.assertEqual(round(fit.utility(big[0]), 1), round(fit.utility(big[1]), 1))
@@ -1005,6 +1005,21 @@ class MemoryNowTests(TempHome):
         went_on = manager.setup(self.config(), runtime=rt, hw=hw, progress=lambda m: None, smoke=fake_smoke({}),
                                 measure=False, embedding=False, decision=False, hub=ApacheHub())
         self.assertEqual((went_on["ok"], rt.pulled), (True, [ranked[1]]))
+
+    def test_from_the_app_a_model_that_fails_its_checks_is_said_so_and_the_next_is_offered(self):
+        class OnlyFirstIsHere(FakeLlama):
+            def installed(self, entry):
+                return entry["id"] == self.first
+        hw = apple(24, "Apple M4 Pro", sandbox=1)
+        ranked = [c["id"] for c in fit.recommend(hw, self.config(), runtime="llama.cpp")]
+        rt = OnlyFirstIsHere()
+        rt.first = ranked[0]
+        failing = fake_smoke({rt.model_id(catalog.get(ranked[0])): False})
+        result = manager.setup(self.config(), runtime=rt, hw=hw, progress=lambda m: None, smoke=failing, measure=False,
+                               embedding=False, decision=False, other_downloads=False, hub=ApacheHub())
+        self.assertEqual((result["ok"], rt.pulled, result["next"]["model"]), (False, [], ranked[1]))
+        self.assertTrue(result["error"].endswith("could not be set up: it did not pass its checks on this computer"),
+                        result["error"])
 
     def test_from_the_app_a_download_the_disk_has_no_room_for_is_refused_in_a_sentence(self):
         rt = FakeRuntime()

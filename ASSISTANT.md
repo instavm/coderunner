@@ -148,7 +148,11 @@ declares success. If a model fails the test, the next candidate is tried.
   that setup checks against its SHA-256 (Ori's finding; neither Ollama nor
   Prism's fork is involved), with the maker's vision projector from Hugging
   Face. The registry is slow by the connection (0.15 MB/s each on a line
-  that carries 3 MB/s), so that file comes in twelve ranges at once. Prism
+  that carries 3 MB/s), so that file comes in twelve ranges at once. On an
+  18 GB M3 Pro it passed the tool and vision checks and was timed at 69
+  tokens a second reading and 11.6 writing, 20 s for an agent step (0.87
+  and 1.07 of the estimate from memory bandwidth; the catalog carries the
+  two factors). It needs about 11 GB of memory free to load there. Prism
   ML's other builds (the 1-bit 27B, 3.8 GB, and Bonsai 2's denser PTQ1_0
   and PQ2_0 packings) run on Prism's llama.cpp build, which setup downloads
   pinned to a release and checks against its published checksum; it is used
