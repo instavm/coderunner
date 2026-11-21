@@ -687,7 +687,7 @@ async function showPlan() {
   bar.appendChild(el("span"));
   card.appendChild(bar);
   try { renderPlan(await api("/api/setup", {method: "POST", body: JSON.stringify({action: "plan"})})); }
-  catch (err) { bar.remove(); card.append(el("p", "setup-error", err.message), setupButton("Look again", showPlan)); }
+  catch (err) { bar.remove(); card.append(el("p", "setup-error", err.message), setupButton("Try again", showPlan)); }
 }
 
 // The one screen before anything is fetched: this computer in four figures, a model for each job, the space it
@@ -711,7 +711,7 @@ function renderPlan(plan, problem) {
                   "How long each step of a task takes here");
   card.appendChild(tiles);
   if (!plan.model) {
-    card.append(el("p", "setup-error", plan.notes.join(" ") || "No model fits this computer."), setupButton("Look again", showPlan));
+    card.append(el("p", "setup-error", plan.notes.join(" ") || "No model fits this computer."), setupButton("Try again", showPlan));
     return;
   }
 
@@ -774,6 +774,10 @@ function renderPlan(plan, problem) {
   }
   card.appendChild(disk);
 
+  if (plan.memory?.short) {
+    card.appendChild(el("p", "setup-note", `${plan.model.name} needs ${gb(plan.memory.need_gb)} of memory and ` +
+                                           `${gb(plan.memory.free_gb)} is free right now. Close a few apps before you start.`));
+  }
   for (const note of plan.notes) card.appendChild(el("p", "setup-note", note));
   const go = setupButton(plan.downloads.length ? "Download and set up" : "Set up", async () => {
     await api("/api/setup", {method: "POST", body: JSON.stringify({action: "start"})}).catch(() => {});   // 409: one is running
@@ -853,8 +857,7 @@ function showStages(box, job) {
     r.bar.hidden = !running;
     r.bar.classList.toggle("busy", running && !counted);
     r.fill.style.width = counted ? `${stage.percent}%` : "";
-    r.detail.textContent = stage.state === "failed" ? stage.detail || "" : "";
-    r.detail.hidden = !r.detail.textContent;
+    r.detail.hidden = true;                         // setup's own last line is under Details, not here
   }
   box.hidden = !rows.size;
 }
@@ -1012,6 +1015,8 @@ function renderProgress(job) {
   }
   const license = job.state === "failed" ? job.result?.needs_license : null;
   if (license) { progressView = null; renderLicense(license); return; }
+  const short = job.state === "failed" ? job.result?.memory_short : null;
+  if (short) { progressView = null; renderMemory(short, job.result.next); return; }
   const card = setupCard(running ? "Setting up your assistant" : job.state === "done" ? "Ready" : "Setup did not finish",
                          running ? "This takes a while the first time. It keeps going if you close the window." :
                          job.state === "done" ? "Starting the assistant with its model…" : "");
@@ -1030,7 +1035,24 @@ function renderProgress(job) {
     return;
   }
   progressView = null;
-  if (job.state === "failed") card.append(el("p", "setup-error", job.result?.error || "Setup failed."), setupButton("Look again", showPlan));
+  if (job.state === "failed") {
+    // What went wrong, once, and the ways on: the same again, the next choice where setup named one, or back.
+    const again = (model) => async () => {
+      await api("/api/setup", {method: "POST", body: JSON.stringify({action: "start", ...(model ? {model} : {})})}).catch(() => {});
+      watchSetup();
+    };
+    const next = job.result?.next, back = el("button", "linkish setup-other", "Back");
+    back.type = "button";
+    back.onclick = showPlan;
+    card.append(el("p", "setup-error", job.result?.error || "Setup failed."), setupButton("Try again", again(null)));
+    if (next) {
+      const other = el("button", "btn setup-next", `Use ${next.name || modelName(next.model)}` +
+                                                   (next.download_gb ? ` (${gb(next.download_gb)} download)` : ""));
+      other.onclick = () => { other.disabled = true; again(next.model)(); };
+      card.appendChild(other);
+    }
+    card.append(el("div", "", ""), back);
+  }
   card.appendChild(details);
 }
 
@@ -1051,10 +1073,33 @@ function renderLicense(license) {
     await api("/api/setup", {method: "POST", body: JSON.stringify({action: "start", model: license.model, accept_license: true})}).catch(() => {});
     watchSetup();
   });
-  const other = el("button", "linkish setup-other", "Choose again");
+  const other = el("button", "linkish setup-other", "Back");
   other.type = "button";
   other.onclick = showPlan;
   card.append(agree, el("div", "", ""), other);
+}
+
+// The model suits this computer but not this moment: other apps hold the memory it needs. Say how much, and
+// offer the two ways on: make room and try again, or take the smaller model that fits now.
+function renderMemory(short, next) {
+  const card = setupCard("Not enough memory free right now",
+                         `${modelName(short.model)} needs ${gb(short.need_gb)} and ${gb(short.free_gb)} is free. Close a few apps, then try again.`);
+  const start = (model) => async () => {
+    await api("/api/setup", {method: "POST", body: JSON.stringify({action: "start", ...(model ? {model} : {})})}).catch(() => {});
+    watchSetup();
+  };
+  const bar = el("div", "diskbar membar"), have = el("span", "take");
+  have.style.width = `${Math.min(short.free_gb / short.need_gb * 100, 100)}%`;
+  bar.appendChild(have);
+  bar.title = `${gb(short.free_gb)} free of the ${gb(short.need_gb)} it needs`;
+  card.append(bar, setupButton("Try again", start(null)));
+  if (next) {
+    const other = el("button", "linkish setup-other", `Use ${next.name || modelName(next.model)} instead` +
+                                                      (next.download_gb ? ` (${gb(next.download_gb)} download)` : ""));
+    other.type = "button";
+    other.onclick = () => { other.disabled = true; start(next.model)(); };
+    card.append(el("div", "", ""), other);
+  }
 }
 
 async function watchSetup() {

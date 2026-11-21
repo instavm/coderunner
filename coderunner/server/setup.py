@@ -222,6 +222,9 @@ class SetupJob(Job):
             item["label"] = _download_label(item["what"])
         room, free, floor = manager._room_gb(self.config)
         model, hw = planned.get("model"), planned["hardware"]
+        # What is free at this moment, beside what fits the machine: said before anything is started.
+        now = manager.hardware.available_gb(hw.get("ram_gb") or 0) if model and model.get("runtime") in manager.LOCAL else None
+        need = float((model or {}).get("need_gb") or 0)
         total = round(sum(item["gb"] or 0 for item in items), 2)
         summary = {
             "hardware": {"chip": hw.get("chip") or "unknown chip", "ram_gb": round(hw.get("ram_gb") or 0),
@@ -237,6 +240,8 @@ class SetupJob(Job):
                                 "need_gb": model.get("need_gb"), "tok_s": model.get("tok_s"),
                                 "reasons": model.get("reasons", [])[:4]},
             "roles": roles,
+            "memory": None if now is None or not need else {
+                "need_gb": round(need, 1), "free_gb": round(now, 1), "short": need + manager.MEMORY_MARGIN_GB > now},
             "alternatives": [{"id": c["id"], "name": manager.pretty(c["id"]), "runtime": c.get("runtime"),
                               "step_s": c.get("step_s")} for c in planned.get("alternatives", [])[:4]],
             "notes": planned.get("notes", []), "downloads": items, "download_gb": total,
@@ -338,8 +343,9 @@ class SetupJob(Job):
 
     def _run(self, model: str | None, accept_license: bool) -> None:
         try:
+            # The first screen showed one model and its size: setup does not go on to fetch another by itself.
             result = self._setup(self.config, model_id=model or None, accept_license=accept_license,
-                                 progress=self._say)
+                                 progress=self._say, other_downloads=False)
         except Exception as exc:        # setup reports its failures; this is one it did not foresee
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         if result.get("ok") and self.voice:
@@ -351,7 +357,11 @@ class SetupJob(Job):
                 asyncio.run(Voice(self.config).setup(progress=self._say))
             except Exception as exc:    # voice is optional, as in `coderunner setup`
                 self._say(f"voice setup failed ({exc}); retry later with `coderunner voice setup`")
-        keep = ("ok", "entry", "model", "runtime", "ctx", "vision", "error", "needs_license", "skipped_for_disk")
+        keep = ("ok", "entry", "model", "runtime", "ctx", "vision", "error", "needs_license", "skipped_for_disk",
+                "memory_short", "disk_short", "next")
+        if isinstance(result.get("next"), dict):
+            from ..models import manager
+            result["next"] = {**result["next"], "name": manager.pretty(result["next"]["model"])}
         self._finish({key: result.get(key) for key in keep if key in result})
         if self.audit is not None:
             self.audit.write("setup.finished", ok=bool(result.get("ok")), model=result.get("entry") or "",

@@ -341,6 +341,28 @@ Not run: a model download and everything after it in a clean home (disk space, a
 ports, so a second home would talk to the first one's servers); the installer end to end; voice setup; the
 sandbox image build.
 
+### The app's first run, driven in the Electron app (November 21-22, same Mac)
+
+The setup screen, its folder choice and the failure screens were run in the desktop app on a throwaway home and
+photographed over its debugging port. The planning model was downloaded (7.63 GB, checksum matched; the
+connection fell to 2 Mbps and dropped once, and the download resumed from its ranges).
+
+Loading it did not succeed, and that is the finding. With about 6 GB of memory free (34%), reading Bonsai 2 27B
+into memory took swap from 2.2 to 5.9 GB in 25 seconds and free memory to 1%; a watchdog of the test stopped
+the server. A second try with 8.8 GB free added 1.6 GB of swap within seconds. The plan had said "fits: 9.7 of
+11.7 GB": true of the machine, not of the moment (other apps and another CodeRunner home's VM were open). After
+the stop, setup went on by itself to download a different 6 GB model, and the app's headline error was about
+disk space for a third.
+
+What changed because of it: setup reads the memory free right now before loading and wants 1 GB beside the
+model; the first screen says when it is short; a setup started from the app does not fetch a model that screen
+did not show; errors are one or two short sentences. With 7.2 GB free the app then refused the load at once
+("Not enough memory free right now", nothing started) and offered the next model that fits.
+
+Still open: Bonsai 2 27B's speed on llama.cpp is not measured (it needs about 11 GB free on this 18 GB Mac),
+no task has been run in the app with a model, and a second daemon started on a home whose daemon is already
+running is not refused (a stray test daemon answered on the same port for an hour).
+
 ## Not yet validated
 
 * CodeRunner's own Ollama on Linux: the archives' checksums are the release's own, their layout (`bin/ollama`)

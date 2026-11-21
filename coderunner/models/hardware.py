@@ -168,6 +168,28 @@ def _amd(run) -> tuple[str, float, float] | None:
     return best
 
 
+def available_gb(ram_gb: float = 0, *, run: Callable[[list[str]], str | None] | None = None,
+                 read: Callable[[str], str] | None = None, system: str | None = None) -> float | None:
+    """GiB a new process can take right now without the machine swapping, or None where that cannot be read.
+    macOS: the kernel's own figure (kern.memorystatus_level, the percentage `memory_pressure` prints) of the
+    memory installed. Linux: MemAvailable. A plan says what fits the machine; this says what fits it now, with
+    whatever else is open."""
+    run, read = run or _run, read or _read
+    system = (system or platform.system()).lower()
+    try:
+        if system == "darwin":
+            if not ram_gb:
+                ram_gb = int((run(["sysctl", "-n", "hw.memsize"]) or "0").strip()) / GiB
+            level = int((run(["sysctl", "-n", "kern.memorystatus_level"]) or "").strip())
+            return ram_gb * level / 100 if ram_gb and 0 <= level <= 100 else None
+        if system == "linux":
+            match = re.search(r"MemAvailable:\s+(\d+)\s*kB", read("/proc/meminfo"))
+            return int(match.group(1)) * 1024 / GiB if match else None
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def detect(sandbox_memory_gb: float = 1, *, run: Callable[[list[str]], str | None] | None = None,
            read: Callable[[str], str] | None = None, system: str | None = None,
            machine: str | None = None) -> Hardware:

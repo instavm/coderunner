@@ -67,6 +67,27 @@ class SetupJobTests(unittest.TestCase):
         self.assertEqual(job.public()["plan"], shown)
         self.assertEqual((job.public()["configured"], job.public()["state"]), (False, "idle"))
 
+    def test_the_first_screen_says_when_memory_is_short_right_now_and_setup_fetches_no_other_model_unasked(self):
+        from coderunner.models import hardware
+        seen = {}
+
+        def setup(config, **kw):
+            seen.update(kw)
+            return {"ok": False, "error": "Bonsai 2 27B could not be set up: the server exited",
+                    "next": {"model": "qwen3.5-9b", "download_gb": 6.6}}
+        job = SetupJob(self.svc.config, plan=lambda config: PLAN, setup=setup, voice=False)
+        with mock.patch("coderunner.models.coreml.supported", return_value=False):
+            with mock.patch.object(hardware, "available_gb", return_value=6.1):
+                self.assertEqual(job.plan()["memory"], {"need_gb": 8.2, "free_gb": 6.1, "short": True})
+            with mock.patch.object(hardware, "available_gb", return_value=12.0):
+                self.assertFalse(job.plan()["memory"]["short"])
+            with mock.patch.object(hardware, "available_gb", return_value=None):
+                self.assertIsNone(job.plan()["memory"])
+        self.assertTrue(job.start())
+        self.assertTrue(until(lambda: job.public()["state"] == "failed"))
+        self.assertIs(seen["other_downloads"], False)
+        self.assertEqual(job.public()["result"]["next"], {"model": "qwen3.5-9b", "download_gb": 6.6, "name": "Qwen3.5 9B"})
+
     def test_a_model_that_reads_text_only_is_said_so_and_a_long_folder_is_shown_by_its_end(self):
         import pathlib
         from coderunner.server.setup import _short_path
@@ -106,7 +127,7 @@ class SetupJobTests(unittest.TestCase):
     def test_setup_runs_in_the_background_and_its_progress_is_kept(self):
         release, finished = threading.Event(), []
 
-        def setup(config, model_id=None, accept_license=False, progress=print):
+        def setup(config, model_id=None, accept_license=False, progress=print, **more):
             progress(f"qwen3.5-9b via llama.cpp (asked for {model_id}, licence accepted: {accept_license})")
             release.wait(5)
             progress("smoke testing coderunner-qwen3.5-9b")
@@ -333,7 +354,7 @@ class SetupRouteTests(unittest.IsolatedAsyncioTestCase):
         admin = {"Authorization": "Bearer " + ADMIN}
         release = threading.Event()
 
-        def setup(config, model_id=None, accept_license=False, progress=print):
+        def setup(config, model_id=None, accept_license=False, progress=print, **more):
             progress("downloading")
             release.wait(5)
             return {"ok": False, "error": "stopped by the test"}

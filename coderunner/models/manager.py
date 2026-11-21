@@ -24,6 +24,7 @@ MAX_FALLBACKS = 2
 WORTH_A_NOTE = 0.2          # utility gain (fit.utility) worth suggesting a change to the machine
 SLOWER_THAN_ESTIMATED = 1.5     # measured step time / estimate past which setup looks at the next model
 MIN_FREE_GB = 5.0           # disk kept free by downloads unless files.min_free_gb says otherwise
+MEMORY_MARGIN_GB = 1.0      # memory left free beside a model that loads: with 8.8 GB free, a 9.7 GB model swapped
 LOCAL = ("ollama", "llama.cpp", "prism")
 
 
@@ -613,6 +614,20 @@ def _external(config, rt: Runtime, model_id: str | None, progress, smoke) -> dic
     return {"ok": True, "runtime": rt.name, "base_url": rt.base_url, "model": model, "smoke": result}
 
 
+def _memory_short(cand: dict, hw, rt: Runtime) -> tuple[float, float] | None:
+    """(GB this model needs, GB free right now) when it would not fit in what is free at this moment; None when
+    it fits with a margin, when a server elsewhere runs it, or when free memory cannot be read. Loading Bonsai 2
+    27B (9.7 GB) on an 18 GB Mac took swap from 2.2 to 5.9 GB in 25 seconds with 6 GB free, and by 1.6 GB in
+    seconds with 8.8 GB free; the plan had said it fits the machine."""
+    if rt.name not in LOCAL:
+        return None
+    free = hardware.available_gb(getattr(hw, "ram_gb", 0) or 0)
+    need = float(cand.get("need_gb") or 0)
+    if free is None or not need or need + MEMORY_MARGIN_GB <= free:
+        return None
+    return need, free
+
+
 def _free_gpu(config, keep: Runtime) -> None:
     """Unload the model the assistant used so far before another one loads: two models at once froze an 18 GB
     Mac twice. Ollama keeps its other models (embeddings); a llama.cpp server of another runtime stops (its own
@@ -629,11 +644,23 @@ def _free_gpu(config, keep: Runtime) -> None:
         old.stop()
 
 
+def _stopped(first: str, why: str, entry: dict | None = None, need: float = 0.0, attempts=(), **more) -> dict:
+    """Setup's answer when the model it set out with did not work out and it may not go on to another by
+    itself: what went wrong in a sentence, and the next choice for the owner to take or leave."""
+    out = {"ok": False, "attempts": list(attempts), "error": f"{pretty(first)} could not be set up: {why}", **more}
+    if entry is not None:
+        out["next"] = {"model": entry["id"], "download_gb": round(need, 1)}
+    return out
+
+
 def setup(config, model_id: str | None = None, runtime: str | Runtime | None = None, accept_license: bool = False,
           progress: Callable[[str], None] = print, hw: hardware.Hardware | None = None, embedding: bool = True,
-          smoke=smoketest.run, hub: Hub | None = None, measure=None, decision: bool = True) -> dict:
+          smoke=smoketest.run, hub: Hub | None = None, measure=None, decision: bool = True,
+          other_downloads: bool = True) -> dict:
     """measure times the model once it passes the smoke test (default bench.measure; False skips it);
-    decision also sets up a decision model to judge browser steps when memory allows."""
+    decision also sets up a decision model to judge browser steps when memory allows. With other_downloads
+    off (the app: its first screen showed one model and its size), a model that does not work out is not
+    replaced by one that has to be downloaded: setup stops and names it for the owner to choose."""
     hw = _hardware(config, hw)
     runtime = runtime if runtime is not None else _pinned(config)
     rt = _main_runtime(config, hw, runtime)
@@ -718,6 +745,15 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
                     others = _embedding_download_gb(config, hw, main) if embedding else 0.0
                 need = _download_gb(entry, cand, rt) + others
                 short = _no_room(config, need)
+                if not other_downloads and (attempts or too_big):
+                    why = attempts[-1]["error"] if attempts else too_big[-1][1]
+                    return _stopped(queue[0]["id"], why, None if short else entry, need, attempts)
+                if short and not other_downloads:
+                    room = max(_room_gb(config)[0], 0)
+                    return {"ok": False, "attempts": attempts,
+                            "disk_short": {"model": entry["id"], "need_gb": round(need, 1), "room_gb": round(room, 1)},
+                            "error": f"Not enough disk space: {pretty(entry['id'])} needs {need:.1f} GB and "
+                                     f"{room:.1f} GB can be used. Free {max(need - room, 0.1):.1f} GB and try again."}
                 if short:
                     too_big.append((need, f"{entry['id']} with its embedding models is {short}"))
                     progress(f"skipping {entry['id']}: with its embedding models it is {short}")
@@ -737,6 +773,32 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
                 raise RuntimeError(f"{rt.name} serves {entry['id']} as a {built} build, not the GGUF build "
                                    "its memory was planned for")
             _free_gpu(config, rt)
+            short = _memory_short(cand, hw, rt)
+            if short and model_id:
+                progress(f"warning: {entry['id']} needs {short[0]:.1f} GB of memory and {short[1]:.1f} GB is free "
+                         "right now; loading it anyway because it was requested")
+            elif short:
+                # The model suits the machine but not this moment (other apps are open). Settling for a smaller
+                # one for good because of what happens to be open is the wrong trade: say so, and let the owner
+                # close something or choose the smaller model.
+                need, free = short
+                fits = next((c for c in queue[index + 1:]
+                             if float(c.get("need_gb") or 0) + MEMORY_MARGIN_GB <= free), None)
+                smaller, more = fits and fits["id"], {}
+                if fits:                            # the choice the owner is offered, with what it would download
+                    its = prism if fits.get("runtime") == "prism" and prism is not None else \
+                        llama if fits.get("runtime") == "llama.cpp" and llama is not None else main
+                    other = _entry(smaller, extra)
+                    more["next"] = {"model": smaller,
+                                    "download_gb": 0.0 if its.installed(other) else round(_download_gb(other, fits, its), 1)}
+                progress(f"{entry['id']} needs {need:.1f} GB of memory and {free:.1f} GB is free right now; "
+                         "its download is kept")
+                return {"ok": False, "attempts": attempts,
+                        "memory_short": {"model": entry["id"], "need_gb": round(need, 1), "free_gb": round(free, 1),
+                                         "smaller": smaller}, **more,
+                        "error": f"Not enough memory free: {pretty(entry['id'])} needs {need:.1f} GB and {free:.1f} GB "
+                                 "is free. Close some apps and try again"
+                                 + (f", or use {pretty(smaller)} (--model {smaller})." if smaller else ".")}
             model = rt.prepare(entry, cand["ctx"], offload=True) if cand.get("offload") else \
                 rt.prepare(entry, cand["ctx"])
             progress(f"loading {entry['id']} into memory")
@@ -820,8 +882,9 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
     if too_big and not any("smoke" in a for a in attempts):
         need, smallest = min(too_big)             # the least there is to free
         return {"ok": False, "attempts": attempts, "too_big": [why for _, why in too_big],
-                "error": f"Not enough free disk for a model that suits this machine: {smallest}. Free "
-                         f"{need - _room_gb(config)[0]:.1f} GB more (or lower files.min_free_gb) and run setup again."}
+                "error": f"Not enough disk space: {smallest.split(' with its', 1)[0]} needs {need:.1f} GB and "
+                         f"{max(_room_gb(config)[0], 0):.1f} GB can be used. Free "
+                         f"{max(need - _room_gb(config)[0], 0.1):.1f} GB and run setup again."}
     if attempts and not any("smoke" in a for a in attempts):
         return {"ok": False, "error": f"No model could be set up: {attempts[-1].get('error')}", "attempts": attempts}
     return {"ok": False, "error": "No model passed the tool-calling smoke test", "attempts": attempts}

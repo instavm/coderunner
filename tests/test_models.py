@@ -51,7 +51,9 @@ class TempHome(unittest.TestCase):
         self.addCleanup(llama.stop)
         # Setup fetches its own Ollama where none is installed, and skips downloads the disk has no room for:
         # tests about either turn it on, so the others neither download nor depend on this machine's disk.
-        for target, name, value in ((runtimes.OllamaRuntime, "can_install", False), (manager, "_free_gb", 1e6)):
+        # ...nor on what happens to be open on it: free memory is unknown unless a test says how much there is.
+        for target, name, value in ((runtimes.OllamaRuntime, "can_install", False), (manager, "_free_gb", 1e6),
+                                    (hardware, "available_gb", None)):
             patch = mock.patch.object(target, name, return_value=value)
             patch.start()
             self.addCleanup(patch.stop)
@@ -89,6 +91,16 @@ def nvidia(vram_gb, free_gb=None, name="NVIDIA GeForce RTX 4090"):
 # ---- hardware -----------------------------------------------------------------
 
 class HardwareTests(unittest.TestCase):
+    def test_free_memory_right_now_is_read_from_the_kernel(self):
+        answers = {"hw.memsize": str(18 * 1024 ** 3), "kern.memorystatus_level": "34"}
+        self.assertAlmostEqual(hardware.available_gb(run=lambda cmd: answers[cmd[-1]], system="Darwin"), 6.12, places=2)
+        self.assertAlmostEqual(hardware.available_gb(24, run=lambda cmd: "50", system="Darwin"), 12.0)
+        self.assertIsNone(hardware.available_gb(18, run=lambda cmd: "", system="Darwin"))
+        meminfo = "MemTotal:       32000000 kB\nMemAvailable:   12582912 kB\n"
+        self.assertAlmostEqual(hardware.available_gb(read=lambda path: meminfo, system="Linux"), 12.0)
+        self.assertIsNone(hardware.available_gb(read=lambda path: "MemTotal: 1 kB\n", system="Linux"))
+        self.assertIsNone(hardware.available_gb(system="Windows"))
+
     def test_apple_parsing_and_budget(self):
         hw = apple(18)
         self.assertEqual((hw.gpu, hw.chip, hw.bandwidth_gbs), ("apple", "Apple M3 Pro", 150))
@@ -925,6 +937,86 @@ class FakeRuntime(runtimes.Runtime):
         return self.model_id(entry)
 
 
+class MemoryNowTests(TempHome):
+    """A plan says what fits the machine; setup also looks at what is free at the moment it loads a model."""
+
+    def test_a_model_that_fits_the_machine_but_not_this_moment_is_not_loaded(self):
+        rt, cfg, said = FakeRuntime(), self.config(), []
+        rt.start = mock.Mock()
+        hw = apple(24, "Apple M4 Pro", sandbox=1)
+        first = fit.recommend(hw, cfg, runtime="ollama")[0]
+        with mock.patch.object(hardware, "available_gb", return_value=first["need_gb"] - 3.6):
+            result = manager.setup(cfg, runtime=rt, hw=hw, progress=said.append, smoke=fake_smoke({}), measure=False,
+                                   embedding=False, decision=False)
+        short = result["memory_short"]
+        self.assertEqual((result["ok"], short["model"], short["need_gb"]), (False, first["id"], round(first["need_gb"], 1)))
+        self.assertEqual(short["free_gb"], round(first["need_gb"] - 3.6, 1))
+        self.assertRegex(result["error"], r"^Not enough memory free: .+ needs [\d.]+ GB and [\d.]+ GB is free\. Close some apps")
+        # Nothing was loaded, the download stays for the next try, and no smaller model was settled for.
+        self.assertEqual((rt.prepared, rt.removed, cfg.get("models.chat") or ""), ([], [], ""))
+        self.assertTrue(any("its download is kept" in line for line in said))
+        if short["smaller"]:
+            smaller = next(c for c in fit.recommend(hw, cfg, runtime="ollama") if c["id"] == short["smaller"])
+            self.assertLessEqual(smaller["need_gb"] + manager.MEMORY_MARGIN_GB, short["free_gb"] + 0.05)
+            self.assertIn(f"--model {short['smaller']}", result["error"])
+            self.assertEqual(result["next"]["model"], short["smaller"])     # offered with what it would download
+            self.assertGreater(result["next"]["download_gb"], 0)
+
+    def test_a_margin_is_left_beside_the_model_and_one_asked_for_by_name_is_loaded_anyway(self):
+        hw = apple(24, "Apple M4 Pro", sandbox=1)
+        first = fit.recommend(hw, self.config(), runtime="ollama")[0]
+        # 8.8 GB free for a 9.7 GB model was let through once, and swapped: as much as it needs is not enough.
+        with mock.patch.object(hardware, "available_gb", return_value=first["need_gb"] + 0.5):
+            tight = manager.setup(self.config(), runtime=FakeRuntime(), hw=hw, progress=lambda m: None,
+                                  smoke=fake_smoke({}), measure=False, embedding=False, decision=False)
+        self.assertEqual((tight["ok"], tight["memory_short"]["model"]), (False, first["id"]))
+        with mock.patch.object(hardware, "available_gb", return_value=first["need_gb"] + manager.MEMORY_MARGIN_GB + 0.1):
+            roomy = manager.setup(self.config(), runtime=FakeRuntime(), hw=hw, progress=lambda m: None,
+                                  smoke=fake_smoke({}), measure=False, embedding=False, decision=False)
+        self.assertTrue(roomy["ok"], roomy)
+        rt, said = FakeRuntime(), []
+        with mock.patch.object(hardware, "available_gb", return_value=2.0):
+            asked = manager.setup(self.config(), model_id=first["id"], runtime=rt, hw=hw, progress=said.append,
+                                  smoke=fake_smoke({}), measure=False, embedding=False, decision=False)
+        self.assertTrue(asked["ok"], asked)
+        self.assertTrue(any("loading it anyway because it was requested" in line for line in said))
+
+    def test_from_the_app_a_model_that_does_not_work_out_is_not_replaced_by_another_download(self):
+        class FirstWillNotStart(FakeLlama):
+            def installed(self, entry):
+                return entry["id"] == self.first
+
+            def start(self, timeout=60):
+                if self.prepared and self.prepared[-1][0] == self.first:
+                    raise RuntimeError("the server exited with code 1")
+        hw, cfg = apple(24, "Apple M4 Pro", sandbox=1), self.config()
+        ranked = [c["id"] for c in fit.recommend(hw, cfg, runtime="llama.cpp")]
+        rt = FirstWillNotStart()
+        rt.first = ranked[0]
+        stopped = manager.setup(cfg, runtime=rt, hw=hw, progress=lambda m: None, smoke=fake_smoke({}), measure=False,
+                                embedding=False, decision=False, other_downloads=False, hub=ApacheHub())
+        self.assertEqual((stopped["ok"], rt.pulled), (False, []))                 # nothing was fetched unasked
+        self.assertEqual(stopped["next"]["model"], ranked[1])
+        self.assertGreater(stopped["next"]["download_gb"], 0)
+        self.assertRegex(stopped["error"], r"could not be set up: the server exited with code 1$")
+        # `coderunner setup` in a terminal, which prints what it does, still goes on to the next model.
+        rt = FirstWillNotStart()
+        rt.first = ranked[0]
+        went_on = manager.setup(self.config(), runtime=rt, hw=hw, progress=lambda m: None, smoke=fake_smoke({}),
+                                measure=False, embedding=False, decision=False, hub=ApacheHub())
+        self.assertEqual((went_on["ok"], rt.pulled), (True, [ranked[1]]))
+
+    def test_from_the_app_a_download_the_disk_has_no_room_for_is_refused_in_a_sentence(self):
+        rt = FakeRuntime()
+        with mock.patch.object(manager, "_free_gb", return_value=6.0):
+            result = manager.setup(self.config(), runtime=rt, hw=apple(18), progress=lambda m: None, smoke=fake_smoke({}),
+                                   measure=False, embedding=False, decision=False, other_downloads=False)
+        self.assertEqual((result["ok"], rt.pulled), (False, []))
+        self.assertEqual(result["disk_short"]["room_gb"], 1.0)
+        self.assertRegex(result["error"], r"^Not enough disk space: .+ needs [\d.]+ GB and 1\.0 GB can be used\. Free [\d.]+ GB and try again\.$")
+        self.assertLess(len(result["error"]), 110)
+
+
 class FakeLlama(FakeRuntime):
     name = "llama.cpp"
     base_url = "http://127.0.0.1:8/v1"
@@ -1494,10 +1586,12 @@ class DiskRoomTests(TempHome):
         self.assertEqual(rt.pulled, [])
         for outcome in (result, asked):
             self.assertFalse(outcome["ok"])
-            self.assertIn("Not enough free disk", outcome["error"])
+            self.assertIn("Not enough disk space", outcome["error"])
+            self.assertLess(len(outcome["error"]), 120)                         # said in one short sentence or two
+            self.assertNotIn("min_free_gb", outcome["error"])
         self.assertIn("qwen3.5-9b", asked["error"])
-        self.assertRegex(asked["error"], r"Free 5\.\d GB more")              # 6.5 GB wanted, 1 GB of room
-        self.assertRegex(result["error"], r"qwen3.5-4b.*Free \d\.\d GB more")   # the least to free is named
+        self.assertRegex(asked["error"], r"needs 6\.\d GB and 1\.0 GB can be used\. Free 5\.\d GB")
+        self.assertRegex(result["error"], r"qwen3.5-4b.*Free \d\.\d GB")       # the least to free is named
 
     def test_a_model_already_here_needs_no_room(self):
         rt = FakeRuntime()

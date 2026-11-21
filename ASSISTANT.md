@@ -771,8 +771,19 @@ asks for reduced motion, and are left out of a narrow window. Before anything is
 * the download as a share of the free disk, what is left afterwards, and the folder the models go to, with
   "Change" (the system's folder dialog in the app, a path box in a browser). The folder is `models.dir`; a
   download that would take the disk under `files.min_free_gb` is refused here, with what to free;
+* where the planning model needs more memory than is free at that moment, a line saying so (what it needs,
+  what is free) before anything is started;
 * one button, "Download and set up". "How these were chosen" opens the reasons, the speed estimate, the
   memory budget, the other models that fit and the list of downloads.
+
+Setup looks at memory again before it loads a model (the kernel's own figure of what is free: the percentage
+`memory_pressure` prints on a Mac, `MemAvailable` on Linux) and wants 1 GB left beside the model. A model that
+suits the computer but not that moment is not loaded and not replaced for good by a smaller one: the app says
+"Not enough memory free right now" with what it needs and what is free, "Try again", and the next model that
+fits now as a second choice with its download size. Asked for by name (`--model`), a model is loaded anyway,
+with a warning. A setup started from the app also never goes on to download a model the first screen did not
+show: when the chosen one does not work out it stops, says why in a sentence, and offers the next one.
+`coderunner setup` in a terminal, which prints each step, still moves down its list.
 
 Setup then shows the stages it has reached, the running one with a bar (a download with its percentage and
 the time it has left, from how fast it has been going), in the words of that first screen
