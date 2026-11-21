@@ -1,5 +1,6 @@
-"""Setup from the app: the plan for this machine, and setup itself as a background job whose progress the app
-shows. It is the same manager.plan and manager.setup that `coderunner setup` runs, so the two cannot differ."""
+"""Setup from the app: the plan for this machine and setup itself, and the sandbox's computer, each as a background
+job whose progress the app shows. They run the same manager.plan, manager.setup and sandbox.computer.setup as
+`coderunner setup` and `coderunner browser computer`, so the app and the terminal cannot differ."""
 
 from __future__ import annotations
 
@@ -10,23 +11,78 @@ KEEP = 400          # progress lines kept; the app shows the latest
 SHOWN = 80
 
 
-class SetupJob:
-    def __init__(self, config, audit=None, on_done: Callable[[dict], None] | None = None, plan=None, setup=None,
-                 voice: bool = True):
-        from ..models import manager
-        self.config, self.audit, self.on_done, self.voice = config, audit, on_done, voice
-        self._plan, self._setup = plan or manager.plan, setup or manager.setup
+class Job:
+    """One run at a time in the background; what it says is kept for the app to show."""
+
+    def __init__(self):
         self._lock = threading.Lock()
         self.state = "idle"             # idle | running | done | failed
         self.lines: list[str] = []
         self.result: dict | None = None
+
+    def _begin(self, target, *args) -> bool:
+        with self._lock:
+            if self.state == "running":
+                return False
+            self.state, self.lines, self.result = "running", [], None
+        threading.Thread(target=target, args=args, daemon=True, name=type(self).__name__).start()
+        return True
+
+    def _say(self, message: str) -> None:
+        with self._lock:
+            self.lines.append(str(message))
+            del self.lines[:-KEEP]
+
+    def _finish(self, result: dict) -> None:
+        with self._lock:
+            self.result = result
+            self.state = "done" if result.get("ok") else "failed"
+
+    def progress(self) -> dict:
+        with self._lock:
+            return {"state": self.state, "lines": self.lines[-SHOWN:], "line_count": len(self.lines),
+                    "result": self.result}
+
+
+class ComputerJob(Job):
+    """`coderunner browser computer` from the app: the desktop and Chrome installed in the sandbox VM."""
+
+    def __init__(self, config, audit=None, on_done: Callable[[dict], None] | None = None, run=None):
+        super().__init__()
+        self.config, self.audit, self.on_done, self._run_setup = config, audit, on_done, run
+
+    def public(self) -> dict:
+        return self.progress()
+
+    def start(self) -> bool:
+        return self._begin(self._run)
+
+    def _run(self) -> None:
+        from ..sandbox import computer
+        try:
+            ok = (self._run_setup or computer.setup)(self.config, say=self._say)
+        except Exception as exc:
+            self._say(f"Error: {type(exc).__name__}: {exc}")
+            ok = False
+        self._finish({"ok": bool(ok)})
+        if self.audit is not None:
+            self.audit.write("computer.setup_finished", ok=bool(ok))
+        if ok and self.on_done is not None:
+            self.on_done({"ok": True})
+
+
+class SetupJob(Job):
+    def __init__(self, config, audit=None, on_done: Callable[[dict], None] | None = None, plan=None, setup=None,
+                 voice: bool = True):
+        from ..models import manager
+        super().__init__()
+        self.config, self.audit, self.on_done, self.voice = config, audit, on_done, voice
+        self._plan, self._setup = plan or manager.plan, setup or manager.setup
         self.planned: dict | None = None
 
     def public(self) -> dict:
-        with self._lock:
-            return {"configured": bool(self.config.get("models.chat")), "model": self.config.get("models.chat") or "",
-                    "state": self.state, "lines": self.lines[-SHOWN:], "line_count": len(self.lines),
-                    "result": self.result, "plan": self.planned}
+        return {"configured": bool(self.config.get("models.chat")), "model": self.config.get("models.chat") or "",
+                **self.progress(), "plan": self.planned}
 
     def plan(self) -> dict:
         """What setup would do here and what it would fetch. Slow the first time in a day (model discovery)."""
@@ -53,17 +109,7 @@ class SetupJob:
 
     def start(self, model: str | None = None, accept_license: bool = False) -> bool:
         """Run setup in the background; False when one is already running."""
-        with self._lock:
-            if self.state == "running":
-                return False
-            self.state, self.lines, self.result = "running", [], None
-        threading.Thread(target=self._run, args=(model, accept_license), daemon=True, name="setup").start()
-        return True
-
-    def _say(self, message: str) -> None:
-        with self._lock:
-            self.lines.append(str(message))
-            del self.lines[:-KEEP]
+        return self._begin(self._run, model, accept_license)
 
     def _run(self, model: str | None, accept_license: bool) -> None:
         try:
@@ -81,9 +127,7 @@ class SetupJob:
             except Exception as exc:    # voice is optional, as in `coderunner setup`
                 self._say(f"voice setup failed ({exc}); retry later with `coderunner voice setup`")
         keep = ("ok", "entry", "model", "runtime", "ctx", "vision", "error", "needs_license", "skipped_for_disk")
-        with self._lock:
-            self.result = {key: result.get(key) for key in keep if key in result}
-            self.state = "done" if result.get("ok") else "failed"
+        self._finish({key: result.get(key) for key in keep if key in result})
         if self.audit is not None:
             self.audit.write("setup.finished", ok=bool(result.get("ok")), model=result.get("entry") or "",
                              error=str(result.get("error") or "")[:300])

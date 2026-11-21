@@ -108,13 +108,14 @@ class Daemon:
         self._loop: asyncio.AbstractEventLoop | None = None
         self.restart_requested = False
         self.svc = self._build()
-        from .setup import SetupJob
+        from .setup import ComputerJob, SetupJob
         self.setup = SetupJob(self.config, self.svc.audit, on_done=self._after_setup)
+        self.computer_setup = ComputerJob(self.config, self.svc.audit, on_done=self._after_setup)
 
     def _after_setup(self, result: dict) -> None:
-        """Setup from the app chose a model. Everything here was built for the configuration before it, so the
-        daemon starts again with the new one, a few seconds on, once the app has read the outcome. Called from
-        the setup job's thread."""
+        """Setup from the app chose a model, or gave the sandbox its computer. Everything here was built for the
+        configuration before it, so the daemon starts again with the new one, a few seconds on, once the app
+        has read the outcome. Called from the job's thread."""
         self.restart_requested = True
         if self._loop is not None and self._stop is not None:
             self._loop.call_soon_threadsafe(self._loop.call_later, RESTART_AFTER_S, self._stop.set)

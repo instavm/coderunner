@@ -155,3 +155,6 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .setup-go:disabled { opacity: 0.6; }
 .setup-log { margin-top: 14px; border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 12px 14px;
   max-height: 46vh; overflow: auto; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+#computerSetupBox[hidden] { display: none; }
+.setup-line { margin-top: 8px; word-break: break-word; }
+

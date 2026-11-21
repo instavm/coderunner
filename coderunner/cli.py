@@ -288,34 +288,9 @@ Check the connection with: coderunner browser status"""
 
 def _computer_setup(config: Config) -> int:
     """Give the sandbox VM its own desktop and Chrome, and let the assistant browse there."""
-    import pathlib
-    import subprocess
-    from .sandbox import driver_for
-    driver = driver_for(config)
-    if driver.status() != "running" and not driver.start():
-        print("Error: the sandbox is not running and did not start. Check: coderunner sandbox status")
+    from .sandbox import computer
+    if not computer.setup(config, say=print):
         return 1
-    checkout = pathlib.Path(__file__).resolve().parent.parent
-    script = checkout / "desktop-setup.sh"
-    if not script.exists():
-        print("Error: desktop-setup.sh was not found next to this copy of CodeRunner; run this from a checkout.")
-        return 1
-    print("Installing the desktop (Xfce, a VNC screen and Google Chrome) in the sandbox; this takes a few minutes...")
-    for name, target in (("desktop.py", "/app/desktop.py"), ("server.py", "/app/server.py"),
-                         ("entrypoint.sh", "/entrypoint.sh")):     # the sandbox server's desktop and browser routes
-        with open(checkout / name, "rb") as source:
-            if subprocess.run(driver.exec_argv(["sh", "-c", f"cat > {target}"], tty=False), stdin=source).returncode:
-                print(f"Error: could not copy {name} into the sandbox.")
-                return 1
-    with open(script, "rb") as source:
-        if subprocess.run(driver.exec_argv(["bash", "-s"], tty=False), stdin=source).returncode:
-            print("Error: the desktop did not install; see the output above.")
-            return 1
-    print("Restarting the sandbox so its server picks up the desktop...")
-    driver.stop()
-    driver.start()
-    config.set("browser.mode", "computer")
-    config.save()
     print("Done. The assistant now browses on the sandbox's own computer, which you can watch and take over in the "
           "app. Restart the assistant: coderunner down && coderunner up")
     return 0

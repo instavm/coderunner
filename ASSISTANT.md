@@ -715,6 +715,12 @@ own Electron where `npm install` was run in `app/`, and otherwise with Electron 
 the daemon of `CODERUNNER_HOME` and starts it with `coderunner up` when it is not running; the daemon keeps
 running after the app quits. It is not a packaged application yet: it runs from the checkout.
 
+Where the sandbox has no desktop yet, the Computer panel offers "Set up the computer": the same installation
+as `coderunner browser computer` (Xfce, a VNC screen and Chrome inside the VM, a few minutes), with its latest
+line shown; when it is done the daemon starts again with the browser on that computer and the screen connects
+(`GET` and `POST /api/computer/setup`). The app's files are served with `Cache-Control: no-cache`, so a
+browser does not pair an old page with a new script.
+
 Where no model is set up yet, the app opens on a first-run screen instead of tasks: this computer, the model
 the plan picks for it and why, what will be downloaded with sizes against the free disk, and the plan's notes
 (a pick the disk has no room for, a runtime setup will fetch). "Download and set up" runs the same setup as

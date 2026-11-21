@@ -462,10 +462,12 @@ async function connectScreen() {
   try { info = await api("/api/computer", {method: "POST", body: "{}"}); }
   catch (err) { setNote(`The computer is not reachable: ${err.message}`); retry = setTimeout(connectScreen, 5000); return; }
   if (!info.available) {
-    setNote(info.error || "This computer has no screen yet. Run `coderunner browser computer`.");
+    setNote(info.error || "This computer has no screen yet.");
     $("computerState").textContent = "No screen";
+    watchComputerSetup();           // offers to set it up, or shows a setup that is running
     return;
   }
+  if (computerBox) computerBox.box.hidden = true;
   const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/computer/screen`;
   rfb = new RFB($("screen"), url, {credentials: {password: info.password}, wsProtocols: ["binary"], shared: true});
   rfb.scaleViewport = true;
@@ -483,6 +485,49 @@ async function connectScreen() {
   });
 }
 
+// The sandbox has no desktop yet: `coderunner browser computer` from here, with its progress. The daemon
+// starts again when it is done, and the screen connects.
+let computerTimer = null;
+let computerBox = null;         // made here, not in the page: a browser may still hold an older index.html
+function computerSetupBox() {
+  if (computerBox) return computerBox;
+  const box = el("div", "panel-section"), button = el("button", "btn primary", "Set up the computer");
+  box.id = "computerSetupBox";
+  button.type = "button";
+  button.onclick = async () => {
+    button.disabled = true;
+    await api("/api/computer/setup", {method: "POST", body: "{}"}).catch(() => {});      // 409: one is running
+    watchComputerSetup();
+  };
+  box.append(button, el("div", "muted small setup-line"));
+  $("screenWrap").after(box);
+  return computerBox = {box, button, line: box.lastChild};
+}
+
+async function watchComputerSetup() {
+  clearTimeout(computerTimer);
+  let job;
+  try { job = await api("/api/computer/setup"); }
+  catch { computerTimer = setTimeout(watchComputerSetup, 2500); return; }
+  const {box, button, line} = computerSetupBox();
+  box.hidden = false;
+  const last = job.lines[job.lines.length - 1] || "";
+  if (job.state === "running") {
+    button.disabled = true;
+    button.textContent = "Setting up the computer…";
+    line.textContent = last || "Installing a desktop and Chrome in the sandbox; this takes a few minutes.";
+    computerTimer = setTimeout(watchComputerSetup, 2500);
+  } else if (job.state === "done") {
+    button.disabled = true;
+    button.textContent = "The computer is ready";
+    line.textContent = "Starting the assistant with it…";
+    retry = setTimeout(connectScreen, 8000);
+  } else {
+    button.disabled = false;
+    button.textContent = job.state === "failed" ? "Try again" : "Set up the computer";
+    line.textContent = job.state === "failed" ? last : "A desktop and Chrome inside the sandbox, for the assistant to work on while you watch.";
+  }
+}
 function setControl(on) {
   control = on;
   $("watching").classList.toggle("on", !on);

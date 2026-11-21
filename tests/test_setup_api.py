@@ -71,7 +71,7 @@ class SetupJobTests(unittest.TestCase):
         self.assertEqual(seen["result"], {"ok": True, "entry": "qwen3.5-9b", "model": "coderunner-qwen3.5-9b",
                                           "runtime": "llama.cpp"})        # no attempts or smoke details
         self.assertTrue(seen["configured"])
-        self.assertEqual(len(finished), 1)                              # the daemon starts again once
+        self.assertTrue(until(lambda: len(finished) == 1))              # the daemon starts again once
 
     def test_a_failed_setup_says_why_and_does_not_restart_the_daemon(self):
         finished = []
@@ -131,6 +131,116 @@ class SetupRouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(until(lambda: self.daemon.setup.public()["state"] == "failed"))
             state = (await client.get("/api/setup", headers=admin)).json()
             self.assertEqual((state["lines"], state["result"]["error"]), (["downloading"], "stopped by the test"))
+
+
+class FakeDriver:
+    """A sandbox that is this machine: commands meant for the VM run here, in a folder standing in for it."""
+
+    def __init__(self, vm, state="running", starts=True):
+        self.vm, self.state, self.starts, self.calls = vm, state, starts, []
+
+    def status(self):
+        return self.state
+
+    def start(self):
+        self.calls.append("start")
+        if self.starts:
+            self.state = "running"
+        return self.starts
+
+    def stop(self):
+        self.calls.append("stop")
+        self.state = "stopped"
+        return True
+
+    def exec_argv(self, command, tty):
+        if command[:2] == ["sh", "-c"]:              # cat > /app/desktop.py -> the stand-in folder
+            target = self.vm / command[2].split("> ", 1)[1].lstrip("/").replace("/", "_")
+            return ["sh", "-c", f"cat > '{target}'"]
+        return command                                # bash -s: the script on stdin
+
+
+class ComputerSetupTests(unittest.TestCase):
+    def setUp(self):
+        import pathlib
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = pathlib.Path(self._tmp.name)
+        self.checkout, self.vm = self.root / "checkout", self.root / "vm"
+        self.checkout.mkdir()
+        self.vm.mkdir()
+        for name in ("desktop.py", "server.py", "entrypoint.sh"):
+            (self.checkout / name).write_text(f"# {name}\n")
+        (self.checkout / "desktop-setup.sh").write_text("echo installing xfce\necho\necho Desktop installed\n")
+        self.svc = Svc()
+        self.svc.config.path = self.root / "config.json"
+
+    def test_the_desktop_is_installed_in_the_sandbox_and_the_browser_moves_there(self):
+        from coderunner.sandbox import computer
+        driver, said = FakeDriver(self.vm), []
+        self.assertTrue(computer.setup(self.svc.config, said.append, driver=driver, checkout=self.checkout))
+        self.assertEqual(sorted(p.name for p in self.vm.iterdir()), ["app_desktop.py", "app_server.py", "entrypoint.sh"])
+        self.assertEqual((self.vm / "app_server.py").read_text(), "# server.py\n")
+        self.assertEqual(said[1:3], ["installing xfce", "Desktop installed"])          # the script's own lines
+        self.assertEqual(driver.calls, ["stop", "start"])                               # restarted to pick it up
+        self.assertEqual(self.svc.config.get("browser.mode"), "computer")
+
+    def test_a_failed_install_changes_nothing_and_says_why(self):
+        from coderunner.sandbox import computer
+        (self.checkout / "desktop-setup.sh").write_text("echo E: Unable to locate package xfce4-session\nexit 100\n")
+        driver, said = FakeDriver(self.vm), []
+        self.assertFalse(computer.setup(self.svc.config, said.append, driver=driver, checkout=self.checkout))
+        self.assertEqual(said[-2:], ["E: Unable to locate package xfce4-session",
+                                     "Error: the desktop did not install; see the lines above."])
+        self.assertEqual((driver.calls, self.svc.config.get("browser.mode")), ([], "dedicated"))
+        stopped, said = FakeDriver(self.vm, state="stopped", starts=False), []
+        self.assertFalse(computer.setup(self.svc.config, said.append, driver=stopped, checkout=self.checkout))
+        self.assertIn("the sandbox is not running and did not start", said[0])
+        (self.checkout / "desktop-setup.sh").unlink()
+        said = []
+        self.assertFalse(computer.setup(self.svc.config, said.append, driver=FakeDriver(self.vm), checkout=self.checkout))
+        self.assertIn("run this from a checkout", said[0])
+
+    def test_the_app_starts_it_and_follows_it(self):
+        from coderunner.server.setup import ComputerJob
+        finished = []
+        job = ComputerJob(self.svc.config, self.svc.audit, on_done=finished.append,
+                          run=lambda config, say: (say("installing"), True)[1])
+        self.assertEqual(job.public()["state"], "idle")
+        self.assertTrue(job.start())
+        self.assertTrue(until(lambda: len(finished) == 1))                # told once it is done: the daemon restarts
+        self.assertEqual((job.public()["state"], job.public()["lines"], job.public()["result"]),
+                         ("done", ["installing"], {"ok": True}))
+
+        def broken(config, say):
+            raise OSError("container: command not found")
+        job = ComputerJob(self.svc.config, on_done=finished.append, run=broken)
+        job.start()
+        self.assertTrue(until(lambda: job.public()["state"] == "failed"))
+        self.assertIn("container: command not found", job.public()["lines"][-1])
+        self.assertEqual(len(finished), 1)                                    # no restart after a failure
+
+
+class ComputerRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_computer_panel_can_ask_for_its_setup(self):
+        from coderunner.server.setup import ComputerJob
+        svc = Svc()
+        svc.registry = build_registry(svc)
+        daemon = FakeDaemon(svc)
+        release = threading.Event()
+        daemon.computer_setup = ComputerJob(svc.config, run=lambda config, say: (say("installing"), release.wait(5))[1])
+        admin = {"Authorization": "Bearer " + ADMIN}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=admin_app(svc, daemon)),
+                                     base_url="http://127.0.0.1:8224") as client:
+            self.assertEqual((await client.post("/api/computer/setup", json={})).status_code, 401)
+            self.assertEqual((await client.get("/api/computer/setup", headers=admin)).json()["state"], "idle")
+            started = await client.post("/api/computer/setup", json={}, headers=admin)
+            self.assertEqual((started.status_code, started.json()["started"]), (200, True))
+            self.assertEqual((await client.post("/api/computer/setup", json={}, headers=admin)).status_code, 409)
+            release.set()
+            self.assertTrue(until(lambda: daemon.computer_setup.public()["state"] == "done"))
+            self.assertEqual((await client.get("/api/computer/setup", headers=admin)).json()["lines"], ["installing"])
 
 
 class RestartTests(unittest.IsolatedAsyncioTestCase):

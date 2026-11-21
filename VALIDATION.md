@@ -27,7 +27,7 @@ skipped there (`CODERUNNER_SKIP_BROWSER=1`).
 | Files (`test_files.py`) | Only shared, non-secret files; iCloud-only files named but not read (read once on the Mac or with `files.cloud_files`); bundles, libraries and code in source checkouts skipped; half-precision vectors and sign codes; embedding batched across files (153 files in at most 12 requests); a new embedding model means indexing again; file events bring changes in first; pausing on a low battery or Low Power Mode; figures matched by words only; passages with lines; ranking on a calibrated corpus (a picture ranks by its own scale, a kind hint, weak results cut, codes lean on words); the first pass finds the closest codes; `coderunner find` output and direct fallback. With the Swift compiler: PDFs by page, OCR of a screenshot, FSEvents within seconds |
 | Voice (`test_voice.py`) | Engine order (Parakeet on Core ML where setup did not measure it noticeably slower than Apple speech on this machine, Apple speech, Qwen3-ASR, installed engines), Parakeet only on Apple silicon with macOS 15+ and for its 25 languages, languages an engine lacks and failing engines handing over, 16 kHz mono WAV for every engine, the Apple helper built once per source, FluidAudio and llama.cpp checked against their checksums before use, Parakeet's licence checked before its pinned files are downloaded and only its helper kept after the build, Qwen3-ASR downloaded only when neither Parakeet nor Apple can serve the language; the web page's voice upload (size limit, temporary files removed) |
 | The app from the command line (`test_appshell.py`) | The pinned Electron is the one `app/package.json` names, with a build for Macs and Linux and none for Windows; the checkout's own Electron is used before CodeRunner's copy; a download that does not match its checksum is refused; a zip is unpacked with its links and executable bits and cannot write outside its folder; the app is started on this home in a process of its own |
-| Setup from the app (`test_setup_api.py`) | The plan as the app shows it (downloads, free disk, notes); setup as a background job with its progress kept, one at a time, a failure reported without restarting; the owner-only route; the daemon stopping shortly after a finished setup and starting again in place |
+| Setup from the app (`test_setup_api.py`) | The plan as the app shows it (downloads, free disk, notes); setup as a background job with its progress kept, one at a time, a failure reported without restarting; the owner-only route; the daemon stopping shortly after a finished setup and starting again in place. The sandbox's computer: files copied and the script run through the driver with its lines passed on, the sandbox restarted and the browser moved there; a failed install, a sandbox that does not start and a missing script change nothing; its job and owner-only route |
 | Memory, scheduler, connectors, channels, service, remote | Unit tests with fakes; see each test file |
 
 ## Manual checks on this branch
@@ -319,7 +319,12 @@ The first-run screen, in a browser paired with a daemon that had no model (a thr
 its disk floor set to 500 GB so nothing could be downloaded): the plan appeared with the model, its reasons,
 five downloads with sizes and the note that the pick does not fit the disk; "Download and set up" showed
 setup's lines as they came and ended on "Setup did not finish" with the disk message and a way to look again.
-A setup that succeeds, and the daemon starting again after it, were not run live (tests only).
+A setup that succeeds, and the daemon starting again after it, were not run live (tests only). The Computer
+panel against a daemon with no sandbox: the reason on the screen, "Set up the computer", then its refusal
+("the sandbox is not running and did not start") with "Try again". Installing the desktop from the app in a
+real sandbox was not run: the only sandbox on this Mac already has one and is in use. That check found the
+panel dead when the browser kept an older page beside the new script; the script now makes its own button and
+the app's files are served to be revalidated.
 
 `coderunner app`: Electron 45.2.3 downloaded into a throwaway home in 81 s (121 MB, checksum checked, 259 MB
 unpacked) and answered `--version`; the app's window was not opened from it.

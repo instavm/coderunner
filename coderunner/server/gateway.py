@@ -230,6 +230,16 @@ class OwnerAuth:
 MCP_TAINT_SECONDS = 1800
 
 
+class _AppFiles(StaticFiles):
+    """The app's page, script and styles change together with the daemon, so the browser is told to ask each
+    time whether its copy is current: an old page kept beside a new script left the Computer panel dead."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def admin_app(svc, daemon) -> Starlette:
     failures: dict[str, int] = {}
     mcp_taint: dict[str, tuple[float, float]] = {}
@@ -542,10 +552,26 @@ def admin_app(svc, daemon) -> Starlette:
 
     async def computer(request: Request):
         """The sandbox's screen; POST brings it up. The password opens the screen through /api/computer/screen."""
-        info = await svc.sandbox.desktop(start=request.method == "POST")
+        try:
+            info = await svc.sandbox.desktop(start=request.method == "POST")
+        except Exception as exc:        # no sandbox, or one that is not running: the app says so, not "500"
+            info = {"available": False, "running": False,
+                    "error": f"The sandbox is not reachable ({type(exc).__name__}). Check `coderunner sandbox status`."}
         info["mode"] = svc.browser.mode
         info["browser_running"] = svc.browser.running()
         return JSONResponse(info)
+
+    async def computer_setup(request: Request):
+        """`coderunner browser computer` for the app: the desktop and Chrome installed in the sandbox."""
+        job = getattr(daemon, "computer_setup", None)
+        if job is None:
+            return JSONResponse({"error": "not available here"}, status_code=503)
+        if request.method == "GET":
+            return JSONResponse(job.public())
+        started = job.start()
+        svc.audit.write("computer.setup_started" if started else "computer.setup_already_running",
+                        origin=principal(request))
+        return JSONResponse({**job.public(), "started": started}, status_code=200 if started else 409)
 
     async def computer_screen(websocket: WebSocket):
         """The VM's VNC server, relayed as a binary websocket for the app's viewer (noVNC)."""
@@ -619,13 +645,14 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/devices/{id}", remove_device, methods=["DELETE"]),
         Route("/logout", logout, methods=["POST"]),
         Route("/app", app_page, methods=["GET"]),
-        Mount("/app/", app=StaticFiles(directory=WEB_DIR / "app", html=True, check_dir=False)),
+        Mount("/app/", app=_AppFiles(directory=WEB_DIR / "app", html=True, check_dir=False)),
         Route("/api/tasks", start_task, methods=["POST"]),
         Route("/api/tasks/{id}/cancel", cancel_task, methods=["POST"]),
         Route("/api/conversations", conversations, methods=["GET"]),
         Route("/api/conversations/{conversation}", conversation, methods=["GET"]),
         Route("/api/events", events, methods=["GET"]),
         Route("/api/computer", computer, methods=["GET", "POST"]),
+        Route("/api/computer/setup", computer_setup, methods=["GET", "POST"]),
         WebSocketRoute("/api/computer/screen", computer_screen),
     ])
     return OwnerAuth(app, svc)
