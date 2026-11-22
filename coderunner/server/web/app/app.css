@@ -294,7 +294,12 @@ a.item:hover { transform: translateY(-1px); } a.item:focus-visible { outline: 2p
 .wait .att-file { height: 100%; border: 0; border-radius: 0; background: none; padding-right: 30px; }
 .wait-bar { position: absolute; left: 0; bottom: 0; height: 3px; width: 0; background: var(--fill); transition: width .15s linear; }
 .wait.kept .wait-bar { opacity: 0; transition: opacity .4s .2s; }
-.wait.failed { border-color: var(--danger); }
+.wait.failed { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
+.wait.failed img, .wait.failed video, .wait.failed .att-file { opacity: .45; }
+.wait.failed::after { content: "!"; position: absolute; left: 4px; bottom: 6px; width: 16px; height: 16px; border-radius: 50%; background: var(--danger);
+  color: #fff; font-size: 11px; font-weight: 700; line-height: 16px; text-align: center; }
+/* Many files stay in two rows; the rest scroll. */
+.attachments { max-height: 146px; overflow-y: auto; }
 .wait.failed .wait-bar { width: 100% !important; background: var(--danger); }
 .wait-remove { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; border-radius: 50%; border: 0; padding: 0; line-height: 16px; font-size: 13px;
   background: rgb(0 0 0 / 55%); color: #fff; cursor: pointer; }

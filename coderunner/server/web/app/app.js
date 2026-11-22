@@ -711,7 +711,11 @@ function attach(files) {
     request.setRequestHeader("X-File-Name", encodeURIComponent(name));
     request.setRequestHeader("Content-Type", file.type || "application/octet-stream");
     request.upload.onprogress = (event) => { if (event.lengthComputable) bar.style.width = `${event.loaded / event.total * 100}%`; };
-    const fail = (why) => { item.failed = why; tile.classList.add("failed"); tile.title = `${name}: ${why}`; refreshComposer(); };
+    // A file that was not kept says so in words, not only in the colour of its tile.
+    const fail = (why) => {
+      item.failed = why; tile.classList.add("failed"); tile.title = `${name}: ${why}`; refreshComposer();
+      notice(`${name} was not attached. ${why}`);
+    };
     request.onload = () => {
       let data = {};
       try { data = JSON.parse(request.responseText); } catch { /* not ours */ }
