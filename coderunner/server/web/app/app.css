@@ -413,6 +413,11 @@ button.setup-other:hover { color: var(--accent); }
 
 /* How it was chosen, and what setup printed: a click away. */
 .setup-why { margin-top: 9px; }
+/* At the window's opening height the plan, its memory note and the other way in all fit without scrolling. */
+@media (max-height: 760px) {
+  .tiles { margin-top: 16px; } .setup-label { margin-top: 14px; } .role { padding: 6px 0; } .disk { margin-top: 12px; }
+  .setup-note { margin-top: 9px; padding: 7px 12px; } .setup-go { margin-top: 14px; } .setup-other { margin-top: 8px; }
+}
 .setup-why[hidden] { display: none; }
 .setup-why summary { cursor: pointer; color: var(--muted); font-size: 12.5px; list-style: none; }
 .setup-why summary::-webkit-details-marker { display: none; }
@@ -463,7 +468,7 @@ button.setup-other:hover { color: var(--accent); }
 @keyframes demo-in { from { opacity: 0; transform: translateY(9px); } }
 .demo .bubble-user { align-self: flex-end; padding: 6px 11px; border-radius: 11px 11px 3px 11px; max-width: 82%; }
 .demo .now { margin: 0; gap: 8px; }
-.demo .answer { margin: 0; padding: 8px 11px; border-radius: 11px; box-shadow: none; background: var(--bg); white-space: normal; }
+.demo .answer { display: block; margin: 0; padding: 8px 11px; border-radius: 11px; box-shadow: none; background: var(--bg); white-space: normal; }
 .demo-strong { font-weight: 600; }
 .demo-file { display: flex; align-items: center; gap: 9px; width: fit-content; border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px 6px 9px; }
 .demo-file .ico { width: 20px; height: 20px; }

@@ -176,6 +176,13 @@ const state = {
 // A task reads as a conversation: what the assistant says along the way, one line for what it is doing now, its
 // plan ticking off, a picture of the page where that says more than words, and the answer. The calls it makes
 // (which tool, with what arguments) are not shown; they are in the audit trail for whoever wants them.
+// What went wrong in plain words: a program's own message after it (an exit code, a trace) is left to Details.
+function plainError(text) {
+  const [first, ...rest] = String(text || "").split(/:\s+/);
+  return rest.length && /exit|code \d|errno|traceback|exception|http|refused|timed out|\.py\b|server/i.test(rest.join(": "))
+    ? first.replace(/[.\s]*$/, ".") : String(text || "");
+}
+
 const picture = (name) => `/api/shots/${encodeURIComponent(name)}`;
 
 class TaskView {
@@ -1670,7 +1677,7 @@ function renderProgress(job) {
     const next = job.result?.next, back = el("button", "linkish setup-other", "Back");
     back.type = "button";
     back.onclick = showPlan;
-    card.append(el("p", "setup-error", job.result?.error || "Setup failed."), setupButton("Try again", again(null)));
+    card.append(el("p", "setup-error", plainError(job.result?.error) || "Setup did not finish."), setupButton("Try again", again(null)));
     if (next) {
       const other = el("button", "btn setup-next", `Use ${next.name || modelName(next.model)}` +
                                                    (next.download_gb ? ` (${gb(next.download_gb)} download)` : ""));
