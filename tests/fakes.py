@@ -69,7 +69,7 @@ class FakeOpenAI:
                     yield f"data: {json.dumps(chunk)}\n\n"
                     yield "data: [DONE]\n\n"
                 return StreamingResponse(events(), media_type="text/event-stream")
-            return JSONResponse({"choices": [{"message": message, "finish_reason": "stop"}],
+            return JSONResponse({"choices": [{"message": message, "finish_reason": message.pop("finish_reason", "stop")}],
                                  "usage": {"completion_tokens": 3}})
 
         async def embeddings(request: Request):

@@ -43,6 +43,16 @@ CONTEXT = "[Background for the request below, not a request itself]\nCurrent tim
 
 
 SKIPPED = "Skipped: an earlier step in this reply failed. Look at the page again before going on."
+# A local model can fall into writing without end: on a flight search Qwen3.5 9B wrote 10,400 tokens in one
+# step (eight minutes at 21 a second) and would have gone on to the ten-minute request timeout, after which the
+# runtime was restarted and the request sent again. A step is a few hundred tokens and an answer is short, so
+# each request has a limit; a reply that hits it is thrown away whole (its last call is cut mid-way) and asked
+# for again, shorter. After CUTS_ALLOWED of those the task ends in plain words.
+CUT_OFF = ("Your last reply ran past the length one step may have and was cut off, so nothing in it was done. "
+           "Reply again with one short step (a batch of at most ten actions) or with your answer.")
+CUTS_ALLOWED = 2
+STUCK_WRITING = ("I got stuck on this and stopped before doing anything more. Asking again, or for one part at a "
+                 "time, usually works.")
 # Loops seen in real browser runs: the same failing call sent again and again (a dropdown option spelled the
 # same wrong way four times), and scrolling up and down a long results page hunting for prices that one
 # browser_find would have found (14 scrolls in one hotel search).
@@ -263,6 +273,8 @@ class Agent:
         since = 0
         just_failed: dict[tuple[str, str], int] = {}        # calls that failed since the last step that worked
         scrolls = 0
+        cuts = 0                                    # replies cut off for length
+        limit = 0 if getattr(self.llm, "remote", False) else int(self.svc.config.get("agent.step_tokens", 2048) or 0)
         stuck = 0                                   # browser steps in a row that failed or changed nothing
         handover = "browser_task" in self.registry.tools
         for step in range(max_steps):
@@ -281,8 +293,10 @@ class Agent:
             think = None if thinking != "auto" or step == 0 or failed else False
             if thinking == "off":
                 think = False
+            # Twice the limit where the model may think first: its thinking counts against it.
+            capped = {"max_tokens": limit * (1 if think is False else 2)} if limit else {}
             try:
-                reply = await self.llm.chat(messages, tools=self.registry.schemas(), think=think)
+                reply = await self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped)
             except LLMError as exc:
                 self.svc.audit.write("agent.model_failed", error=str(exc)[:300])
                 # Said as a person would: what stopped it and what to do, never the runtime's own error.
@@ -292,6 +306,15 @@ class Agent:
                 if ctx.told:
                     final += " What I had found so far is above."
                 break
+            if limit and reply.get("finish_reason") == "length":
+                cuts += 1
+                self.svc.audit.write("agent.reply_cut", step=step, limit=capped["max_tokens"], times=cuts)
+                if cuts > CUTS_ALLOWED:
+                    final = STUCK_WRITING + (" What I had found so far is above." if ctx.told else "")
+                    break
+                messages.append({"role": "user", "content": CUT_OFF})
+                failed = False              # the next reply is written without thinking first
+                continue
             if not reply["tool_calls"]:
                 if not reply["content"] and not nudged:
                     # Small reasoning models sometimes stop after thinking, without writing an answer.
@@ -350,7 +373,8 @@ class Agent:
             try:
                 # Same tools as every other request, only switched off: a request without them is a different
                 # prompt from its start, which made the runtime read the whole conversation again (24,000 tokens).
-                reply = await self.llm.chat(messages, tools=self.registry.schemas(), tool_choice="none", think=False)
+                reply = await self.llm.chat(messages, tools=self.registry.schemas(), tool_choice="none", think=False,
+                                            **({"max_tokens": limit} if limit else {}))
                 final = reply["content"] or final
             except LLMError:
                 pass

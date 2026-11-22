@@ -203,6 +203,34 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("unknown tool", tools[4])
             await svc.llm.aclose()
 
+    async def test_a_reply_that_runs_on_is_cut_and_asked_for_again_and_a_model_that_keeps_at_it_is_stopped(self):
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.sandbox = FakeSandbox()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            runaway = {"role": "assistant", "content": "click click click " * 400, "finish_reason": "length"}
+            fake.script = [dict(runaway), tool_call("run_python", {"code": "print(1)"}), {"role": "assistant", "content": "It is 1."}]
+            reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-cut"), "what is it?")
+            self.assertEqual(reply, "It is 1.")
+            # Every request carries the limit: twice it where the model may think (the first step, and none other here).
+            self.assertEqual([r.get("max_tokens") for r in fake.requests], [4096, 2048, 2048])
+            sent = fake.requests[1]["messages"]
+            self.assertTrue(sent[-1]["content"].startswith("Your last reply ran past the length one step may have"))
+            self.assertNotIn("click click", json.dumps(sent))               # the runaway text is not kept or run
+            self.assertEqual(svc.sandbox.calls, [("print(1)", "main")])
+            self.assertEqual([e["times"] for e in svc.audit.tail() if e["event"] == "agent.reply_cut"], [1])
+            # Three in a row: the task ends in plain words instead of going round.
+            fake.script = [dict(runaway), dict(runaway), dict(runaway), {"role": "assistant", "content": "never reached"}]
+            reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-cut2"), "and again?")
+            self.assertTrue(reply.startswith("I got stuck on this and stopped"), reply)
+            # No limit is sent where it is switched off.
+            svc.config.set("agent.step_tokens", 0)
+            fake.script = [{"role": "assistant", "content": "fine"}]
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-cut3"), "ok?")
+            self.assertNotIn("max_tokens", fake.requests[-1])
+            await svc.llm.aclose()
+
     async def test_a_run_of_scrolls_points_at_find(self):
         class Scrolling(FakeBrowser):
             async def scroll(self, direction="down", amount=600, tab=None, tainted=False):
