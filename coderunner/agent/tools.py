@@ -801,7 +801,9 @@ def plan_tools(svc) -> list[Tool]:
             return "Nothing to show: each item needs a name."
         ctx.shown += len(shown)
         ctx.emit({"type": "items", "items": shown})
-        return f"{len(shown)} shown to the owner as cards. Do not list them again in your answer."
+        # A small model otherwise wrote the cards out again as a list, and said they were "above".
+        return (f"{len(shown)} shown to the owner as cards with your answer. Your answer is now one or two plain "
+                "sentences: do not list or describe these items again, and do not say where the cards are.")
 
     step = {"type": "object", "properties": {"step": STR, "status": {"type": "string", "enum": ["todo", "doing", "done"]}},
             "required": ["step"]}
