@@ -46,6 +46,7 @@ button { font: inherit; color: inherit; cursor: pointer; transition: background 
 .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
 .dot.running { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
 .dot.waiting { background: var(--warn); }
+.dot.queued { background: none; border: 1.5px solid var(--muted); }
 .dot.failed { background: var(--danger); }
 .dot.done { background: var(--ok); opacity: .55; }
 @keyframes pulse { 50% { opacity: .35; } }

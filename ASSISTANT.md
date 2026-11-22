@@ -468,6 +468,24 @@ first; 0 for none). A model can fall into writing without end: one step of a fli
 tokens, eight minutes, on Qwen3.5 9B. A reply that hits the limit is dropped whole and asked for again, shorter,
 and after two of those the task ends in plain words.
 
+### More than one task at a time
+
+Tasks started while another is running do not share a page. Each has its own tabs: the tab it is on, the tabs
+it opened (and the ones those opened), its own limit of three, and on the assistant's own computer a window of
+its own. It cannot see, name or close another task's tabs, and the picture in its thread is of its own page.
+When it ends, its older tabs close and the one it ended on is nobody's: a follow-up in the same conversation
+goes on from there, and the next task may use or close it. Opening a task's thread in the app brings its window
+to the front of the assistant's computer (`POST /api/focus`). Code each task runs in the sandbox has its own
+session ("main" for the first place, "task2" for the second), so their variables do not meet.
+
+On a local model two tasks run at once and the rest wait ("Queued" in the list, "Waiting its turn" in the
+thread; `agent.parallel_tasks` changes the two, and a remote model runs four). They take turns at the model, one
+reply at a time: a step is a reply and then a wait that needs no model (a page loading, code running, your
+answer to an approval), so while one waits the other has the model. The task open in the app goes first. Each
+names its own slot in llama.cpp's server (started with one slot per place and one for the step judge), so its
+conversation stays read while the other has the model. Two tasks working on the same site leave two seconds
+between one's step and the other's.
+
 ### A browser driver for website tasks
 
 `coderunner models driver` adds a second model trained to use websites from screenshots: Microsoft's

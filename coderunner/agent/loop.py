@@ -251,6 +251,18 @@ class Agent:
         finally:
             current_run.reset(token)
 
+    async def _turn(self, ctx: RunContext, messages: list[dict], think: bool | None, capped: dict) -> dict:
+        """One reply from the model. On a local model tasks take turns (server.tasks.Turns) and each keeps its
+        own slot in the runtime, so its conversation stays read while the other task has the model: without
+        that, every change of task read the whole conversation again."""
+        turns = getattr(self.svc, "turns", None)
+        if turns is None or getattr(self.llm, "remote", False):
+            return await self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped)
+        slot = getattr(ctx.events, "slot", None)
+        async with turns.turn(ctx.conversation):
+            return await self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped,
+                                       **({"id_slot": slot} if slot is not None else {}))
+
     async def _run(self, ctx: RunContext, text: str, images: list[tuple[str, str]] | None) -> str:
         if not ctx.origin_is_owner:
             ctx.taint()
@@ -303,7 +315,7 @@ class Agent:
             # Twice the limit where the model may think first: its thinking counts against it.
             capped = {"max_tokens": limit * (1 if think is False else 2)} if limit else {}
             try:
-                reply = await self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped)
+                reply = await self._turn(ctx, messages, think, capped)
             except LLMError as exc:
                 self.svc.audit.write("agent.model_failed", error=str(exc)[:300])
                 # Said as a person would: what stopped it and what to do, never the runtime's own error.

@@ -40,7 +40,7 @@ from typing import Any, Awaitable, Callable
 
 from ..safety import decision
 from ..core import paths
-from ..safety.policy import Action, Decision, _matches
+from ..safety.policy import Action, Decision, _matches, current_run
 from . import launcher as default_launcher
 from .cdp import CDPError, CDPPipe
 from .errors import BrowserError
@@ -55,6 +55,10 @@ NAV_TIMEOUT = 20.0
 MAX_TABS = 3                # tabs of the assistant's own kept open; the oldest close as new ones open (three
                             # shopping pages already filled the sandbox's 2 GB)
 TABS_AFTER_TASK = 1         # and what a finished task leaves open: the page it ended on
+# Two tasks at once each keep their own tabs (see _scope). Where both work on the same site, a step of one
+# waits this long after a step of the other: a person with two windows does not click in both at once, and a
+# site is not sent two tasks' requests on top of each other.
+SAME_SITE_GAP = 2.0
 # Reading a page, opening one, looking: done again from the start costs nothing, so a browser that had to be
 # brought back is not the model's or the owner's business. A click or typed text is not repeated behind
 # anyone's back: the model is told the page was reopened and looks again.
@@ -234,7 +238,13 @@ class BrowserBroker:
     def _reset(self) -> None:
         self._sessions: dict[str, str] = {}       # targetId -> sessionId
         self._targets: dict[str, str] = {}        # sessionId -> targetId
-        self._active: str | None = None
+        # Each task has its own tabs: the tab it is on (by its conversation) and the tabs that are its own. With
+        # one "current tab" for everything, two tasks at once clicked on each other's pages, and an element number
+        # read on one page was found on the other.
+        self._actives: dict[str, str] = {}        # task (conversation, "" outside one) -> the tab it is on
+        self._tab_owner: dict[str, str] = {}          # targetId -> the task whose tab it is; others' tabs are not seen
+        self._last: dict[str, str] = {}           # finished task -> the tab it ended on, for a follow-up
+        self._site_last: dict[str, tuple[str, float]] = {}     # host -> (task, when) of the last step there
         self._opened: set[str] = set()            # tabs the broker opened itself
         self._refs: dict[str, dict[int, dict]] = {}
         # Numbers a page no longer has, with what they were (role, name, the page's address): an element drawn
@@ -498,11 +508,11 @@ class BrowserBroker:
         return await self._run("screenshot", {"tab": tab, "full_page": full_page, "tainted": tainted},
                                lambda: self._screenshot(tab, full_page, format, quality, tainted))
 
-    async def peek(self, scale: float = 0.6, quality: int = 60) -> tuple[bytes, str] | None:
+    async def peek(self, scale: float = 0.6, quality: int = 60, scope: str | None = None) -> tuple[bytes, str] | None:
         """What the page the assistant is on looks like now, for the owner's own app: a JPEG of what is in view
         and the page's address, or None when there is no web page open. It is not an action of the assistant's:
         nothing is asked, judged or written to the audit trail, and no browser is started for it."""
-        target = self._active
+        target = self._actives.get(self._scope() if scope is None else scope)
         sid = self._sessions.get(target) if target else None
         if not sid or self._cdp is None or self._cdp.closed:
             return None
@@ -697,6 +707,59 @@ class BrowserBroker:
             del self._sessions[target]
         self._loads.pop(sid or "", None)
 
+    def _scope(self) -> str:
+        """Whose tabs these are: the task the call is made for (its conversation), or "" outside one."""
+        return str(getattr(current_run.get(), "conversation", "") or "")
+
+    @property
+    def _active(self) -> str | None:
+        return self._actives.get(self._scope())
+
+    @_active.setter
+    def _active(self, target: str | None) -> None:
+        scope = self._scope()
+        if target is None:
+            self._actives.pop(scope, None)
+            return
+        self._actives[scope] = target
+        if scope:
+            self._tab_owner.setdefault(target, scope)
+
+    def _visible(self, pages: list[dict], scope: str | None = None) -> list[dict]:
+        """The tabs a task may see and use: its own, and those that are nobody's (the owner's, or left by a
+        finished task). Its own come first."""
+        scope = self._scope() if scope is None else scope
+        seen = [info for info in pages if self._tab_owner.get(info["targetId"], scope) == scope]
+        return sorted(seen, key=lambda info: info["targetId"] not in self._tab_owner)
+
+    def release(self, scope: str) -> None:
+        """A finished task's tabs are nobody's again: the next task may use or close them. The task remembers
+        which one it was on, so a follow-up in the same conversation goes on from there."""
+        for target in [target for target, owner in self._tab_owner.items() if owner == scope]:
+            del self._tab_owner[target]
+        if scope in self._actives:
+            self._last[scope] = self._actives.pop(scope)
+        for old in list(self._last)[:-50]:
+            del self._last[old]
+
+    async def focus(self, scope: str) -> bool:
+        """Bring a task's tab to the front of the assistant's own computer, for the owner looking at that task."""
+        target = self._actives.get(scope)
+        if not target or self._cdp is None or self._cdp.closed:
+            return False
+        with contextlib.suppress(Exception):
+            await self._cdp.send("Target.activateTarget", {"targetId": target}, timeout=5)
+            return True
+        return False
+
+    async def _courtesy(self, host: str) -> None:
+        scope, now = self._scope(), time.monotonic()
+        other, when = self._site_last.get(host, ("", 0.0))
+        if scope and other and other != scope and now - when < SAME_SITE_GAP:
+            await asyncio.sleep(SAME_SITE_GAP - (now - when))
+        if scope:
+            self._site_last[host] = (scope, time.monotonic())
+
     def _forget_target(self, target: str | None) -> None:
         if not target:
             return
@@ -707,8 +770,10 @@ class BrowserBroker:
                       self._committed, self._page_targets, self._spawned, self._new_tabs, self._expected):
             table.pop(target, None)
         self._opened.discard(target)
-        if self._active == target:
-            self._active = None
+        self._tab_owner.pop(target, None)
+        for table in (self._actives, self._last):
+            for scope in [scope for scope, active in table.items() if active == target]:
+                del table[scope]
 
     # ---- tabs and sessions --------------------------------------------------
 
@@ -729,19 +794,21 @@ class BrowserBroker:
 
     async def _target(self, tab: str | None) -> str:
         cdp = await self._ensure()
-        pages = await self._pages()
+        pages = self._visible(await self._pages())
         alive = {info["targetId"] for info in pages}
         if tab is not None:
             tab = str(tab)
             target = self._tab_targets.get(tab if not tab.isdigit() else f"t{tab}")
-            if target not in alive:
+            if target not in alive:             # not open, or another task's
                 raise BrowserError(f"No open tab {tab}; call tabs to list them")
         elif self._active in alive:
             target = self._active
+        elif self._last.get(self._scope()) in alive:        # a follow-up: the page the last task here ended on
+            target = self._last[self._scope()]
         elif pages:
             target = pages[0]["targetId"]
         else:
-            target = (await cdp.send("Target.createTarget", {"url": "about:blank"}))["targetId"]
+            target = (await cdp.send("Target.createTarget", self._new_tab()))["targetId"]
         self._active = target
         self._tab_id(target)
         return target
@@ -871,6 +938,8 @@ class BrowserBroker:
     async def _allow(self, kind: str, host: str, summary: str, tainted: bool, **detail: Any) -> None:
         if kind == "browser.interact" and self._messaging(host):
             kind = "browser.sensitive"
+        if kind != "browser.read":
+            await self._courtesy(host)
         if not await self.policy.check(Action(kind, host, summary, detail, tainted), origin=self.origin):
             # Worded for the answer the model writes next: the owner's own decision, never "blocked by a policy".
             raise BrowserError(f"Not permitted: {summary}. This step needs the owner and was not allowed now. Do "
@@ -970,6 +1039,8 @@ class BrowserBroker:
         if target not in self._page_targets:
             opener = info.get("openerId")
             self._page_targets[target] = {"opener": opener}
+            if opener in self._tab_owner:           # a tab a task's page opened is that task's
+                self._tab_owner[target] = self._tab_owner[opener]
             if opener in self._busy and opener not in self._handoff:
                 # Opened by something the assistant just did: same rules as the opener until it loads.
                 self._spawned[target] = (self._busy[opener], opener, time.monotonic() + SPAWN_WINDOW)
@@ -1095,7 +1166,7 @@ class BrowserBroker:
         if not self.running():
             return {"ok": True, "tabs": [], "running": False}
         tabs = []
-        for info in await self._pages():
+        for info in self._visible(await self._pages()):
             target, url = info["targetId"], info.get("url", "")
             host = page_host(url)
             visible = host is not None and (host == "about:blank" or self.policy.evaluate(
@@ -1114,13 +1185,16 @@ class BrowserBroker:
                 return urllib.parse.urljoin(base, url)
         return url
 
-    async def tidy(self, keep: int = TABS_AFTER_TASK) -> int:
-        """Close the assistant's older tabs (after a task). Returns how many were closed."""
-        if not self.running():
-            return 0
-        return await self._trim_tabs(keep)
+    async def tidy(self, keep: int = TABS_AFTER_TASK, scope: str | None = None) -> int:
+        """Close a task's older tabs when it has finished (the one it ended on stays) and give up its claim to
+        what is left. Returns how many were closed."""
+        scope = self._scope() if scope is None else scope
+        try:
+            return await self._trim_tabs(keep, scope) if self.running() else 0
+        finally:
+            self.release(scope)
 
-    async def _trim_tabs(self, keep: int) -> int:
+    async def _trim_tabs(self, keep: int, scope: str | None = None) -> int:
         """Every task opened its pages in new tabs and none was ever closed: after forty tasks the sandbox's
         Chrome had 14 page processes in a 2 GB machine, and opening a page timed out. The assistant's own tabs
         beyond `keep` are closed, oldest first, the one in use last; on its own computer every tab is its own,
@@ -1129,8 +1203,15 @@ class BrowserBroker:
             pages = await self._pages()
         except Exception:
             return 0
-        mine = [info["targetId"] for info in pages if self.mode == "computer" or info["targetId"] in self._opened]
-        extra = [target for target in mine if target != self._active][:max(0, len(mine) - keep)]
+        scope = self._scope() if scope is None else scope
+        active = self._actives.get(scope)
+        mine = [info["targetId"] for info in self._visible(pages, scope)
+                if self.mode == "computer" or info["targetId"] in self._opened]
+        # Tabs that are nobody's go first (a finished task's), then this task's own, oldest first.
+        mine.sort(key=lambda target: target in self._tab_owner)
+        in_use = set(self._actives.values())
+        extra = [target for target in mine if target != active and (target in self._tab_owner or target not in in_use)]
+        extra = extra[:max(0, len(mine) - keep)]
         closed = 0
         for target in extra:
             with contextlib.suppress(Exception):
@@ -1141,12 +1222,21 @@ class BrowserBroker:
             self.audit.write("browser.tabs_closed", count=closed, kept=len(mine) - closed)
         return closed
 
+    def _new_tab(self) -> dict:
+        """A task's first tab on the assistant's own computer opens in a window of its own when another task has
+        tabs open, so each task's pages stay together and neither covers the other's."""
+        scope = self._scope()
+        others = any(owner != scope for owner in self._tab_owner.values())
+        mine = any(owner == scope for owner in self._tab_owner.values())
+        return {"url": "about:blank", **({"newWindow": True} if self.mode == "computer" and scope and others and not mine
+                                         else {})}
+
     async def _open(self, url: str, tainted: bool) -> dict:
         url, host = await self._vet(self._absolute(url, self._active))
         await self._allow("browser.navigate", host, f"Open {url} in a new tab", tainted, url=url, chosen=True)
         cdp = await self._ensure()
         await self._trim_tabs(MAX_TABS - 1)
-        target = (await cdp.send("Target.createTarget", {"url": "about:blank"}))["targetId"]
+        target = (await cdp.send("Target.createTarget", self._new_tab()))["targetId"]
         self._opened.add(target)
         self._active = target
         return await self._goto(target, url, host, tainted)

@@ -670,6 +670,18 @@ def admin_app(svc, daemon) -> Starlette:
         return StreamingResponse(stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
+    async def focus(request: Request):
+        """The task the owner has open in the app: its window comes to the front of the assistant's computer,
+        and it goes first when tasks take turns at the model."""
+        body = await request.json()
+        conversation = str(body.get("conversation") or "")
+        if getattr(svc, "turns", None) is not None:
+            svc.turns.focus = conversation
+        shown = False
+        if conversation and getattr(svc, "browser", None) is not None and hasattr(svc.browser, "focus"):
+            shown = await svc.browser.focus(conversation)
+        return JSONResponse({"conversation": conversation, "shown": bool(shown)})
+
     async def computer(request: Request):
         """The sandbox's screen; POST brings it up. The password opens the screen through /api/computer/screen."""
         body = {}
@@ -801,6 +813,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/conversations/{conversation}", conversation, methods=["GET"]),
         Route("/api/events", events, methods=["GET"]),
         Route("/api/computer", computer, methods=["GET", "POST"]),
+        Route("/api/focus", focus, methods=["POST"]),
         Route("/api/computer/setup", computer_setup, methods=["GET", "POST"]),
         WebSocketRoute("/api/computer/screen", computer_screen),
     ])

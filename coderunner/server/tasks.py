@@ -74,16 +74,63 @@ class EventBus:
         return [{**json.loads(r["data"]), "seq": r["seq"]} for r in rows]
 
 
+class Turns:
+    """One model turn at a time, shared between the tasks that are running.
+
+    A local model writes about twenty tokens a second for everyone: two tasks generating at once each get
+    half, and take each other's place in its cache. A task's step is a model turn and then a wait that needs no
+    model (a page loading, code running, the owner's answer), so tasks take turns: while one waits on its page
+    the other has the model. The task the owner is looking at goes first, then whoever asked first."""
+
+    def __init__(self):
+        self.focus = ""                     # the conversation open in the app
+        self._busy = False
+        self._order = 0
+        self._waiting: list[tuple[int, int, asyncio.Future]] = []
+
+    @contextlib.asynccontextmanager
+    async def turn(self, conversation: str = ""):
+        if self._busy:
+            self._order += 1
+            waiter = asyncio.get_running_loop().create_future()
+            entry = (0 if conversation and conversation == self.focus else 1, self._order, waiter)
+            self._waiting.append(entry)
+            try:
+                await waiter
+            except asyncio.CancelledError:
+                if entry in self._waiting:
+                    self._waiting.remove(entry)
+                elif waiter.done() and not waiter.cancelled():
+                    self._next()            # the turn had just been handed over: pass it on
+                raise
+        self._busy = True
+        try:
+            yield
+        finally:
+            self._next()
+
+    def _next(self) -> None:
+        self._waiting.sort(key=lambda entry: entry[:2])
+        while self._waiting:
+            _, _, waiter = self._waiting.pop(0)
+            if not waiter.done():
+                waiter.set_result(None)     # the turn passes straight to it: still busy
+                return
+        self._busy = False
+
+
 class Tasks:
     def __init__(self, daemon, bus: EventBus):
         self.daemon = daemon
         self.bus = bus
         self.store = daemon.svc.store
         self.running: dict[str, asyncio.Task] = {}
+        self.waiting: list[tuple] = []          # tasks asked for while as many as may run are running
+        self.slots: dict[str, int] = {}         # running task -> its place (its model slot and code session)
         self._asked: dict[str, object] = {}     # approval id -> the thread of the task that asked
         daemon.svc.audit.listeners.append(self._on_audit)
         # A daemon that stopped mid-task left it "running" for ever: its thread says how it ended.
-        for row in self.store.query("SELECT id, conversation FROM tasks WHERE status = 'running'"):
+        for row in self.store.query("SELECT id, conversation FROM tasks WHERE status IN ('running', 'queued')"):
             reply = "Stopped: the assistant was restarted while this was running."
             self.store.execute("UPDATE tasks SET status = 'cancelled', reply = ?, finished = ? WHERE id = ?",
                                (reply, time.time(), row["id"]))
@@ -99,20 +146,47 @@ class Tasks:
         from ..files import attached
         task_id = secrets.token_hex(6)
         now = time.time()
+        queued = len(self.running) >= self.limit()
         self.store.execute("INSERT INTO tasks(id, conversation, prompt, status, reply, created, finished) "
-                           "VALUES (?, ?, ?, 'running', '', ?, NULL)", (task_id, conversation, prompt, now))
+                           "VALUES (?, ?, ?, ?, '', ?, NULL)",
+                           (task_id, conversation, prompt, "queued" if queued else "running", now))
         base = {"task": task_id, "conversation": conversation}
 
         def emit(event: dict) -> None:
             self.bus.publish({**base, **event})
 
-        emit.task = task_id
+        emit.task, emit.conversation = task_id, conversation
         emit.shots = {"count": 0, "page": "", "at": 0.0, "since": 0, "busy": False}
         files = [info for info in map(attached.describe, (attachments or [])[:attached.MAX_PER_TASK]) if info]
         emit({"type": "started", "prompt": prompt, **({"attachments": files} if files else {})})
-        self.running[task_id] = asyncio.create_task(
-            self._run(task_id, conversation, prompt, origin, emit, [info["id"] for info in files]))
+        job = (task_id, conversation, prompt, origin, emit, [info["id"] for info in files])
+        if queued:
+            # As many tasks as this computer runs well at once are running: this one starts when one ends.
+            self.waiting.append(job)
+            emit({"type": "queued", "ahead": len(self.waiting) - 1})
+        else:
+            self._launch(job)
         return self.get(task_id)
+
+    def limit(self) -> int:
+        """How many tasks run at once: two on a local model (they take turns at it, see Turns), more where the
+        model is not on this computer. agent.parallel_tasks sets it."""
+        svc = self.daemon.svc
+        set_by_owner = svc.config.get("agent.parallel_tasks") if hasattr(svc, "config") else None
+        return max(1, int(set_by_owner or (4 if getattr(svc, "remote", None) else 2)))
+
+    def _launch(self, job: tuple) -> None:
+        task_id, emit = job[0], job[4]
+        emit.slot = next(n for n in range(64) if n not in self.slots.values())
+        self.slots[task_id] = emit.slot
+        self.running[task_id] = asyncio.create_task(self._run(*job))
+
+    def _next(self) -> None:
+        while self.waiting and len(self.running) < self.limit():
+            job = self.waiting.pop(0)
+            self.store.execute("UPDATE tasks SET status = 'running' WHERE id = ? AND status = 'queued'", (job[0],))
+            job[4]({"type": "resumed"})
+            self._launch(job)
 
     async def _run(self, task_id: str, conversation: str, prompt: str, origin: str, emit,
                    attachments: list[str] | None = None) -> None:
@@ -143,16 +217,18 @@ class Tasks:
             self.running.pop(task_id, None)
             if status == "done" and emit.shots["since"]:
                 await self._capture(emit, 0, again=True)        # how the page stood when it finished
+            self.slots.pop(task_id, None)
             browser = getattr(self.daemon.svc, "browser", None)
-            if browser is not None and hasattr(browser, "tidy") and len(self.running) == 0:
-                with contextlib.suppress(Exception):            # the pages it opened are not left to pile up
-                    await asyncio.wait_for(browser.tidy(), 10)
+            if browser is not None and hasattr(browser, "tidy"):
+                with contextlib.suppress(Exception):            # its own pages are not left to pile up
+                    await asyncio.wait_for(browser.tidy(scope=conversation), 10)
             self.store.execute("UPDATE tasks SET status = ?, reply = ?, finished = ? WHERE id = ?",
                                (status, reply, time.time(), task_id))
             emit({"type": status, "reply": reply})
             made = kept.produced(outputs)       # a chart, a sheet, a document its code wrote: shown under the answer
             if made:
                 emit({"type": "files", "files": made})
+            self._next()                        # a task that was waiting for a place starts now
 
     # ---- pictures of the page ----------------------------------------------
 
@@ -171,7 +247,8 @@ class Tasks:
         try:
             await asyncio.sleep(delay)
             browser = getattr(self.daemon.svc, "browser", None)
-            found = await browser.peek() if browser is not None and state["count"] < MAX_SHOTS else None
+            found = await self._peek(browser, getattr(emit, "conversation", None)) \
+                if browser is not None and state["count"] < MAX_SHOTS else None
             if not found:
                 return
             image, page = found
@@ -188,10 +265,25 @@ class Tasks:
             if held:
                 state["busy"] = False
 
+    @staticmethod
+    async def _peek(browser, conversation):
+        """The page this task is on (its own tab, not another task's)."""
+        import inspect
+        if "scope" in inspect.signature(browser.peek).parameters:
+            return await browser.peek(scope=conversation)
+        return await browser.peek()
+
     def cancel(self, task_id: str) -> bool:
         task = self.running.get(task_id)
         if task is None:
-            return False
+            job = next((job for job in self.waiting if job[0] == task_id), None)
+            if job is None:
+                return False
+            self.waiting.remove(job)            # stopped before it started
+            self.store.execute("UPDATE tasks SET status = 'cancelled', reply = 'Stopped.', finished = ? WHERE id = ?",
+                               (time.time(), task_id))
+            job[4]({"type": "cancelled", "reply": "Stopped."})
+            return True
         task.cancel()
         return True
 

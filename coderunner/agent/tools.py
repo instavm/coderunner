@@ -139,8 +139,14 @@ def sandbox_tools(svc) -> list[Tool]:
         from ..files import attached
         return str(text).replace(str(attached.attached_dir()), attached.SANDBOX_DIR)
 
+    def own(ctx) -> str:
+        """The code session of the task: "main", or one of its own for a second task running beside another, so
+        two tasks' variables and working directories do not meet."""
+        slot = getattr(getattr(ctx, "events", None), "slot", 0) or 0
+        return "main" if not slot else f"task{slot + 1}"
+
     async def run_python(args, ctx):
-        session = args.get("session") or "main"
+        session = args.get("session") or own(ctx)
         args = {**args, "code": in_sandbox(args["code"])}
         if not await approved(f"Run in the sandbox:\n{args['code']}", session, ctx):
             return "Error: the owner did not approve running this code."
@@ -154,7 +160,7 @@ def sandbox_tools(svc) -> list[Tool]:
             or "(no output)"
 
     async def run_shell(args, ctx):
-        command, session = in_sandbox(args["command"]), args.get("session") or "main"
+        command, session = in_sandbox(args["command"]), args.get("session") or own(ctx)
         timeout = max(1, min(int(args.get("timeout") or 120), 3600))
         if not await approved(f"Run in the sandbox shell:\n{command}", session, ctx):
             return "Error: the owner did not approve running this command."

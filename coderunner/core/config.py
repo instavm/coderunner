@@ -67,6 +67,7 @@ DEFAULTS: dict[str, Any] = {
         "scan_interval": 600,        # seconds between checks for new or changed files
     },
     "agent": {"max_steps": 30, "tool_output_chars": 12000, "approval_timeout": 300,
+              "parallel_tasks": None,  # tasks run at once (None: two on a local model, four on a remote one)
               "step_tokens": 2048,   # most a local model may write in one step (twice this where it may think); 0: no limit
               "recall_min_similarity": "auto"},  # similarity for a memory to enter a task; auto: per model
     "policy": {

@@ -588,8 +588,11 @@ class LlamaCppRuntime(Runtime):
         # shared cache: the step judge gets its own slot instead of evicting the agent's cached conversation.
         # Measured with Qwen3.5-9B on an M3 Pro: with one slot every step after a judge call re-read the
         # whole prompt (6 s growing to 19 s per step); with two, steps read only what was new (3.6 s).
+        # A slot for each task that may run at once (agent.parallel_tasks, two by default) and one for the judge:
+        # each task's requests name its slot, so its conversation stays read while the other has the model.
+        slots = int((self.config.get("agent.parallel_tasks") if self.config else None) or 2) + 1
         cmd += ["--jinja", "-c", str(active["ctx"]), "--host", "127.0.0.1", "--port", str(self.port),
-                "--cache-ram", "0", "-np", "2", "--kv-unified", "--alias", active["alias"]]
+                "--cache-ram", "0", "-np", str(slots), "--kv-unified", "--alias", active["alias"]]
         idle = idle_seconds(self.config)
         if idle:
             # The server frees the model's memory when idle and loads it again on the next request: a 27B

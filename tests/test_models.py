@@ -857,7 +857,7 @@ class RuntimeTests(TempHome):
         with mock.patch.object(rt, "binary", return_value="llama-server"):
             cmd = rt.command(rt._state()["active"])
         self.assertEqual(cmd, ["llama-server", "-m", "/m/q.gguf", "--mmproj", "/m/mmproj.gguf", "--jinja", "-c", "32768",
-                               "--host", "127.0.0.1", "--port", "8081", "--cache-ram", "0", "-np", "2",
+                               "--host", "127.0.0.1", "--port", "8081", "--cache-ram", "0", "-np", "3",
                                "--kv-unified", "--alias", "coderunner-qwen3.5-9b", "--sleep-idle-seconds", "600"])
         self.assertTrue(rt.vision(entry))
         self.assertEqual(rt.base_url, "http://127.0.0.1:8081/v1")
@@ -1734,7 +1734,7 @@ class PrismTests(TempHome):
         cmd = rt.command({"model": "/m.gguf", "mmproj": "/p.gguf", "ctx": 32768, "alias": "bonsai-2-27b"})
         joined = " ".join(cmd)
         for flag in ("--mmproj /p.gguf", "--jinja", "-ctk q8_0", "-ctv q8_0", "--load-mode none", "-c 32768",
-                     "-np 2", "--kv-unified"):
+                     "-np 3", "--kv-unified"):
             self.assertIn(flag, joined)
         self.assertIn(json.dumps({"reasoning_effort": "medium"}), cmd)
         self.assertIn("--sleep-idle-seconds 600", joined)             # frees the model's memory when unused

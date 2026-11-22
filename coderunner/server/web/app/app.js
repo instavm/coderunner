@@ -205,7 +205,9 @@ class TaskView {
     this.now = null;              // the line that says what is happening
     this.plan = null;             // the plan, kept in one place and updated
     $("thread").appendChild(this.root);
-    if (this.status === "running") this.setNow("Thinking");
+    const queued = this.status === "queued";            // waiting for a place: other tasks are running
+    if (queued) this.status = "running";
+    if (this.status === "running") this.setNow(queued ? "Waiting its turn" : "Thinking");
   }
 
   // Something to read, placed above the line that says what is happening now.
@@ -299,6 +301,8 @@ class TaskView {
         else if (e.ok !== false) this.setNow(describeActivity(e));
         break;
       case "done": case "failed": case "cancelled": this.finish(e); break;
+      case "queued": this.setNow("Waiting its turn"); break;
+      case "resumed": this.setNow("Thinking"); break;
       case "files": this.showProduced(e.files); break;
     }
     this.tick();
@@ -452,7 +456,7 @@ async function loadConversations() {
                                                        !a.card.classList.contains("closed"));
     const status = waiting ? "waiting" : c.status;
     t.append(el("span", "dot " + status), el("span", "label", trunc(c.title || "Attached files", 60)));
-    const sub = status === "running" ? "Working…" : status === "waiting" ? "Needs you" :
+    const sub = status === "running" ? "Working…" : status === "waiting" ? "Needs you" : status === "queued" ? "Queued" :
                 status === "failed" ? "Failed" : status === "cancelled" ? "Stopped" :
                 new Date(c.updated * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
     button.append(t, el("div", "s", sub));
@@ -471,6 +475,8 @@ async function openConversation(id, title, again) {
   const kept = again ? $("thread").scrollTop : null;
   $("composer").hidden = false;
   state.conversation = id;
+  // The task being read comes to the front on the assistant's computer and goes first at the model.
+  api("/api/focus", {method: "POST", body: JSON.stringify({conversation: id || ""})}).catch(() => {});
   state.views.clear();
   $("thread").replaceChildren();
   $("title").textContent = id ? trunc(title || "Task", 90) : "New task";

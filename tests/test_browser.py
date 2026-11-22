@@ -543,6 +543,74 @@ class RenumberedTests(BrokerTestCase):
             self.broker._ref("T", 61)
 
 
+class OwnTabsTests(BrokerTestCase):
+    """Two tasks at once each have their own tabs: neither sees, acts on or closes the other's."""
+
+    def as_task(self, conversation):
+        return current_run.set(SimpleNamespace(conversation=conversation, content_tainted=False,
+                                               private_sources=set(), shared=set()))
+
+    async def test_each_task_keeps_to_its_own_tabs(self):
+        from coderunner.browser import broker as broker_module
+        a = self.as_task("app:a")
+        await self.broker.open("https://fares.example/")
+        browser = self.launcher.browser
+        tab_a = self.broker._active
+        current_run.reset(a)
+        on_its_computer = mock.patch.object(type(self.broker), "mode", new_callable=mock.PropertyMock, return_value="computer")
+        on_its_computer.start()
+        self.addCleanup(on_its_computer.stop)
+        b = self.as_task("app:b")
+        await self.broker.open("https://shop.example/")
+        tab_b = self.broker._active
+        self.assertNotEqual(tab_a, tab_b)
+        # The second task's first tab on the assistant's computer opened in a window of its own.
+        made = browser.sent("Target.createTarget")
+        self.assertEqual([bool(m.get("newWindow")) for m in made], [False, True])
+        # It does not see the other's tab, cannot name it, and its "current tab" is its own.
+        listed = (await self.broker.tabs())["tabs"]
+        self.assertNotIn("https://fares.example/", [t["url"] for t in listed])
+        other = self.broker._tab_ids[tab_a]
+        self.assertIn("No open tab", (await self.broker.snapshot(tab=other))["error"])
+        self.assertEqual((await self.broker.snapshot())["url"], "https://shop.example/")
+        # Opening more pages closes its own oldest, never the other task's.
+        for n in range(broker_module.MAX_TABS + 2):
+            await self.broker.open(f"https://shop.example/p{n}")
+        self.assertIn(tab_a, browser.pages)
+        current_run.reset(b)
+        a = self.as_task("app:a")
+        self.assertEqual(self.broker._active, tab_a)                    # the first task is still where it was
+        self.assertEqual((await self.broker.snapshot())["url"], "https://fares.example/")
+        current_run.reset(a)
+        # Finished: its older tabs close, the one it ended on stays for a follow-up, and it is nobody's now.
+        await self.broker.tidy(scope="app:b")
+        self.assertEqual([t for t, owner in self.broker._tab_owner.items() if owner == "app:b"], [])
+        b = self.as_task("app:b")
+        ended_on = self.broker._last["app:b"]
+        self.assertEqual((await self.broker.snapshot())["url"], browser.pages[ended_on]["url"])
+        current_run.reset(b)
+        # A page picture is of the task's own tab, whoever asks.
+        self.assertEqual((await self.broker.peek(scope="app:a"))[1], "https://fares.example/")
+
+    async def test_two_tasks_on_one_site_do_not_step_at_the_same_moment(self):
+        from coderunner.browser import broker as broker_module
+        waited = []
+
+        async def nap(seconds):
+            waited.append(round(seconds, 1))
+        a = self.as_task("app:a")
+        await self.broker._courtesy("shop.example")
+        current_run.reset(a)
+        b = self.as_task("app:b")
+        with mock.patch.object(broker_module.asyncio, "sleep", nap):
+            await self.broker._courtesy("shop.example")                 # right after the other task's step there
+            await self.broker._courtesy("shop.example")                 # its own next step: no wait
+            await self.broker._courtesy("elsewhere.example")            # another site: no wait
+        current_run.reset(b)
+        self.assertEqual(len(waited), 1)
+        self.assertTrue(0 < waited[0] <= broker_module.SAME_SITE_GAP)
+
+
 class TabTidyTests(BrokerTestCase):
     async def test_the_assistants_older_tabs_close_as_new_ones_open_and_after_a_task(self):
         from coderunner.browser import broker as broker_module

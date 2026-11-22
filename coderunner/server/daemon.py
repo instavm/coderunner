@@ -60,6 +60,7 @@ class Services:
     connectors: list = field(default_factory=list)
     channels: dict = field(default_factory=dict)
     registry: Any = None
+    turns: Any = None               # server.tasks.Turns: one model turn at a time between running tasks
     agent: Agent | None = None
     driver: Any = None              # agent.driver.Driver: a screenshot-driven model for browser tasks
 
@@ -320,6 +321,8 @@ class Daemon:
 
         svc.driver = self._driver(svc)
         svc.registry = build_registry(svc)
+        from .tasks import Turns
+        svc.turns = Turns()
         svc.agent = Agent(svc, svc.llm, svc.registry)
         svc.policy.add_listener(self._announce_approval)
         return svc
