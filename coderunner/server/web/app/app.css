@@ -87,7 +87,8 @@ button.check-row:hover .check-what { color: var(--accent); }
 #mainHead { display: flex; align-items: center; justify-content: space-between; padding: 12px 22px; padding-top: 36px; border-bottom: 1px solid var(--line); -webkit-app-region: drag; }
 #mainHead button { -webkit-app-region: no-drag; }
 .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pill { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 4px 12px; }
+.pill { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 4px 12px; white-space: nowrap; flex: none; }
+#mainHead { gap: 12px; } #title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pill:hover { border-color: var(--accent); color: var(--accent); }
 #thread { flex: 1; overflow-y: auto; padding: 22px 0 30px; }
 #thread > * { max-width: 760px; margin-left: auto; margin-right: auto; padding: 0 24px; }
@@ -232,6 +233,7 @@ a.item:hover { transform: translateY(-1px); } a.item:focus-visible { outline: 2p
 #screen canvas { cursor: default; }
 .screen-note { position: absolute; inset: 0; display: grid; place-items: center; color: #bdbab1; font-size: 13px; padding: 20px; text-align: center; pointer-events: none; }
 .screen-note:empty { display: none; }
+.screen-note:not(:empty) ~ .control { display: none; }      /* nothing to watch or take over yet */
 .control { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; background: rgb(20 20 19 / 82%); border-radius: 999px; padding: 3px; backdrop-filter: blur(8px); }
 .seg { border: 0; background: none; color: #d9d6cd; padding: 4px 12px; border-radius: 999px; font-size: 12.5px; white-space: nowrap; }
 .seg.on { background: #f2f0ea; color: #1d1c1a; }

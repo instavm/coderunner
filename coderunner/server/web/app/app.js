@@ -896,7 +896,9 @@ let rfb = null;
 let control = false;
 let retry = null;
 
+let screenWord = "";                // why there is no screen, while there is none
 function setNote(text) { $("screenNote").textContent = text; }
+function setScreenWord(word) { screenWord = word; $("computerState").textContent = word; }
 
 async function connectScreen() {
   clearTimeout(retry);
@@ -904,7 +906,7 @@ async function connectScreen() {
   try { info = await api("/api/computer", {method: "POST", body: "{}"}); }
   catch {                             // the daemon is away: the line above the thread says so, and it comes back
     setNote("Reconnecting to the screen…");
-    $("computerState").textContent = "Reconnecting";
+    setScreenWord("Reconnecting");
     retry = setTimeout(connectScreen, 4000);
     return;
   }
@@ -912,13 +914,13 @@ async function connectScreen() {
   if (info.reachable === false) {   // no sandbox answering: coming up, stopped, or never installed
     const starting = info.state === "starting";
     setNote(starting ? "Starting the computer…" : info.error);
-    $("computerState").textContent = starting ? "Starting" : info.state === "absent" ? "Not installed" : "Stopped";
+    setScreenWord(starting ? "Starting" : info.state === "absent" ? "Not installed" : "Stopped");
     if (computerBox) computerBox.box.hidden = true;
     if (info.state === "stopped") {
       const start = el("button", "btn primary", "Start it");
       start.id = "startComputer"; start.type = "button";
       start.onclick = async () => {
-        start.remove(); setNote("Starting the computer…"); $("computerState").textContent = "Starting";
+        start.remove(); setNote("Starting the computer…"); setScreenWord("Starting");
         clearTimeout(retry);
         try { await api("/api/computer", {method: "POST", body: JSON.stringify({start: true})}); } catch { /* said above the thread */ }
         connectScreen();
@@ -930,12 +932,13 @@ async function connectScreen() {
   }
   if (!info.available) {
     setNote(info.error || "This computer has no screen yet.");
-    $("computerState").textContent = "No screen";
+    setScreenWord("No screen");
     watchComputerSetup();           // offers to set it up, or shows a setup that is running
     return;
   }
   if (computerBox) computerBox.box.hidden = true;
   const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/computer/screen`;
+  screenWord = "";
   rfb = new RFB($("screen"), url, {credentials: {password: info.password}, wsProtocols: ["binary"], shared: true});
   rfb.scaleViewport = true;
   rfb.resizeSession = false;
@@ -947,7 +950,7 @@ async function connectScreen() {
   rfb.addEventListener("disconnect", () => {
     rfb = null;
     setNote("Reconnecting to the screen…");
-    $("computerState").textContent = "Reconnecting";
+    setScreenWord("Reconnecting");
     retry = setTimeout(connectScreen, 2500);
   });
 }
@@ -1019,7 +1022,8 @@ $("toggleComputer").onclick = () => showComputer($("shell").classList.contains("
 function setNow(text) { state.nowText = text; refreshNow(); }
 function refreshNow() {
   const busy = state.running.size > 0;
-  $("computerState").textContent = control ? "You're in control" : busy ? "Working" : rfb ? "Idle" : "Connecting";
+  // Without a screen the word is why (starting, stopped, not installed), not "Connecting" again every few seconds.
+  $("computerState").textContent = control ? "You're in control" : rfb ? (busy ? "Working" : "Idle") : screenWord || (busy ? "Working" : "Connecting");
   $("nowLine").textContent = busy ? (state.nowText || "Working…") : "Idle";
 }
 
