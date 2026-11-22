@@ -456,6 +456,18 @@ After CodeRunner is updated, the daemon brings the extension's folder up to date
 running the old extension (also after a restart) until you press its reload arrow in
 `chrome://extensions`; `coderunner browser status` says when the extension is older than CodeRunner.
 
+Two things keep a small local model's browser steps from going to waste. An element a page draws again
+(a calendar after "Next month") gets a new number; a step that still names the old one is taken to the element
+with the same role and name when the page is the same and exactly one matches, and is refused as before
+otherwise ("Unknown element", which was 8 of 13 failed browser steps in a day of local runs). And when the
+model sends two single clicks or entries in a row on a page it has already read, the second result carries a
+note to send what it already knows together in one `browser_batch`.
+
+A local model's reply also has a length limit, `agent.step_tokens` (2,048 tokens; twice that where it may think
+first; 0 for none). A model can fall into writing without end: one step of a flight search ran to 10,400
+tokens, eight minutes, on Qwen3.5 9B. A reply that hits the limit is dropped whole and asked for again, shorter,
+and after two of those the task ends in plain words.
+
 ### A browser driver for website tasks
 
 `coderunner models driver` adds a second model trained to use websites from screenshots: Microsoft's
