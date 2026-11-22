@@ -805,10 +805,11 @@ class BrowserBroker:
             kind = "browser.sensitive"
         if not await self.policy.check(Action(kind, host, summary, detail, tainted), origin=self.origin):
             # Worded for the answer the model writes next: the owner's own decision, never "blocked by a policy".
-            raise BrowserError(f"Not permitted: {summary}. This step was not allowed, so it is the owner's to take "
-                               "themselves. Do not try it another way. In your answer say what is done and that "
-                               "you left this step to them, in plain words (never \"policy\", \"blocked\" or "
-                               "\"approval\").")
+            raise BrowserError(f"Not permitted: {summary}. This step needs the owner and was not allowed now. Do "
+                               "not try it another way; go on with what does not need it. In your answer give the "
+                               "result first, then say in everyday words what is left for them (\"It is in the "
+                               "cart; checkout is yours.\", \"Croma shows its price only after a location is "
+                               "chosen.\"), never with the words policy, blocked, approval or permitted.")
 
     async def _commits(self, host: str, url: str, action: str, role: str, name: str, **extra: str) -> bool:
         """Whether the judge (decision or assistant model) thinks this step commits something."""

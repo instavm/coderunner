@@ -481,6 +481,114 @@ Not covered by these runs: a real drag from Finder; the system's file dialog its
 limit; attaching from a paired phone; the check on a text-only model, without the sandbox or on Linux (those paths are in the unit
 tests only); any model but Qwen3.5 9B on these tasks.
 
+### Remote mode on Claude Haiku 5.5, and twenty tasks and five forms on real websites (November 22, same Mac)
+
+The same home was switched to remote mode with `coderunner claude on` (the key read from a file into
+`assistant/anthropic-key`, mode 600) and driven in the desktop app.
+
+That the calls reach `claude-haiku-5-5`: the daemon's log has one line a request with the model the API named
+and its request id, e.g. a first planner step with tools `req_011ChHjENr2ycyLqnNWcHN1p` (4,929 tokens written
+to the cache), the judge of a step `req_011ChHjEVHUnDPHdQcGnU1r9`, and the task's second step
+`req_011ChHjF3Uz72kyaz6evGiVW` with `cache_read=4929`. A step takes 1.1 to 1.3 s (the Models panel shows the
+median measured). The first task in the app, a sum and a Wikipedia lookup, was answered in 10 s.
+
+As the step judge on the approval benchmark (100 synthetic, 30 real, 28 held-out steps): 96 / 30 / 28 right with
+the worked examples, no committing step missed of 71, 4 false alarms of 87, 0.78 s a step; asked cold 94 / 29 /
+27 with 8 false alarms. The injection guard was tried with it and turned off again for remote mode: it flagged
+7 ordinary pages in about 80 reads, taking the page snapshot's own reading hints for instructions.
+
+`coderunner check --long` on Haiku: 11 of 11 that apply passed in about three and a half minutes (answer 1 s,
+picture 1 s, document 3 s, video 5 s, code 5 s, files 7 s, website 11 s, flights 40 s, booking 49 s, appliance
+17 s, errands 57 s); `driver` is skipped, as the browser driver is not used with Claude.
+
+`coderunner check --real`, the twenty tasks on real websites. The first full run passed all twenty by its
+criteria in 10 min 24 s, and reading the answers showed the criteria were too easy: a price comparison of a
+phone no shop listed and a cart nothing had been put in had passed. The grading was tightened (an answer that
+opens by saying it could not do the task fails; a cart or reservation task must have clicked what it turns on,
+or been stopped by the approval for that very step), the phone was changed to one on sale and the SSD budget to
+one that exists. Problems those runs exposed and that were fixed:
+
+* with a local model's limits the loop dropped pages once the conversation passed 20,000 tokens and gave 12,000
+  characters of each page, so a three-country comparison came back "not captured"; Claude is given 36,000
+  characters of a page, links whole, and a 150,000-token working context;
+* a research task that held a recalled memory asked for approval once a site (five times for a flight search);
+  "Allow for this task" now covers the rest of the task;
+* every task's pages stayed open: after about forty tasks the sandbox's Chrome held fourteen page processes in
+  its 2 GB, the kernel killed one (`memory.events`: `oom_kill 1`), and every later page open failed three
+  times over thirty seconds each until Chrome was restarted by hand. Tabs are capped and closed after a task,
+  a crashed tab is closed when the browser reports it, and a fault is met by reconnecting and restarting
+  Chrome without the model being told. With the page processes killed in the middle of a task, the task went
+  on and reached its next approval;
+* answers opened with the model's own narration, and its interim remarks were shown in the thread; only
+  deliberate updates are shown now.
+
+The last full run, on the code as committed (2026-11-22 17:19:44, `claude-haiku-5-5`, 16 min 31 s in all): 19 of 20 everyday tasks passed; of the five forms 4 passed and 1 stopped at the CAPTCHA that is the owner's.
+
+| Task | Result | Time | Steps | Approvals asked (refused) |
+|---|---|---|---|---|
+| mauritius: a week in Mauritius planned: flights, hotels, a day-by-day plan with costs | passed | 54 s | 10 | 0 (0) |
+| phone: one phone priced at three retailers | passed | 33 s | 10 | 2 (2) |
+| laptop: three laptops under a budget from two shops | passed | 36 s | 9 | 0 (0) |
+| headphones: the best-reviewed headphones according to two review sites | passed | 1 min 37 s | 13 | 0 (0) |
+| flight: the cheapest non-stop flight on a date, from two travel sites | passed | 2 min 50 s | 19 | 1 (0) |
+| train: morning trains between two cities from a timetable | passed | 15 s | 5 | 0 (0) |
+| hotel: three hotels under a nightly budget for given dates | passed | 30 s | 6 | 0 (0) |
+| restaurant: three restaurants in a neighbourhood, open at a given time | passed | 22 s | 5 | 0 (0) |
+| repair: three repair shops nearby with hours and phone numbers | failed (the answer says it could not be done) | 25 s | 5 | 1 (0) |
+| weather: a three-day forecast and the best day for a picnic | passed | 15 s | 4 | 0 (0) |
+| currency: an amount converted into two currencies at today's rates | passed | 17 s | 5 | 0 (0) |
+| islands: three countries compared in a table with a source for each | passed | 46 s | 11 | 0 (0) |
+| visa: visa rules for three countries, each from an official source | passed | 1 min 7 s | 14 | 0 (0) |
+| price: one product's price at the maker and at a retailer, against a threshold | passed | 16 s | 4 | 1 (0) |
+| news: today's technology headlines from two news sites | passed | 39 s | 4 | 0 (0) |
+| cart: a product put in a cart and taken to the step before sign-in or payment | passed | 1 min 11 s | 4 | 2 (1) |
+| reserve: a hotel room taken to the page that asks for the guest's details | passed | 25 s | 6 | 2 (1) |
+| biryani: a recipe turned into a shopping list, with five items priced at a grocer | passed | 1 min 5 s | 14 | 0 (0) |
+| papers: two attached documents read, and a letter drafted from them | passed | 5 s | 2 | 1 (0) |
+| chart: an attached sheet charted in the sandbox, with the figures read off it | passed | 7 s | 3 | 1 (0) |
+
+The five forms:
+
+| Task | Result | Time | Steps | Approvals asked (refused) |
+|---|---|---|---|---|
+| ecourts: a district court case search filled in, up to its CAPTCHA | needs you: CAPTCHA | 28 s | 11 | 1 (1) |
+| stations: a trains-between-stations search form filled in and read | passed | 17 s | 5 | 0 (0) |
+| pincode: a PIN code found through state, district and post office lists | passed | 41 s | 8 | 0 (0) |
+| ifsc: a bank branch's IFSC code found through bank, state, district and branch lists | passed | 21 s | 6 | 0 (0) |
+| emi: a loan calculator given four figures, checked by the instalment it returns | passed | 30 s | 5 | 1 (0) |
+
+The one failure of that run, `repair`, was an answer that opened by saying the shops' hours could not be
+confirmed. The run before it (16:19, before the web search step) passed 18 of 20: `train` and `visa` had opened
+addresses written from memory, none of which existed; with `browser_search` both pass. Pass rates on these
+tasks were not pursued further on Haiku: how well tasks succeed is to be measured on the local model.
+
+The forms were run four times while the grading was settled. What they showed about form handling: lists that
+depend on one another worked as they are, both the kind that fills the next list in the page (eCourts) and the
+kind where each choice opens a new page (the PIN and IFSC finders); a station field with suggestions and a
+calculator's number fields took typing. What was wrong and is fixed: the assistant ended the task to ask for
+the CAPTCHA instead of handing the screen over, and nothing stopped it from typing into a CAPTCHA box. Not
+exercised by these five: select widgets drawn by a page's own script, date pickers (the flight and hotel tasks
+use booking.com's), results in a frame.
+
+Reading every thread of the run (7 updates, 25 answers) for internal workings: no tool names, element numbers,
+retries or error texts. One answer (`phone`) opened with "I'm stopping on Croma here" after a step was not
+allowed; the wording given to the model for such a step was changed again after this run and not re-measured.
+
+The sandbox VM's 2 GB is the limit that remains: `memory.events` in the VM showed `oom_kill 3` by the end of
+the day (the first before the tab cap, two more at 16:02 to 16:04 while heavy shopping pages loaded), each met
+by the browser being brought back without the task being told. No kill in the runs after 16:04 (some sixty
+tasks). A 4 GB VM (`coderunner sandbox reset --memory 4g`, which recreates the VM and deletes its filesystem)
+is the remedy and was not applied here.
+
+Tokens for the afternoon in remote mode, from the daemon's log up to 17:03 (718 requests): 227,073 input,
+9,894,858 read from the cache, 2,822,607 written to it, 118,084 output.
+
+Not covered: the "Start it" button and the shell bringing a dead daemon back were not exercised in a window
+(the open window's main process predates them; unit tests cover the logic); the approval cards for sending
+mail, changing a setting and dialling a call were looked at with stand-in approvals written into the page's
+data, not raised by the connectors, which were not enabled or run; the first run's "Use Claude instead" path
+in a window; remote mode on Linux; Sonnet or Opus as the remote model.
+
 ## Not yet validated
 
 * CodeRunner's own Ollama on Linux: the archives' checksums are the release's own, their layout (`bin/ollama`)

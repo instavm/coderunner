@@ -80,6 +80,25 @@ class AppShellTests(unittest.TestCase):
         self.assertNotIn("coderunner up", facing)
         self.assertIn("No model is set up yet.", gateway)
 
+    def test_a_high_risk_approval_is_shown_whole_and_the_owners_turn_has_its_own_button(self):
+        import re
+        web = appshell.app_dir().parent / "coderunner" / "server" / "web" / "app"
+        page, style, markup = ((web / name).read_text() for name in ("app.js", "app.css", "index.html"))
+        # A message to be sent is never cut to the two lines a script's preview gets: it scrolls inside its card.
+        self.assertRegex(page, r'const grave = e\.risk === "high" && !act;\s+if \(grave\) this\.showWhole\(card')
+        body = re.search(r"^\.ask-body \{[^}]*\}", style, re.M).group(0)
+        self.assertNotIn("line-clamp", body)
+        self.assertIn("overflow-y: auto", body)
+        whole = page[page.index("  showWhole(card, summary) {"):page.index("  finish(e) {")]
+        self.assertIn("not in what you asked, nor in your contacts", whole)      # the caution, set apart
+        self.assertIn("ask-caution", whole)
+        self.assertRegex(whole, r"\^\(To\|Cc\|Bcc")                              # who it reaches, a line each
+        # The owner's step is said once, and the large screen has the button that hands it back.
+        self.assertIn('id="turnDone"', markup)
+        self.assertIn('$("turnDone").onclick = finish', page)
+        # Finished check tasks are on the Check screen, not among the owner's own.
+        self.assertIn('c.conversation.startsWith("app:check-") && c.status !== "running"', page)
+
     def test_the_checkouts_own_electron_is_used_before_coderunners_copy(self):
         app = self.home / "checkout" / "app"
         self.assertIsNone(appshell.installed(app))

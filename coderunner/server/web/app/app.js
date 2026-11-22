@@ -507,6 +507,8 @@ async function loadConversations() {
   const nav = $("conversations");
   nav.replaceChildren();
   for (const c of list) {
+    // The check's own tasks are on the Check screen; here only the one running now, or the one being read.
+    if (c.conversation.startsWith("app:check-") && c.status !== "running" && c.conversation !== state.conversation) continue;
     const button = el("button", "conv" + (c.conversation === state.conversation ? " on" : ""));
     const t = el("div", "t");
     const waiting = [...state.approvals.values()].some((a) => a.conversation === c.conversation &&

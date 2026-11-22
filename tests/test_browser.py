@@ -452,7 +452,7 @@ class NavigationPolicyTests(BrokerTestCase):
         self.assertEqual(result["ok"], False)
         self.assertIn("Not permitted", result["error"])
         # The model words its answer from this: the step is the owner's to take, with no policy or kind names.
-        self.assertIn("owner's to take", result["error"])
+        self.assertIn("needs the owner", result["error"])
         self.assertNotIn("browser.navigate", result["error"])
         self.assertNotIn("denied by policy", result["error"])
         self.assertEqual(self.kinds(), ["browser.navigate"])

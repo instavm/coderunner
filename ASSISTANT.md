@@ -964,7 +964,7 @@ test sites are served on (the sandbox's gateway address when the browser is the 
 step would pay. Approvals of any other task are left alone. A check does not start while a task is running.
 The API: `GET /api/check`, `POST /api/check` with `{"names": [...], "long": ...}` or `{"action": "stop"}`.
 
-### Twenty tasks on real websites
+### Twenty tasks and five forms on real websites
 
 `coderunner check --real` (the "Real websites" tab of Check in the app) hands the assistant twenty things people
 give an assistant, on the real web: a week in Mauritius planned with flights, hotels and a day-by-day plan with
@@ -983,7 +983,22 @@ committing step went through. A site that shows a CAPTCHA or turns automated vis
 text: no sign-in, no account, no payment, no personal details, a few pages a site. The run answers its tasks'
 approvals as the check does, except that every committing step and every hand-over of the screen is refused.
 Each line gives the time, the tool calls and the approvals asked; the result is kept in
-`assistant/check-real.json`, and each task stays in the app's list to be opened.
+`assistant/check-real.json`, and each task opens from its row on the Check screen (finished check tasks are not
+listed among the owner's own).
+
+Five more are public forms, listed apart: an eCourts case search for the district courts of Gautam Buddha Nagar
+(state, district and court complex lists that depend on one another, a party name and a year), a
+trains-between-stations form, a PIN code and a bank's IFSC code found through dependent lists, and a loan
+calculator checked by the instalment it returns. A form is graded on what was chosen and typed in the page,
+read from the browser's own record of the task and from the form's values at the end, not from the answer. The
+eCourts search ends in a CAPTCHA: the assistant fills in the rest, hands the screen to the owner and stops; the
+run declines the hand-over and records "needs you", which is neither a pass nor a failure.
+
+To find a page the assistant searches the web (`browser_search`: the results one line each with the link, from
+a second search site when the first answers with a challenge) instead of opening an address from memory. A
+CAPTCHA is the owner's step, as passwords and one-time codes are: the browser refuses to type into a CAPTCHA
+box, the assistant calls `browser_handoff`, the thread shows "Your turn on the computer" with the one thing to
+do, and the large screen carries the same sentence with "I'm done"; the task goes on from the result.
 
 `coderunner models bench --tasks` is a different measurement: it times a model on the same test sites in a
 throwaway home with a headless browser, to compare models. `check` asks whether this install works.
