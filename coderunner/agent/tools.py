@@ -773,12 +773,49 @@ def plan_tools(svc) -> list[Tool]:
         ctx.emit({"type": "note", "text": text[:1200]})
         return "The owner has been told."
 
+    async def show(args, ctx):
+        """Cards under the answer for things better seen than read. Each field is the model's own structure
+        (never cut from its prose) and is shown as text; a picture is the one the page shows beside the item."""
+        task = getattr(ctx.events, "task", None)
+        browser = getattr(svc, "browser", None)
+        shown = []
+        for raw in (args.get("items") or [])[:8]:
+            if not isinstance(raw, dict) or not str(raw.get("name") or "").strip():
+                continue
+            url = str(raw.get("url") or "").strip()
+            item = {"name": str(raw["name"]).strip()[:120], "price": str(raw.get("price") or "").strip()[:40],
+                    "seller": str(raw.get("seller") or "").strip()[:60],
+                    "url": url[:2000] if url.startswith(("http://", "https://")) else ""}
+            numbered = str(raw.get("ref") or "").isdigit()
+            if task and browser is not None and hasattr(browser, "picture") and (numbered or item["url"]):
+                # By its number in the list, or as the link on the open page that leads to its address.
+                image = await (browser.picture(int(raw["ref"])) if numbered else browser.picture(url=item["url"]))
+                if image:
+                    from ..server.tasks import shots_dir
+                    name = f"{task}-i{len(shown) + ctx.shown}.jpg"
+                    shots_dir().mkdir(parents=True, exist_ok=True)
+                    (shots_dir() / name).write_bytes(image)
+                    item["image"] = name
+            shown.append(item)
+        if not shown:
+            return "Nothing to show: each item needs a name."
+        ctx.shown += len(shown)
+        ctx.emit({"type": "items", "items": shown})
+        return f"{len(shown)} shown to the owner as cards. Do not list them again in your answer."
+
     step = {"type": "object", "properties": {"step": STR, "status": {"type": "string", "enum": ["todo", "doing", "done"]}},
             "required": ["step"]}
     return [Tool("tell_owner", "Tell the owner something in the task's thread while you work: a finding, a partial "
                  "result, a choice you made. One or two sentences in plain words. Not for what you are about to do, "
                  "and never about tools, errors or retries.",
                  _params({"text": STR}, ["text"]), tell),
+            Tool("show_items", "Show the owner up to eight products or places as cards with a picture, under your "
+                 "answer: for a shopping or hotel result they will want to look at. Each item: name, price, seller "
+                 "and url. Call it while the page that lists them is still open (their pictures are taken from "
+                 "it); ref is an item's number [N] in that list.",
+                 _params({"items": {"type": "array", "items": {"type": "object", "properties": {
+                     "name": STR, "price": STR, "seller": STR, "url": STR, "ref": INT}, "required": ["name"]}}},
+                     ["items"]), show),
             Tool("plan_update", "Write or update the plan for a task with several steps: a short list of steps, "
                  "each todo, doing or done. It is shown to you at every step.",
                  _params({"steps": {"type": "array", "items": step}}, ["steps"]), update)]

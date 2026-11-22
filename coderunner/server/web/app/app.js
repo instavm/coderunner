@@ -1,6 +1,7 @@
 // CodeRunner app: tasks run in the background on the daemon; this page shows what each one does as it happens,
 // and the sandbox computer's screen, which the owner can watch or take over.
 import RFB from "./novnc/core/rfb.js";
+import {el, richText, inline, markdown, messages, itemCards} from "./render.js";
 
 const $ = (id) => document.getElementById(id);
 // In the desktop app on a Mac the window's own buttons sit over the page's top-left corner.
@@ -84,93 +85,6 @@ function notice(text) {
   box.hidden = false;
   clearTimeout(noticeTimer);
   noticeTimer = setTimeout(() => { box.hidden = true; }, 7000);
-}
-
-function el(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined && text !== null) node.textContent = text;
-  return node;
-}
-
-// Text with its web addresses as links (never HTML from the model or a page).
-function richText(node, text) {
-  const parts = String(text).split(/(https?:\/\/[^\s<>()]+)/g);
-  for (const part of parts) {
-    if (/^https?:\/\//.test(part)) {
-      // An address reads as where it leads: the site and the start of its path. The whole of it is the link.
-      const url = part.replace(/[.,;:!?]+$/, ""), rest = part.slice(url.length);
-      const a = el("a", "link", linkLabel(url)); a.href = url; a.title = url; a.target = "_blank"; a.rel = "noopener noreferrer";
-      node.appendChild(a);
-      if (rest) node.appendChild(document.createTextNode(rest));
-    } else if (part) node.appendChild(document.createTextNode(part));
-  }
-  return node;
-}
-
-function linkLabel(url) {
-  try {
-    const u = new URL(url), site = u.host.replace(/^www\./, "");
-    const path = decodeURIComponent(u.pathname).replace(/\/$/, "");
-    const tail = path.length > 28 ? path.slice(0, 27) + "…" : path + (u.search ? "…" : "");
-    return site + (tail === "…" && !path ? "" : tail);
-  } catch { return url.length > 48 ? url.slice(0, 47) + "…" : url; }
-}
-
-// A small, safe subset of Markdown (paragraphs, lists, tables, **bold**, `code`, links), built as DOM nodes.
-function inline(node, text) {
-  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g;
-  for (const part of String(text).split(pattern)) {
-    if (!part) continue;
-    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) node.appendChild(el("strong", "", part.slice(2, -2)));
-    else if (part.startsWith("`") && part.endsWith("`") && part.length > 2) node.appendChild(el("code", "", part.slice(1, -1)));
-    else if (part.startsWith("[")) {
-      const m = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
-      const a = el("a", "", m[1]); a.href = m[2]; a.target = "_blank"; a.rel = "noopener noreferrer";
-      node.appendChild(a);
-    } else richText(node, part);
-  }
-  return node;
-}
-function markdown(node, text) {
-  node.classList.add("md");
-  let list = null, para = null;
-  const lines = String(text ?? "").split("\n").map((raw) => raw.trimEnd());
-  const cells = (line) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
-  const isRow = (line) => /^\s*\|.*\|\s*$/.test(line || "");
-  const isRule = (line) => isRow(line) && cells(line).every((cell) => /^:?-{2,}:?$/.test(cell));
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (isRow(line) && isRule(lines[i + 1])) {             // a table: its head, a rule, then its rows
-      const table = el("table", "md-table"), head = table.createTHead().insertRow();
-      for (const cell of cells(line)) inline(head.appendChild(el("th")), cell);
-      const body = table.createTBody();
-      for (i += 2; i < lines.length && isRow(lines[i]); i++) {
-        const row = body.insertRow();
-        for (const cell of cells(lines[i])) inline(row.insertCell(), cell);
-      }
-      i -= 1;
-      node.appendChild(el("div", "md-table-wrap")).appendChild(table);
-      list = null; para = null;
-      continue;
-    }
-    const bullet = line.match(/^\s*[-*•]\s+(.*)$/), numbered = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
-    if (bullet || numbered) {
-      const kind = bullet ? "ul" : "ol";
-      if (!list || list.tagName.toLowerCase() !== kind) {
-        list = el(kind); if (numbered) list.start = Number(numbered[1]); node.appendChild(list);
-      }
-      inline(list.appendChild(el("li")), bullet ? bullet[1] : numbered[2]);
-      para = null;
-    } else if (!line.trim()) { list = null; para = null; }
-    else if (/^#{1,4}\s+/.test(line)) { list = null; para = null; inline(node.appendChild(el("div", "md-h")), line.replace(/^#+\s+/, "")); }
-    else {
-      list = null;
-      if (para) para.appendChild(document.createElement("br")); else para = node.appendChild(el("p"));
-      inline(para, line);
-    }
-  }
-  return node;
 }
 
 // Tool results wrap page content in <untrusted> tags for the model; the owner sees the words only.
@@ -350,10 +264,11 @@ class TaskView {
     if (e.seq) this.seq = e.seq;
     switch (e.type) {
       case "started": this.showAttached(e.attachments); break;
-      case "note": this.say(markdown(el("div", "note"), e.text)); break;
+      case "note": this.say(markdown(el("div", "note say"), e.text)); break;
+      case "items": this.items = this.say(itemCards(e.items, (name) => `/api/shots/${encodeURIComponent(name)}`)); break;
       case "plan": this.showPlan(e.steps); break;
       case "tool":
-        if (e.name === "plan_update" || e.name === "tell_owner") break;
+        if (e.name === "plan_update" || e.name === "tell_owner" || e.name === "show_items") break;
         this.steps += 1;
         this.setNow(describeTool(e.name, e.arguments));
         break;
@@ -475,9 +390,11 @@ class TaskView {
     this.finished = e.ts;
     this.now?.row.remove();
     this.now = null;
+    // The answer is a few chat messages, not a document in a box.
     const answer = el("div", "answer" + (e.type === "failed" ? " failed" : ""));
-    markdown(answer, e.reply || "");
+    for (const message of messages(e.reply || "")) answer.appendChild(message);
     this.flow.appendChild(answer);
+    if (this.items) this.flow.appendChild(this.items);        // what is better seen than read, under the words
     const took = clock((this.finished || Date.now() / 1000) - this.started);
     this.flow.appendChild(el("div", "took muted small", e.type === "cancelled" ? `Stopped after ${took}` :
                              e.type === "failed" ? `Failed after ${took}` : `Done in ${took}`));
@@ -532,6 +449,7 @@ async function openConversation(id, title, again) {
     if (state.conversation !== id) return;
   }
   const kept = again ? $("thread").scrollTop : null;
+  $("composer").hidden = false;
   state.conversation = id;
   state.views.clear();
   $("thread").replaceChildren();
@@ -559,6 +477,7 @@ async function showCheck() {
   state.conversation = "check";             // not a conversation: no task's events belong to it
   state.views.clear();
   $("title").textContent = "Check";
+  $("composer").hidden = true;              // this screen runs checks; a task is written from a thread
   loadConversations();
   const box = el("section", "checkup");
   box.append(el("h1", "", "Check"), el("p", "muted", CHECK_LEADS[checkSet]));
@@ -594,7 +513,7 @@ async function showCheck() {
       row.append(el("span", "check-mark", CHECK_MARKS[task.state]), what,
                  el("span", "check-time", took + (task.approvals ? ` · ${task.approvals} asked` : "")));
       row.title = [task.why, task.sites?.length ? task.sites.join(", ") : ""].filter(Boolean).join(" · ");
-      if (task.conversation) { row.type = "button"; row.onclick = () => openConversation(task.conversation, task.what); }
+      if (task.conversation) { row.type = "button"; row.onclick = () => openConversation(task.conversation, what.firstChild.textContent); }
       list.appendChild(row);
     }
     box.appendChild(list);

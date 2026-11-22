@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 RULES = ("\n\nRules for this task: do not sign in, create an account, pay, or enter personal details anywhere. "
          "If a site shows a CAPTCHA or blocks automated visits, leave that site and use another; mention it only "
          "if it kept you from a result. "
-         "Open only the few pages you need on each site. End with the links of the pages you used.")
+         "Open only the few pages you need on each site. Link each page you used where you mention it.")
 LIMIT_S = 600
 MONEY = re.compile(r"(?:₹|Rs\.?|INR|MUR|US\$|\$|USD|€|EUR|£)\s?\d[\d,.]*|\d[\d,.]*\s?(?:rupees|INR|MUR|USD|dollars|euros)", re.I)
 LINK = re.compile(r"https?://[^\s<>()\[\]\"']+")

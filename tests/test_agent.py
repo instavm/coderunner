@@ -340,6 +340,39 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("duckduckgo", svc.browser.opened[1])
         self.assertIn("[7] Visa rules -> https://gov.example/visa", result)
 
+    async def test_items_are_shown_from_the_structure_given_with_the_pictures_the_page_shows(self):
+        import tempfile
+        from unittest import mock
+        from coderunner.agent.tools import plan_tools
+
+        class Pictured(FakeBrowser):
+            async def picture(self, ref=None, tab=None, url=""):
+                return b"jpeg-bytes" if ref == 11 or url.endswith("/by-address") else None
+
+        svc = Svc()
+        svc.browser = Pictured("")
+        tool = next(t for t in plan_tools(svc) if t.name == "show_items")
+        seen = []
+        emit = seen.append
+        emit_task = lambda event: seen.append(event)          # noqa: E731
+        emit_task.task = "0123456789ab"
+        ctx = RunContext(conversation="t-items", events=emit_task)
+        with tempfile.TemporaryDirectory() as home, mock.patch("coderunner.server.tasks.shots_dir",
+                                                              return_value=__import__("pathlib").Path(home)):
+            said = await tool.handler({"items": [
+                {"name": "Pixel 10a 256 GB", "price": "₹50,999", "seller": "Amazon", "url": "https://www.amazon.in/dp/B0X", "ref": 11},
+                {"name": "Other phone", "url": "javascript:alert(1)", "ref": 12}, {"price": "₹1"}, "not an item",
+                {"name": "Found by its address", "url": "https://shop.example/by-address"}]}, ctx)
+            self.assertTrue((__import__("pathlib").Path(home) / "0123456789ab-i2.jpg").exists())
+            self.assertEqual((__import__("pathlib").Path(home) / "0123456789ab-i0.jpg").read_bytes(), b"jpeg-bytes")
+        self.assertIn("3 shown", said)
+        (event,) = seen
+        self.assertEqual((event["type"], event["items"][2].get("image")), ("items", "0123456789ab-i2.jpg"))
+        self.assertEqual(event["items"][0], {"name": "Pixel 10a 256 GB", "price": "₹50,999", "seller": "Amazon",
+                                             "url": "https://www.amazon.in/dp/B0X", "image": "0123456789ab-i0.jpg"})
+        self.assertEqual(event["items"][1], {"name": "Other phone", "price": "", "seller": "", "url": ""})   # no picture, no address
+        del emit
+
     async def test_a_page_with_a_long_list_says_so(self):
         for total, hinted in ((28, True), (3, False)):
             class Listing(FakeBrowser):
@@ -606,8 +639,8 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
     async def test_old_pages_are_dropped_only_near_the_context_limit(self):
         from coderunner.agent.loop import DROPPED
         with FakeOpenAI() as fake:
-            svc = Svc({"models": {"context": 8192}})        # each page is about 1,100 tokens
-            svc.browser = FakeBrowser("A long page\n" + "[1] link \"More\"\n" * 200)
+            svc = Svc({"models": {"context": 8192}})        # each page is about 950 tokens
+            svc.browser = FakeBrowser("A long page\n" + "[1] link \"More\"\n" * 170)
             svc.llm = LLM(fake.base_url, "test")
             svc.registry = build_registry(svc)
             fake.script = [tool_call("browser_snapshot", {}, f"c{i}") for i in range(6)] + [

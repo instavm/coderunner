@@ -627,7 +627,7 @@ def admin_app(svc, daemon) -> Starlette:
         from .tasks import shots_dir
         name = request.path_params["name"]
         path = shots_dir() / name
-        if not re.fullmatch(r"[0-9a-f]{12}-\d{1,2}\.jpg", name) or not path.is_file():
+        if not re.fullmatch(r"[0-9a-f]{12}-i?\d{1,2}\.jpg", name) or not path.is_file():
             return JSONResponse({"error": "no such picture"}, status_code=404)
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 

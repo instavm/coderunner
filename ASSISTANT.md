@@ -769,6 +769,17 @@ policy.
 approvals, and the sandbox computer's screen to watch or take over (`coderunner browser computer` gives the
 sandbox that screen).
 
+The answer is a chat reply, not a report. The instructions ask for the finding first in a sentence or two,
+plain sentences without headings or bold labels, a source linked by its name where it is mentioned, one
+sentence for a caveat, no recap and no offer at the end, and give two short examples. The app (`render.js`)
+shows it as messages: two or three short paragraphs are a message each, a longer text stays one; a table or a
+list is a block of its own, and a comparison of four columns or more becomes a card a row, since such a table
+does not fit a thread's width. A link is the page's name with a small mark for its site, the site's first
+letter on a neutral tile: no icon is fetched, as a favicon service would be told every site an answer mentions.
+Products or places come as a row of cards with picture, name, price and seller under the words, from the
+structure the assistant gives with `show_items` (never cut from its prose, every field shown as text); a
+picture is cut from the page as the sandbox browser already shows it, so nothing is requested for it.
+
 A task reads as a conversation with a person, not as a list of tool calls. The thread holds what the owner
 asked, what the assistant tells them on purpose while it works (a finding or a partial result, sent with its
 `tell_owner` tool), its plan as a checklist that fills in, its questions and approval requests, pictures of

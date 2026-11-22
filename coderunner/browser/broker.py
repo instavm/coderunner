@@ -130,6 +130,32 @@ DENIED_PERMISSIONS = ("geolocation", "notifications", "camera", "microphone", "m
 PASSWORD_HINT = ("This is a password or one-time-code field. The owner types those, never the assistant: "
                  "call handoff(reason) so they can finish it in the CodeRunner browser window.")
 
+# The one picture an item is shown with: inside its link, or in the nearest box around it that holds few pictures
+# (a box with many is the whole list).
+PICTURE_JS = """function() {
+  const big = (im) => { const r = im.getBoundingClientRect(); return r.width >= 60 && r.height >= 60; };
+  for (let n = this, up = 0; n && up < 6; n = n.parentElement, up++) {
+    const found = [...n.querySelectorAll('img')].filter(big);
+    if (found.length > 3) return null;
+    if (found.length) {
+      found[0].scrollIntoView({block: 'center', inline: 'nearest'});
+      const r = found[0].getBoundingClientRect();
+      return {x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height};
+    }
+  }
+  return null;
+}"""
+# The link on the page that leads to an address: the same path, or a path holding the address's last part (a
+# product's id, which a results page follows with its own tracking).
+LINK_TO_JS = """function(url) {
+  let want; try { want = new URL(url); } catch (e) { return null; }
+  const last = want.pathname.split('/').filter(Boolean).pop() || '';
+  const leads = (a) => { let u; try { u = new URL(a.href); } catch (e) { return false; }
+    return u.host.replace(/^www\\./, '') === want.host.replace(/^www\\./, '') &&
+      (u.pathname === want.pathname || (last.length >= 6 && u.pathname.includes(last))); };
+  const links = [...document.querySelectorAll('a[href]')].filter(leads);
+  return links.find((a) => a.querySelector('img')) || links[0] || null;
+}"""
 CAPTCHA_HINT = ("This field is for a CAPTCHA. Proving there is a person is the owner's step, never the "
                 "assistant's: fill in the rest of the form, then call handoff(reason) so they can type it in the "
                 "CodeRunner browser window, and carry on when they are done.")
@@ -480,6 +506,36 @@ class BrowserBroker:
                                     {"format": "jpeg", "quality": quality, "clip": clip}, timeout=15)
             return base64.b64decode(shot["data"]), url
         except Exception:               # the page went away mid-capture: there is nothing to show
+            return None
+
+    async def picture(self, ref: int | None = None, tab: str | None = None, url: str = "") -> bytes | None:
+        """The picture a list item is shown with (a product's, a hotel's), as a JPEG cut from the page as the
+        browser already shows it: nothing is requested from the site for it. The item is [ref], or the link on
+        the page that leads to url. None when the page shows no picture with it."""
+        try:
+            target = await self._target(tab)
+            sid = await self._session(target)
+            if ref is not None:
+                node = await self._send(sid, "DOM.resolveNode", {"backendNodeId": self._ref(target, ref)["backend"],
+                                                               "objectGroup": "coderunner"})
+            else:
+                found = await self._send(sid, "Runtime.callFunctionOn", {
+                    "functionDeclaration": LINK_TO_JS, "executionContextId": await self._world(sid, target),
+                    "arguments": [{"value": url}], "returnByValue": False, "objectGroup": "coderunner"})
+                node = {"object": found.get("result") or {}}
+            if not node["object"].get("objectId"):
+                return None
+            box = await self._call(sid, node["object"]["objectId"], PICTURE_JS)
+            if not box:
+                return None
+            await asyncio.sleep(0.2)                    # scrolled into view: let it paint
+            box = await self._call(sid, node["object"]["objectId"], PICTURE_JS) or box
+            clip = {"x": box["x"], "y": box["y"], "width": box["width"], "height": box["height"],
+                    "scale": min(1.0, 320 / max(box["width"], 1))}
+            shot = await self._send(sid, "Page.captureScreenshot", {"format": "jpeg", "quality": 72, "clip": clip},
+                                    timeout=15)
+            return base64.b64decode(shot["data"])
+        except Exception:               # a picture is an extra
             return None
 
     async def handoff(self, reason: str, tab: str | None = None, tainted: bool = False) -> dict:

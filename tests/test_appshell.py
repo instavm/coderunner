@@ -1,3 +1,5 @@
+import subprocess
+import shutil
 """`coderunner app`: Electron from the checkout or CodeRunner's own pinned copy, and the app opened with it."""
 
 import json
@@ -98,6 +100,18 @@ class AppShellTests(unittest.TestCase):
         self.assertIn('$("turnDone").onclick = finish', page)
         # Finished check tasks are on the Check screen, not among the owner's own.
         self.assertIn('c.conversation.startsWith("app:check-") && c.status !== "running"', page)
+
+    @unittest.skipIf(shutil.which("node") is None, "node not installed")
+    def test_the_thread_renderer_makes_messages_marks_and_cards_and_never_html(self):
+        root = appshell.app_dir().parent
+        done = subprocess.run(["node", str(root / "tests" / "js" / "render_test.mjs"),
+                               str(root / "coderunner" / "server" / "web" / "app" / "render.js")],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "ok"), done.stderr[-800:])
+        page = (root / "coderunner" / "server" / "web" / "app" / "render.js").read_text()
+        self.assertNotIn("innerHTML", page)
+        code = "\n".join(line for line in page.splitlines() if not line.strip().startswith("//"))
+        self.assertNotRegex(code, r"favicon|googleusercontent|icons\.duckduckgo")     # no icon service is asked
 
     def test_the_checkouts_own_electron_is_used_before_coderunners_copy(self):
         app = self.home / "checkout" / "app"
