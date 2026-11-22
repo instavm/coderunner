@@ -211,7 +211,10 @@ class Daemon:
             # File search and voice keep their local models; the local chat model is left set up, unloaded.
             svc.llm, svc.llm_api_key, svc.vision = claude, "", True
             judge = DecisionModel(claude.base_url, claude.model, api="chat", claude=claude)
-            svc.guard = Guard(judge, audit=audit)
+            # The injection guard stays off unless asked for (models.remote.guard): a general model asked the
+            # guard's question took the page snapshot's own reading hints for instructions and flagged 7 ordinary
+            # pages in about 80. Wrapping, taint, approvals and the leak rule are what stop a steered task.
+            svc.guard = Guard(judge if (self.config.get("models.remote") or {}).get("guard") else None, audit=audit)
         else:
             svc.llm = LLM(endpoint.base_url, endpoint.model, endpoint.api_key)
             svc.llm.recover = self._restart_model
@@ -241,6 +244,11 @@ class Daemon:
                                     ActionCheck.from_config(self.config, audit, **runtime), chrome=svc.chrome,
                                     sandbox=(url, paths.api_token()))
 
+        if claude is not None:
+            # A model with room to read gets more of each page at once, and links whole enough to cite: a local
+            # 9B model is given 12,000 characters and addresses cut to 60.
+            from ..browser import page
+            svc.browser.page_chars, page.LINK_CHARS = claude.page_chars, claude.link_chars
         from ..agent.memory import Memory
         # Embeddings can come from a different runtime than the chat model, e.g. EmbeddingGemma in
         # Ollama beside a chat model served by llama.cpp.

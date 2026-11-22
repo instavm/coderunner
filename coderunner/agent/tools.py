@@ -91,7 +91,7 @@ class ToolRegistry:
             self.svc.audit.write("tool.error", tool=name, error=str(exc))
             return f"Error: {name} failed: {exc}"
         text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
-        limit = int(self.svc.config.get("agent.tool_output_chars", 12000))
+        limit = int(getattr(self.svc.llm, "tool_output_chars", 0) or self.svc.config.get("agent.tool_output_chars", 12000))
         if len(text) > limit:
             text = text[:limit] + f"\n…[truncated {len(text) - limit} characters]"
         if tool.untrusted or tool.sandbox_output:
@@ -163,7 +163,7 @@ def sandbox_tools(svc) -> list[Tool]:
             return await run_python({"code": code, "session": "shell"}, ctx)
         except (httpx.TransportError, OSError):
             return SANDBOX_DOWN
-        limit = int(svc.config.get("agent.tool_output_chars", 12000)) - 400
+        limit = int(getattr(svc.llm, "tool_output_chars", 0) or svc.config.get("agent.tool_output_chars", 12000)) - 400
         if "job" in result:
             return (f"Started job {result['job']} in {result.get('cwd', '')}; it keeps running on its own. "
                     f"See its output with shell_job.\n{_fit(result.get('output', ''), limit)}").strip()
@@ -184,7 +184,7 @@ def sandbox_tools(svc) -> list[Tool]:
         if "error" in found:
             return f"Error: {found['error']}"
         state = "running" if found.get("running") else f"finished, exit code {found.get('exit_code')}"
-        limit = int(svc.config.get("agent.tool_output_chars", 12000)) - 400
+        limit = int(getattr(svc.llm, "tool_output_chars", 0) or svc.config.get("agent.tool_output_chars", 12000)) - 400
         return (f"Job {found['job']} ({state}): {found.get('command', '')[:200]}\n"
                 f"{_fit(found.get('output', ''), limit)}\n[log {found.get('log')}, {found.get('log_bytes')} bytes]")
 

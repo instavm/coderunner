@@ -136,7 +136,15 @@ class Agent:
                                (conversation, role, json.dumps(content), time.time()))
 
     def _system(self) -> str:
-        return SYSTEM.format(owner=self.svc.config.get("owner.name") or "the owner")
+        owner = self.svc.config.get("owner.name") or "the owner"
+        text = SYSTEM.format(owner=owner)
+        if getattr(self.llm, "remote", False):
+            # Remote mode: the model is not on the owner's computer, and is not told that it is.
+            first, rest = text.split("\n", 1)
+            text = (f"You are {owner}'s assistant. You run on Anthropic's API; your tools act on {owner}'s own "
+                    f"computer.\n{rest}\n- Your last message is what {owner} reads as the answer: begin with the result "
+                    "itself, not with what you did, what you have, or what you are about to write.")
+        return text
 
     async def _context(self, text: str, ctx: RunContext) -> str:
         memories = ""
@@ -243,7 +251,8 @@ class Agent:
         handover = "browser_task" in self.registry.tools
         for step in range(max_steps):
             self._drop_old_images(messages)
-            self._drop_old_pages(messages, int(self.svc.config.get("models.context", 32768) or 32768))
+            self._drop_old_pages(messages, int(getattr(self.llm, "context", 0)
+                                                   or self.svc.config.get("models.context", 32768) or 32768))
             # Each request only extends the one before: hybrid models such as Qwen3.5 can resume only from a
             # cache checkpoint near the end of the previous prompt, so a message that came and went (or an
             # edit to the instructions) means re-reading the whole conversation, ~80 s for 20K tokens on a

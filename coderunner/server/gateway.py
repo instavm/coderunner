@@ -17,6 +17,7 @@ import contextlib
 import hashlib
 import hmac
 import json
+import mimetypes
 import pathlib
 import re
 import secrets
@@ -569,7 +570,7 @@ def admin_app(svc, daemon) -> Starlette:
             job.stop()
             return JSONResponse(job.public())
         names = [str(n) for n in body.get("names") or []] if isinstance(body.get("names"), list) else []
-        problem = job.start(names or None, long=bool(body.get("long")))
+        problem = job.start(names or None, long=bool(body.get("long")), suite="real" if body.get("real") else "check")
         if problem:
             return JSONResponse({**job.public(), "error": problem}, status_code=409)
         svc.audit.write("check.started", origin=principal(request), names=names, long=bool(body.get("long")))
@@ -589,6 +590,20 @@ def admin_app(svc, daemon) -> Starlette:
         svc.audit.write("files.attached", name=kept["name"], kind=kept["kind"], size=kept["size"],
                         origin=principal(request))
         return JSONResponse(kept)
+
+    async def output_file(request: Request):
+        """A file a task's code wrote to the sandbox's outputs folder, for the app to show under its answer: the
+        same rule as an attached file (pictures, video, sound and PDFs in place, anything else as a download)."""
+        from ..files import attached
+        path = attached.output_path(request.path_params["name"])
+        if path is None:
+            return JSONResponse({"error": "no such file"}, status_code=404)
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        headers = {"Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff",
+                   "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'"}
+        if attached.INLINE.fullmatch(mime):
+            return FileResponse(path, media_type=mime, headers=headers, content_disposition_type="inline", filename=path.name)
+        return FileResponse(path, media_type="application/octet-stream", headers=headers, filename=path.name)
 
     async def uploaded(request: Request):
         """An attached file, for the app to show: pictures, video, sound and PDFs in place, anything else only
@@ -781,6 +796,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/remote", remote_mode, methods=["GET", "POST"]),
         Route("/api/uploads", upload, methods=["POST"]),
         Route("/api/uploads/{id}", uploaded, methods=["GET"]),
+        Route("/api/outputs/{name}", output_file, methods=["GET"]),
         Route("/api/conversations", conversations, methods=["GET"]),
         Route("/api/conversations/{conversation}", conversation, methods=["GET"]),
         Route("/api/events", events, methods=["GET"]),

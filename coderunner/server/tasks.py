@@ -114,6 +114,8 @@ class Tasks:
     async def _run(self, task_id: str, conversation: str, prompt: str, origin: str, emit,
                    attachments: list[str] | None = None) -> None:
         status, reply = "done", ""
+        from ..files import attached as kept
+        outputs = kept.outputs_now()            # to tell afterwards what this task made
         try:
             channel, _, chat_id = conversation.partition(":")
             text, images = prompt, None
@@ -138,6 +140,9 @@ class Tasks:
             self.store.execute("UPDATE tasks SET status = ?, reply = ?, finished = ? WHERE id = ?",
                                (status, reply, time.time(), task_id))
             emit({"type": status, "reply": reply})
+            made = kept.produced(outputs)       # a chart, a sheet, a document its code wrote: shown under the answer
+            if made:
+                emit({"type": "files", "files": made})
 
     # ---- pictures of the page ----------------------------------------------
 

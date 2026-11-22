@@ -54,7 +54,11 @@ button { font: inherit; color: inherit; cursor: pointer; transition: background 
 /* Check: each kind of task, one line each. */
 .checkup { padding-top: 8vh !important; }
 .checkup h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; margin: 0 0 6px; }
-.check-list { margin-top: 20px; border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 3px 14px; }
+a.link { overflow-wrap: anywhere; }
+.tabs { display: inline-flex; gap: 2px; margin-top: 16px; padding: 3px; border-radius: 10px; background: var(--surface-2); }
+.tab { border: 0; background: none; padding: 5px 13px; border-radius: 8px; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; }
+.tab.on { background: var(--surface); color: var(--text); font-weight: 550; box-shadow: var(--shadow); }
+.check-list { margin-top: 14px; border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 3px 14px; }
 .check-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; width: 100%; padding: 9px 0; border: 0; border-top: 1px solid var(--line);
   background: none; font: inherit; color: var(--text); text-align: left; }
 .check-row:first-child { border-top: 0; }
@@ -64,6 +68,8 @@ button.check-row:hover .check-what { color: var(--accent); }
 .check-row.passed .check-mark { color: var(--ok); }
 .check-row.failed .check-mark { color: var(--danger); }
 .check-row.skipped, .check-row.waiting { color: var(--muted); }
+.check-row.blocked .check-mark { color: var(--warn); }
+.check-foot .btn, .check-foot .linkish { white-space: nowrap; flex: none; }
 .check-row.running .check-mark { width: 9px; height: 9px; margin: 0 auto; border-radius: 50%; background: var(--fill); align-self: center; animation: pulse 1.2s ease-in-out infinite; }
 .check-row.waiting .check-mark { width: 9px; height: 9px; margin: 0 auto; border-radius: 50%; border: 1.5px solid var(--line); align-self: center; }
 .check-why { display: block; font-size: 12.5px; color: var(--muted); }
@@ -230,6 +236,7 @@ button.check-row:hover .check-what { color: var(--accent); }
 .att-name { font-weight: 550; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .att-size { color: var(--muted); font-size: 12px; }
 .attached { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin: 0 0 6px auto; max-width: 85%; }
+.produced { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
 .att-image { display: block; max-width: min(320px, 100%); max-height: 240px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface-2); cursor: zoom-in; }
 .attached .att-image:not(:only-child), .attached .att-video:not(:only-child) { height: 132px; width: auto; max-width: 236px; object-fit: cover; }
 .att-video { display: block; max-width: min(380px, 100%); max-height: 260px; border-radius: 12px; border: 1px solid var(--line); background: #000; }

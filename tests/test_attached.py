@@ -1,5 +1,6 @@
 """Files the owner attaches to a task in the app: kept, served back, and handed to the model."""
 
+import asyncio
 import base64
 import os
 import pathlib
@@ -169,6 +170,49 @@ class TaskTests(Home):
         await tasks.running[plain["id"]]
         self.assertEqual((got["text"], got["images"]), ("And the weather there?", None))
         self.assertNotIn("attachments", [e for e in bus.since(0) if e["type"] == "started"][-1])
+
+
+class ProducedTests(Home):
+    async def test_what_a_tasks_code_wrote_is_shown_under_its_answer(self):
+        outputs = attached.outputs_dir()
+        outputs.mkdir(parents=True)
+        (outputs / "old.csv").write_text("a,b\n")
+        svc = Svc()
+        daemon = FakeDaemon(svc)
+
+        async def handle(channel, chat_id, text, origin="", events=None, task=""):
+            (outputs / "sales.png").write_bytes(PNG)                     # as code in the sandbox would
+            (outputs / "report.html").write_text("<script>alert(1)</script>")
+            (outputs / "link.png").symlink_to(self.home / "assistant" / "admin-token")
+            (outputs / "attached").mkdir()
+            return "Here is the chart."
+        daemon.handle_message = handle
+        bus = tasks_module.EventBus(svc.store)
+        tasks = tasks_module.Tasks(daemon, bus)
+        task = tasks.start("app:one", "Chart the sales", "owner")
+        await tasks.running[task["id"]]
+        kinds = [e["type"] for e in bus.since(0)]
+        self.assertEqual(kinds[-2:], ["done", "files"])
+        made = [e for e in bus.since(0) if e["type"] == "files"][0]["files"]
+        self.assertEqual([(f["name"], f["kind"], f["inline"], f["url"]) for f in made],
+                         [("report.html", "text", False, "/api/outputs/report.html"), ("sales.png", "image", True, "/api/outputs/sales.png")])
+        svc.registry = build_registry(svc)
+        admin = {"Authorization": "Bearer " + ADMIN}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=admin_app(svc, daemon)),
+                                     base_url="http://127.0.0.1:8224") as client:
+            self.assertEqual((await client.get("/api/outputs/sales.png")).status_code, 401)
+            shown = await client.get("/api/outputs/sales.png", headers=admin)
+            self.assertEqual((shown.status_code, shown.content, shown.headers["content-type"]), (200, PNG, "image/png"))
+            page = await client.get("/api/outputs/report.html", headers=admin)       # never run as the app's own page
+            self.assertEqual((page.headers["content-type"], page.headers["content-disposition"][:10]),
+                             ("application/octet-stream", "attachment"))
+            for name in ("link.png", "attached", "nope.png", "..%2Fapi-token"):
+                self.assertEqual((await client.get(f"/api/outputs/{name}", headers=admin)).status_code, 404, name)
+        # A task that wrote nothing says nothing.
+        daemon.handle_message = lambda *a, **k: asyncio.sleep(0, "Done.")
+        plain = tasks.start("app:one", "And?", "owner")
+        await tasks.running[plain["id"]]
+        self.assertEqual([e["type"] for e in bus.since(0)][-1], "done")
 
 
 class RestartTests(Home):

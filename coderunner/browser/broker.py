@@ -152,6 +152,7 @@ def _fingerprint(plan: dict) -> tuple:
 class BrowserBroker:
     def __init__(self, config, policy, audit, launcher=None, decider=None, chrome=None, sandbox=None):
         self.config = config
+        self.page_chars = PAGE_CHARS            # how much of a page is returned at once (more for a larger model)
         self.sandbox = sandbox      # (url, credential) of the sandbox VM, for browser.mode "computer"
         self.policy = policy
         self.audit = audit
@@ -258,11 +259,11 @@ class BrowserBroker:
     async def close_tab(self, tab: str, tainted: bool = False) -> dict:
         return await self._run("close_tab", {"tab": tab, "tainted": tainted}, lambda: self._close_tab(tab, tainted))
 
-    async def snapshot(self, tab: str | None = None, max_chars: int = PAGE_CHARS, tainted: bool = False,
+    async def snapshot(self, tab: str | None = None, max_chars: int | None = None, tainted: bool = False,
                        start: str = "") -> dict:
         """The page as text; with start, from the first line mentioning it, to read past the cut of a long page."""
         return await self._run("snapshot", {"tab": tab, "tainted": tainted, "start": str(start)[:100]},
-                               lambda: self._snapshot(tab, max_chars, tainted, start=str(start or "")))
+                               lambda: self._snapshot(tab, max_chars or self.page_chars, tainted, start=str(start or "")))
 
     async def click(self, ref: int, tab: str | None = None, tainted: bool = False) -> dict:
         return await self._run("click", {"ref": ref, "label": self._label(ref, tab), "tab": tab, "tainted": tainted},
@@ -295,7 +296,7 @@ class BrowserBroker:
         if seen and lines and "content" not in picked:
             changes = page_changes(seen, lines)    # since the model last read the page, the typing included
             if changes is not None:
-                picked["changes"] = cut(changes, PAGE_CHARS) if changes else NO_CHANGE
+                picked["changes"] = cut(changes, self.page_chars) if changes else NO_CHANGE
         return picked
 
     async def _suggestion(self, target: str, text: str, tainted: bool) -> tuple[int, str] | None:
@@ -1081,9 +1082,9 @@ class BrowserBroker:
         self._seen(target, url, content)
         changes = page_changes(before, content.split("\n")) if before is not None else None
         if changes is None:
-            result["content"] = cut(content, PAGE_CHARS)
+            result["content"] = cut(content, self.page_chars)
         else:
-            result["changes"] = cut(changes, PAGE_CHARS) if changes else NO_CHANGE
+            result["changes"] = cut(changes, self.page_chars) if changes else NO_CHANGE
         return result
 
     async def _find(self, text: str, tab: str | None, tainted: bool) -> dict:

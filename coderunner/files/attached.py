@@ -16,6 +16,7 @@ import pathlib
 import re
 import secrets
 import unicodedata
+import urllib.parse
 
 from ..core import paths
 from .kinds import kind_of
@@ -110,6 +111,47 @@ def on_host(path: str) -> str:
         if ID.fullmatch(upload_id) and name and "/" not in name:
             return str(attached_dir() / upload_id / name)
     return text
+
+
+# ---- what a task made: files code in the sandbox left in its outputs folder --------------------------------
+
+PRODUCED_MAX = 8
+
+
+def outputs_dir() -> pathlib.Path:
+    return paths.home() / "assets" / "outputs"
+
+
+def output_path(name: str) -> pathlib.Path | None:
+    """A plain file directly in the outputs folder by its name, or None (a link, a folder, a name with a path)."""
+    if not name or name != pathlib.PurePath(name).name or name.startswith("."):
+        return None
+    path = outputs_dir() / name
+    if path.is_symlink() or not path.is_file() or path.resolve().parent != outputs_dir().resolve():
+        return None
+    return path
+
+
+def outputs_now() -> dict[str, float]:
+    """The files in the outputs folder with when each last changed (taken before a task, compared after)."""
+    try:
+        return {p.name: p.stat().st_mtime for p in outputs_dir().iterdir()
+                if not p.name.startswith(".") and not p.is_symlink() and p.is_file()}
+    except OSError:
+        return {}
+
+
+def produced(before: dict[str, float]) -> list[dict]:
+    """What appeared or changed in the outputs folder since `before`, as the app shows it."""
+    found = []
+    for name, changed in sorted(outputs_now().items()):
+        path = output_path(name)
+        if path is None or before.get(name) == changed:
+            continue
+        mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        found.append({"name": name, "mime": mime, "size": path.stat().st_size, "kind": KINDS.get(kind_of(path) or "", "file"),
+                      "inline": bool(INLINE.fullmatch(mime)), "url": f"/api/outputs/{urllib.parse.quote(name)}"})
+    return found[:PRODUCED_MAX]
 
 
 def is_attached(real: pathlib.Path) -> bool:

@@ -33,6 +33,7 @@ from ..files import attached
 from ..models import sites as fixtures
 from ..models import tasks as sample
 from ..safety.policy import current_run
+from . import realworld
 
 FIXTURES = pathlib.Path(sample.__file__).parent / "fixtures"
 SAMPLE = {task.name: task for task in sample.TASKS}
@@ -156,13 +157,17 @@ CHECKS = [
 ]
 
 
-def result_path() -> pathlib.Path:
-    return paths.assistant_dir() / "check.json"
+SUITES = {"check": CHECKS, "real": realworld.TASKS}
+REAL_STEPS = 60                     # a trip plan over several sites needs more steps than a day's ordinary task
 
 
-def last() -> dict | None:
+def result_path(suite: str = "check") -> pathlib.Path:
+    return paths.assistant_dir() / ("check.json" if suite == "check" else f"check-{suite}.json")
+
+
+def last(suite: str = "check") -> dict | None:
     try:
-        return json.loads(result_path().read_text())
+        return json.loads(result_path(suite).read_text())
     except (OSError, ValueError):
         return None
 
@@ -178,29 +183,38 @@ class CheckJob:
         self.result: dict | None = None
         self._job: asyncio.Task | None = None
         self._asked = 0                     # approvals the current task asked for (an owner would have been asked)
+        self._approvals: list[dict] = []    # and what each was, for the tasks on real sites
+        self.suite = "check"
 
     def public(self) -> dict:
-        return {"state": self.state, "lines": self.lines[-KEEP:], "tasks": self.tasks,
+        return {"state": self.state, "suite": self.suite, "lines": self.lines[-KEEP:], "tasks": self.tasks,
                 "result": self.result or (last() if self.state == "idle" else None),
-                "names": [{"name": c.name, "what": c.what, "long": c.long} for c in CHECKS]}
+                "names": [{"name": c.name, "what": c.what, "long": c.long} for c in CHECKS],
+                # The twenty tasks on real websites (`coderunner check --real`), and how they went last time.
+                "real": {"names": [{"name": t.name, "what": t.what, "long": t.long, "kind": t.kind} for t in realworld.TASKS],
+                         "result": self.result if self.suite == "real" and self.result else last("real")},
+                "check": last("check")}
 
     def _say(self, line: str) -> None:
         self.lines.append(line)
         del self.lines[:-KEEP]
 
-    def start(self, names: list[str] | None = None, long: bool = False) -> str:
-        """Start a run; returns "" or why it was not started."""
+    def start(self, names: list[str] | None = None, long: bool = False, suite: str = "check") -> str:
+        """Start a run; returns "" or why it was not started. suite "real": the tasks on real websites."""
+        if suite not in SUITES:
+            return "There is no such set of checks."
+        pool = SUITES[suite]
         if self.state == "running":
             return "A check is already running."
         if not self.daemon.svc.config.get("models.chat") and not getattr(self.daemon.svc, "remote", None):
             return "No model is set up yet."
         if getattr(self.daemon.tasks, "running", None):
             return "A task is running; the check waits for the model to be free."
-        unknown = [n for n in names or [] if n not in {c.name for c in CHECKS}]
+        unknown = [n for n in names or [] if n not in {c.name for c in pool}]
         if unknown:
-            return f"No such check: {', '.join(unknown)}. There are: {', '.join(c.name for c in CHECKS)}."
-        chosen = [c for c in CHECKS if (c.name in names if names else long or not c.long)]
-        self.state, self.lines, self.result = "running", [], None
+            return f"No such check: {', '.join(unknown)}. There are: {', '.join(c.name for c in pool)}."
+        chosen = [c for c in pool if (c.name in names if names else long or suite == "real" or not c.long)]
+        self.state, self.lines, self.result, self.suite = "running", [], None, suite
         self.tasks = [{"name": c.name, "what": c.what, "state": "waiting", "why": "", "seconds": None, "steps": None,
                        "approvals": None, "conversation": ""} for c in chosen]
         self._job = asyncio.get_running_loop().create_task(self._run(chosen))
@@ -227,7 +241,8 @@ class CheckJob:
             "sandbox": "" if sandbox else "the sandbox is not running",
             "browser": "" if browser is not None else "no browser is set up",
             "search": "" if getattr(files, "embedder", None) is not None else "file search is not set up",
-            "driver": "" if getattr(svc, "driver", None) is not None else "no browser driver is set up",
+            "driver": "" if getattr(svc, "driver", None) is not None else
+                      "the browser driver is not used with Claude" if getattr(svc, "remote", None) else "no browser driver is set up",
         }
 
     # ---- the run -----------------------------------------------------------------
@@ -248,13 +263,21 @@ class CheckJob:
                 return
             self._asked += 1
             allow = not PAYS.search(approval.summary.split("\n")[0])
+            if self.suite == "real":            # on real sites nothing that commits, signs in or hands over the screen
+                allow = allow and approval.kind not in realworld.COMMITS
+            self._approvals.append({"kind": approval.kind, "summary": approval.summary.split("\n")[0][:160], "allowed": allow})
             with contextlib.suppress(KeyError):
-                svc.policy.decide(approval.id, allow, decided_by="check")
+                # As an owner would in the app: sharing is allowed for the task, not asked again for every site.
+                svc.policy.decide(approval.id, allow, scope="task" if approval.kind == "data.share" else "once",
+                                  decided_by="check")
 
         svc.policy.add_listener(approve)
+        steps_before = config.get("agent.max_steps", 30)
         try:
             able = await self._able()
-            needs = {need for c in chosen for need in c.needs}
+            needs = {need for c in chosen for need in c.needs} if self.suite == "check" else set()
+            if self.suite == "real":
+                config.set("agent.max_steps", max(int(steps_before or 30), REAL_STEPS))
             if "browser" in needs and not able["browser"]:
                 # The assistant's own computer reaches this Mac at the sandbox's gateway address, not at loopback.
                 run.site.host = self.daemon.driver.gateway_address() if config.get("browser.mode") == "computer" else "127.0.0.1"
@@ -285,6 +308,7 @@ class CheckJob:
             with contextlib.suppress(ValueError):
                 svc.policy._listeners.remove(approve)
             config.set("browser.allow", allow_before)
+            config.set("agent.max_steps", steps_before)
             if shared:
                 with contextlib.suppress(Exception):
                     svc.files.remove_root(str(documents))
@@ -293,17 +317,21 @@ class CheckJob:
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(serving, 10)
             shutil.rmtree(folder, ignore_errors=True)
-            ran = [t for t in self.tasks if t["state"] in ("passed", "failed")]
+            ran = [t for t in self.tasks if t["state"] in ("passed", "failed", "blocked")]
             passed = sum(t["state"] == "passed" for t in ran)
-            self.result = {"date": datetime.datetime.now().isoformat(timespec="seconds"), "model": config.get("models.chat") or "",
+            remote = getattr(svc, "remote", None)
+            self.result = {"date": datetime.datetime.now().isoformat(timespec="seconds"), "suite": self.suite,
+                           "model": remote["model"] if remote else config.get("models.chat") or "",
+                           "blocked": sum(t["state"] == "blocked" for t in self.tasks),
                            "passed": passed, "ran": len(ran), "skipped": sum(t["state"] == "skipped" for t in self.tasks),
                            "seconds": round(time.time() - started), "tasks": self.tasks,
-                           "ok": bool(ran) and passed == len(ran)}
+                           "ok": bool(ran) and passed == len(ran) - sum(t["state"] == "blocked" for t in self.tasks)}
             self.state = "done" if self.result["ok"] else "failed"
-            self._say(f"{passed} of {len(ran)} passed" + (f", {self.result['skipped']} skipped" if self.result["skipped"] else "")
+            self._say(f"{passed} of {len(ran)} passed" + (f", {self.result['blocked']} blocked by a site" if self.result["blocked"] else "")
+                      + (f", {self.result['skipped']} skipped" if self.result["skipped"] else "")
                       + f", in {self.result['seconds'] // 60} min {self.result['seconds'] % 60} s.")
             with contextlib.suppress(OSError):
-                result_path().write_text(json.dumps(self.result, indent=2))
+                result_path(self.suite).write_text(json.dumps(self.result, indent=2))
             svc.audit.write("check.finished", passed=passed, ran=len(ran), skipped=self.result["skipped"])
 
     async def _indexed(self, documents: pathlib.Path) -> bool:
@@ -327,10 +355,11 @@ class CheckJob:
         conversation = f"app:check-{check.name}-{secrets.token_hex(3)}"
         row.update(state="running", conversation=conversation)
         self._say(f"{check.name}: {check.what}…")
-        start, since, self._asked = time.monotonic(), tasks.bus.latest(), 0
-        task = tasks.start(conversation, check.prompt(run), "check", attachments=ids)
+        start, since, self._asked, self._approvals = time.monotonic(), tasks.bus.latest(), 0, []
+        real = isinstance(check, realworld.Real)
+        task = tasks.start(conversation, check.prompt + realworld.RULES if real else check.prompt(run), "check", attachments=ids)
         job = tasks.running.get(task["id"])
-        limit = LONG_S if check.long else QUICK_S
+        limit = (LONG_S if check.long else realworld.LIMIT_S) if real else LONG_S if check.long else QUICK_S
         try:
             if job is not None:
                 await asyncio.wait_for(asyncio.shield(job), limit)
@@ -339,6 +368,17 @@ class CheckJob:
             run.tools = [e.get("name", "") for e in tasks.bus.since(since, conversation) if e.get("type") == "tool"]
             if status != "done":
                 passed, why = False, answer[:200] or f"the task ended as {status}"
+            elif real:
+                events = tasks.bus.since(since, conversation)
+                visited = [e.get("url") or e.get("page") or "" for e in events if e.get("type") in ("activity", "shot")]
+                clicked = [str(e.get("label") or e.get("text") or e.get("name") or "") for e in events
+                           if e.get("type") == "activity" and str(e.get("event", "")).startswith("browser.")]
+                state, why, figures = realworld.grade(check, answer, visited, self._approvals, run.tools, clicked)
+                row.update(state=state, why=why, seconds=round(time.monotonic() - start), steps=len(run.tools),
+                           approvals=self._asked, kind=check.kind, **figures)
+                self._say(f"  {state.upper() if state != 'passed' else state} in {row['seconds']} s, {row['steps']} steps, "
+                          f"{self._asked} approvals asked ({figures['refused']} refused): {why}")
+                return
             else:
                 passed, why = check.check(answer, run)
                 if passed and check.tool and check.tool not in run.tools:
@@ -349,5 +389,7 @@ class CheckJob:
             run.tools = [e.get("name", "") for e in tasks.bus.since(since, conversation) if e.get("type") == "tool"]
         row.update(state="passed" if passed else "failed", why=why, seconds=round(time.monotonic() - start),
                    steps=len(run.tools), approvals=self._asked)
+        if real:
+            row["kind"] = check.kind
         asked = f", {self._asked} approval{'s' if self._asked != 1 else ''} asked" if self._asked else ""
         self._say(f"  {'passed' if passed else 'FAILED'} in {row['seconds']} s, {row['steps']} steps{asked}: {why}")

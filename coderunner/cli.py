@@ -263,13 +263,14 @@ def cmd_check(args, config: Config) -> int:
         print("The assistant is not running. Start it with `coderunner up`, then run this again.")
         return 1
     if args.last:
-        result = _admin(config, "GET", "/api/check").get("result")
+        shown = _admin(config, "GET", "/api/check")
+        result = shown["real"]["result"] if args.real else shown.get("check") or shown.get("result")
         if not result:
             print("No check has been run yet.")
             return 1
         return _print_check(result)
     try:
-        _admin(config, "POST", "/api/check", {"names": args.names, "long": args.long})
+        _admin(config, "POST", "/api/check", {"names": args.names, "long": args.long, "real": args.real})
     except RuntimeError as exc:
         try:
             print(json.loads(str(exc).split(": ", 1)[1])["error"])
@@ -301,7 +302,7 @@ def _print_check(result: dict) -> int:
     print(f"{result['date']}  {result['model']}")
     for task in result["tasks"]:
         took = f"{task['seconds']} s" if task.get("seconds") is not None else ""
-        asked = f" ({task['approvals']} approvals asked)" if task.get("approvals") else ""
+        asked = f" ({task['approvals']} approval{'s' if task['approvals'] != 1 else ''} asked)" if task.get("approvals") else ""
         print(f"  {task['state']:<8}{task['name']:<11}{took:>7}  {task['why']}{asked}")
     print(f"{result['passed']} of {result['ran']} passed" + (f", {result['skipped']} skipped" if result["skipped"] else ""))
     return 0 if result.get("ok") else 1
@@ -957,6 +958,9 @@ def build_parser() -> argparse.ArgumentParser:
                                             "flights, booking, appliance, errands, driver)")
     p.add_argument("--long", action="store_true", help="also the long ones: flights, booking, appliance, errands, driver")
     p.add_argument("--last", action="store_true", help="show the last run's result instead of running")
+    p.add_argument("--real", action="store_true",
+                   help="the twenty tasks on real websites (a trip planned, prices compared, a cart taken to the step "
+                        "before payment...): nothing is signed in to, paid for or submitted")
     p.set_defaults(func=cmd_check)
 
     p = sub.add_parser("chat", help="Talk to the assistant; approvals are asked here")

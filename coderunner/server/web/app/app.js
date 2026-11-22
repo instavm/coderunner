@@ -96,11 +96,23 @@ function richText(node, text) {
   const parts = String(text).split(/(https?:\/\/[^\s<>()]+)/g);
   for (const part of parts) {
     if (/^https?:\/\//.test(part)) {
-      const a = el("a", "", part); a.href = part; a.target = "_blank"; a.rel = "noopener noreferrer";
+      // An address reads as where it leads: the site and the start of its path. The whole of it is the link.
+      const url = part.replace(/[.,;:!?]+$/, ""), rest = part.slice(url.length);
+      const a = el("a", "link", linkLabel(url)); a.href = url; a.title = url; a.target = "_blank"; a.rel = "noopener noreferrer";
       node.appendChild(a);
+      if (rest) node.appendChild(document.createTextNode(rest));
     } else if (part) node.appendChild(document.createTextNode(part));
   }
   return node;
+}
+
+function linkLabel(url) {
+  try {
+    const u = new URL(url), site = u.host.replace(/^www\./, "");
+    const path = decodeURIComponent(u.pathname).replace(/\/$/, "");
+    const tail = path.length > 28 ? path.slice(0, 27) + "…" : path + (u.search ? "…" : "");
+    return site + (tail === "…" && !path ? "" : tail);
+  } catch { return url.length > 48 ? url.slice(0, 47) + "…" : url; }
 }
 
 // A small, safe subset of Markdown (paragraphs, lists, tables, **bold**, `code`, links), built as DOM nodes.
@@ -305,6 +317,14 @@ class TaskView {
     this.root.insertBefore(this.attached, this.bubble);
   }
 
+  // What the task made (a chart, a sheet, a document its code wrote), under its answer.
+  showProduced(files) {
+    if (!Array.isArray(files) || !files.length || this.produced) return;
+    this.produced = el("div", "produced");
+    for (const file of files) this.produced.appendChild(attachedFile(file));
+    this.flow.insertBefore(this.produced, this.flow.querySelector(".took"));
+  }
+
   showPicture(e) {
     const figure = el("figure", "shot"), image = el("img");
     image.src = `/api/shots/${encodeURIComponent(e.file)}`;
@@ -337,6 +357,7 @@ class TaskView {
         else if (e.ok !== false) this.setNow(describeActivity(e));
         break;
       case "done": case "failed": case "cancelled": this.finish(e); break;
+      case "files": this.showProduced(e.files); break;
     }
     this.tick();
   }
@@ -357,9 +378,9 @@ class TaskView {
       card.appendChild(more);
     }
     const row = el("div", "row"), before = this.now?.what.textContent || "Working";
-    const decide = async (allow) => {
+    const decide = async (allow, scope = "once") => {
       row.querySelectorAll("button").forEach((b) => b.disabled = true);
-      try { await api(`/api/approvals/${e.id}`, {method: "POST", body: JSON.stringify({allow, scope: "once"})}); }
+      try { await api(`/api/approvals/${e.id}`, {method: "POST", body: JSON.stringify({allow, scope})}); }
       catch (err) { row.querySelectorAll("button").forEach((b) => b.disabled = false); notice(err.message); return; }
       closeAsk(e.id, allow);
       this.setNow(before);            // no longer waiting for the owner
@@ -378,7 +399,14 @@ class TaskView {
       allow.onclick = () => decide(true);
       const deny = el("button", "btn danger", "Deny");
       deny.onclick = () => decide(false);
-      row.append(allow, deny);
+      row.append(allow);
+      if (share) {                    // a task that reads several sites asks once, not once a site
+        const all = el("button", "btn", "Allow for this task");
+        all.title = "Every site this task opens, until it ends";
+        all.onclick = () => decide(true, "task");
+        row.append(all);
+      }
+      row.append(deny);
     }
     card.appendChild(row);
     this.say(card);
@@ -464,7 +492,10 @@ async function openConversation(id, title, again) {
 // ---- check: each kind of task done once on this computer --------------------------
 
 let checkTimer = null;
-const CHECK_MARKS = {passed: "✓", failed: "✕", skipped: "–", waiting: "", running: ""};
+let checkSet = "check";             // "check": this install's own tasks; "real": the twenty on real websites
+const CHECK_MARKS = {passed: "✓", failed: "✕", blocked: "!", skipped: "–", waiting: "", running: ""};
+const CHECK_LEADS = {check: "Each kind of task, done once on this computer and checked.",
+                     real: "Twenty everyday tasks on real websites. Nothing is signed in to, paid for or submitted."};
 
 async function showCheck() {
   if (state.setup) return;
@@ -472,27 +503,37 @@ async function showCheck() {
   state.views.clear();
   $("title").textContent = "Check";
   loadConversations();
-  const box = el("section", "checkup"), lead = "Each kind of task, done once on this computer and checked.";
-  box.append(el("h1", "", "Check"), el("p", "muted", lead));
+  const box = el("section", "checkup");
+  box.append(el("h1", "", "Check"), el("p", "muted", CHECK_LEADS[checkSet]));
   $("thread").replaceChildren(box);
   const run = async (body) => {
     try { draw(await api("/api/check", {method: "POST", body: JSON.stringify(body)})); }
-    catch (err) { await poll(); box.appendChild(el("p", "setup-error", err.message)); return; }
+    catch (err) { await poll(); if (err.message) box.appendChild(el("p", "setup-error", err.message)); return; }
     poll();
   };
   const draw = (data) => {
-    const running = data.state === "running", result = data.result;
-    const rows = running ? data.tasks : result ? result.tasks :
-      data.names.filter((n) => !n.long).map((n) => ({...n, state: "waiting"}));
-    box.replaceChildren(el("h1", "", "Check"), el("p", "muted", lead));
+    const real = checkSet === "real", running = data.state === "running" && (data.suite || "check") === checkSet;
+    const other = data.state === "running" && !running;       // the other set is running: this one waits
+    const result = real ? data.real?.result : data.suite === "real" ? data.check : data.result || data.check;
+    const names = real ? data.real?.names || [] : data.names.filter((n) => !n.long);
+    const rows = running ? data.tasks : result ? result.tasks : names.map((n) => ({...n, state: "waiting"}));
+    const tabs = el("div", "tabs");
+    for (const [key, label] of [["check", "This install"], ["real", "Real websites"]]) {
+      const tab = el("button", "tab" + (key === checkSet ? " on" : ""), label);
+      tab.type = "button";
+      tab.onclick = () => { if (checkSet !== key) { checkSet = key; draw(data); } };
+      tabs.appendChild(tab);
+    }
+    box.replaceChildren(el("h1", "", "Check"), el("p", "muted", CHECK_LEADS[checkSet]), tabs);
     const list = el("div", "check-list");
     for (const task of rows) {
       const row = el(task.conversation ? "button" : "div", "check-row " + task.state);
       const what = el("span", "check-what", task.what.charAt(0).toUpperCase() + task.what.slice(1));
       if (task.why && task.state !== "passed") what.appendChild(el("span", "check-why", task.why));
+      const took = task.seconds != null ? clock(task.seconds) : "";
       row.append(el("span", "check-mark", CHECK_MARKS[task.state]), what,
-                 el("span", "check-time", task.seconds != null ? clock(task.seconds) : ""));
-      row.title = task.why || "";
+                 el("span", "check-time", took + (task.approvals ? ` · ${task.approvals} asked` : "")));
+      row.title = [task.why, task.sites?.length ? task.sites.join(", ") : ""].filter(Boolean).join(" · ");
       if (task.conversation) { row.type = "button"; row.onclick = () => openConversation(task.conversation, task.what); }
       list.appendChild(row);
     }
@@ -506,13 +547,20 @@ async function showCheck() {
       if (result) {
         const when = new Date(result.date).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
         foot.appendChild(el("span", "muted", `${result.passed} of ${result.ran} passed` +
-                                              (result.skipped ? `, ${result.skipped} skipped` : "") + ` · ${when}`));
+                                              (result.blocked ? `, ${result.blocked} blocked by a site` : "") +
+                                              (result.skipped ? `, ${result.skipped} skipped` : "") + ` · ${modelName(result.model)} · ${when}`));
       }
-      const go = el("button", "btn primary", result ? "Run again" : "Run check"), more = el("button", "linkish", "Include the long tasks");
-      go.onclick = () => { go.disabled = true; run({}); };
-      more.type = "button"; more.title = "A flight search, a booking up to payment, and two more: about 20 minutes";
-      more.onclick = () => { more.disabled = true; run({long: true}); };
-      foot.append(go, more);
+      const go = el("button", "btn primary", result ? "Run again" : real ? "Run all twenty" : "Run check");
+      go.disabled = other;
+      go.onclick = () => { go.disabled = true; run(real ? {real: true} : {}); };
+      foot.appendChild(go);
+      if (!real) {
+        const more = el("button", "linkish", "Include the long tasks");
+        more.type = "button"; more.disabled = other;
+        more.title = "A flight search, a booking up to payment, and three more: a few more minutes";
+        more.onclick = () => { more.disabled = true; run({long: true}); };
+        foot.appendChild(more);
+      }
     }
     box.appendChild(foot);
   };

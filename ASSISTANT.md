@@ -769,9 +769,18 @@ and its name in `X-File-Name`; `GET /api/uploads/<id>` serves pictures, video, s
 everything else only as a download, so an attached HTML page or SVG never runs as the daemon's own page;
 `POST /api/tasks` takes their ids in `attachments`.
 
+A file the task's code wrote to the sandbox's outputs folder (a chart, a sheet, a document) is shown under its
+answer in the same way: a picture as itself, anything else as a card to download (`/api/outputs/<name>`, only
+for plain files directly in that folder).
+
+A web address in an answer is shown as where it leads (the site and the start of its path); the whole address
+is the link.
+
 An approval in the thread is one sentence with Allow and Deny; the step it is about (a script, a form) is two
 small lines under it that open on a click, and once decided the card says how: Allowed, Declined, or not
-answered in time.
+answered in time. A data-sharing approval (the task has read your files or memories and wants to use what it
+read on a site) also offers "Allow for this task", which covers every site that task opens: a research task
+over six sites asked six times before. Nothing is stored for it; the next task is asked again.
 
 The window opens at 1152 by 720. `coderunner app` opens it: with the checkout's
 own Electron where `npm install` was run in `app/`, and otherwise with Electron 45.2.3 downloaded once into
@@ -909,6 +918,27 @@ test sites are served on (the sandbox's gateway address when the browser is the 
 `browser.allow`; and approvals asked by the check's own tasks are answered for the owner, allowed unless the
 step would pay. Approvals of any other task are left alone. A check does not start while a task is running.
 The API: `GET /api/check`, `POST /api/check` with `{"names": [...], "long": ...}` or `{"action": "stop"}`.
+
+### Twenty tasks on real websites
+
+`coderunner check --real` (the "Real websites" tab of Check in the app) hands the assistant twenty things people
+give an assistant, on the real web: a week in Mauritius planned with flights, hotels and a day-by-day plan with
+costs; a phone priced at three retailers; laptops under a budget; headphones according to two review sites; the
+cheapest non-stop flight on a date; morning trains from a timetable; hotels under a nightly budget; restaurants
+and repair shops in a neighbourhood; a forecast; a currency conversion; three countries compared; visa rules
+from official sources; a price against a threshold; the day's headlines; a cart and a hotel reservation taken
+to the step before sign-in or payment; a recipe turned into a priced shopping list; and two that work from
+attached documents (a letter drafted from a lease and a receipt, a chart drawn from a sheet).
+
+Real sites have no fixed answers, so each is graded on what can be told without reading the answer through:
+the parts asked for are there, it links to pages the browser really opened (a link to a site it never visited
+does not count), prices carry a currency, a task that must stop before committing says where it stopped, and no
+committing step went through. A site that shows a CAPTCHA or turns automated visits away is recorded as
+"blocked" beside passed and failed, and is never worked around. Every task carries the same rules in its own
+text: no sign-in, no account, no payment, no personal details, a few pages a site. The run answers its tasks'
+approvals as the check does, except that every committing step and every hand-over of the screen is refused.
+Each line gives the time, the tool calls and the approvals asked; the result is kept in
+`assistant/check-real.json`, and each task stays in the app's list to be opened.
 
 `coderunner models bench --tasks` is a different measurement: it times a model on the same test sites in a
 throwaway home with a headless browser, to compare models. `check` asks whether this install works.

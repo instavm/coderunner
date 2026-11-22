@@ -109,6 +109,40 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
         finally:
             current_run.reset(token)
 
+    async def test_the_owner_can_allow_sharing_for_the_whole_task_instead_of_once_a_site(self):
+        policy = make_policy({"sandbox": {"network": "default"}})
+        run = SimpleNamespace(content_tainted=True, private_sources={"memory"}, shared=set())
+        token = current_run.set(run)
+        try:
+            def nav(host):
+                return Action("browser.navigate", host, f"Open https://{host}/", {"url": f"https://{host}/", "chosen": True})
+            task = asyncio.create_task(policy.check(nav("flights.example"), wait=5))
+            await asyncio.sleep(0.05)
+            [approval] = policy.pending()
+            policy.decide(approval.id, True, scope="task")
+            self.assertTrue(await task)
+            # A research task that opens six sites asked six times; now the rest of this task goes on unasked.
+            for host in ("hotels.example", "reviews.example"):
+                self.assertTrue(await policy.check(nav(host), wait=0.05))
+            self.assertTrue(await policy.check(Action("sandbox.exec", "main", "Run in the sandbox: ..."), wait=0.05))
+            self.assertEqual(policy.pending(), [])
+        finally:
+            current_run.reset(token)
+        # It holds for that task only: the next task is asked again, and nothing was stored as a grant.
+        other = SimpleNamespace(content_tainted=True, private_sources={"memory"}, shared=set())
+        token = current_run.set(other)
+        try:
+            self.assertFalse(await policy.check(Action("browser.navigate", "hotels.example", "Open", {"url": "x", "chosen": True}),
+                                                wait=0.05))
+            # For any other kind of approval "task" means once: a committing step is asked each time.
+            pay = asyncio.create_task(policy.check(Action("browser.sensitive", "shop.example", "Click Pay"), wait=5))
+            await asyncio.sleep(0.05)
+            approval = next(a for a in policy.pending() if a.kind == "browser.sensitive")
+            self.assertEqual(policy.decide(approval.id, True, scope="task").scope, "once")
+            await pay
+        finally:
+            current_run.reset(token)
+
     async def test_no_leak_check_without_both_private_data_and_untrusted_content(self):
         policy = make_policy({"sandbox": {"network": "default"}})
         typing = Action("browser.interact", "shop.com", "Type", {"text": "x"})

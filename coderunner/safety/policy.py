@@ -47,7 +47,10 @@ class Decision(str, Enum):
     ASK = "ask"
 
 
-SCOPES = {"once": 0, "session": None, "hour": 3600, "day": 86400, "always": None}
+# "task": for a data-sharing approval, every destination for the rest of that task (a research task that opens
+# six sites asked six times, once a site); for any other approval it is "once".
+SCOPES = {"once": 0, "task": 0, "session": None, "hour": 3600, "day": 86400, "always": None}
+ANYWHERE = "*"                          # in a run's `shared`: the owner allowed every destination for this task
 
 # Defaults when no rule or grant matches.
 DEFAULTS: dict[str, Decision] = {
@@ -204,7 +207,8 @@ class Policy:
         decision = self.evaluate(action)
         timeout = wait if wait is not None else float(self.config.get("agent.approval_timeout", 300))
         run, destination = current_run.get(), self._leak_destination(action)
-        if decision is not Decision.DENY and destination is not None and destination not in run.shared:
+        if decision is not Decision.DENY and destination is not None and destination not in run.shared \
+                and ANYWHERE not in run.shared:
             sources = sorted(run.private_sources)
             note = (f"This task has read untrusted content and holds data from your {', '.join(sources)}; "
                     f"allow it to use that data on {destination} for the rest of the task.")
@@ -215,7 +219,14 @@ class Policy:
             else:
                 share = Action("data.share", destination, f"{note}\nFirst step: {action.summary}",
                                {"sources": sources, "step": action.kind}, tainted=True)
-                if not await self._decide(share, self.evaluate(share), origin, timeout):
+                asked = self.evaluate(share)
+                if asked is Decision.ASK:
+                    approval = await self.request(share, origin)
+                    if not await self.wait(approval.id, timeout):
+                        return False
+                    if (self.get(approval.id) or approval).scope == "task":
+                        run.shared.add(ANYWHERE)
+                elif not await self._decide(share, asked, origin, timeout):
                     return False
                 run.shared.add(destination)
         allowed = await self._decide(action, decision, origin, timeout)
@@ -290,7 +301,11 @@ class Policy:
             raise ValueError(f"scope must be one of {', '.join(SCOPES)}")
         if not allow or approval.kind in HIGH_RISK:
             scope = "once"
-        if allow and scope == "session":
+        if scope == "task" and approval.kind != "data.share":
+            scope = "once"
+        if allow and scope == "task":
+            pass                                # the run that asked remembers it (check), nothing is stored
+        elif allow and scope == "session":
             self._session_grants.append((approval.kind, approval.target))
         elif allow and scope != "once":
             ttl = SCOPES[scope]

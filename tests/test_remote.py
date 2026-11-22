@@ -227,9 +227,11 @@ class KeyTests(Home):
 
 class DaemonTests(Home):
     async def test_the_status_names_the_models_really_in_use_in_each_mode(self):
+        from coderunner.browser import page
         from coderunner.core import paths
         from coderunner.core.config import Config
         from coderunner.server.daemon import Daemon
+        self.addCleanup(setattr, page, "LINK_CHARS", page.LINK_CHARS)       # remote mode gives links whole
         paths.ensure_dirs()
         data = {"models": {"runtime": "openai", "base_url": "http://127.0.0.1:9/v1", "chat": "coderunner-qwen3.5-9b",
                            "embedding": "coderunner-embeddinggemma-2", "driver": {"model": "fara1.5-4b", "exclusive": True}},
@@ -255,7 +257,11 @@ class DaemonTests(Home):
                          ("Claude Haiku 5.5", "claude-haiku-5-5", True))
         self.assertNotIn("browser_task", away.svc.registry.tools)
         self.assertIs(away.svc.browser.decider.model.claude, away.svc.llm)
-        self.assertIs(away.svc.guard.model.claude, away.svc.llm)
+        self.assertIsNone(away.svc.guard.model)                               # the guard is off unless asked for
+        self.assertTrue(away.svc.agent._system().startswith("You are the owner's assistant. You run on Anthropic's API;"))
+        self.assertTrue(local.svc.agent._system().startswith("You are a private assistant running entirely on"))
+        self.assertEqual((away.svc.llm.context, away.svc.llm.tool_output_chars), (150_000, 40_000))
+        self.assertEqual((away.svc.browser.page_chars, page.LINK_CHARS, local.svc.browser.page_chars), (36_000, 200, 12_000))
         self.assertNotIn(KEY, json.dumps(shown))
         from coderunner.models import manager
         started = mock.Mock()

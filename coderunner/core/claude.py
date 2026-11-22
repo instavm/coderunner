@@ -107,6 +107,13 @@ class Claude:
     """The chat interface of core.llm.LLM, served by Anthropic's API."""
 
     remote = True
+    # Room for what a task reads: old pages are dropped past 60% of this, which keeps a prompt under the
+    # 100,000 tokens where Haiku's price changes; a page is given whole enough to hold its facts (a local 9B
+    # model gets 12,000 characters of it, and an encyclopedia page's figures sat beyond that).
+    context = 150_000
+    tool_output_chars = 40_000
+    page_chars = 36_000
+    link_chars = 200
 
     def __init__(self, api_key: str, model: str = MODEL, effort: str = EFFORT, timeout: float = 180,
                  http_client=None):
