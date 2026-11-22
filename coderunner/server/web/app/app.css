@@ -1,7 +1,7 @@
 /* One brand colour, flat: --fill behind white text (buttons, progress), --accent for links and marks. No gradients,
    no glows; depth comes from hairlines and one faint shadow. */
 :root {
-  --bg: #f6f6f7; --surface: #ffffff; --surface-2: #ececef; --line: #dedfe4; --text: #17181c; --muted: #696c76;
+  --bg: #f6f6f7; --surface: #ffffff; --surface-2: #ececef; --line: #dedfe4; --text: #17181c; --muted: #646771;
   --accent: #2563eb; --fill: #2563eb; --accent-soft: #e3ebfd; --accent-text: #ffffff; --warn: #9a5216; --warn-soft: #f7e8d8;
   --danger: #c0392f; --ok: #1f8a4c; --shadow: 0 1px 2px rgb(0 0 0 / 5%);
   --radius: 10px; --sidebar: clamp(220px, 21vw, 268px); --panel: clamp(320px, 32vw, 400px);
@@ -129,7 +129,7 @@ button.check-row:hover .check-what { color: var(--accent); }
 .md ul, .md ol { margin: 4px 0 8px; padding-left: 22px; } .md li { margin: 2px 0; }
 .md code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface-2); padding: 1px 5px; border-radius: 5px; }
 .md-cards { display: grid; gap: 8px; margin: 10px 0; white-space: normal; }
-.md-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--surface-2); }
+.md-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--surface); }
 .md-card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
 .md-card-title { font-weight: 600; min-width: 0; }
 .md-card-price { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -200,6 +200,16 @@ a.item:hover { transform: translateY(-1px); } a.item:focus-visible { outline: 2p
 .btn.primary:hover { filter: brightness(1.08); border-color: var(--fill); }
 .btn:active:not(:disabled), .pill:active, .icon-btn:active, .tab:active { transform: scale(.98); }
 .btn:disabled { opacity: .5; cursor: default; }
+/* Hover, for the controls that had none: the same quiet step as the rest. */
+.tab:not(.on):hover { color: var(--text); }
+.linkish:hover:not(:disabled) { text-decoration: underline; }
+.stop:hover { border-color: var(--danger); color: var(--danger); }
+.btn.danger:hover:not(:disabled) { border-color: var(--danger); }
+.wait-remove:hover { filter: brightness(1.35); }
+.seg:not(.on):hover { color: #fff; }
+a.att-file:hover { border-color: var(--accent); }
+.shot:hover img { filter: brightness(.96); }
+.shot:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .btn:disabled:hover { border-color: var(--line); filter: none; }
 .btn.danger { color: var(--danger); }
 .ask.closed { border-color: var(--line); background: var(--surface-2); }
