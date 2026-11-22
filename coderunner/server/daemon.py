@@ -473,8 +473,35 @@ class Daemon:
             self._stop.set()
 
 
+def only_one():
+    """The lock a home's one daemon holds while it runs, or None when another daemon has it. A second daemon on
+    the same home was not refused: it loaded the model again and waited for the port, and took over with whatever
+    code it had when the first one stopped. The lock goes with the process (and is taken again by a daemon that
+    starts again in place)."""
+    try:
+        import fcntl
+    except ImportError:             # not a POSIX system: no lock to take
+        return True
+    paths.ensure_dirs()
+    handle = open(paths.assistant_dir() / "run" / "daemon.lock", "a+")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    handle.truncate(0)
+    handle.write(f"{os.getpid()}\n")
+    handle.flush()
+    return handle
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    lock = only_one()
+    if lock is None:
+        log.error("Another CodeRunner daemon is already running for %s; this one stops. `coderunner down` stops "
+                  "the other.", paths.home())
+        raise SystemExit(1)
     daemon = Daemon()
     asyncio.run(daemon.run())
     if daemon.restart_requested:

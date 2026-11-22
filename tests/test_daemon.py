@@ -242,6 +242,33 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class OneDaemonTests(unittest.TestCase):
+    def test_a_second_daemon_on_the_same_home_is_refused_until_the_first_is_gone(self):
+        import os
+        import tempfile
+        from unittest import mock
+
+        from coderunner.server import daemon as daemon_module
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"CODERUNNER_HOME": home}):
+            first = daemon_module.only_one()
+            self.assertIsNotNone(first)
+            self.assertIsNone(daemon_module.only_one())
+            with mock.patch.object(daemon_module, "Daemon") as built, self.assertRaises(SystemExit) as stopped, \
+                    self.assertLogs(daemon_module.log, "ERROR") as said:
+                daemon_module.main()
+            self.assertEqual(stopped.exception.code, 1)
+            built.assert_not_called()                   # nothing was loaded or started
+            self.assertIn("Another CodeRunner daemon is already running", said.output[0])
+            first.close()                               # as when the first daemon exits, or starts again in place
+            again = daemon_module.only_one()
+            self.assertIsNotNone(again)
+            again.close()
+        with tempfile.TemporaryDirectory() as other, mock.patch.dict(os.environ, {"CODERUNNER_HOME": other}):
+            elsewhere = daemon_module.only_one()        # another home's daemon is another matter
+            self.assertIsNotNone(elsewhere)
+            elsewhere.close()
+
+
 class SearchModeTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_says_there_is_no_model_in_search_mode(self):
         from coderunner.core.config import Config

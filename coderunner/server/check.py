@@ -31,6 +31,7 @@ from ..core import paths
 from ..files import attached
 from ..models import sites as fixtures
 from ..models import tasks as sample
+from ..safety.policy import current_run
 
 FIXTURES = pathlib.Path(sample.__file__).parent / "fixtures"
 SAMPLE = {task.name: task for task in sample.TASKS}
@@ -233,7 +234,10 @@ class CheckJob:
         documents, server, serving, shared = folder / "Documents", None, None, False
 
         def approve(approval) -> None:
-            if approval.origin != "check":
+            # Called where the approval is asked, inside the task that asks. The browser asks under its own
+            # origin, so the task is told by its conversation: left unanswered, each of those waited five minutes.
+            asking = str(getattr(current_run.get(), "conversation", ""))
+            if approval.origin != "check" and not asking.startswith("app:check-"):
                 return
             allow = not PAYS.search(approval.summary.split("\n")[0])
             with contextlib.suppress(KeyError):

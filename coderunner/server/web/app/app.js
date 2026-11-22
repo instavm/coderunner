@@ -785,7 +785,7 @@ function modelName(id) {
   return base.split("-").filter(Boolean).map((word) => /^[ae]?\d+(\.\d+)?[bm]$/i.test(word) ? word.toUpperCase() :
     /^\d+bit$/.test(word) ? word.replace("bit", "-bit") : word[0].toUpperCase() + word.slice(1)).join(" ");
 }
-const VOICES = {apple: "Apple's on-device speech", parakeet: "Parakeet", whisper: "Whisper"};
+const VOICES = {apple: "Apple's on-device speech", parakeet: "Parakeet", "parakeet-coreml": "Parakeet Ultra", "qwen3-asr": "Qwen3 ASR", whisper: "Whisper"};
 const BROWSERS = {computer: "The assistant's own computer", chrome: "Your Chrome, in its own tab group", dedicated: "A Chrome window of its own"};
 
 async function loadModels() {
@@ -794,7 +794,7 @@ async function loadModels() {
     const models = status.models || {};
     const rows = [["Planning", modelName(models.chat || status.model?.model)], ["Web pages", modelName(models.driver)],
                   ["Safety check", modelName(models.decision)], ["File search", modelName(models.embedding || status.model?.embedding)],
-                  ["Voice", (status.voice || []).map((name) => VOICES[name] || name).join(", ")],
+                  ["Voice", (status.voice || []).slice(0, 1).map((name) => VOICES[name] || name).join("")],   // the one in use; the rest stand by
                   ["Browser", BROWSERS[status.browser?.mode] || status.browser?.mode]];
     const dl = $("models");
     dl.replaceChildren();

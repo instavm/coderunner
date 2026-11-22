@@ -177,10 +177,20 @@ class CheckTests(unittest.IsolatedAsyncioTestCase):
             asked["sandbox"] = await policy.check(Action("channel.send", "x", "Run in the sandbox:\nprint(1)"), origin=origin, wait=2)
             asked["pay"] = await policy.check(Action("channel.send", "x", "Click Pay now on skyfare"), origin=origin, wait=2)
             asked["other"] = await policy.check(Action("channel.send", "x", "Send a message"), origin="telegram:1", wait=0.2)
+            # The browser asks under its own origin: the task it asks for is told by its conversation.
+            from types import SimpleNamespace
+
+            from coderunner.safety.policy import current_run
+            token = current_run.set(SimpleNamespace(conversation=f"{channel}:{chat_id}", events=None, content_tainted=False,
+                                                    private_sources=set(), shared=set()))
+            try:
+                asked["browser"] = await policy.check(Action("channel.send", "x", "Open the library site"), origin="agent", wait=2)
+            finally:
+                current_run.reset(token)
             return "391"
         self.daemon.handle_message = handle
         await self.run_check(["answer"])
-        self.assertEqual(asked, {"sandbox": True, "pay": False, "other": False})    # another task's is left for the owner
+        self.assertEqual(asked, {"sandbox": True, "pay": False, "other": False, "browser": True})    # another task's is the owner's
 
     async def test_a_check_is_not_started_twice_or_without_a_model_or_for_a_name_it_does_not_have(self):
         self.assertEqual(self.job.start(["nope"]), "No such check: nope. There are: answer, picture, document, video, code, "
