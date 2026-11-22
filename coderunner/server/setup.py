@@ -369,7 +369,8 @@ class SetupJob(Job):
             result = self._setup(self.config, model_id=model or None, accept_license=accept_license,
                                  progress=self._say, other_downloads=False, insist=False)
         except Exception as exc:        # setup reports its failures; this is one it did not foresee
-            result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            self._say(f"Error: {type(exc).__name__}: {exc}")           # for whoever opens Details
+            result = {"ok": False, "error": "Setup stopped on an error it did not expect. Details has the last lines."}
         if result.get("ok") and self.voice:
             self._say("setting up speech to text")
             try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import json
 import os
@@ -101,6 +102,7 @@ def cmd_up(args, config: Config) -> int:
         driver.start()
     elif state == "missing" and config.get("sandbox.driver") != "none":
         print(NO_SANDBOX)
+    _stopped_mark().unlink(missing_ok=True)
     if _daemon_up(config):
         print("Daemon already running.")
         return 0
@@ -122,8 +124,17 @@ def cmd_up(args, config: Config) -> int:
     return 1
 
 
+def _stopped_mark():
+    """Left by `coderunner down`: the owner stopped the assistant, so the desktop app does not bring it back
+    by itself (it offers a button). Any start clears it."""
+    return paths.assistant_dir() / "run" / "stopped-by-owner"
+
+
 def cmd_down(args, config: Config) -> int:
     from .server import service
+    with contextlib.suppress(OSError):
+        _stopped_mark().parent.mkdir(parents=True, exist_ok=True)
+        _stopped_mark().write_text("")
     info = service.status()
     if args.uninstall and info.get("installed"):
         print(service.uninstall())

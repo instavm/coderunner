@@ -171,6 +171,20 @@ class TaskTests(Home):
         self.assertNotIn("attachments", [e for e in bus.since(0) if e["type"] == "started"][-1])
 
 
+class RestartTests(Home):
+    async def test_a_task_cut_short_by_a_restart_says_so_in_its_thread(self):
+        svc = Svc()
+        svc.store.execute("INSERT INTO tasks(id, conversation, prompt, status, reply, created, finished) "
+                          "VALUES ('abc123abc123', 'app:one', 'Plan the trip', 'running', '', 1.0, NULL)")
+        bus = tasks_module.EventBus(svc.store)
+        tasks = tasks_module.Tasks(FakeDaemon(svc), bus)
+        ended = tasks.get("abc123abc123")
+        self.assertEqual((ended["status"], ended["reply"]),
+                         ("cancelled", "Stopped: the assistant was restarted while this was running."))
+        self.assertEqual([(e["type"], e["conversation"], e["reply"]) for e in bus.since(0)],
+                         [("cancelled", "app:one", "Stopped: the assistant was restarted while this was running.")])
+
+
 class SandboxPathTests(Home):
     async def test_code_that_names_an_attached_file_by_its_host_path_is_given_the_sandboxs(self):
         from coderunner.agent.loop import RunContext

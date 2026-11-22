@@ -199,6 +199,17 @@ button.check-row:hover .check-what { color: var(--accent); }
    the window by, and one centred column that fits the window without scrolling. */
 #composer[hidden] { display: none; }
 
+/* The daemon is away: one calm line under the header, and whatever was on screen stays. */
+.offline { display: flex; align-items: center; gap: 8px; justify-content: center; padding: 6px 12px; font-size: 12.5px; color: var(--muted);
+  background: var(--surface-2); border-bottom: 1px solid var(--line); }
+.offline[hidden] { display: none; }
+.offline-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); animation: pulse 1.2s ease-in-out infinite; }
+.is-offline .send { opacity: .4; pointer-events: none; }
+.notice { margin: 0 auto 8px; width: min(760px, calc(100% - 48px)); box-sizing: border-box; padding: 8px 12px; border-radius: 10px; font-size: 13px;
+  color: var(--danger); background: var(--surface); border: 1px solid var(--line); }
+.notice[hidden] { display: none; }
+#screenNote .btn { display: block; margin: 10px auto 0; pointer-events: auto; }
+
 /* Files waiting in the composer, and files in a task's thread. */
 .attachments { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 4px 10px; }
 .attachments[hidden], .bubble-user[hidden] { display: none; }

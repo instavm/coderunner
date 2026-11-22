@@ -5,11 +5,83 @@ import RFB from "./novnc/core/rfb.js";
 const $ = (id) => document.getElementById(id);
 const HEADERS = {"Content-Type": "application/json", "X-CodeRunner": "1"};
 
+// The daemon restarts now and then (a setting changed, the Mac slept, it was stopped). While it does not
+// answer the app keeps what is on screen, says one calm thing, tries again quietly and picks everything up
+// by itself when it is back. No request's own error text is ever shown for this.
+const link = {down: false, since: 0, timer: null, wait: 1000, asked: false};
+
+class Offline extends Error {
+  constructor() { super(""); this.offline = true; }
+}
+
 async function api(path, options = {}) {
-  const response = await fetch(path, {credentials: "same-origin", headers: HEADERS, ...options});
+  let response;
+  try { response = await fetch(path, {credentials: "same-origin", headers: HEADERS, ...options}); }
+  catch { setOffline(true); throw new Offline(); }
+  if (response.status >= 502 && response.status <= 504) { setOffline(true); throw new Offline(); }
+  setOffline(false);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || response.statusText);
+  if (!response.ok) throw new Error(data.error || "That did not work. Try again.");
   return data;
+}
+
+function setOffline(down) {
+  if (down === link.down) return;
+  link.down = down;
+  clearTimeout(link.timer);
+  if (down) {
+    link.since = Date.now(); link.wait = 1000; link.asked = false;
+    $("offlineText").textContent = "Reconnecting…";
+    document.querySelector("#offline button")?.remove();
+    $("offline").hidden = false;
+    document.body.classList.add("is-offline");
+    link.timer = setTimeout(probe, link.wait);
+    return;
+  }
+  $("offline").hidden = true;
+  document.body.classList.remove("is-offline");
+  recover();
+}
+
+async function probe() {
+  let up = false;
+  try { up = (await fetch("/health", {cache: "no-store"})).ok; } catch { /* still away */ }
+  if (up) { setOffline(false); return; }
+  link.wait = Math.min(link.wait * 1.6, 8000);
+  // Gone for a while: in the desktop app, where the assistant can be started from here, say so and offer it.
+  if (Date.now() - link.since > 12000 && window.coderunnerShell?.startAssistant && !link.asked) {
+    link.asked = true;
+    $("offlineText").textContent = "The assistant is not running.";
+    const start = el("button", "linkish", "Start it");
+    start.type = "button";
+    start.onclick = () => { start.remove(); $("offlineText").textContent = "Starting…"; window.coderunnerShell.startAssistant(); };
+    $("offline").appendChild(start);
+  }
+  link.timer = setTimeout(probe, link.wait);
+}
+
+// Back: the models, the task list, the thread on screen (a task may have ended meanwhile) and the screen.
+function recover() {
+  if (!link.since) return;
+  link.since = 0;
+  if (state.setup) { checkSetup(); return; }
+  loadModels();
+  pollApprovals();
+  if (state.conversation && state.conversation !== "check") openConversation(state.conversation, $("title").textContent, true);
+  else loadConversations();
+  if (!rfb) connectScreen();
+}
+
+// Something the owner should know that is not part of a task: said above the task box, in the app's own
+// style, and gone by itself.
+let noticeTimer = null;
+function notice(text) {
+  if (!text) return;                  // an Offline error: the reconnecting line already says it
+  const box = $("notice");
+  box.textContent = text;
+  box.hidden = false;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => { box.hidden = true; }, 7000);
 }
 
 function el(tag, className, text) {
@@ -288,7 +360,7 @@ class TaskView {
     const decide = async (allow) => {
       row.querySelectorAll("button").forEach((b) => b.disabled = true);
       try { await api(`/api/approvals/${e.id}`, {method: "POST", body: JSON.stringify({allow, scope: "once"})}); }
-      catch (err) { row.querySelectorAll("button").forEach((b) => b.disabled = false); alert(err.message); return; }
+      catch (err) { row.querySelectorAll("button").forEach((b) => b.disabled = false); notice(err.message); return; }
       closeAsk(e.id, allow);
       this.setNow(before);            // no longer waiting for the owner
     };
@@ -367,14 +439,22 @@ async function loadConversations() {
   }
 }
 
-async function openConversation(id, title) {
+async function openConversation(id, title, again) {
   if (state.setup) return;        // the first-run screen holds the page until a model is set up
+  let data = null;
+  if (id && again) {              // the same thread, read again after a reconnect: what is shown stays until it is here
+    try { data = await api(`/api/conversations/${encodeURIComponent(id)}`); } catch { return; }
+    if (state.conversation !== id) return;
+  }
+  const kept = again ? $("thread").scrollTop : null;
   state.conversation = id;
   state.views.clear();
   $("thread").replaceChildren();
   $("title").textContent = id ? trunc(title || "Task", 90) : "New task";
   if (!id) { $("thread").appendChild(emptyState); loadConversations(); $("input").focus(); return; }
-  const data = await api(`/api/conversations/${encodeURIComponent(id)}`);
+  try { data = data || await api(`/api/conversations/${encodeURIComponent(id)}`); }
+  catch (err) { notice(err.message); return; }
+  if (kept !== null) setTimeout(() => { $("thread").scrollTop = kept; }, 0);
   for (const task of data.tasks) state.views.set(task.id, new TaskView(task));
   for (const e of data.events) state.views.get(e.task)?.apply(e);
   loadConversations();
@@ -569,7 +649,7 @@ function dropWaiting(item) {
 
 function attach(files) {
   for (const file of files) {
-    if (waiting.length >= MAX_ATTACHED) { alert(`At most ${MAX_ATTACHED} files to a message.`); break; }
+    if (waiting.length >= MAX_ATTACHED) { notice(`At most ${MAX_ATTACHED} files to a message.`); break; }
     const kind = mediaKind(file.type), name = file.name || `pasted.${(file.type.split("/")[1] || "bin").replace(/\W.*/, "")}`;
     const item = {file, id: "", failed: "", preview: kind === "image" || kind === "video" ? URL.createObjectURL(file) : ""};
     const tile = item.tile = el("div", "wait " + kind), remove = el("button", "wait-remove", "×"), bar = el("span", "wait-bar");
@@ -634,7 +714,7 @@ $("composer").onsubmit = async (event) => {
   event.preventDefault();
   const message = $("input").value.trim();
   const failed = waiting.find((item) => item.failed);
-  if (failed) { alert(`${failed.file.name || "A file"} was not attached: ${failed.failed} Remove it to go on.`); return; }
+  if (failed) { notice(`${failed.file.name || "A file"} was not attached: ${failed.failed} Remove it to go on.`); return; }
   const attachments = waiting.filter((item) => item.id).map((item) => item.id);
   if ((!message && !attachments.length) || waiting.some((item) => !item.id)) return;
   $("send").disabled = true;
@@ -646,7 +726,7 @@ $("composer").onsubmit = async (event) => {
     if (task.conversation !== state.conversation) {
       await openConversation(task.conversation, message || "Attached files");
     }
-  } catch (err) { alert(err.message); }
+  } catch (err) { notice(err.message); }
   finally { refreshComposer(); }
 };
 function grow() { const i = $("input"); i.style.height = "auto"; i.style.height = Math.min(i.scrollHeight, 200) + "px"; }
@@ -673,12 +753,30 @@ async function connectScreen() {
   clearTimeout(retry);
   let info;
   try { info = await api("/api/computer", {method: "POST", body: "{}"}); }
-  catch (err) { setNote(`The computer is not reachable: ${err.message}`); retry = setTimeout(connectScreen, 5000); return; }
-  if (info.reachable === false) {   // no sandbox running: nothing to set a desktop up in yet
-    setNote(info.error);
-    $("computerState").textContent = "Not running";
+  catch {                             // the daemon is away: the line above the thread says so, and it comes back
+    setNote("Reconnecting to the screen…");
+    $("computerState").textContent = "Reconnecting";
+    retry = setTimeout(connectScreen, 4000);
+    return;
+  }
+  $("startComputer")?.remove();
+  if (info.reachable === false) {   // no sandbox answering: coming up, stopped, or never installed
+    const starting = info.state === "starting";
+    setNote(starting ? "Starting the computer…" : info.error);
+    $("computerState").textContent = starting ? "Starting" : info.state === "absent" ? "Not installed" : "Stopped";
     if (computerBox) computerBox.box.hidden = true;
-    retry = setTimeout(connectScreen, 10000);
+    if (info.state === "stopped") {
+      const start = el("button", "btn primary", "Start it");
+      start.id = "startComputer"; start.type = "button";
+      start.onclick = async () => {
+        start.remove(); setNote("Starting the computer…"); $("computerState").textContent = "Starting";
+        clearTimeout(retry);
+        try { await api("/api/computer", {method: "POST", body: JSON.stringify({start: true})}); } catch { /* said above the thread */ }
+        connectScreen();
+      };
+      $("screenNote").appendChild(start);
+    }
+    retry = setTimeout(connectScreen, starting ? 3000 : 10000);
     return;
   }
   if (!info.available) {

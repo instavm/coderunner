@@ -108,6 +108,7 @@ class Daemon:
         self._stop: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self.restart_requested = False
+        self.sandbox_starting = False
         self.svc = self._build()
         from .setup import ComputerJob, SetupJob
         self.setup = SetupJob(self.config, self.svc.audit, on_done=self._after_setup)
@@ -141,6 +142,7 @@ class Daemon:
         """Start the sandbox VM when it is down: after a restart, macOS brings back the daemon (its login service)
         but not the VM, and run_python and run_shell failed with "the sandbox is not running" until `coderunner
         up` was run by hand. A sandbox never installed (missing) or without a runtime (unavailable) is left alone."""
+        self.sandbox_starting = True           # the app says "starting" meanwhile, not "not running"
         try:
             state = await asyncio.to_thread(self.driver.status)
             if state in ("missing", "unavailable"):
@@ -148,9 +150,15 @@ class Daemon:
             if state != "running":
                 await asyncio.to_thread(self.driver.start)
                 self.svc.audit.write("sandbox.started", driver=self.driver.name, was=state)
+            for _ in range(30):                 # the VM is up before the server in it answers
+                if await self.svc.sandbox.health():
+                    break
+                await asyncio.sleep(2)
         except Exception as exc:              # the tools then say the sandbox is not running, as before
             self.svc.audit.write("sandbox.start_failed", driver=self.driver.name, error=str(exc)[:200])
             return
+        finally:
+            self.sandbox_starting = False
         if self.config.get("browser.mode") == "computer":
             # The owner sees the computer's screen as soon as the app opens, not only once a task needs it.
             for _ in range(30):

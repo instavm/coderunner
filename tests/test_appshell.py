@@ -42,10 +42,43 @@ class AppShellTests(unittest.TestCase):
         main, preload = ((appshell.app_dir() / name).read_text() for name in ("main.js", "preload.js"))
         self.assertIn('preload: path.join(__dirname, "preload.js")', main)
         self.assertIn("contextIsolation: true, nodeIntegration: false, sandbox: true", main)
-        self.assertEqual(re.findall(r'ipcMain\.(?:handle|on)\("([\w-]+)"', main), ["pick-folder"])
-        self.assertEqual(re.findall(r'ipcRenderer\.\w+\("([\w-]+)"', preload), ["pick-folder"])
+        self.assertEqual(re.findall(r'ipcMain\.(?:handle|on)\("([\w-]+)"', main), ["pick-folder", "start-assistant"])
+        self.assertEqual(re.findall(r'ipcRenderer\.\w+\("([\w-]+)"', preload), ["pick-folder", "start-assistant"])
         self.assertEqual(re.findall(r'exposeInMainWorld\("(\w+)"', preload), ["coderunnerShell"])
         self.assertIn("if (asker !== ORIGIN) return null;", main)        # only the daemon's own page is answered
+        self.assertIn("return asker === ORIGIN ? startDaemon() : false;", main)
+
+    def test_the_shell_brings_a_dead_daemon_back_unless_the_owner_stopped_it(self):
+        import argparse
+        from unittest import mock
+
+        from coderunner import cli
+        main = (appshell.app_dir() / "main.js").read_text()
+        self.assertIn("if (misses >= 2 && !stoppedByOwner()) startDaemon();", main)
+        self.assertIn('path.join(ASSISTANT, "run", "stopped-by-owner")', main)
+        # `coderunner down` leaves the mark the shell looks for, and any start clears it.
+        with mock.patch.dict("os.environ", {"CODERUNNER_HOME": str(self.home)}), \
+                mock.patch("coderunner.server.service.status", return_value={}), mock.patch("builtins.print"):
+            mark = cli._stopped_mark()
+            cli.cmd_down(argparse.Namespace(uninstall=False, sandbox=False), mock.Mock())
+            self.assertTrue(mark.exists())
+            with mock.patch.object(cli, "_daemon_up", return_value=True), mock.patch("coderunner.sandbox.driver_for"):
+                cli.cmd_up(argparse.Namespace(), mock.Mock())
+            self.assertFalse(mark.exists())
+
+    def test_the_app_shows_no_raw_errors_terminal_commands_or_alerts(self):
+        import re
+        page = (appshell.app_dir().parent / "coderunner" / "server" / "web" / "app" / "app.js").read_text()
+        code = "\n".join(line for line in page.splitlines() if not line.strip().startswith("//"))
+        self.assertNotRegex(code, r"\balert\(")
+        self.assertNotIn("Failed to fetch", code)
+        self.assertNotRegex(code, r"is not reachable: \$\{")
+        self.assertNotRegex(code, r"`coderunner |coderunner (up|setup|down)\b")
+        gateway = (appshell.app_dir().parent / "coderunner" / "server" / "gateway.py").read_text()
+        facing = gateway[gateway.index("async def computer("):gateway.index("async def computer_setup(")]
+        self.assertNotIn("__name__", facing)
+        self.assertNotIn("coderunner up", facing)
+        self.assertIn("No model is set up yet.", gateway)
 
     def test_the_checkouts_own_electron_is_used_before_coderunners_copy(self):
         app = self.home / "checkout" / "app"

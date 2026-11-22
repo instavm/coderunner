@@ -79,9 +79,12 @@ class Tasks:
         self.store = daemon.svc.store
         self.running: dict[str, asyncio.Task] = {}
         daemon.svc.audit.listeners.append(self._on_audit)
-        # A daemon that stopped mid-task left it "running" for ever.
-        self.store.execute("UPDATE tasks SET status = 'cancelled', finished = ? WHERE status = 'running'",
-                           (time.time(),))
+        # A daemon that stopped mid-task left it "running" for ever: its thread says how it ended.
+        for row in self.store.query("SELECT id, conversation FROM tasks WHERE status = 'running'"):
+            reply = "Stopped: the assistant was restarted while this was running."
+            self.store.execute("UPDATE tasks SET status = 'cancelled', reply = ?, finished = ? WHERE id = ?",
+                               (reply, time.time(), row["id"]))
+            bus.publish({"task": row["id"], "conversation": row["conversation"], "type": "cancelled", "reply": reply})
         for old in shots_dir().glob("*.jpg") if shots_dir().exists() else []:
             if time.time() - old.stat().st_mtime > SHOTS_KEPT_DAYS * 86400:
                 old.unlink(missing_ok=True)

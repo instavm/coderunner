@@ -27,6 +27,7 @@
         <button id="toggleComputer" class="pill" title="Show the computer">Computer</button>
       </div>
     </header>
+    <div id="offline" class="offline" role="status" hidden><span class="offline-dot"></span><span id="offlineText">Reconnecting…</span></div>
     <section id="thread" aria-live="polite">
       <div id="empty" class="empty">
         <h1>What should I get done?</h1>
@@ -38,6 +39,7 @@
         </div>
       </div>
     </section>
+    <div id="notice" class="notice" role="alert" hidden></div>
     <form id="composer" autocomplete="off">
       <div id="attachments" class="attachments" hidden></div>
       <div class="composer-row">

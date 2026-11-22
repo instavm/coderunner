@@ -189,7 +189,9 @@ class SetupJobTests(unittest.TestCase):
         job = SetupJob(self.svc.config, on_done=finished.append, setup=broken, voice=False)
         job.start()
         self.assertTrue(until(lambda: job.public()["state"] == "failed"))
-        self.assertEqual(job.public()["result"]["error"], "ValueError: unforeseen")
+        # The app shows a sentence; the exception's own words are under Details.
+        self.assertEqual(job.public()["result"]["error"], "Setup stopped on an error it did not expect. Details has the last lines.")
+        self.assertIn("Error: ValueError: unforeseen", job.public()["lines"])
         self.assertEqual(finished, [])
 
 
@@ -509,6 +511,37 @@ class ComputerSetupTests(unittest.TestCase):
 
 
 class ComputerRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_computer_panel_is_told_whether_the_computer_is_starting_stopped_or_absent(self):
+        svc = Svc()
+        svc.registry = build_registry(svc)
+        svc.browser = mock.Mock(mode="computer", running=lambda: False)
+        svc.sandbox = mock.Mock(desktop=mock.AsyncMock(side_effect=RuntimeError("connection refused")))
+        daemon = FakeDaemon(svc)
+        daemon.driver = mock.Mock(name="apple", status=mock.Mock(return_value="stopped"), start=mock.Mock())
+        daemon.driver.name = "apple"
+        admin = {"Authorization": "Bearer " + ADMIN}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=admin_app(svc, daemon)),
+                                     base_url="http://127.0.0.1:8224") as client:
+            async def shown(body=None):
+                got = (await client.post("/api/computer", json=body or {}, headers=admin)).json()
+                return got["state"], got["error"]
+            self.assertEqual(await shown(), ("stopped", "The assistant's computer is stopped."))
+            daemon.sandbox_starting = True                      # the daemon is bringing it up after a start
+            self.assertEqual(await shown(), ("starting", "The assistant's computer is starting."))
+            daemon.sandbox_starting = False
+            daemon.driver.status.return_value = "running"       # the VM is up, the server in it not yet
+            self.assertEqual(await shown(), ("starting", "The assistant's computer is starting."))
+            daemon.driver.status.return_value = "missing"
+            self.assertEqual(await shown(), ("absent", "This install has no computer for the assistant."))
+            # No exception's name and no command to type reach the app; "Start it" starts the VM.
+            for state in ("stopped", "running", "missing"):
+                daemon.driver.status.return_value = state
+                text = (await client.post("/api/computer", json={}, headers=admin)).text
+                self.assertNotRegex(text, r"RuntimeError|coderunner up|connection refused")
+            daemon.driver.status.return_value = "stopped"
+            await shown({"start": True})
+            daemon.driver.start.assert_called_once()
+
     async def test_the_computer_panel_can_ask_for_its_setup(self):
         from coderunner.server.setup import ComputerJob
         svc = Svc()

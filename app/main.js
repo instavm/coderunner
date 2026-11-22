@@ -4,7 +4,9 @@
 //     running, and adds the owner's admin token to requests made to it, and to nothing else;
 //   - opens every other address in the default browser, never inside the app;
 //   - denies the page every permission except notifications;
-//   - shows the system's folder dialog when the page asks where to keep the models (preload.js).
+//   - shows the system's folder dialog when the page asks where to keep the models (preload.js);
+//   - brings the daemon back when it dies while the app is open, unless the owner stopped it (`coderunner down`
+//     leaves a mark): then the page offers "Start it", which asks this shell.
 const {app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, session, shell} = require("electron");
 const {execFile} = require("child_process");
 const fs = require("fs");
@@ -76,9 +78,26 @@ function startDaemon() {
   const tools = ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), ".local", "bin")];   // container, docker
   const env = {...process.env, CODERUNNER_HOME: HOME, PATH: [...tools, process.env.PATH || "/usr/bin:/bin"].join(":")};
   execFile(command, ["up"], {env, timeout: 180000}, (error, stdout, stderr) => {
-    if (error) failure = `${stdout}${stderr}`.trim().split("\n").slice(-2).join(" ") || String(error.message);
+    starting = false;               // it can be started again if it dies later
+    failure = error ? `${stdout}${stderr}`.trim().split("\n").slice(-2).join(" ") || String(error.message) : "";
   });
   return true;
+}
+
+// The owner stopped the assistant themselves: it is not brought back behind their back.
+function stoppedByOwner() {
+  return fs.existsSync(path.join(ASSISTANT, "run", "stopped-by-owner"));
+}
+
+// While the app is open, a daemon that has died (a crash, a kill, a restart that did not come back) is started
+// again. Two misses in a row, so a daemon restarting in place is left to it.
+let misses = 0;
+function watchDaemon() {
+  setInterval(async () => {
+    if (await daemonUp()) { misses = 0; return; }
+    misses += 1;
+    if (misses >= 2 && !stoppedByOwner()) startDaemon();
+  }, 5000);
 }
 
 function createWindow() {
@@ -167,8 +186,15 @@ app.whenReady().then(() => {
     });
     return picked.canceled ? null : picked.filePaths[0];
   });
+  // The page's "Start it", shown when the assistant has been away for a while (stopped by the owner, say).
+  ipcMain.handle("start-assistant", (event) => {
+    let asker = "";
+    try { asker = new URL(event.senderFrame.url).origin; } catch { /* refused */ }
+    return asker === ORIGIN ? startDaemon() : false;
+  });
   buildMenu();
   createWindow();
+  watchDaemon();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 

@@ -517,7 +517,7 @@ def admin_app(svc, daemon) -> Starlette:
         if len(files) > attached.MAX_PER_TASK:
             return JSONResponse({"error": f"At most {attached.MAX_PER_TASK} files to a message."}, status_code=400)
         if not svc.config.get("models.chat") and not getattr(svc, "remote", None):
-            return JSONResponse({"error": "No local chat model is set up. Run `coderunner setup`."}, status_code=409)
+            return JSONResponse({"error": "No model is set up yet."}, status_code=409)
         conversation = str(body.get("conversation") or "")
         if not conversation.startswith("app:"):
             conversation = "app:" + secrets.token_hex(6)
@@ -657,12 +657,34 @@ def admin_app(svc, daemon) -> Starlette:
 
     async def computer(request: Request):
         """The sandbox's screen; POST brings it up. The password opens the screen through /api/computer/screen."""
+        body = {}
+        if request.method == "POST":
+            with contextlib.suppress(Exception):
+                body = await request.json()
+        driver = getattr(daemon, "driver", None)
+        if body.get("start") and driver is not None:           # the owner's "Start it": the VM, then its screen
+            daemon.sandbox_starting = True
+            try:
+                await asyncio.to_thread(driver.start)
+                svc.audit.write("sandbox.started", driver=driver.name, origin=principal(request))
+            except Exception as exc:
+                svc.audit.write("sandbox.start_failed", driver=driver.name, error=str(exc)[:200])
+            finally:
+                daemon.sandbox_starting = False
         try:
             info = await svc.sandbox.desktop(start=request.method == "POST")
-        except Exception as exc:        # no sandbox, or one that is not running: the app says so, not "500"
-            info = {"available": False, "running": False, "reachable": False,
-                    "error": "The assistant's computer is not running. `coderunner up` starts it "
-                             f"({type(exc).__name__})."}
+        except Exception:               # no sandbox, or one that is not answering yet: said in the app's words
+            # Which of the three it is: still coming up (the daemon starts it), stopped, or never installed. The
+            # app says "starting" for the first, offers a button for the second, and never a command to type.
+            state = "starting" if getattr(daemon, "sandbox_starting", False) else "stopped"
+            if state == "stopped" and driver is not None:
+                with contextlib.suppress(Exception):
+                    found = await asyncio.to_thread(driver.status)
+                    state = "starting" if found == "running" else "absent" if found in ("missing", "unavailable") else "stopped"
+            info = {"available": False, "running": False, "reachable": False, "state": state,
+                    "error": {"starting": "The assistant's computer is starting.",
+                              "stopped": "The assistant's computer is stopped.",
+                              "absent": "This install has no computer for the assistant."}[state]}
         info["mode"] = svc.browser.mode
         info["browser_running"] = svc.browser.running()
         return JSONResponse(info)
