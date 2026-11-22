@@ -446,9 +446,18 @@ slowest request took 40 s before and 2.95 s after (1 of 357 over a second).
 A second daemon started by hand on the same home now stops at once with "Another CodeRunner daemon is already
 running".
 
-Not covered by these runs: a file dropped on the window or pasted (the same code as the paperclip, which was
-driven through its file input); the system's file dialog itself; files near the 200 MB limit; attaching from a
-paired phone; the check on a text-only model, without the sandbox or on Linux (those paths are in the unit
+All eleven were then run in one go (`coderunner check --long`) with a browser driver set (Fara1.5 4B, taking
+the GPU in turn with the planner): 11 of 11 in 26 min 18 s. `errands` passed in 867 s of its 900: the planner
+spent seven minutes on the calendar before handing the flight search to the driver, which took four and a half
+more. While the driver worked it was also the judge of its own steps, and it called five harmless clicks
+committing ("Previous month" three times, the date, "Search"), so each asked for approval; the check answered
+them, an owner would have been asked five times. That judgement is not fixed here.
+
+A picture pasted into the task box and a file dropped on the thread were attached in the app, by events
+dispatched in the page (not a drag from Finder).
+
+Not covered by these runs: a real drag from Finder; the system's file dialog itself; files near the 200 MB
+limit; attaching from a paired phone; the check on a text-only model, without the sandbox or on Linux (those paths are in the unit
 tests only); any model but Qwen3.5 9B on these tasks.
 
 ## Not yet validated
