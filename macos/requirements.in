@@ -1,9 +1,0 @@
-# Core CodeRunner runtime on macOS, Python 3.13. Extra scientific/PDF tools are optional.
-aiofiles
-beautifulsoup4
-bash-kernel
-ipykernel
-jupyter-server
-mcp[cli]>=1.26,<2
-playwright==1.53.0
-uvicorn[standard]
