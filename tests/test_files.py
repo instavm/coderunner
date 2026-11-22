@@ -406,9 +406,9 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
                                 "AND modality = 'image'")
         frames = [unpack(r["embedding"]) for r in rows if r["part"].startswith("frame at")]
         whole = next(unpack(r["embedding"]) for r in rows if r["part"] == "the whole video")
-        total = [sum(column) for column in zip(*frames)]
+        total = [sum(column) for column in zip(*frames, strict=True)]
         norm = sum(x * x for x in total) ** 0.5
-        self.assertTrue(all(abs(a - b / norm) < 2e-3 for a, b in zip(whole, total)))
+        self.assertTrue(all(abs(a - b / norm) < 2e-3 for a, b in zip(whole, total, strict=True)))
         await embedder.aclose()
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is needed for media")

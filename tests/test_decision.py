@@ -69,7 +69,7 @@ class ActionCheckTests(DecisionTestCase):
         # called a calendar's buttons committing and the owner was asked for each.
         self.assertEqual([m["role"] for m in sent], ["system"] + ["user", "assistant"] * len(COMMIT_EXAMPLES) + ["user"])
         letters = {option["key"]: option["label"] for option in json.loads(sent[0]["content"].split("\n", 1)[1])["options"]}
-        for (state, key), asked, answered in zip(COMMIT_EXAMPLES, sent[1::2], sent[2::2]):
+        for (state, key), asked, answered in zip(COMMIT_EXAMPLES, sent[1::2], sent[2::2], strict=False):
             self.assertEqual((json.loads(asked["content"]), answered["content"]), ({"state": state}, letters[key]))
         kinds = [key for _, key in COMMIT_EXAMPLES]
         self.assertGreaterEqual(min(kinds.count("safe"), kinds.count("commit")), 4)      # neither answer is the habit

@@ -242,8 +242,8 @@ class EngineDetectionTests(VoiceTestCase):
         for system, machine, major, expected in (("darwin", "arm64", 15, True), ("darwin", "arm64", 14, False),
                                                  ("darwin", "x86_64", 26, False), ("linux", "aarch64", 0, False)):
             with mock.patch.object(parakeet_module, "sys", SimpleNamespace(platform=system)), \
-                    mock.patch.object(parakeet_module, "platform", SimpleNamespace(machine=lambda: machine)), \
-                    mock.patch.object(parakeet_module, "macos_major", lambda: major):
+                    mock.patch.object(parakeet_module, "platform", SimpleNamespace(machine=lambda machine=machine: machine)), \
+                    mock.patch.object(parakeet_module, "macos_major", lambda major=major: major):
                 self.assertEqual(REAL_PARAKEET_POSSIBLE(), expected, (system, machine, major))
 
     def test_parakeet_languages(self):
@@ -418,7 +418,7 @@ class TranscribeTests(VoiceTestCase):
         self.assertGreaterEqual(len(segments), 3)
         self.assertTrue(all(0.2 <= s.end - s.start <= 0.4 for s in segments[:-1]), segments)
         self.assertEqual((segments[0].start, segments[-1].end), (0.0, 1.0))
-        self.assertTrue(all(a.end == b.start for a, b in zip(segments, segments[1:])))
+        self.assertTrue(all(a.end == b.start for a, b in zip(segments, segments[1:], strict=False)))
         self.assertTrue(all(s.text == "Qwen heard 16000 Hz on 1 channel." for s in segments))
         self.assertEqual(list(self.work.iterdir()), [])
 

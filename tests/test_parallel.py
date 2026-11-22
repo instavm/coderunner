@@ -2,7 +2,6 @@
 
 import asyncio
 import unittest
-from types import SimpleNamespace
 from unittest import mock
 
 import httpx
@@ -37,7 +36,7 @@ class TurnsTests(unittest.IsolatedAsyncioTestCase):
         running += [asyncio.create_task(step(name, rest)) for name in ("b", "c", "d")]
         await asyncio.sleep(0)
         turns.focus = "d"                                       # the owner opens d's thread while it waits
-        turns._waiting[:] = [(0 if name == "d" else 1, n, w) for (_, n, w), name in zip(turns._waiting, "bcd")]
+        turns._waiting[:] = [(0 if name == "d" else 1, n, w) for (_, n, w), name in zip(turns._waiting, "bcd", strict=True)]
         first.set()
         await asyncio.gather(*running)
         self.assertEqual(order, ["a", "d", "b", "c"])

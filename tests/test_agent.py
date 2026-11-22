@@ -1,5 +1,4 @@
 import json
-import json
 import unittest
 
 import httpx
@@ -430,7 +429,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
                 async def navigate(self, url, tainted=False):          # a whole page, as the broker gives it
                     return {"ok": True, "url": url, "title": "Movies", "content": self.page_text}
 
-                async def items(self, start=0, count=40, tab=None, tainted=False, numbered=True):
+                async def items(self, start=0, count=40, tab=None, tainted=False, numbered=True, total=total):
                     return {"ok": True, "url": "https://rt.example/browse", "total": total, "items": []}
 
             with FakeOpenAI() as fake:

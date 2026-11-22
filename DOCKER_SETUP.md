@@ -33,7 +33,7 @@ The Docker build workflow runs on:
 
 ### Quick Start with Docker
 
-Export an existing operator-managed `CODERUNNER_API_TOKEN` (at least 32 bytes, no whitespace) before starting the container or clients. This branch is unreleased; build an authenticated image from this checkout and substitute its local tag below. Previously published images may ignore the token. See [authentication boundaries](AUTHENTICATION.md).
+Export a `CODERUNNER_API_TOKEN` (at least 32 bytes, no whitespace) before starting the container, and send it from every client. Images published before authentication ignore the token: build one from this checkout until a new image is published. See [authentication boundaries](AUTHENTICATION.md).
 
 ```bash
 # Run CodeRunner with Docker

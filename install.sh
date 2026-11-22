@@ -1,6 +1,13 @@
 #!/bin/bash
 set -u
 
+# Run as yourself: under sudo, HOME is root's, so the token, the venv and the assets would land in /var/root and
+# the clients run as you would never find them. The steps that need root ask for sudo themselves.
+if [ "$(id -u)" = "0" ]; then
+    echo "❌ Run ./install.sh as your own user, not with sudo." >&2
+    exit 1
+fi
+
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CODERUNNER_HOME="${CODERUNNER_HOME:-$HOME/.coderunner}"
 
@@ -8,6 +15,10 @@ CODERUNNER_HOME="${CODERUNNER_HOME:-$HOME/.coderunner}"
 CONTAINER_VERSION="1.5.0"
 CONTAINER_INSTALLER="container-${CONTAINER_VERSION}-installer-signed.pkg"
 download_url="https://github.com/apple/container/releases/download/${CONTAINER_VERSION}/${CONTAINER_INSTALLER}"
+
+version_at_least() {
+    [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
+}
 
 install_container_tool() {
     echo "Downloading Apple 'container' $CONTAINER_VERSION..."
@@ -344,7 +355,8 @@ install_sandbox_macos() {
         echo "Apple 'container' tool detected. Current version:"
         container --version
         current_version=$(container --version | awk '{print $4}')
-        if [ "$current_version" != "$CONTAINER_VERSION" ]; then
+        # A newer 'container' is kept: replacing it with the tested version would be a downgrade, with sudo.
+        if ! version_at_least "$current_version" "$CONTAINER_VERSION"; then
             echo "Updating Apple 'container' to version $CONTAINER_VERSION..."
             install_container_tool
         fi

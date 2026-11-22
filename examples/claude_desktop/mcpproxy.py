@@ -8,12 +8,18 @@ from fastmcp import FastMCP
 
 
 def api_token() -> str:
-    """CODERUNNER_API_TOKEN, else the token the installer saved in ~/.coderunner/api-token."""
-    token = os.environ.get("CODERUNNER_API_TOKEN")
-    if token:
-        return token
-    home = pathlib.Path(os.environ.get("CODERUNNER_HOME", pathlib.Path.home() / ".coderunner"))
-    return (home / "api-token").read_text().strip()
+    """The sandbox token: CODERUNNER_API_TOKEN, else the file the installer wrote."""
+    token = os.environ.get("CODERUNNER_API_TOKEN", "").strip()
+    if not token:
+        try:
+            token = pathlib.Path(os.environ.get("CODERUNNER_HOME", "~/.coderunner")).expanduser() \
+                .joinpath("api-token").read_text().strip()
+        except OSError:
+            pass
+    if not token:
+        print("No sandbox token: run ./install.sh, or export CODERUNNER_API_TOKEN.", file=sys.stderr)
+        sys.exit(1)
+    return token
 
 
 def resolve_with_system_dns(hostname):

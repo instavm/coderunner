@@ -22,7 +22,7 @@ Anthropic recently announced [Skills for Claude](https://www.anthropic.com/news/
 git clone https://github.com/instavm/coderunner.git
 cd coderunner
 chmod +x install.sh
-sudo ./install.sh
+./install.sh
 ```
 
 Installation takes ~2 minutes. The MCP server will be available at `http://coderunner.local:8222/mcp`

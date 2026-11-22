@@ -111,7 +111,6 @@ console.log(JSON.stringify([
             self.assertFalse(mark.exists())
 
     def test_the_app_shows_no_raw_errors_terminal_commands_or_alerts(self):
-        import re
         page = (appshell.app_dir().parent / "coderunner" / "server" / "web" / "app" / "app.js").read_text()
         code = "\n".join(line for line in page.splitlines() if not line.strip().startswith("//"))
         self.assertNotRegex(code, r"\balert\(")

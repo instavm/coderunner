@@ -1,6 +1,5 @@
 """Remote mode: Claude on Anthropic's API as the assistant's model, with the owner's key. Not private, and said so."""
 
-import asyncio
 import json
 import os
 import pathlib

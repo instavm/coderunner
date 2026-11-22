@@ -29,6 +29,14 @@ the only public route. Host and Origin validation still applies.
   device; Tailscale identity headers are an extra restriction, never the
   credential, because any local process can forge them.
 
+When running the Docker image by hand, publish it the same way:
+`-p 127.0.0.1:8222:8222 -e CODERUNNER_API_TOKEN`. The process inside the guest
+still listens on `0.0.0.0:8222`. The installer passes the credential by
+environment variable name, checks that anonymous requests are rejected and that
+an authenticated session list works before it reports readiness. It does not
+change an existing container's environment: to rotate the token, delete the
+container and run the installer again.
+
 ## What the credentials do not protect against
 
 Anyone with the sandbox token can execute arbitrary code in the sandbox, use
@@ -49,3 +57,6 @@ Images published before authentication was added ignore the token. The
 installer verifies that anonymous requests are rejected and refuses such an
 image; build from this checkout with `./install.sh --build` until a new image
 is published.
+
+`tests/test_auth.py` covers HTTP, WebSocket, weak or missing configuration,
+duplicated credentials and rotation; `test-e2e.sh` checks a running sandbox.

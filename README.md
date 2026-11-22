@@ -15,6 +15,15 @@ search to your agent over MCP under an approval and leak rule, and runs the agen
 
 ## Search for your agent
 
+### Credentials
+
+The installer generates the sandbox token in `~/.coderunner/api-token` (or saves
+the `CODERUNNER_API_TOKEN` you exported). Clients send it as
+`Authorization: Bearer <token>`; `cat ~/.coderunner/api-token` prints it. Only
+`GET /health` is public, and a missing or weak token fails closed. The Claude
+Desktop proxy and the examples read the token from that file when the variable
+is not set. See [authentication and network boundaries](AUTHENTICATION.md).
+
 ```bash
 git clone https://github.com/instavm/coderunner.git && cd coderunner
 ./install.sh --search                                  # embedding model and index only; about 1.5 GB, a few minutes
@@ -120,6 +129,14 @@ addresses are refused. In both modes the MCP server is at `http://127.0.0.1:8222
 when the sandbox is created (`coderunner sandbox reset --network ...` changes it). These modes need Apple
 `container` on macOS. `CODERUNNER_NETWORK` also works.
 
+### With Claude Code
+
+Claude Code runs commands on your machine, as you, with permission prompts as the only boundary. Pointing it at
+CodeRunner's tools instead runs the code it writes in the VM: it can only touch the folders you mounted under
+`/workspace`, the network you allowed, and the sandbox's own filesystem, whatever it was told to do. Use the
+sandbox for code that handles untrusted input or that you would not run by hand, and for several agents that
+must not share state (named sessions). It does not protect anything you mount read-write.
+
 ### Claude Code inside the sandbox
 
 ```bash
@@ -153,7 +170,10 @@ claude plugin marketplace add https://github.com/instavm/coderunner-plugin && cl
 Claude Desktop and Kiro start the stdio proxy in `examples/claude_desktop/mcpproxy.py` with
 `~/.coderunner/venv/bin/python`; it reads the token from `~/.coderunner/api-token`. Copy
 `examples/claude_desktop/claude_desktop_config.example.json`, set the two paths, and add it under Settings,
-Developer in Claude Desktop (`~/.kiro/settings/mcp.json` for Kiro). `examples/openai_agents/openai_client.py`
+Developer in Claude Desktop (`~/.kiro/settings/mcp.json` for Kiro). If the tool shows as "Disabled" although
+the server is listed as running, quit Claude Desktop fully (Cmd-Q) and open it again, check that `command` is the
+venv python the installer printed, and read `~/Library/Logs/Claude/mcp-server-coderunner.log`: the proxy needs
+the sandbox running and the token file. `examples/openai_agents/openai_client.py`
 shows the sandbox from the OpenAI Agents library (`pip install -r examples/requirements.txt`).
 [Coderunner-UI](https://github.com/instavm/coderunner-ui) is an offline chat workspace on top of the sandbox.
 
