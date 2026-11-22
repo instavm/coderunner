@@ -17,6 +17,8 @@
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+/* One ring for whatever the keyboard is on. */
+:where(button, a, summary, select, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button { font: inherit; color: inherit; cursor: pointer; transition: background .15s, border-color .15s, box-shadow .15s, transform .1s, filter .15s; }
 .muted { color: var(--muted); }
 .small { font-size: 12.5px; }
