@@ -5,6 +5,7 @@ import unittest
 import httpx
 
 from coderunner.agent import Agent, RunContext, build_registry
+from coderunner.agent.tools import browser_tools
 from coderunner.safety.decision import DecisionModel
 from coderunner.safety.guard import Guard
 from coderunner.core.llm import LLM, parse_text_tool_calls
@@ -290,6 +291,54 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("items 81-100 of 100", last)
             self.assertNotIn("more:", last)
             await svc.llm.aclose()
+
+    async def test_a_web_search_comes_back_as_its_results(self):
+        class Searching(FakeBrowser):
+            opened: list = []
+
+            async def navigate(self, url, tainted=False):
+                self.opened.append(url)
+                return {"ok": True, "url": url, "title": "search", "content": "a results page"}
+
+            async def items(self, start=0, count=40, tab=None, tainted=False, numbered=True):
+                rows = [{"text": f"Timetable {n}", "href": f"https://rail{n}.example/blr-mas", "ref": 10 + n}
+                        for n in range(1, 9)]
+                return {"ok": True, "url": self.opened[-1], "total": 8, "items": rows[start:start + count]}
+
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.browser = Searching("")
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            fake.script = [tool_call("browser_search", {"query": "Bengaluru to Chennai  trains timetable"}),
+                           {"role": "assistant", "content": "done"}]
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-search"), "morning trains")
+            result = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"][0]
+            self.assertIn("q=Bengaluru+to+Chennai+trains+timetable", svc.browser.opened[0])
+            self.assertIn("[11] Timetable 1 -> https://rail1.example/blr-mas", result)
+            await svc.llm.aclose()
+
+    async def test_a_search_site_that_shows_no_results_is_left_for_another(self):
+        class Challenged(FakeBrowser):
+            opened: list = []
+
+            async def navigate(self, url, tainted=False):
+                self.opened.append(url)
+                return {"ok": True, "url": url, "title": "search", "content": "Verify you are human"}
+
+            async def items(self, start=0, count=40, tab=None, tainted=False, numbered=True):
+                if "bing.com" in self.opened[-1]:
+                    return {"ok": True, "url": self.opened[-1], "total": 0, "items": []}
+                return {"ok": True, "url": self.opened[-1], "total": 1,
+                        "items": [{"text": "Visa rules", "href": "https://gov.example/visa", "ref": 7}]}
+
+        svc = Svc()
+        svc.browser = Challenged("")
+        tool = next(t for t in browser_tools(svc) if t.name == "browser_search")
+        result = await tool.handler({"query": "visa rules"}, RunContext(conversation="t-search-2"))
+        self.assertEqual(len(svc.browser.opened), 2)
+        self.assertIn("duckduckgo", svc.browser.opened[1])
+        self.assertIn("[7] Visa rules -> https://gov.example/visa", result)
 
     async def test_a_page_with_a_long_list_says_so(self):
         for total, hinted in ((28, True), (3, False)):

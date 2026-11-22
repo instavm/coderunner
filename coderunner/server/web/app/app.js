@@ -192,6 +192,7 @@ function describeTool(name, raw) {
   const a = args(raw);
   switch (name) {
     case "browser_open": case "browser_navigate": return `Opening ${host(a.url)}`;
+    case "browser_search": return `Searching the web for “${String(a.query || "").slice(0, 60)}”`;
     case "browser_snapshot": return "Reading the page";
     case "browser_list": return "Reading the results on the page";
     case "browser_click": return "Working on the page";

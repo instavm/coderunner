@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 import httpx
 
 from ..browser.broker import KEYS
+from .driver import SEARCH
 from ..safety.policy import Action
 from ..sandbox.client import ShellUnsupported
 
@@ -49,6 +50,7 @@ STR = {"type": "string"}
 # browser_batch: Qwen3.5 sent one call per reply in 157 of 157 browser replies although asked for several, so a
 # form took a model call per field; a list of steps in one call does not depend on that.
 BATCH_STEPS = 12
+SEARCH_ELSE = "https://html.duckduckgo.com/html/?q={}"     # when the first search site shows a challenge
 LIST_HINT_ITEMS = 8             # a page with a list this long says browser_list reads it
 BATCH_STEP_CHARS = 1500         # what each earlier step changed; the last step's result comes in full
 INT = {"type": "integer"}
@@ -320,6 +322,23 @@ def browser_tools(svc) -> list[Tool]:
         return (f"url: {_short_address(result.get('url', ''))}\nThe page's main list, items {start + 1}-{shown} of "
                 f"{total}:\n" + "\n".join(lines) + more)
 
+    async def search(args, ctx):
+        """A web search, read as its list of results. Without it the planner opened addresses from memory: seven
+        guessed timetable pages, none of them there, and the task ended without its trains."""
+        query = " ".join(str(args.get("query") or "").split())
+        if not query:
+            return "Error: say what to search for."
+        # A search site that answers with a challenge instead of results is left for the next one.
+        opened: Any = "Error: the search could not be opened."
+        for address in (SEARCH, SEARCH_ELSE):
+            opened = _result(await b.navigate(address.format(urllib.parse.quote_plus(query)), tainted=ctx.tainted))
+            if isinstance(opened, str):
+                continue
+            listed = await list_({}, ctx)
+            if "main list" in listed:
+                return listed
+        return opened if isinstance(opened, str) else "No results could be read for this search; try other words."
+
     async def select(args, ctx):
         return _text(_result(await b.select(int(args["ref"]), args["option"], tainted=ctx.tainted)))
 
@@ -397,6 +416,9 @@ def browser_tools(svc) -> list[Tool]:
         Tool("browser_open", "Open a URL in a new tab of the CodeRunner browser window or tab group, which the "
              "owner can watch. Returns the page as text with numbered elements [N].",
              _params({"url": STR}, ["url"]), open_, True),
+        Tool("browser_search", "Search the web and get the results, one line each with its link. This is how to "
+             "find a page: an address written from memory is often not there.",
+             _params({"query": STR}, ["query"]), search, True),
         Tool("browser_snapshot", "Read the whole current page again as text with numbered elements [N]. Other "
              "browser actions already return what they changed, so use this only when you need the full page. A long "
              "page is cut: start=<text> reads it from the first line mentioning that text (a heading, \"properties "
