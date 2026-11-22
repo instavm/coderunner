@@ -107,6 +107,7 @@ button.check-row:hover .check-what { color: var(--accent); }
 .say + .say { border-top-left-radius: 16px; }
 .note.say { margin: 10px 0; width: fit-content; }
 .say-block { align-self: stretch; margin: 2px 0; }
+.md-table-wrap.say-block { background: var(--surface); border-radius: 14px; padding: 4px 14px; }
 .answer.failed .say { box-shadow: inset 2px 0 0 var(--danger); }
 .answer a, .note a { color: var(--accent); }
 .answer a.item, .items a.item { color: inherit; }
@@ -172,8 +173,7 @@ a.item:hover { transform: translateY(-1px); } a.item:focus-visible { outline: 2p
 .plan-step.doing .plan-mark { color: var(--accent); }
 /* A picture of the page: small in the thread (its room is kept before it loads, so the thread does not jump),
    full width on a click. */
-.shot { margin: 12px 0; max-width: 300px; cursor: zoom-in; transition: max-width .2s; }
-.shot.large { max-width: 100%; cursor: zoom-out; }
+.shot { margin: 12px 0; max-width: 300px; cursor: zoom-in; border-radius: 10px; }
 .shot img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; background: var(--surface-2);
   border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
 .shot figcaption { margin-top: 4px; }
@@ -198,7 +198,9 @@ a.item:hover { transform: translateY(-1px); } a.item:focus-visible { outline: 2p
 .btn:hover { border-color: var(--muted); }
 .btn.primary { background: var(--fill); color: #fff; border-color: var(--fill); }
 .btn.primary:hover { filter: brightness(1.08); border-color: var(--fill); }
-.btn.primary:active { transform: scale(.98); }
+.btn:active:not(:disabled), .pill:active, .icon-btn:active, .tab:active { transform: scale(.98); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn:disabled:hover { border-color: var(--line); filter: none; }
 .btn.danger { color: var(--danger); }
 .ask.closed { border-color: var(--line); background: var(--surface-2); }
 
@@ -321,6 +323,13 @@ a.item:hover { transform: translateY(-1px); } a.item:focus-visible { outline: 2p
 .att-audio audio { height: 34px; width: 280px; max-width: 100%; }
 .lightbox { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 32px; background: rgb(0 0 0 / 78%); cursor: zoom-out; }
 .lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }
+.lightbox { animation: fade-in .12s ease-out; }
+@keyframes fade-in { from { opacity: 0; } }
+/* Someone who asked their computer for less motion gets none here: no pulsing, sliding or easing. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001s !important; animation-iteration-count: 1 !important;
+    transition-duration: .001s !important; scroll-behavior: auto !important; }
+}
 #main.dropping #composer { border-color: var(--accent); border-style: dashed; box-shadow: 0 0 0 3px var(--accent-soft); }
 #computerSetupBox[hidden] { display: none; }
 .setup-line { margin-top: 8px; word-break: break-word; }

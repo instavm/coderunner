@@ -176,6 +176,9 @@ const state = {
 // A task reads as a conversation: what the assistant says along the way, one line for what it is doing now, its
 // plan ticking off, a picture of the page where that says more than words, and the answer. The calls it makes
 // (which tool, with what arguments) are not shown; they are in the audit trail for whoever wants them.
+// Scrolling eases only for those who have not asked their computer for less motion.
+const gently = () => matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+
 // What went wrong in plain words: a program's own message after it (an exit code, a trace) is left to Details.
 function plainError(text) {
   const [first, ...rest] = String(text || "").split(/:\s+/);
@@ -262,7 +265,10 @@ class TaskView {
     image.alt = `The page at ${host(e.page)}`;
     image.loading = "lazy";
     figure.append(image, el("figcaption", "muted small", host(e.page)));
-    figure.onclick = () => figure.classList.toggle("large");
+    // A page's picture opens over the app at full size, as an attached picture does, and Escape puts it away.
+    figure.tabIndex = 0; figure.setAttribute("role", "button"); figure.setAttribute("aria-label", `Picture of ${host(e.page)}, open larger`);
+    figure.onclick = () => lightbox(image.src, `Picture of ${host(e.page)}`);
+    figure.onkeydown = (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); figure.click(); } };
     image.onload = () => { image.style.aspectRatio = `${image.naturalWidth} / ${image.naturalHeight}`; };
     image.onerror = () => figure.remove();          // a picture cleared away since: the words still stand
     this.say(figure);
@@ -371,7 +377,7 @@ class TaskView {
     this.setNow("Waiting for you");
     state.approvals.set(e.id, {conversation: state.conversation, card, row});
     if (!state.pending.has(e.id) && e.ts && Date.now() / 1000 - e.ts > 5) closeAsk(e.id, null);
-    card.scrollIntoView({block: "nearest", behavior: "smooth"});
+    card.scrollIntoView({block: "nearest", behavior: gently()});
   }
 
   // What a message, a call or a setting change will be, in full: who it reaches on lines of their own, then
@@ -408,6 +414,7 @@ class TaskView {
     this.items?.remove();
     for (const part of answered(e.reply || "", this.shown, picture)) answer.appendChild(part);
     this.flow.appendChild(answer);
+    this.answer = answer;
     const took = clock((this.finished || Date.now() / 1000) - this.started);
     this.flow.appendChild(el("div", "took muted small", e.type === "cancelled" ? `Stopped after ${took}` :
                              e.type === "failed" ? `Failed after ${took}` : `Done in ${took}`));
@@ -589,7 +596,12 @@ function listen() {
       }
       const nearBottom = $("thread").scrollHeight - $("thread").scrollTop - $("thread").clientHeight < 160;
       view?.apply(e);
-      if (nearBottom) scrollDown();
+      // The reader at the end follows what arrives. An answer longer than the window is shown from its first
+      // line, not its last: they were waiting to read it.
+      const answer = ["done", "failed"].includes(e.type) ? view?.answer : null, thread = $("thread");
+      if (nearBottom && answer && answer.offsetHeight > thread.clientHeight - 90)
+        thread.scrollTop += answer.getBoundingClientRect().top - thread.getBoundingClientRect().top - 14;
+      else if (nearBottom) scrollDown();
     } else if (e.type === "activity" && e.event === "approval.requested") {
       notify("CodeRunner needs you", e.summary || "A task is waiting for you");
     }
@@ -628,6 +640,7 @@ const mediaKind = (type) => /^image\/(?!svg)/.test(type) ? "image" : /^video\//.
 // A picture at full size over the app; a click or Escape puts it away.
 function lightbox(src, alt) {
   const box = el("div", "lightbox"), image = el("img");
+  box.setAttribute("role", "dialog"); box.setAttribute("aria-label", alt || "Picture"); box.title = "Click or press Escape to close";
   image.src = src; image.alt = alt || "";
   box.appendChild(image);
   const close = () => { box.remove(); document.removeEventListener("keydown", onKey, true); };
@@ -1397,7 +1410,7 @@ function renderPlan(plan, problem) {
   if (plan.downloads.length) say("Downloads", plan.downloads.map((d) => `${d.label || d.what} ${gb(d.gb)}`).join(" · "));
   say("Disk", `${gb(plan.free_gb)} free now; ${plan.floor_gb} GB is always left free.`);
   why.append(el("summary", "", "How these were chosen"), list);
-  why.addEventListener("toggle", () => { if (why.open) why.scrollIntoView({behavior: "smooth", block: "end"}); });
+  why.addEventListener("toggle", () => { if (why.open) why.scrollIntoView({behavior: gently(), block: "end"}); });
   card.appendChild(why);
   const other = el("button", "linkish setup-other", "Use an Anthropic key instead");
   other.type = "button";
