@@ -28,6 +28,7 @@ SHOT_AFTER = ("browser.open", "browser.navigate")
 SHOT_SETTLE_S = 1.5         # a page just opened is still drawing
 SHOT_APART_S = 20           # the same page is not shown again sooner than this
 MAX_SHOTS = 8               # for one task
+APPROVAL_CHARS = 20000      # of what an approval asks about (the text of a message to send)
 SHOTS_KEPT_DAYS = 14
 
 
@@ -227,8 +228,13 @@ class Tasks:
             for old in list(self._asked)[:-200]:
                 del self._asked[old]
         fields = {k: v for k, v in record.items() if k in SHOWN_FIELDS and v not in (None, "")}
+        # What an approval asks about reaches the app whole: a message to be sent, a setting to be changed, must
+        # be read in full before it is allowed, never cut at 300 characters.
+        whole = "summary" if event == "approval.requested" else ""
         for key, value in fields.items():
-            if isinstance(value, str) and len(value) > 300:
+            if key == whole:
+                fields[key] = value[:APPROVAL_CHARS] if isinstance(value, str) else value
+            elif isinstance(value, str) and len(value) > 300:
                 fields[key] = value[:300] + "…"
             elif isinstance(value, (dict, list)):
                 fields[key] = json.dumps(value, default=str)[:300]

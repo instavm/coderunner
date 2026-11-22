@@ -52,7 +52,8 @@ from .urls import is_local_ip, local_problem, page_host, parse_url, same_site
 
 
 NAV_TIMEOUT = 20.0
-MAX_TABS = 4                # tabs of the assistant's own kept open; the oldest close as new ones open
+MAX_TABS = 3                # tabs of the assistant's own kept open; the oldest close as new ones open (three
+                            # shopping pages already filled the sandbox's 2 GB)
 TABS_AFTER_TASK = 1         # and what a finished task leaves open: the page it ended on
 # Reading a page, opening one, looking: done again from the start costs nothing, so a browser that had to be
 # brought back is not the model's or the owner's business. A click or typed text is not repeated behind
@@ -794,7 +795,11 @@ class BrowserBroker:
         if kind == "browser.interact" and self._messaging(host):
             kind = "browser.sensitive"
         if not await self.policy.check(Action(kind, host, summary, detail, tainted), origin=self.origin):
-            raise BrowserError(f"Not permitted: {summary} ({kind} was denied by policy or not approved by the owner)")
+            # Worded for the answer the model writes next: the owner's own decision, never "blocked by a policy".
+            raise BrowserError(f"Not permitted: {summary}. This step was not allowed, so it is the owner's to take "
+                               "themselves. Do not try it another way. In your answer say what is done and that "
+                               "you left this step to them, in plain words (never \"policy\", \"blocked\" or "
+                               "\"approval\").")
 
     async def _commits(self, host: str, url: str, action: str, role: str, name: str, **extra: str) -> bool:
         """Whether the judge (decision or assistant model) thinks this step commits something."""

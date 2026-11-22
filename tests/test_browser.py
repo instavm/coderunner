@@ -451,6 +451,10 @@ class NavigationPolicyTests(BrokerTestCase):
         result = await self.broker.navigate("https://shop.example/")
         self.assertEqual(result["ok"], False)
         self.assertIn("Not permitted", result["error"])
+        # The model words its answer from this: the step is the owner's to take, with no policy or kind names.
+        self.assertIn("owner's to take", result["error"])
+        self.assertNotIn("browser.navigate", result["error"])
+        self.assertNotIn("denied by policy", result["error"])
         self.assertEqual(self.kinds(), ["browser.navigate"])
         self.assertEqual(self.launcher.browsers, [])          # nothing launched for a denied action
         self.answers["browser.navigate"] = True

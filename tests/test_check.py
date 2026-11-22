@@ -312,6 +312,7 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
 
         async def handle(channel, chat_id, text, origin="", events=None, task="", images=None):
             seen.update(text=text, steps=svc.config.get("agent.max_steps"))
+            svc.store.execute("INSERT INTO memories(text, tags, created) VALUES ('amazon.in SSD search: https://…', '', 1.0)")
             token = current_run.set(SimpleNamespace(conversation=f"{channel}:{chat_id}", events=events, content_tainted=False,
                                                     private_sources=set(), shared=set()))
             try:
@@ -325,6 +326,7 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
                 current_run.reset(token)
             return "The SanDisk 1 TB SSD (₹7,299, https://www.amazon.in/dp/B0S) is in the cart. I stopped at the sign-in page."
         daemon.handle_message = handle
+        svc.store.execute("INSERT INTO memories(text, tags, created) VALUES ('the owner''s own', '', 1.0)")
         job = check_module.CheckJob(daemon)
         self.assertEqual(job.start(["cart"], suite="real"), "")
         await job._job
@@ -338,6 +340,7 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((shown["suite"], shown["real"]["result"]["passed"], check_module.last("real")["suite"]), ("real", 1, "real"))
         self.assertEqual(len(shown["real"]["names"]), 20)
         self.assertEqual(svc.files.roots, [])                                   # no test sites or documents for these
+        self.assertEqual(svc.store.query("SELECT text FROM memories"), [{"text": "the owner's own"}])   # its own are forgotten
         self.assertEqual(job.start(["nope"], suite="real")[:19], "No such check: nope")
 
 

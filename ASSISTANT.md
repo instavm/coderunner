@@ -744,9 +744,29 @@ policy.
 approvals, and the sandbox computer's screen to watch or take over (`coderunner browser computer` gives the
 sandbox that screen).
 
-A task reads as a conversation, not as a list of tool calls: one line says what the assistant is doing now,
-its notes and its plan (a checklist that fills in) are said as it goes, a question waits for an answer, and the
-answer ends with how long it took. Where it works on a web page, a picture of the page is put in the thread
+A task reads as a conversation with a person, not as a list of tool calls. The thread holds what the owner
+asked, what the assistant tells them on purpose while it works (a finding or a partial result, sent with its
+`tell_owner` tool), its plan as a checklist that fills in, its questions and approval requests, pictures of
+pages, and the answer with how long it took. One line says what it is doing now, in the owner's words ("Opening
+booking.com", "Reading the results on the page"), without the names of tools or kinds of control. What the
+model writes beside its tool calls is its own working and is not shown: "The browser didn't respond on the
+first try, so I'll retry" used to be put in the thread. A task that cannot be finished ends with what was done,
+what could not be and what to do next; one that breaks ends with a sentence a person would say, with the cause
+in the audit trail (`task.failed`); one stopped by a restart says so.
+
+Faults are met below the model where doing so is harmless. A page whose process died (Chrome's "Aw, Snap") is
+closed as soon as the browser reports it. A browser call that fails is followed by a new connection and, if a
+new tab still does not answer, by starting Chrome again (the sandbox's own through the daemon); a step that
+only reads (open, read, find, list, look) is then done again and the model sees only its result, while a click
+or typed text is not repeated: the model is told the page was reopened and to look again. No message to the
+model names a protocol method or a timeout. The assistant's own tabs are capped at four, the oldest closed as
+new ones open, and a finished task keeps only the page it ended on: after forty tasks the sandbox's Chrome had
+fourteen pages in a 2 GB machine, the kernel killed one, and no page would open until Chrome was restarted by
+hand. While the daemon itself is away (a restart, sleep) the app keeps what is on screen, says "Reconnecting…",
+tries again quietly and picks everything up when it is back; the desktop app starts a daemon that died, unless
+the owner stopped it with `coderunner down`, and then offers "Start it". The Computer panel says "Starting"
+while the sandbox comes up and offers a button for one that is stopped. No raw error, exception name or
+terminal command is shown anywhere in the app. Where it works on a web page, a picture of the page is put in the thread
 after it opens one, when it asks for approval on one, and at the end: at most 8 a task and 20 seconds apart,
 kept 14 days in `assistant/shots` and served on the owner surface at `/api/shots/<name>`.
 

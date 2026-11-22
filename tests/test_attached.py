@@ -257,7 +257,24 @@ class ApprovalThreadTests(Home):
         [approval] = svc.policy.pending()
         svc.policy.decide(approval.id, True)             # as the app's Allow does: outside the task
         await tasks.running[task["id"]]
-        seen = [(e["event"], e.get("id"), e.get("status")) for e in bus.since(0) if e["type"] == "activity"]
+        # What is asked about reaches the thread whole (a message to send is read in full before it is allowed).
+        long = "Send this to Asha:\n" + "Dear Asha, " + "the rent is due. " * 60
+        again = tasks.start("app:two", "Send it", "owner")
+        daemon.handle_message = lambda *a, events=None, **k: asyncio.sleep(0, "ok")
+        await tasks.running[again["id"]]
+
+        async def asks(channel, chat_id, text, origin="", events=None, task=""):
+            token = current_run.set(SimpleNamespace(events=events, content_tainted=False, private_sources=set(), shared=set()))
+            try:
+                return str(await svc.policy.check(Action("channel.send", "x", long), origin=origin, wait=0.05))
+            finally:
+                current_run.reset(token)
+        daemon.handle_message = asks
+        third = tasks.start("app:three", "Send it", "owner")
+        await tasks.running[third["id"]]
+        asked = [e for e in bus.since(0, "app:three") if e.get("event") == "approval.requested"][0]
+        self.assertEqual((asked["summary"], asked["risk"]), (long, "high"))
+        seen = [(e["event"], e.get("id"), e.get("status")) for e in bus.since(0, "app:one") if e["type"] == "activity"]
         self.assertEqual(seen, [("approval.requested", approval.id, "pending"), ("approval.decided", approval.id, "approved")])
 
 

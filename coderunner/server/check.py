@@ -273,6 +273,9 @@ class CheckJob:
 
         svc.policy.add_listener(approve)
         steps_before = config.get("agent.max_steps", 30)
+        # What its tasks remember (a site's search address saved as a shortcut) is forgotten at the end: a check
+        # leaves the owner's memory as it found it, and a later task is not asked about data the check put there.
+        remembered = (svc.store.one("SELECT MAX(id) AS id FROM memories") or {}).get("id") or 0
         try:
             able = await self._able()
             needs = {need for c in chosen for need in c.needs} if self.suite == "check" else set()
@@ -299,6 +302,8 @@ class CheckJob:
                 await self._one(check, row, run)
         except asyncio.CancelledError:
             self._say("Stopped.")
+            for task_id in list(getattr(self.daemon.tasks, "running", {})):        # its task stops with it
+                self.daemon.tasks.cancel(task_id)
             for row in self.tasks:
                 if row["state"] in ("waiting", "running"):
                     row.update(state="skipped", why="the check was stopped")
@@ -309,6 +314,12 @@ class CheckJob:
                 svc.policy._listeners.remove(approve)
             config.set("browser.allow", allow_before)
             config.set("agent.max_steps", steps_before)
+            with contextlib.suppress(Exception):
+                for row in svc.store.query("SELECT id FROM memories WHERE id > ?", (remembered,)):
+                    if getattr(svc, "memory", None) is not None:
+                        svc.memory.forget(id=row["id"])
+                    else:
+                        svc.store.execute("DELETE FROM memories WHERE id = ?", (row["id"],))
             if shared:
                 with contextlib.suppress(Exception):
                     svc.files.remove_root(str(documents))

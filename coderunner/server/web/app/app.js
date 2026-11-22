@@ -378,9 +378,20 @@ class TaskView {
     const share = e.kind === "data.share";
     // What it holds is said as the policy names it: your files, your memory, your mail.
     const holds = (/holds data from your ([^;]+);/.exec(first) || [])[1] || "files";
-    card.appendChild(richText(el("div", ""), share ? `This task holds data from your ${holds}. Allow it to use that data on ${e.target}?` : first));
-    const step = (share ? rest.join("\n").replace(/^First step: /, "") : rest.join("\n")).trim();
-    if (step) {
+    // A step on a page is asked as a person would ask it: the control's own name, cut where its description
+    // starts, and the site. The whole of what the page calls it is under the question.
+    const act = /^(Click|Double-click|Triple-click) (.+) on ([\w.-]+)$/s.exec(first);
+    const named = act && plainLabel(act[2].replace(/&amp;/g, "&")).split(/, |\s[·|-]\s/)[0];
+    const question = share ? `This task holds data from your ${holds}. Allow it to use that data on ${e.target}?` :
+      act ? `${act[1]} “${named}” on ${act[3].replace(/^www\./, "")}?` : first;
+    card.appendChild(richText(el("div", ""), question));
+    const whole = act && plainLabel(act[2]) !== named ? act[2].replace(/&amp;/g, "&") : "";
+    const step = (share ? rest.join("\n").replace(/^First step: /, "") : [whole, ...rest].filter(Boolean).join("\n")).trim();
+    // What a high-risk step would send or change (a message, a setting, a call) is shown whole, as written:
+    // nothing is allowed on the strength of its first two lines. Anything else is two small lines that open.
+    const grave = e.risk === "high" && !act;
+    if (grave) this.showWhole(card, String(e.summary || ""));
+    else if (step) {
       const more = el("div", "ask-step", step);
       more.title = "Show all of it";
       more.onclick = () => more.classList.toggle("open");
@@ -423,6 +434,30 @@ class TaskView {
     state.approvals.set(e.id, {conversation: state.conversation, card, row});
     if (!state.pending.has(e.id) && e.ts && Date.now() / 1000 - e.ts > 5) closeAsk(e.id, null);
     card.scrollIntoView({block: "nearest", behavior: "smooth"});
+  }
+
+  // What a message, a call or a setting change will be, in full: who it reaches on lines of their own, then
+  // every word as written (it scrolls inside the card when long), and a caution about a recipient the owner
+  // never named set apart under it.
+  showWhole(card, summary) {
+    let rest = summary.includes("\n") ? summary.slice(summary.indexOf("\n") + 1) : "";
+    const check = /\n\n(Check [^\n]+: not in what you asked, nor in your contacts\.)\s*$/.exec(rest);
+    if (check) rest = rest.slice(0, check.index);
+    if (rest.trim()) {
+      const body = el("div", "ask-body");
+      const lines = rest.split("\n");
+      while (lines.length && /^(To|Cc|Bcc|From|Subject|Number|Name): /.test(lines[0])) {
+        const [, label, value] = /^(\w+): (.*)$/.exec(lines.shift());
+        const line = el("div", "ask-field");
+        line.append(el("span", "ask-label", label), el("span", "", value));
+        body.appendChild(line);
+      }
+      if (lines[0] === "Body:") lines.shift();
+      const text = lines.join("\n").replace(/^\n+|\s+$/g, "");
+      if (text) body.appendChild(el("div", "ask-text", text));
+      card.appendChild(body);
+    }
+    if (check) card.appendChild(el("div", "ask-caution", check[1]));
   }
 
   finish(e) {
