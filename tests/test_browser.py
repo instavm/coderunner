@@ -501,6 +501,48 @@ class NavigationPolicyTests(BrokerTestCase):
         self.assertEqual(self.kinds(), ["browser.navigate"])
 
 
+class RenumberedTests(BrokerTestCase):
+    """An element drawn again gets a new number; a step that names the old one still finds it, where that is
+    beyond doubt."""
+
+    PAGE = "https://fares.example/search"
+
+    def page(self, *elements, url=PAGE):
+        self.broker._renumbered("T", {number: {"backend": 100 + number, "role": role, "name": name}
+                                      for number, role, name in elements}, url)
+
+    def test_a_retired_number_finds_the_one_element_with_its_role_and_name_on_the_same_page(self):
+        self.page((11, "button", "Next month"), (12, "button", "Search"), (13, "textbox", "From"))
+        self.page((21, "button", "Next month"), (22, "button", "Search"), (13, "textbox", "From"))   # the calendar drew again
+        self.assertEqual(self.broker._ref("T", 11)["backend"], 121)
+        self.assertEqual(self.broker._ref("T", 12)["backend"], 122)
+        self.assertEqual(self.broker._ref("T", 13)["backend"], 113)                # a number still current is itself
+        said = [e for e in self.audit.tail() if e["event"] == "browser.rebound"]
+        self.assertEqual([(e["ref"], e["label"]) for e in said], [(11, "button Next month"), (12, "button Search")])
+        self.page((31, "button", "Next month"), (32, "button", "Search"), (13, "textbox", "From"))   # and again
+        self.assertEqual(self.broker._ref("T", 11)["backend"], 131)                # still the same button
+
+    def test_it_is_not_guessed_where_two_would_do_none_is_left_or_the_page_is_another(self):
+        self.page((11, "button", "Select"), (12, "button", "Search"), (14, "link", ""))
+        self.page((21, "button", "Select"), (23, "button", "Select"), (24, "link", ""))
+        for number in (11, 12, 14, 99, "x"):            # two candidates; gone; no name to go by; never seen; not a number
+            with self.assertRaisesRegex(BrowserError, "Unknown element"):
+                self.broker._ref("T", number)
+        # The same button's name on another address is another page's button.
+        self.page((41, "button", "Search"))
+        self.page((51, "button", "Search"), url="https://fares.example/results?from=BLR")
+        with self.assertRaisesRegex(BrowserError, "Unknown element"):
+            self.broker._ref("T", 41)
+        # A new document forgets the old numbers altogether.
+        self.page((61, "button", "Pay now"), url=self.PAGE)
+        self.page((71, "button", "Pay now"), url=self.PAGE)
+        self.broker._targets["S"] = "T"
+        self.broker._on_navigated({"frame": {"id": "T", "url": self.PAGE}}, "S")
+        self.page((81, "button", "Pay now"), url=self.PAGE)
+        with self.assertRaisesRegex(BrowserError, "Unknown element"):
+            self.broker._ref("T", 61)
+
+
 class TabTidyTests(BrokerTestCase):
     async def test_the_assistants_older_tabs_close_as_new_ones_open_and_after_a_task(self):
         from coderunner.browser import broker as broker_module

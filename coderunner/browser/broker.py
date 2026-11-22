@@ -73,6 +73,12 @@ def plainly(exc: Exception) -> str:
 NAV_START_WINDOW = 0.5      # how long a click or key press gets to start a navigation
 HANDOFF_WAIT = 600
 SPAWN_WINDOW = 10.0         # popups opened by an action follow its navigation rules for this long
+RETIRED_KEPT = 2000         # element numbers a page no longer has, remembered per tab (see _rebound)
+
+
+def same_page(url: str) -> str:
+    """A page's address without its fragment: where a retired element number may still be meant."""
+    return str(url or "").split("#", 1)[0]
 
 # Web chat clients: anything typed or clicked there could message people or answer
 # an approval request on a paired channel, so every interaction is sensitive.
@@ -231,6 +237,11 @@ class BrowserBroker:
         self._active: str | None = None
         self._opened: set[str] = set()            # tabs the broker opened itself
         self._refs: dict[str, dict[int, dict]] = {}
+        # Numbers a page no longer has, with what they were (role, name, the page's address): an element drawn
+        # again gets a new number, and a step that still names the old one is taken to the new one when the
+        # same page has exactly one element of that role and name (_rebound).
+        self._retired: dict[str, dict[int, tuple[str, str, str]]] = {}
+        self._ref_urls: dict[str, str] = {}
         self._numbers: dict[str, dict] = {}       # tab -> element numbers kept across renderings (render_ax)
         self._lines: dict[str, list[str]] = {}    # tab -> the page as the model last saw it, line by line
         self._read_urls: dict[str, str] = {}      # tab -> the address of the page as the model last saw it
@@ -690,7 +701,8 @@ class BrowserBroker:
         if not target:
             return
         self._forget_session(self._sessions.get(target))
-        for table in (self._refs, self._numbers, self._lines, self._read_urls, self._snapshots, self._shots,
+        for table in (self._refs, self._retired, self._ref_urls, self._numbers, self._lines, self._read_urls,
+                      self._snapshots, self._shots,
                       self._dialogs, self._dismissed, self._blocked,
                       self._committed, self._page_targets, self._spawned, self._new_tabs, self._expected):
             table.pop(target, None)
@@ -969,6 +981,8 @@ class BrowserBroker:
         if target and frame.get("id") == target and not frame.get("parentId"):
             self._committed[target] = frame.get("url", "")
             self._refs.pop(target, None)            # element refs belong to the old document
+            self._retired.pop(target, None)         # and so do the numbers it had retired
+            self._ref_urls.pop(target, None)
             self._lines.pop(target, None)
             if target in self._numbers:             # new numbers continue, so an old one cannot hit a new element
                 self._numbers[target]["ids"] = {}
@@ -1204,8 +1218,21 @@ class BrowserBroker:
         secret = await self._secret_fields(sid, nodes)
         content, refs = render_ax(nodes, url, secret, self._numbers.setdefault(target, {"next": 1, "ids": {}}),
                                   whole=whole)
-        self._refs[target] = refs
+        self._renumbered(target, refs, url)
         return content
+
+    def _renumbered(self, target: str, refs: dict[int, dict], url: str) -> None:
+        """A page read again: its elements as they are now, and the numbers it no longer has kept with what
+        they were."""
+        before, was = self._refs.get(target) or {}, self._ref_urls.get(target, "")
+        retired = self._retired.setdefault(target, {})
+        for number, node in before.items():
+            if number not in refs and node.get("name"):
+                retired[number] = (node.get("role", ""), node.get("name", ""), was)
+        for number in list(retired)[:-RETIRED_KEPT]:
+            del retired[number]
+        self._refs[target] = refs
+        self._ref_urls[target] = same_page(url)
 
     def _seen(self, target: str, url: str, content: str) -> bool:
         """Record the page as the model now knows it; returns whether it differs from what it saw before."""
@@ -1330,7 +1357,29 @@ class BrowserBroker:
         try:
             return self._refs[target][int(ref)]
         except (KeyError, ValueError, TypeError):
+            found = self._rebound(target, ref)
+            if found is not None:
+                return found
             raise BrowserError(f"Unknown element [{ref}] in this tab; take a new snapshot") from None
+
+    def _rebound(self, target: str, ref: Any) -> dict | None:
+        """The element a retired number meant, where that is beyond doubt: still the same page, and exactly one
+        element there with the same role and name. A calendar that draws itself again after "Next month" gave
+        its buttons new numbers, and the rest of a batch written from the first reading failed on "Unknown
+        element" (8 of 13 failed browser steps in a day's local runs). The click that follows is checked as
+        every click is (the step judge, approvals, the label under the pointer): this only finds the element."""
+        try:
+            role, name, url = self._retired[target][int(ref)]
+        except (KeyError, ValueError, TypeError):
+            return None
+        if not name or url != self._ref_urls.get(target):
+            return None
+        same = [node for node in (self._refs.get(target) or {}).values()
+                if node.get("role", "") == role and node.get("name", "") == name]
+        if len(same) != 1:
+            return None
+        self.audit.write("browser.rebound", ref=ref, label=squash(f"{role} {name}")[:100])
+        return same[0]
 
     async def _click(self, ref: int | None, tab: str | None, tainted: bool, element: dict | None = None,
                      clicks: int = 1) -> dict:

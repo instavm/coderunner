@@ -229,6 +229,29 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             fake.script = [{"role": "assistant", "content": "fine"}]
             await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-cut3"), "ok?")
             self.assertNotIn("max_tokens", fake.requests[-1])
+
+    async def test_single_steps_in_a_row_are_pointed_at_one_batch(self):
+        class Clicking(FakeBrowser):
+            async def click(self, *args, **kwargs):
+                return {"ok": True, "url": "https://example.com", "content": "Results 1-10"}
+
+            async def batch(self, *args, **kwargs):
+                return {"ok": True, "url": "https://example.com", "content": "Results 1-10"}
+
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.browser = Clicking("")
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            fake.script = [tool_call("browser_click", {"ref": 1}), tool_call("browser_click", {"ref": 2}),
+                           tool_call("browser_click", {"ref": 3}), tool_call("browser_batch", {"steps": []}),
+                           tool_call("browser_click", {"ref": 4}), {"role": "assistant", "content": "done"}]
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-singles"), "search the flights")
+            results = [m["content"] for m in fake.requests[-1]["messages"] if m.get("role") == "tool"]
+            hinted = ["single steps in a row" in result for result in results]
+            # The second in a row says so; a batch starts the count again.
+            self.assertEqual(hinted, [False, True, False, False, False])
+            self.assertIn("2 single steps in a row", results[1])
             await svc.llm.aclose()
 
     async def test_a_run_of_scrolls_points_at_find(self):

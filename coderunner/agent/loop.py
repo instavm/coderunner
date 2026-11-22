@@ -69,6 +69,12 @@ HANDOVER_HINT = ("\nNote: {count} browser steps in a row failed or changed nothi
                  "numbered steps. browser_task can finish it from screenshots; give it the whole remaining goal.")
 PASSIVE_BROWSER = frozenset({"browser_snapshot", "browser_find", "browser_tabs", "browser_screenshot",
                              "browser_task", "browser_handoff"})
+# Steps sent one at a time when the page was already read: a flight search took three or four clicks in a row,
+# a booking six (22 such steps in a day's local runs), each a model request of ten seconds or more.
+SINGLES_BEFORE_HINT = 2
+SINGLE_ACTIONS = frozenset({"browser_click", "browser_type", "browser_select", "browser_press"})
+BATCH_HINT = ("\nNote: that was {count} single steps in a row. When you can already see the next elements you "
+              "need on this page, send those steps together in one browser_batch.")
 SCROLL_HINT = ("\nNote: {count} scrolls in a row. To find something on this page, browser_find with words you "
                "expect in it (a name, \"₹\", \"Price\") is quicker; browser_snapshot start=<text> reads from there.")
 
@@ -275,6 +281,7 @@ class Agent:
         scrolls = 0
         cuts = 0                                    # replies cut off for length
         limit = 0 if getattr(self.llm, "remote", False) else int(self.svc.config.get("agent.step_tokens", 2048) or 0)
+        singles = 0                                 # single browser actions in a row
         stuck = 0                                   # browser steps in a row that failed or changed nothing
         handover = "browser_task" in self.registry.tools
         for step in range(max_steps):
@@ -354,6 +361,9 @@ class Agent:
                     scrolls = scrolls + 1 if name == "browser_scroll" else 0
                     if scrolls >= SCROLLS_BEFORE_HINT and not failed:
                         result += SCROLL_HINT.format(count=scrolls)
+                    singles = singles + 1 if name in SINGLE_ACTIONS else 0
+                    if singles >= SINGLES_BEFORE_HINT and singles % SINGLES_BEFORE_HINT == 0 and not failed:
+                        result += BATCH_HINT.format(count=singles)
                     if name.startswith("browser_") and name not in PASSIVE_BROWSER:
                         stuck = stuck + 1 if failed or NO_CHANGE in result else 0
                         if handover and stuck == STUCK_BEFORE_HINT:
