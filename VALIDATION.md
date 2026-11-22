@@ -372,9 +372,84 @@ moved to its task screen. One task was given there, a rent increase to work out:
 "Thinking" with a running clock and "Stop", and the answer (three correct figures) came after 2 minutes 15
 seconds, most of it the first read of the system prompt at 69 tokens a second.
 
-Still open: tasks that use the browser or files have not been run in the app with this model, the measurement
-was taken with swap in use, and a second daemon started on a home whose daemon is already running is not
-refused (a stray test daemon answered on the same port for an hour).
+Still open from this run: tasks that use the browser or files have not been run in the app with Bonsai 2 27B
+(the next section runs them with Qwen3.5 9B), and the measurement was taken with swap in use. The second
+daemon on one home is refused since November 22.
+
+### A default install in the app, its core tasks and `coderunner check` (November 22, same Mac)
+
+The home the assistant normally runs from on this Mac (sandbox VM on, the browser on the sandbox's own
+computer, 107,000 files indexed) had its model settings set aside and was opened in the desktop app, which
+started the daemon itself. Each step was photographed over the app's debugging port.
+
+First run. The setup screen came up with Bonsai 2 27B recommended (8.3 GB to download) and three faults:
+
+* the daemon had started Ollama (installed on this Mac for other things) although nothing was set up and this
+  Mac uses llama.cpp. It now starts no runtime before setup;
+* the screen named the other models that fit but gave no way to take one, though Qwen3.5 9B was already on the
+  disk. The planning model's name now opens the list (seconds a step, download or "Installed");
+* a planning model that was already there was reported as "downloaded".
+
+With Qwen3.5 9B chosen ("Nothing to download" beside the 0.6 GB voice model), setup loaded it, passed the four
+checks (6.0, 3.6, 2.2 and 4.2 s), measured 241 tokens a second reading and 19.9 writing (10 s a step, as
+estimated), prepared file search (31 passages a second on the Neural Engine against 18 on the GPU), fetched and
+prepared the voice model, started the daemon again in place and showed the task screen with the computer's
+screen live in its panel. The voice download took about seven minutes on this connection.
+
+Tasks given in the app, with Qwen3.5 9B:
+
+| Task | Result |
+|---|---|
+| A receipt (PNG), a video and a PDF attached; the receipt's total and what the video says | Total right in 47 s. The video's on-screen words were read, its speech was not listened to. |
+| The same video alone, after the fix below | The speech transcribed and the cost given, 14 s |
+| A PDF lease attached: end date and notice | Right, 13 s |
+| A CSV attached, "use Python": best month and total | Right, but 9 min 24 s: an approval nobody answered (5 minutes), then a script that named the host's path. After the fixes: 32 s with one approval. |
+| Wikipedia in the sandbox's browser: a river's length and states | Right, 1 min 56 s, two page pictures in the thread |
+| "Search my files for a rental or lease agreement": file names and notice periods | Four agreements read and tabled, 2 min 13 s; one path the model made up was refused as not a file |
+| Take control of the computer, then back to watching | The panel said "You're in control" and went back |
+
+What those runs changed: each attached file's line now says which tool reads it and that a video's sound is
+not in its frame; the file tools take the sandbox's path for an attached file as well as the host's, and sandbox
+code that names the host's path is given the sandbox's; an approval is one sentence with the step small under
+it, says how it ended (it said "Answered" for one that had timed out), and the status line stops saying
+"Waiting for you" once it is answered.
+
+`coderunner check`, on that install:
+
+| Check | Result | Time | Tool calls |
+|---|---|---|---|
+| answer | passed | 6 s | 0 |
+| picture | passed | 26 s | 0 |
+| document | passed | 11 s | 1 |
+| video | passed | 14 s | 1 |
+| code | passed | 32 s | 1 |
+| files | passed | 86 s | 9 |
+| website | passed | 31 s | 4 |
+| flights | passed | 146 s | 6 |
+| booking | passed (the cheapest flight's passenger page reached, payment never opened) | 222 s | 9 |
+| appliance | passed | 104 s | 12 |
+| errands (a flight search, a website and two documents in one request) | passed, 3 of 3 | 394 s | 22 |
+
+The seven quick ones ran in one go (5 min 18 s with the wait for the test documents to be indexed). Of the
+four long ones, two were run twice: in the first run `appliance` took 396 s and `errands` did not finish in its
+15 minutes, because the check answered only approvals asked under its own origin and the browser asks under
+another, so each of those waited five minutes. That was the check's fault and is fixed; the figures above are
+the second run. After the run the shared folders and `browser.allow` were as before and the test folder was
+gone.
+
+The check also showed the daemon answering nothing for tens of seconds at a time on this index (3.1 GB,
+518,000 pieces). Three reads ran on its event loop: every scan read all indexed files (8 s); the first search
+after a start read every vector (63 s); every indexing pass asked for names without a vector with a read of
+the whole table (13 s). Polled every 0.4 s while the daemon started, a folder was shared and scanned, the
+slowest request took 40 s before and 2.95 s after (1 of 357 over a second).
+
+A second daemon started by hand on the same home now stops at once with "Another CodeRunner daemon is already
+running".
+
+Not covered by these runs: a file dropped on the window or pasted (the same code as the paperclip, which was
+driven through its file input); the system's file dialog itself; files near the 200 MB limit; attaching from a
+paired phone; the check on a text-only model, without the sandbox or on Linux (those paths are in the unit
+tests only); any model but Qwen3.5 9B on these tasks.
 
 ## Not yet validated
 
