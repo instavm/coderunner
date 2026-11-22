@@ -52,6 +52,23 @@ from .urls import is_local_ip, local_problem, page_host, parse_url, same_site
 
 
 NAV_TIMEOUT = 20.0
+MAX_TABS = 4                # tabs of the assistant's own kept open; the oldest close as new ones open
+TABS_AFTER_TASK = 1         # and what a finished task leaves open: the page it ended on
+# Reading a page, opening one, looking: done again from the start costs nothing, so a browser that had to be
+# brought back is not the model's or the owner's business. A click or typed text is not repeated behind
+# anyone's back: the model is told the page was reopened and looks again.
+REPEATABLE = {"open", "navigate", "snapshot", "tabs", "items", "find", "screenshot", "back", "scroll"}
+ATTACH_TIMEOUT = 8.0        # a tab that does not answer in this long is not coming
+
+
+def plainly(exc: Exception) -> str:
+    """A browser fault in the owner's terms: what happened on the page, never how the browser is driven."""
+    text = str(exc)
+    if "timed out" in text:
+        return "The page did not respond in time."
+    if "crashed" in text or "closed" in text or "not running" in text or "Target closed" in text:
+        return "The page stopped responding and was closed. Open it again."
+    return "The browser could not do that on this page."
 NAV_START_WINDOW = 0.5      # how long a click or key press gets to start a navigation
 HANDOFF_WAIT = 600
 SPAWN_WINDOW = 10.0         # popups opened by an action follow its navigation rules for this long
@@ -153,6 +170,7 @@ class BrowserBroker:
     def __init__(self, config, policy, audit, launcher=None, decider=None, chrome=None, sandbox=None):
         self.config = config
         self.page_chars = PAGE_CHARS            # how much of a page is returned at once (more for a larger model)
+        self.restart = None                     # async: start the browser itself again (the sandbox's Chrome)
         self.sandbox = sandbox      # (url, credential) of the sandbox VM, for browser.mode "computer"
         self.policy = policy
         self.audit = audit
@@ -463,12 +481,68 @@ class BrowserBroker:
     async def _run(self, name: str, fields: dict, body: Callable[[], Awaitable[dict]]) -> dict:
         try:
             result = await body()
-        except (BrowserError, CDPError) as exc:
+        except BrowserError as exc:
             result = {"ok": False, "error": str(exc)}
+        except CDPError as first:
+            # A page that crashed (the sandbox ran out of memory under fourteen tabs) or a browser that stopped
+            # answering: brought back here, quietly and within a bounded time, and the step done again where
+            # doing it again is harmless. It used to fail three times, thirty seconds each, in front of the owner.
+            self.audit.write("browser.fault", action=name, error=str(first)[:200])
+            recovered = await self._recover()
+            try:
+                if not (recovered and name in REPEATABLE):
+                    raise first
+                result = await body()
+                self.audit.write("browser.recovered", action=name)
+            except BrowserError as exc:
+                result = {"ok": False, "error": str(exc)}
+            except CDPError as exc:
+                result = {"ok": False, "error": plainly(exc) if not recovered or name in REPEATABLE else
+                          "The page stopped responding and was reopened. Look at it again before going on."}
         extra = result.pop("_audit", {})     # e.g. typed text, only when it is not a secret
         self.audit.write(f"browser.{name}", **fields, **extra, ok=bool(result.get("ok")), error=result.get("error"),
                          page=result.get("url"))
         return result
+
+    async def _recover(self) -> bool:
+        """Bring the browser back after a fault: crashed tabs closed, the connection made again, and if a new
+        tab still does not answer, the browser itself started again (its own computer's Chrome through
+        `restart`, set by the daemon; a browser the broker launched is simply launched anew)."""
+        for step in ("reconnect", "restart"):
+            try:
+                if step == "restart":
+                    if self.restart is None and self.mode == "computer":
+                        return False
+                    if self.restart is not None:
+                        await asyncio.wait_for(self.restart(), 30)
+                await self._shutdown()
+                cdp = await asyncio.wait_for(self._ensure(), 60)
+                probe = (await cdp.send("Target.createTarget", {"url": "about:blank"}, timeout=ATTACH_TIMEOUT))["targetId"]
+                sid = (await cdp.send("Target.attachToTarget", {"targetId": probe, "flatten": True},
+                                      timeout=ATTACH_TIMEOUT))["sessionId"]
+                await cdp.send("Page.enable", None, sid, timeout=ATTACH_TIMEOUT)
+                with contextlib.suppress(CDPError):
+                    await cdp.send("Target.closeTarget", {"targetId": probe}, timeout=5)
+                self.audit.write("browser.brought_back", how=step)
+                return True
+            except (CDPError, BrowserError, asyncio.TimeoutError, OSError) as exc:
+                self.audit.write("browser.recover_failed", how=step, error=str(exc)[:200])
+        return False
+
+    def _on_crashed(self, target: str | None) -> None:
+        """A page's process died (Chrome's "Aw, Snap"): the tab is closed, so the owner never sees it and the
+        next step opens a fresh one, where it used to sit dead on the screen until asked about."""
+        if not target or self._cdp is None:
+            return
+        self.audit.write("browser.tab_crashed", tab=self._tab_ids.get(target))
+        cdp = self._cdp
+        self._forget_target(target)
+
+        async def close() -> None:
+            with contextlib.suppress(CDPError):
+                await cdp.send("Target.closeTarget", {"targetId": target}, timeout=5)
+        with contextlib.suppress(RuntimeError):
+            asyncio.get_running_loop().create_task(close())
 
     async def _ensure(self) -> CDPPipe:
         if self.running():
@@ -510,6 +584,8 @@ class BrowserBroker:
         cdp.on("Page.fileChooserOpened", lambda p, sid: self.audit.write(
             "browser.file_chooser_blocked", tab=self._tab_ids.get(self._targets.get(sid or "", ""))))
         cdp.on("Fetch.requestPaused", self._on_request)
+        cdp.on("Inspector.targetCrashed", lambda _, sid: self._on_crashed(self._targets.get(sid or "")))
+        cdp.on("Target.targetCrashed", lambda p, _: self._on_crashed(p.get("targetId")))
         cdp.on_close(self._on_closed)
         await cdp.send("Target.setDiscoverTargets", {"discover": True})
         # Browser-wide, so every tab (popups and new windows too) is covered before its first request.
@@ -599,7 +675,7 @@ class BrowserBroker:
         sid = (await self._cdp.send("Target.attachToTarget", {"targetId": target, "flatten": True}))["sessionId"]
         self._sessions[target], self._targets[sid] = sid, target
         try:
-            await self._send(sid, "Page.enable")
+            await self._send(sid, "Page.enable", timeout=ATTACH_TIMEOUT)
             await self._send(sid, "Page.setLifecycleEventsEnabled", {"enabled": True})
             await self._send(sid, "Page.setInterceptFileChooserDialog", {"enabled": True})
             # The page behaves as if its window had the focus. Otherwise, whenever the owner works in another
@@ -953,10 +1029,38 @@ class BrowserBroker:
                 return urllib.parse.urljoin(base, url)
         return url
 
+    async def tidy(self, keep: int = TABS_AFTER_TASK) -> int:
+        """Close the assistant's older tabs (after a task). Returns how many were closed."""
+        if not self.running():
+            return 0
+        return await self._trim_tabs(keep)
+
+    async def _trim_tabs(self, keep: int) -> int:
+        """Every task opened its pages in new tabs and none was ever closed: after forty tasks the sandbox's
+        Chrome had 14 page processes in a 2 GB machine, and opening a page timed out. The assistant's own tabs
+        beyond `keep` are closed, oldest first, the one in use last; on its own computer every tab is its own,
+        in the owner's Chrome only those it opened."""
+        try:
+            pages = await self._pages()
+        except Exception:
+            return 0
+        mine = [info["targetId"] for info in pages if self.mode == "computer" or info["targetId"] in self._opened]
+        extra = [target for target in mine if target != self._active][:max(0, len(mine) - keep)]
+        closed = 0
+        for target in extra:
+            with contextlib.suppress(Exception):
+                await self._cdp.send("Target.closeTarget", {"targetId": target}, timeout=5)
+                closed += 1
+            self._forget_target(target)
+        if closed:
+            self.audit.write("browser.tabs_closed", count=closed, kept=len(mine) - closed)
+        return closed
+
     async def _open(self, url: str, tainted: bool) -> dict:
         url, host = await self._vet(self._absolute(url, self._active))
         await self._allow("browser.navigate", host, f"Open {url} in a new tab", tainted, url=url, chosen=True)
         cdp = await self._ensure()
+        await self._trim_tabs(MAX_TABS - 1)
         target = (await cdp.send("Target.createTarget", {"url": "about:blank"}))["targetId"]
         self._opened.add(target)
         self._active = target

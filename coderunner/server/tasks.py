@@ -8,6 +8,7 @@ kept (so a reopened app shows the task as it went) and sent to every app watchin
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import secrets
 import time
@@ -78,6 +79,7 @@ class Tasks:
         self.bus = bus
         self.store = daemon.svc.store
         self.running: dict[str, asyncio.Task] = {}
+        self._asked: dict[str, object] = {}     # approval id -> the thread of the task that asked
         daemon.svc.audit.listeners.append(self._on_audit)
         # A daemon that stopped mid-task left it "running" for ever: its thread says how it ended.
         for row in self.store.query("SELECT id, conversation FROM tasks WHERE status = 'running'"):
@@ -132,11 +134,18 @@ class Tasks:
         except asyncio.CancelledError:
             status, reply = "cancelled", "Stopped."
         except Exception as exc:        # the app shows the failure instead of waiting for ever
-            status, reply = "failed", f"The task failed: {exc}"
+            # Said as a person would say it. What went wrong is in the audit trail for whoever looks.
+            self.daemon.svc.audit.write("task.failed", task=task_id, error=f"{type(exc).__name__}: {exc}"[:400])
+            status, reply = "failed", ("I couldn't finish this: something went wrong on my side partway through. "
+                                       "Anything said above still stands. You can ask again.")
         finally:
             self.running.pop(task_id, None)
             if status == "done" and emit.shots["since"]:
                 await self._capture(emit, 0, again=True)        # how the page stood when it finished
+            browser = getattr(self.daemon.svc, "browser", None)
+            if browser is not None and hasattr(browser, "tidy") and len(self.running) == 0:
+                with contextlib.suppress(Exception):            # the pages it opened are not left to pile up
+                    await asyncio.wait_for(browser.tidy(), 10)
             self.store.execute("UPDATE tasks SET status = ?, reply = ?, finished = ? WHERE id = ?",
                                (status, reply, time.time(), task_id))
             emit({"type": status, "reply": reply})
@@ -207,8 +216,16 @@ class Tasks:
         ctx = current_run.get()
         emit = getattr(ctx, "events", None)
         event = record.get("event", "")
+        if event == "approval.decided" and emit is None:
+            # Answered from the app (or timed out elsewhere): outside the task that asked, so it is put into
+            # that task's thread here. The thread then says how each approval ended when it is opened later.
+            emit = self._asked.pop(record.get("id", ""), None)
         if emit is None or not event.startswith(ACTIVITY):
             return
+        if event == "approval.requested" and record.get("id"):
+            self._asked[record["id"]] = emit
+            for old in list(self._asked)[:-200]:
+                del self._asked[old]
         fields = {k: v for k, v in record.items() if k in SHOWN_FIELDS and v not in (None, "")}
         for key, value in fields.items():
             if isinstance(value, str) and len(value) > 300:

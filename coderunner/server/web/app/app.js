@@ -3,6 +3,8 @@
 import RFB from "./novnc/core/rfb.js";
 
 const $ = (id) => document.getElementById(id);
+// In the desktop app on a Mac the window's own buttons sit over the page's top-left corner.
+if (window.coderunnerShell && /Mac/i.test(navigator.platform || "")) document.documentElement.classList.add("mac-shell");
 const HEADERS = {"Content-Type": "application/json", "X-CodeRunner": "1"};
 
 // The daemon restarts now and then (a setting changed, the Mac slept, it was stopped). While it does not
@@ -192,15 +194,15 @@ function describeTool(name, raw) {
     case "browser_open": case "browser_navigate": return `Opening ${host(a.url)}`;
     case "browser_snapshot": return "Reading the page";
     case "browser_list": return "Reading the results on the page";
-    case "browser_click": return "Clicking";
+    case "browser_click": return "Working on the page";
     case "browser_type": return a.text ? `Typing “${trunc(a.text, 40)}”` : "Typing";
     case "browser_batch": return "Filling in the page";
     case "browser_find": return `Looking for “${trunc(a.text || a.query, 40)}” on the page`;
     case "browser_select": return `Choosing “${trunc(a.option, 40)}”`;
-    case "browser_press": return `Pressing ${a.key}`;
-    case "browser_scroll": return "Scrolling";
+    case "browser_press": return "Working on the page";
+    case "browser_scroll": return "Reading further down the page";
     case "browser_back": return "Going back";
-    case "browser_tabs": return "Checking the open tabs";
+    case "browser_tabs": return "Looking at the open pages";
     case "browser_screenshot": return "Looking at the screen";
     case "browser_handoff": return "Asking you to take over";
     case "browser_task": return `Working in the browser: ${trunc(a.goal || a.task || "", 90)}`;
@@ -214,24 +216,29 @@ function describeTool(name, raw) {
     case "memory_search": return "Checking what I remember";
     case "memory_save": return "Remembering this";
     case "plan_update": return "Updating the plan";
+    case "tell_owner": return "Working";
     case "schedule_create": return "Scheduling it";
     case "send_message": return "Sending a message";
     default: return "Working";
   }
 }
 
+// What was clicked or typed into, as it reads on the page: without the kind of control or the page's own text.
+const plainLabel = (label) => trunc(String(label || "").replace(/^(button|link|option|textbox|searchbox|combobox|checkbox|radio|tab|menuitem|switch|listitem|heading)\s+/i, "")
+  .replace(/\s*\(page text .*$/i, "").replace(/^"(.*)"$/, "$1").replace(/"\s*->.*$/, "").replace(/^"|"$/g, ""), 60);
+
 function describeActivity(e) {
   const ok = e.ok !== false;
   switch (e.event) {
     case "browser.started": return "Started the computer's browser";
     case "browser.open": case "browser.navigate": return ok ? `Opened ${host(e.url || e.page)}` : null;
-    case "browser.click": return e.label ? `Clicked ${trunc(e.label, 80)}` : "Clicked";
-    case "browser.type": return e.label ? `Typed into ${trunc(e.label, 80)}` : "Typed";
+    case "browser.click": return e.label ? `Chose “${plainLabel(e.label)}”` : "Working on the page";
+    case "browser.type": return e.label ? `Filling in “${plainLabel(e.label)}”` : "Filling in the page";
     case "browser.select": return `Chose “${trunc(e.option, 60)}”`;
-    case "browser.press": return `Pressed ${e.key}`;
-    case "browser.click_at": return "Clicked on the screen";
-    case "browser.type_focused": return "Typed";
-    case "browser.scroll": case "browser.wheel": return "Scrolled";
+    case "browser.press": return "Working on the page";
+    case "browser.click_at": return "Working on the page";
+    case "browser.type_focused": return "Filling in the page";
+    case "browser.scroll": case "browser.wheel": return "Reading further down the page";
     case "driver.start": return "Working through the page";
     case "driver.finish": return "Reading what came of it";
     default: return null;
@@ -345,7 +352,7 @@ class TaskView {
       case "note": this.say(markdown(el("div", "note"), e.text)); break;
       case "plan": this.showPlan(e.steps); break;
       case "tool":
-        if (e.name === "plan_update") break;
+        if (e.name === "plan_update" || e.name === "tell_owner") break;
         this.steps += 1;
         this.setNow(describeTool(e.name, e.arguments));
         break;
@@ -369,7 +376,9 @@ class TaskView {
     // One sentence says what is asked; the step itself (a script, a form) is shown small under it.
     const [first, ...rest] = String(e.summary || e.kind).split(/\n+/);
     const share = e.kind === "data.share";
-    card.appendChild(richText(el("div", ""), share ? `This task holds data from your files. Allow it to use that data on ${e.target}?` : first));
+    // What it holds is said as the policy names it: your files, your memory, your mail.
+    const holds = (/holds data from your ([^;]+);/.exec(first) || [])[1] || "files";
+    card.appendChild(richText(el("div", ""), share ? `This task holds data from your ${holds}. Allow it to use that data on ${e.target}?` : first));
     const step = (share ? rest.join("\n").replace(/^First step: /, "") : rest.join("\n")).trim();
     if (step) {
       const more = el("div", "ask-step", step);

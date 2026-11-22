@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 import os
 import pathlib
 import tempfile
@@ -213,6 +214,51 @@ class ProducedTests(Home):
         plain = tasks.start("app:one", "And?", "owner")
         await tasks.running[plain["id"]]
         self.assertEqual([e["type"] for e in bus.since(0)][-1], "done")
+
+
+class EndingTests(Home):
+    async def test_a_task_that_breaks_ends_with_a_human_explanation_and_the_cause_goes_to_the_audit_trail(self):
+        svc = Svc()
+        daemon = FakeDaemon(svc)
+
+        async def handle(channel, chat_id, text, origin="", events=None, task=""):
+            raise KeyError("targetId")
+        daemon.handle_message = handle
+        bus = tasks_module.EventBus(svc.store)
+        tasks = tasks_module.Tasks(daemon, bus)
+        task = tasks.start("app:one", "Plan the trip", "owner")
+        await tasks.running[task["id"]]
+        ended = tasks.get(task["id"])
+        self.assertEqual((ended["status"], ended["reply"]),
+                         ("failed", "I couldn't finish this: something went wrong on my side partway through. "
+                                    "Anything said above still stands. You can ask again."))
+        self.assertNotIn("KeyError", json.dumps(bus.since(0)))
+        self.assertIn("KeyError", (svc.tmp / "audit.jsonl").read_text())
+
+
+class ApprovalThreadTests(Home):
+    async def test_a_thread_says_how_each_approval_ended_also_when_it_was_answered_from_the_app(self):
+        from coderunner.safety.policy import Action, current_run
+        from types import SimpleNamespace
+        svc = Svc()
+        daemon = FakeDaemon(svc)
+
+        async def handle(channel, chat_id, text, origin="", events=None, task=""):
+            token = current_run.set(SimpleNamespace(events=events, content_tainted=False, private_sources=set(), shared=set()))
+            try:
+                return str(await svc.policy.check(Action("channel.send", "x", "Send the note"), origin=origin, wait=5))
+            finally:
+                current_run.reset(token)
+        daemon.handle_message = handle
+        bus = tasks_module.EventBus(svc.store)
+        tasks = tasks_module.Tasks(daemon, bus)
+        task = tasks.start("app:one", "Send it", "owner")
+        await asyncio.sleep(0.05)
+        [approval] = svc.policy.pending()
+        svc.policy.decide(approval.id, True)             # as the app's Allow does: outside the task
+        await tasks.running[task["id"]]
+        seen = [(e["event"], e.get("id"), e.get("status")) for e in bus.since(0) if e["type"] == "activity"]
+        self.assertEqual(seen, [("approval.requested", approval.id, "pending"), ("approval.decided", approval.id, "approved")])
 
 
 class RestartTests(Home):

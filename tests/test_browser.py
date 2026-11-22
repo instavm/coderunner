@@ -497,6 +497,101 @@ class NavigationPolicyTests(BrokerTestCase):
         self.assertEqual(self.kinds(), ["browser.navigate"])
 
 
+class TabTidyTests(BrokerTestCase):
+    async def test_the_assistants_older_tabs_close_as_new_ones_open_and_after_a_task(self):
+        from coderunner.browser import broker as broker_module
+        for n in range(8):                                  # eight pages opened one after another, none closed
+            await self.broker.open(f"https://site{n}.example/")
+        browser = self.launcher.browser
+        open_now = set(browser.pages)
+        # The oldest of its own were closed as it went; the owner's first tab is not its to close.
+        self.assertLessEqual(len(open_now & self.broker._opened), broker_module.MAX_TABS)
+        self.assertTrue(browser.sent("Target.closeTarget"))
+        self.assertIn("P1", open_now)
+        active = self.broker._active
+        self.assertGreater(await self.broker.tidy(), 0)
+        self.assertLessEqual(len(set(browser.pages) & self.broker._opened), broker_module.TABS_AFTER_TASK)
+        self.assertIn(active, browser.pages)                # the page it ended on stays
+        self.assertIn("P1", browser.pages)
+        self.assertNotIn("P1", [p["targetId"] for p in browser.sent("Target.closeTarget")])
+        self.assertTrue([e for e in self.audit.tail(80) if e["event"] == "browser.tabs_closed"])
+
+
+class RecoveryTests(BrokerTestCase):
+    """A browser that fails once is brought back below the model: nothing of it reaches the task's thread."""
+
+    async def test_a_page_read_that_fails_once_is_done_again_and_the_model_sees_only_the_page(self):
+        from coderunner.browser.cdp import CDPError
+        await self.broker.open("https://shop.example/")
+        real, calls = self.broker._snapshot, []
+        recovered = []
+
+        async def recover():
+            recovered.append(True)
+            return True
+        self.broker._recover = recover
+
+        async def flaky(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise CDPError("Page.enable timed out after 30s")
+            return await real(*args, **kwargs)
+        self.broker._snapshot = flaky
+        result = await self.broker.snapshot()
+        self.assertEqual((result["ok"], len(calls), recovered), (True, 2, [True]))
+        events = [e["event"] for e in self.audit.tail(20)]
+        self.assertIn("browser.fault", events)
+        self.assertIn("browser.recovered", events)
+        self.assertNotIn("timed out", json.dumps(result))
+
+    async def test_a_click_is_not_repeated_and_what_the_model_is_told_names_no_plumbing(self):
+        from coderunner.browser import broker as broker_module
+        from coderunner.browser.cdp import CDPError
+        await self.broker.open("https://shop.example/")
+        tried = []
+
+        async def recover():
+            return True
+        self.broker._recover = recover
+
+        async def dead(*args, **kwargs):
+            tried.append(1)
+            raise CDPError("Input.dispatchMouseEvent timed out after 30s")
+        self.broker._click = dead
+        result = await self.broker.click(1)
+        self.assertEqual((result["ok"], len(tried)), (False, 1))                # not clicked twice behind anyone's back
+        self.assertEqual(result["error"], "The page stopped responding and was reopened. Look at it again before going on.")
+        # Nothing brought it back: the fact, in the owner's terms.
+        self.broker._recover = lambda: asyncio.sleep(0, False)
+        self.broker._snapshot = dead
+        gone = await self.broker.snapshot()
+        self.assertEqual(gone["error"], "The page did not respond in time.")
+        for text in (result["error"], gone["error"], broker_module.plainly(CDPError("Target closed")),
+                     broker_module.plainly(CDPError("Protocol error (Runtime.evaluate)"))):
+            self.assertNotRegex(text, r"Page\.|Input\.|Runtime|CDP|timed out after|\d+s\b")
+
+    async def test_a_crashed_tab_is_closed_at_once_and_a_stuck_browser_is_started_again(self):
+        await self.broker.open("https://shop.example/")
+        browser = self.launcher.browser
+        target = self.broker._active
+        self.broker._on_crashed(target)                     # Chrome's "Aw, Snap": told by the browser, not waited for
+        await asyncio.sleep(0.05)
+        self.assertIn(target, [p["targetId"] for p in browser.sent("Target.closeTarget")])
+        self.assertIsNone(self.broker._active)
+        self.assertIn("browser.tab_crashed", [e["event"] for e in self.audit.tail(20)])
+        # The whole browser not answering: its own way of starting again is used, then a new tab is tried.
+        restarted = []
+
+        async def restart():
+            restarted.append(True)
+        self.broker.restart = restart
+        launches = len(self.launcher.browsers)
+        self.assertTrue(await self.broker._recover())
+        self.assertGreater(len(self.launcher.browsers), launches)
+        self.assertEqual([e["how"] for e in self.audit.tail(20) if e["event"] == "browser.brought_back"], ["reconnect"])
+        self.assertEqual(restarted, [])                     # the gentler step was enough
+
+
 class InteractionPolicyTests(BrokerTestCase):
     browser_config = {"allow": ["shop.example"]}
     rules = [{"kind": "browser.interact", "target": "shop.example", "decision": "allow"}]

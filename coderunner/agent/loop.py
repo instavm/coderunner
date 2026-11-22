@@ -30,6 +30,9 @@ How you work:
 - The owner's shared folders are searchable with files_search (text, code, documents, images, audio, video).
 - Save lasting preferences and facts with memory_save. Never store secrets.
 - When a website task ends on a page whose address holds the whole search (places, dates, filters, sorting), save that address with memory_save as a shortcut, without session or tracking parameters, e.g. "booking.com one-way flight results: https://...". Next time open it directly with the new values instead of filling the forms again.
+- {owner} reads this as a conversation with a person. What reaches them: your final message, what you send with tell_owner, your plan, and your questions. Text you write beside a tool call is not shown.
+- tell_owner is for a finding or a partial result worth knowing before the end, in a sentence or two ("Three non-stop flights that day; the cheapest is IndiGo at ₹4,800. Checking a second site."). Never tell {owner} about tools, clicks, element numbers, errors, timeouts, retries, or what you are about to try (not "The page did not respond, I'll retry").
+- If something cannot be finished, end with what you did, what could not be done and what {owner} can do next, in plain words: no error texts, no technical names, and never ask {owner} to restart or fix the browser or the computer.
 - Be brief: answers may be read on a phone."""
 # The instructions and the tool list (~3,000 tokens) stay the same for every task, so the runtime keeps them
 # read: the first request of a task then reads ~25 new tokens instead of all of it (0.9 s instead of 48 s
@@ -99,6 +102,7 @@ class RunContext:
     shared: set[str] = field(default_factory=set)
     images: list[tuple[str, str]] = field(default_factory=list)
     plan: list[dict] = field(default_factory=list)      # written by the model with plan_update
+    told: int = 0                                       # things said to the owner on purpose (tell_owner)
     # Called with each step as it happens (tool calls, notes, the plan), for an app showing the task live.
     events: Callable[[dict], None] | None = None
 
@@ -268,7 +272,13 @@ class Agent:
             try:
                 reply = await self.llm.chat(messages, tools=self.registry.schemas(), think=think)
             except LLMError as exc:
-                final = f"I couldn't get an answer from the model: {exc}"
+                self.svc.audit.write("agent.model_failed", error=str(exc)[:300])
+                # Said as a person would: what stopped it and what to do, never the runtime's own error.
+                final = (f"I had to stop here. {exc}" if getattr(self.llm, "remote", False) else
+                         "I had to stop here: the model on this computer stopped answering. Nothing was changed "
+                         "by this; ask again in a moment.")
+                if ctx.told:
+                    final += " What I had found so far is above."
                 break
             if not reply["tool_calls"]:
                 if not reply["content"] and not nudged:
@@ -278,9 +288,10 @@ class Agent:
                     continue
                 final = reply["content"] or "(no response)"
                 break
+            # What the model writes beside its tool calls is its own working: kept in the conversation it reads,
+            # not shown. The thread is told things only through tell_owner, the plan, questions and the answer
+            # ("The browser didn't respond on the first try, so I'll retry" used to be put in front of the owner).
             messages.append({"role": "assistant", "content": reply["content"], "tool_calls": reply["tool_calls"]})
-            if (reply["content"] or "").strip():
-                ctx.emit({"type": "note", "text": reply["content"].strip()})
             failed = False
             for call in reply["tool_calls"]:
                 function = call.get("function", {})

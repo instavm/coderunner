@@ -1,4 +1,5 @@
 import json
+import json
 import unittest
 
 import httpx
@@ -72,6 +73,51 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         _, calls = parse_text_tool_calls('{"name": "rm_rf", "arguments": {}}', {"run_python"})
         self.assertEqual(calls, [])
+
+
+class ThreadTests(unittest.IsolatedAsyncioTestCase):
+    """The owner reads a conversation: the answer, what the model tells them on purpose, never its working."""
+
+    async def test_a_note_reaches_the_thread_only_through_the_explicit_update(self):
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.sandbox = FakeSandbox()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            said = []
+            fake.script = [
+                {"role": "assistant", "content": "The page didn't respond on the first try, so I'll retry.",
+                 "tool_calls": [tool_call("run_python", {"code": "print(1)"})["tool_calls"][0]]},
+                tool_call("tell_owner", {"text": "Three non-stop flights that day; the cheapest is IndiGo at ₹4,800."}),
+                {"role": "assistant", "content": "IndiGo 6E 204 at ₹4,800 is the cheapest."}]
+            ctx = RunContext(conversation="t-thread", events=said.append)
+            reply = await Agent(svc, svc.llm, svc.registry).run(ctx, "Cheapest flight?")
+            self.assertEqual(reply, "IndiGo 6E 204 at ₹4,800 is the cheapest.")
+            notes = [e["text"] for e in said if e["type"] == "note"]
+            self.assertEqual(notes, ["Three non-stop flights that day; the cheapest is IndiGo at ₹4,800."])
+            self.assertFalse([e for e in said if "retry" in json.dumps(e) and e["type"] != "tool"])
+            # The model itself still reads what it wrote, and is told how the owner sees things.
+            sent = fake.requests[-1]["messages"]
+            self.assertIn("so I'll retry", json.dumps(sent))
+            self.assertIn("tell_owner is for a finding or a partial result", sent[0]["content"])
+            self.assertIn("never ask the owner to restart or fix the browser", sent[0]["content"])
+
+    async def test_a_tool_that_fails_and_a_model_that_stops_answering_are_said_without_plumbing(self):
+        with FakeOpenAI() as fake:
+            class Broken:
+                async def start_session(self, session):
+                    raise RuntimeError("the sandbox image has no kernel")
+            svc = Svc()
+            svc.sandbox = Broken()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            ctx = RunContext(conversation="t-fail")
+            told = await svc.registry.invoke("run_python", {"code": "1"}, ctx)
+            self.assertEqual(told, "Error: the sandbox image has no kernel")           # no tool's name to repeat
+        svc.llm = LLM("http://127.0.0.1:9/v1", "test", timeout=2)
+        ended = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-down"), "Hello?")
+        self.assertEqual(ended, "I had to stop here: the model on this computer stopped answering. Nothing was changed "
+                                "by this; ask again in a moment.")
 
 
 class AgentLoopTests(unittest.IsolatedAsyncioTestCase):

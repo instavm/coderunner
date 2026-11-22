@@ -159,6 +159,7 @@ class Daemon:
             return
         finally:
             self.sandbox_starting = False
+        await self._vm_timezone()
         if self.config.get("browser.mode") == "computer":
             # The owner sees the computer's screen as soon as the app opens, not only once a task needs it.
             for _ in range(30):
@@ -167,6 +168,30 @@ class Daemon:
                 await asyncio.sleep(2)
             with contextlib.suppress(Exception):
                 await self.svc.sandbox.desktop(start=True)
+
+    async def _restart_vm_browser(self) -> None:
+        """Stop Chrome on the sandbox's desktop; its relay starts a fresh one on the next connection. Used by
+        the browser broker when Chrome no longer answers (after the VM ran out of memory, new tabs hung)."""
+        argv = self.driver.exec_argv(["pkill", "-f", "google-chrome|/opt/google/chrome/chrome"], tty=False)
+        if argv:
+            await asyncio.to_thread(subprocess.run, argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+            await asyncio.sleep(1.5)
+            self.svc.audit.write("browser.vm_chrome_restarted")
+
+    async def _vm_timezone(self) -> None:
+        """The sandbox's clock in the owner's time zone: they watch that screen, and it showed UTC."""
+        import re
+        zone = self.config.get("owner.timezone") or ""
+        if not zone:
+            with contextlib.suppress(OSError):
+                zone = os.path.realpath("/etc/localtime").split("zoneinfo/", 1)[-1]
+        if not re.fullmatch(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+){0,2}", zone or ""):
+            return
+        with contextlib.suppress(Exception):            # a nicety: never in the way of starting
+            argv = self.driver.exec_argv(["sh", "-c", f"[ -e /usr/share/zoneinfo/{zone} ] && ln -sf /usr/share/zoneinfo/{zone} "
+                                                      f"/etc/localtime && echo {zone} > /etc/timezone"], tty=False)
+            if argv:
+                await asyncio.to_thread(subprocess.run, argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
 
     async def _restart_embedding(self) -> bool:
         """Start the embedding server again when it has gone (one restart at a time)."""
@@ -244,6 +269,8 @@ class Daemon:
                                     ActionCheck.from_config(self.config, audit, **runtime), chrome=svc.chrome,
                                     sandbox=(url, paths.api_token()))
 
+        if self.config.get("browser.mode") == "computer":
+            svc.browser.restart = self._restart_vm_browser      # what the broker falls back to when Chrome is stuck
         if claude is not None:
             # A model with room to read gets more of each page at once, and links whole enough to cite: a local
             # 9B model is given 12,000 characters and addresses cut to 60.

@@ -273,6 +273,13 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("the answer says it could not be done", realworld.grade(cart, nothing, visited, [], [], added)[1])
         self.assertIn("the answer says it could not be done",
                       realworld.grade(task, "I couldn't complete the comparison: none is listed.\n" + good, visited, [], [])[1])
+        # Stopped by the approval for the very step the task was to stop before: that is the stop asked for.
+        reserve = next(t for t in realworld.TASKS if t.name == "reserve")
+        blocked = [{"kind": "browser.sensitive", "summary": 'Click button "I\'ll reserve" on booking.com', "allowed": False}]
+        said = "I couldn't complete the reservation step: the Reserve click needs your approval. Dumas Guest House, total ₹10,117, https://www.booking.com/hotel/in/x"
+        state, why, _ = realworld.grade(reserve, said, ["https://www.booking.com/hotel/in/x"], blocked, [], ['link "Dumas Guest House"'])
+        self.assertEqual((state, why[-41:]), ("passed", "stopped at the approval for the next step"))
+        self.assertEqual(realworld.grade(reserve, said, ["https://www.booking.com/hotel/in/x"], [], [], ['link "Dumas"'])[0], "failed")
         self.assertEqual((realworld.host_of("https://m.amazon.in/x"), realworld.host_of("https://www.gov.co.uk/y"),
                           realworld.host_of("booking.com/hotel")), ("amazon.in", "gov.co.uk", "booking.com"))
 

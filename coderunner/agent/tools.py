@@ -89,7 +89,8 @@ class ToolRegistry:
             result = await tool.handler(arguments, ctx)
         except Exception as exc:
             self.svc.audit.write("tool.error", tool=name, error=str(exc))
-            return f"Error: {name} failed: {exc}"
+            # Worded as what happened, without the tool's name: the model repeats what it is told.
+            return f"Error: {exc}"
         text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
         limit = int(getattr(self.svc.llm, "tool_output_chars", 0) or self.svc.config.get("agent.tool_output_chars", 12000))
         if len(text) > limit:
@@ -677,9 +678,21 @@ def plan_tools(svc) -> list[Tool]:
         ctx.plan = steps
         return "Plan saved." if steps else "Plan cleared."
 
+    async def tell(args, ctx):
+        text = str(args.get("text") or "").strip()
+        if not text:
+            return "Nothing was said."
+        ctx.told += 1
+        ctx.emit({"type": "note", "text": text[:1200]})
+        return "The owner has been told."
+
     step = {"type": "object", "properties": {"step": STR, "status": {"type": "string", "enum": ["todo", "doing", "done"]}},
             "required": ["step"]}
-    return [Tool("plan_update", "Write or update the plan for a task with several steps: a short list of steps, "
+    return [Tool("tell_owner", "Tell the owner something in the task's thread while you work: a finding, a partial "
+                 "result, a choice you made. One or two sentences in plain words. Not for what you are about to do, "
+                 "and never about tools, errors or retries.",
+                 _params({"text": STR}, ["text"]), tell),
+            Tool("plan_update", "Write or update the plan for a task with several steps: a short list of steps, "
                  "each todo, doing or done. It is shown to you at every step.",
                  _params({"steps": {"type": "array", "items": step}}, ["steps"]), update)]
 

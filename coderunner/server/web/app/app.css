@@ -100,8 +100,13 @@ button.check-row:hover .check-what { color: var(--accent); }
 .answer.failed { border-color: var(--danger); }
 .answer a, .note a { color: var(--accent); }
 .md-table-wrap { overflow-x: auto; margin: 8px 0; white-space: normal; }
-.md-table { border-collapse: collapse; font-size: 13.5px; }
-.md-table th, .md-table td { text-align: left; padding: 6px 18px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+.md-table { border-collapse: collapse; font-size: 13.5px; min-width: 100%; }
+.md-table th, .md-table td { text-align: left; padding: 7px 18px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top;
+  overflow-wrap: normal; word-break: normal; }
+.md-table th:last-child, .md-table td:last-child { padding-right: 0; }
+.md-table td:first-child { white-space: nowrap; font-weight: 550; }
+/* A link in a table is one line: the site and the start of its path, the rest on hover. */
+.md-table a.link { display: inline-block; max-width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 .md-table th { color: var(--muted); font-weight: 600; font-size: 12.5px; }
 .md-table tr:last-child td { border-bottom: 0; }
 .md { white-space: normal; }
@@ -187,6 +192,7 @@ button.check-row:hover .check-what { color: var(--accent); }
 /* expanded screen */
 #shell.expanded #computer { position: fixed; inset: 0; z-index: 10; background: #0d0d0c; }
 #shell.expanded .panel-head { padding: 10px 16px; color: #ecebe6; }
+.mac-shell #shell.expanded .panel-head { padding-left: 92px; }      /* clear of the window's close, minimise and zoom */
 #shell.expanded .panel-head .muted { color: #9b988f; }
 #shell.expanded .icon-btn { background: #272725; border-color: #3a3935; color: #ecebe6; }
 #shell.expanded #screenWrap { flex: 1; aspect-ratio: auto; margin: 0 16px 16px; }
