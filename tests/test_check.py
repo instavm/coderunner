@@ -64,7 +64,7 @@ class CheckTests(unittest.IsolatedAsyncioTestCase):
         day = sample.target_day(site.today).isoformat()
         cheap, evening = sites.cheapest("BLR", "DEL", day), sites.evening("BLR", "DEL", day)
         fares = "; ".join(f"{f['airline']} {f['price']}" for f in cheap)
-        papers = "Covered until 14 March 2030. Service: 1800 266 1880."
+        papers = "Covered until 14 March 2030. Service: 1800 555 0199."
         library = "It closes at 14:00 on Sundays and a DVD is ₹15 a day late."
         late = f"{evening['airline']} {evening['number']} at ₹{evening['price']}"
         return {"answer": "391", "picture": "The total is Rs 1,280.", "document": "It ends on 28 February 2027; two months' notice.",

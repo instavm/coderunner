@@ -98,10 +98,10 @@ class Checks(unittest.TestCase):
         self.assertFalse(tasks.check_library("Closes 15:00; fee 15", self.site)[0])
 
     def test_documents(self):
-        self.assertTrue(tasks.check_documents("Covered until 14 March 2030. Call 1800-266-1880.", self.site)[0])
-        self.assertTrue(tasks.check_documents("Until 2030-03-14; Kelvin Care 1800 266 1880", self.site)[0])
-        self.assertFalse(tasks.check_documents("Until 14 March 2027; call 1800 266 1880", self.site)[0])
-        self.assertFalse(tasks.check_documents("Until March 2030; call 1800 103 4455", self.site)[0])
+        self.assertTrue(tasks.check_documents("Covered until 14 March 2030. Call 1800-555-0199.", self.site)[0])
+        self.assertTrue(tasks.check_documents("Until 2030-03-14; Kelvin Care 1800 555 0199", self.site)[0])
+        self.assertFalse(tasks.check_documents("Until 14 March 2027; call 1800 555 0199", self.site)[0])
+        self.assertFalse(tasks.check_documents("Until March 2030; call 1800 555 0177", self.site)[0])
 
 
 class MeterTests(unittest.IsolatedAsyncioTestCase):

@@ -73,8 +73,8 @@ def check_library(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
 
 def check_documents(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
     until = re.search(r"2030", answer) and re.search(r"\bmar(ch)?\b|\b0?3[/-]2030|2030-03", answer, re.I)
-    phone = "18002661880" in re.sub(r"[\s-]", "", answer)
-    missing = [what for what, ok in (("cover until March 2030", until), ("service line 1800 266 1880", phone)) if not ok]
+    phone = "18005550199" in re.sub(r"[\s-]", "", answer)
+    missing = [what for what, ok in (("cover until March 2030", until), ("service line 1800 555 0199", phone)) if not ok]
     return (not missing, "both facts" if not missing else "missing " + ", ".join(missing))
 
 

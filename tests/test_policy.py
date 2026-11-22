@@ -34,7 +34,7 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
                                       for kind in ("connector.send", "system.setting", "phone.call")]}}
         policy = make_policy(every)
         for action in (Action("connector.send", "mail:a@example.com", "send"), Action("system.setting", "volume", "set"),
-                       Action("phone.call", "9845012345", "call")):
+                       Action("phone.call", "4155550142", "call")):
             self.assertIs(policy.evaluate(action), Decision.ASK, action.kind)      # an allow rule does not reach them
             self.assertEqual(action.risk(), "high")
         # Reading or drafting mail is not leave to send it; nor is a setting or a call open until its connector is.
@@ -44,7 +44,7 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
             Action("connector.send", "mail:a@example.com", "send")), Decision.DENY)
         bare = make_policy({"connectors": {"enabled": ["calendar"]}})
         self.assertIs(bare.evaluate(Action("system.setting", "volume", "set")), Decision.DENY)
-        self.assertIs(bare.evaluate(Action("phone.call", "9845012345", "call")), Decision.DENY)
+        self.assertIs(bare.evaluate(Action("phone.call", "4155550142", "call")), Decision.DENY)
 
     def test_connectors_need_enabling(self):
         policy = make_policy({"connectors": {"enabled": ["calendar"]}})

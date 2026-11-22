@@ -59,13 +59,13 @@ class NativeTests(unittest.IsolatedAsyncioTestCase):
         await self.registry.invoke("mail_send", {**args, "to": "Asha@Example.com"}, self.ctx("email asha@example.com"))
         self.assertNotIn("Check ", self.asked[-1].summary)
         self.runner.stdout = {"contacts": [{"name": "Ravi Kumar", "emails": ["ravi@example.org"], "email_labels": ["work"],
-                                            "phones": ["+91 98450 12345"], "phone_labels": ["mobile"]}], "total": 1}
+                                            "phones": ["+1 415 555 0142"], "phone_labels": ["mobile"]}], "total": 1}
         ctx = self.ctx("send Ravi the invoice")
         await self.registry.invoke("contacts_find", {"name": "Ravi"}, ctx)
         await self.registry.invoke("mail_send", {**args, "to": "ravi@example.org"}, ctx)
         self.assertNotIn("Check ", self.asked[-1].summary)
-        await self.registry.invoke("phone_call", {"number": "098450 12345", "name": "Ravi"}, ctx)
-        self.assertEqual(self.asked[-1].summary, "Call 09845012345 (Ravi) from this Mac. FaceTime asks you to confirm, "
+        await self.registry.invoke("phone_call", {"number": "(415) 555-0142", "name": "Ravi"}, ctx)
+        self.assertEqual(self.asked[-1].summary, "Call 4155550142 (Ravi) from this Mac. FaceTime asks you to confirm, "
                                                  "and you do the talking.")
         await self.registry.invoke("phone_call", {"number": "+1 415 555 0100"}, ctx)
         self.assertIn("Check +14155550100: not in what you asked", self.asked[-1].summary)
@@ -87,9 +87,9 @@ class NativeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.asked), asks)                         # reading them needs no approval
 
     def test_addresses_and_numbers_are_compared_in_one_form(self):
-        self.assertEqual(handles("Mail Asha <Asha@Example.com>, or call +91 98450-12345 / (080) 4112 3456 before 5."),
-                         {"asha@example.com", "9845012345", "8041123456"})
-        self.assertEqual(handle("+91 98450 12345"), handle("098450-12345"))
+        self.assertEqual(handles("Mail Asha <Asha@Example.com>, or call +1 415-555-0142 / (212) 555 0187 before 5."),
+                         {"asha@example.com", "4155550142", "2125550187"})
+        self.assertEqual(handle("+1 415 555 0142"), handle("(415) 555-0142"))
         self.assertEqual(handles("Flat 12B, rent 42000, invoice 4471, on 14 Nov 2026"), set())
 
 

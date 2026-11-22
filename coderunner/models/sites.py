@@ -453,7 +453,7 @@ class Sites:
                             "<h2>Popular topics</h2><p><a href='/kelvin/service'>Book a repair visit</a> · "
                             "<a href='/kelvin/register'>Register your product</a> · <a href='/kelvin/products'>All "
                             "products and care guides</a> · <a href='/kelvin/warranty'>Warranty terms</a></p>"
-                            "<p>Kelvin Care: 1800 266 1880 (toll free, 8 am to 8 pm, all days)</p>")
+                            "<p>Kelvin Care: 1800 555 0199 (toll free, 8 am to 8 pm, all days)</p>")
 
     async def kelvin_search(self, request: Request):
         self._visit(request)
@@ -478,7 +478,7 @@ class Sites:
 <tr><td>Wipe the door seal</td><td>every week</td></tr><tr><td>Check the spray arms turn freely</td><td>every month</td></tr>
 </table><h2>Troubleshooting</h2><p><b>Rattling during the eco programme:</b> make sure the lower spray arm clicks into
 place and nothing hangs below the bottom basket.</p><p><b>White film on glasses:</b> top up the rinse aid and descale.</p>
-<p>Still need help? Call Kelvin Care on 1800 266 1880.</p>""")
+<p>Still need help? Call Kelvin Care on 1800 555 0199.</p>""")
 
 
 KELVIN_NAV = (("", "Support"), ("products", "Products"), ("service", "Book a repair"), ("register", "Register a product"),
@@ -548,7 +548,7 @@ Product: Dishwasher, Series 4 (DW-412)
 Kelvin warrants this appliance for 2 years from the date of purchase against defects in materials and
 workmanship. Keep your purchase invoice: it is your proof of the purchase date.
 
-Service and repairs: call Kelvin Care on 1800 266 1880 (toll free, 8 am to 8 pm, all days),
+Service and repairs: call Kelvin Care on 1800 555 0199 (toll free, 8 am to 8 pm, all days),
 or book a visit at kelvin-appliances.example/service.
 """,
     "Manuals/kelvin-fridge-warranty-card.txt": """KELVIN APPLIANCES — WARRANTY CARD
@@ -556,13 +556,13 @@ Product: FrostFree refrigerator, 260 L (RF-260)
 Purchased: 2 January 2024
 
 Comprehensive warranty: 1 year from the date of purchase. Compressor: 10 years.
-Refrigerator service: call 1800 103 4455.
+Refrigerator service: call 1800 555 0177.
 """,
     "Home/lease-2025.md": """# Flat lease — 3B, Lakeside Apartments
 - Start: 1 June 2025, 24 months (ends 31 May 2027)
 - Rent ₹38,000 a month, due by the 5th; deposit ₹1,50,000
 - Notice period: 2 months
-- Landlord: phone 98450 11223
+- Landlord: phone 415 555 0163
 """,
     "Travel/goa-trip.md": """# Goa, 19–23 December 2025
 - Flights booked: BLR → GOX 19 Dec 07:10, return GOX → BLR 23 Dec 18:40

@@ -150,13 +150,13 @@ class SafetyTests(unittest.TestCase):
 
     def test_a_call_is_dialled_for_the_owner_and_short_numbers_are_theirs_to_dial(self):
         call = tools(None)["phone_call"]
-        self.assertEqual(call.build({"number": "+91 98450 12345"}), ["+919845012345"])
-        self.assertEqual(call.build({"number": "(080) 4112-3456"}), ["08041123456"])
-        self.assertEqual(call.describe({"number": "+91 98450 12345", "name": "the plumber"}),
-                         "Call +919845012345 (the plumber) from this Mac. FaceTime asks you to confirm, and you do the talking.")
-        self.assertEqual((call.action, call.target({"number": "98450 12345"}), call.who({"number": "98450 12345"})),
-                         ("phone.call", "9845012345", ["9845012345"]))
-        for bad in ("112", "911", "100", "1800", "call me", "+91 98450 12345 ext 4; rm", "tel:123456789", ""):
+        self.assertEqual(call.build({"number": "+1 415 555 0142"}), ["+14155550142"])
+        self.assertEqual(call.build({"number": "(212) 555-0187"}), ["2125550187"])
+        self.assertEqual(call.describe({"number": "+1 415 555 0142", "name": "the plumber"}),
+                         "Call +14155550142 (the plumber) from this Mac. FaceTime asks you to confirm, and you do the talking.")
+        self.assertEqual((call.action, call.target({"number": "415 555 0142"}), call.who({"number": "415 555 0142"})),
+                         ("phone.call", "4155550142", ["4155550142"]))
+        for bad in ("112", "911", "100", "1800", "call me", "+1 415 555 0142 ext 4; rm", "tel:123456789", ""):
             with self.assertRaises(ValueError, msg=bad):
                 call.build({"number": bad})
         self.assertIn("'tel:' + argv[0]", macos.PHONE_CALL)
