@@ -47,6 +47,28 @@ COMMIT_CRITERIA = {
 }
 
 
+# Steps already judged, shown to a chat model before the one it is asked about (each as a turn of its own, in
+# the layout describe() gives). A small model asked cold leans to "commit": Fara1.5 4B, which judges while it
+# drives the browser on Macs where the planner cannot stay loaded beside it, called 43 of 73 harmless steps
+# committing (a calendar's "Previous month", "Search"), and the owner was asked each time. With these it calls
+# 2 of 73 so, and still misses none of 57 committing ones (tests/approval_eval.py).
+COMMIT_EXAMPLES = (
+    ('Site: trains.example\nPage path: /search\nAction: click button "Find trains"\n'
+     'Text near the element: From Pune; To Mumbai', "safe"),
+    ('Site: shop.example\nPage path: /checkout\nAction: click button "Place order"', "commit"),
+    ('Site: trains.example\nPage path: /search\nAction: click button "Next month"\nText near the element: calendar',
+     "safe"),
+    ('Site: mail.example\nPage path: /compose\nAction: click button "Send"', "commit"),
+    ('Site: trains.example\nPage path: /results\nAction: click link "Choose this fare"', "safe"),
+    ('Site: bank.example\nPage path: /settings/security\nAction: click switch "Two-factor authentication"', "commit"),
+    ('Site: shop.example\nPage path: /p/123\nAction: click button "Add to basket"', "safe"),
+    ('Site: forum.example\nPage path: /t/881\nAction: type and press Enter textbox "Write a reply"\n'
+     'Text to type: "Thanks, that worked"', "commit"),
+    ('Site: shop.example\nPage path: /\nAction: type and press Enter searchbox "Search products"\n'
+     'Text to type: "usb cable"', "safe"),
+)
+
+
 def describe(site: str, path: str, action: str, role: str, name: str, *, title: str = "", typed: str = "",
              nearby: str = "") -> str:
     """A browser step as the judge sees it."""
@@ -87,8 +109,10 @@ class DecisionModel:
         api = config.get("models.decision_api") or ("chat" if model == chat else "systemone")
         return cls(base_url, model, api=api, api_key=api_key or config.get("models.api_key") or "")
 
-    async def probability(self, state: str, question: str, criteria: dict[str, str], positive: set[str]) -> float:
-        """Probability that the answer is one of the positive criteria keys."""
+    async def probability(self, state: str, question: str, criteria: dict[str, str], positive: set[str],
+                          examples: tuple = ()) -> float:
+        """Probability that the answer is one of the positive criteria keys. examples: (state, key) pairs a chat
+        model is shown answered first (a decision model has its own training for this and is not shown them)."""
         if self.api == "systemone":
             response = await self._client.post(f"{self.base_url}/systemone", json={
                 "model": self.model, "state": state,
@@ -102,13 +126,18 @@ class DecisionModel:
         # such as Bonsai 2 resume only from there). Before, a 27B on a laptop re-read ~250 tokens, 4 s a step.
         task = {"question": question,
                 "options": [{"label": label, "key": key, "description": criteria[key]} for label, key in labels.items()]}
+        letter = {key: label for label, key in labels.items()}
+        # The examples come before the state, so they are read once and kept like the instructions.
+        shown = [turn for text, key in examples if key in letter
+                 for turn in ({"role": "user", "content": json.dumps({"state": text})},
+                              {"role": "assistant", "content": letter[key]})]
         # A plain letter, not JSON: forcing a quote as the first token skewed a model's choice in testing.
         response = await self._client.post(f"{self.base_url}/chat/completions", json={
             "model": self.model, "temperature": 0, "max_tokens": 8,
             # No reasoning: Ollama reads reasoning_effort, llama.cpp reads chat_template_kwargs.
             "reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False},
             "messages": [{"role": "system", "content": f"{SYSTEM}\n{json.dumps(task)}"},
-                         {"role": "user", "content": json.dumps({"state": state})}]})
+                         *shown, {"role": "user", "content": json.dumps({"state": state})}]})
         response.raise_for_status()
         text = (response.json()["choices"][0]["message"].get("content") or "").strip().strip('"\'*.` ')
         if text[:1] not in labels or (len(text) > 1 and text[1].isalnum()):
@@ -122,10 +151,11 @@ class DecisionModel:
 class ActionCheck:
     """Judges whether a browser step commits something."""
 
-    def __init__(self, model: DecisionModel, *, threshold: float = 0.7, audit=None):
+    def __init__(self, model: DecisionModel, *, threshold: float = 0.7, audit=None, examples: tuple = COMMIT_EXAMPLES):
         self.model = model
         self.threshold = threshold
         self.audit = audit
+        self.examples = examples
 
     @classmethod
     def from_config(cls, config, audit=None, **runtime) -> "ActionCheck | None":
@@ -138,7 +168,8 @@ class ActionCheck:
         """True when the model thinks the step commits something, cannot tell, or cannot be reached."""
         start = time.monotonic()
         try:
-            probability = await self.model.probability(state, COMMIT_QUESTION, COMMIT_CRITERIA, {"commit", "unclear"})
+            probability = await self.model.probability(state, COMMIT_QUESTION, COMMIT_CRITERIA, {"commit", "unclear"},
+                                                       examples=self.examples)
         except Exception as exc:  # fail closed: the owner is asked
             self._audit(error=str(exc)[:200], commits=True, seconds=round(time.monotonic() - start, 2))
             return True

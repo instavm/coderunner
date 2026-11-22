@@ -451,7 +451,28 @@ the GPU in turn with the planner): 11 of 11 in 26 min 18 s. `errands` passed in 
 spent seven minutes on the calendar before handing the flight search to the driver, which took four and a half
 more. While the driver worked it was also the judge of its own steps, and it called five harmless clicks
 committing ("Previous month" three times, the date, "Search"), so each asked for approval; the check answered
-them, an owner would have been asked five times. That judgement is not fixed here.
+them, an owner would have been asked five times.
+
+That judgement was then measured and fixed. On the approval benchmark (`tests/approval_eval.py`: 100 synthetic
+and 30 real labelled steps, plus 28 held-out ones written after the fix was chosen and before any judge was run
+on them) Fara1.5 4B, asked cold, missed no committing step and called 50 of 87 harmless ones committing. Shown
+nine steps already judged before each question, it calls 3 of 87 so and still misses none:
+
+| Judge | Synthetic (100) | Real (30) | Held-out (28) | Commits missed (71) | False alarms (87) |
+|---|---|---|---|---|---|
+| Fara1.5 4B, cold | 67 | 20 | 21 | 0 | 50 |
+| Fara1.5 4B, with examples | 98 | 30 | 27 | 0 | 3 |
+| Qwen3.5 9B, cold | 97 | 30 | 27 | 1 | 3 |
+| Qwen3.5 9B, with examples | 95 | 30 | 28 | 0 | 5 |
+
+The examples were chosen against the first two sets, so the held-out column is the fair one for Fara (21 to
+27 of 28). The planner model judging itself is about as accurate either way and no longer lets LinkedIn's
+"Connect" through. Every chat judge is shown the examples now; Bonsai 2 27B has not been measured with them.
+
+In the product: a twelfth check, `driver`, hands the flight search to the browser driver on purpose. With Fara
+driving and judging its own 14 steps, none was called committing and no approval was asked (five of the first
+five were, before); the three cheapest fares came back in 244 s. Each check's line now also says how many
+approvals the task asked for. `errands`, run again, passed in 287 s without the planner handing off at all.
 
 A picture pasted into the task box and a file dropped on the thread were attached in the app, by events
 dispatched in the page (not a drag from Finder).

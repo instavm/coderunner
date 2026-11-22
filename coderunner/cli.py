@@ -290,7 +290,8 @@ def _print_check(result: dict) -> int:
     print(f"{result['date']}  {result['model']}")
     for task in result["tasks"]:
         took = f"{task['seconds']} s" if task.get("seconds") is not None else ""
-        print(f"  {task['state']:<8}{task['name']:<11}{took:>7}  {task['why']}")
+        asked = f" ({task['approvals']} approvals asked)" if task.get("approvals") else ""
+        print(f"  {task['state']:<8}{task['name']:<11}{took:>7}  {task['why']}{asked}")
     print(f"{result['passed']} of {result['ran']} passed" + (f", {result['skipped']} skipped" if result["skipped"] else ""))
     return 0 if result.get("ok") else 1
 
@@ -909,8 +910,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="Show hardware and environment checks").set_defaults(func=cmd_doctor)
     p = sub.add_parser("check", help="Do the core tasks once on this install, as the app would, and say which worked")
     p.add_argument("names", nargs="*", help="only these (answer, picture, document, video, code, files, website, "
-                                            "flights, booking, appliance, errands)")
-    p.add_argument("--long", action="store_true", help="also the long ones: flights, booking, appliance, errands")
+                                            "flights, booking, appliance, errands, driver)")
+    p.add_argument("--long", action="store_true", help="also the long ones: flights, booking, appliance, errands, driver")
     p.add_argument("--last", action="store_true", help="show the last run's result instead of running")
     p.set_defaults(func=cmd_check)
 

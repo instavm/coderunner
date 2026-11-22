@@ -5,7 +5,8 @@ the sandbox, the browser it would really use), against test sites and test files
 answer can be checked without anyone reading it: a plain answer, a picture, a document, a video with speech
 and a sheet worked on in the sandbox (all attached, as in the app), the owner's own documents found by search,
 a website read, and with --long the long ones (a flight search through forms, a booking taken to the page
-before payment, documents then a website, three errands in one request).
+before payment, documents then a website, three errands in one request, and the flight search again by the
+browser driver from screenshots, where one is set up).
 
 For the run only: a folder of test documents is shared and indexed, the test sites' address may be browsed,
 and approvals its own tasks ask for are answered (allowed, except a step that would pay). All three are put
@@ -148,6 +149,10 @@ CHECKS = [
                      "DVD. 3. From my documents: until what date my dishwasher is covered, counting any extended warranty, "
                      "and the number to call for service."),
           check_errands, needs=("search", "browser"), long=True),
+    Check("driver", "a flight search done from screenshots by the browser driver",
+          lambda r: ("Hand this whole task to the browser driver with browser_task, and tell me what it reports. "
+                     + SAMPLE["flights"].prompt(r.site)),
+          lambda a, r: sample.check_flights(a, r.site), needs=("browser", "driver"), long=True, tool="browser_task"),
 ]
 
 
@@ -172,6 +177,7 @@ class CheckJob:
         self.tasks: list[dict] = []
         self.result: dict | None = None
         self._job: asyncio.Task | None = None
+        self._asked = 0                     # approvals the current task asked for (an owner would have been asked)
 
     def public(self) -> dict:
         return {"state": self.state, "lines": self.lines[-KEEP:], "tasks": self.tasks,
@@ -196,7 +202,7 @@ class CheckJob:
         chosen = [c for c in CHECKS if (c.name in names if names else long or not c.long)]
         self.state, self.lines, self.result = "running", [], None
         self.tasks = [{"name": c.name, "what": c.what, "state": "waiting", "why": "", "seconds": None, "steps": None,
-                       "conversation": ""} for c in chosen]
+                       "approvals": None, "conversation": ""} for c in chosen]
         self._job = asyncio.get_running_loop().create_task(self._run(chosen))
         return ""
 
@@ -221,6 +227,7 @@ class CheckJob:
             "sandbox": "" if sandbox else "the sandbox is not running",
             "browser": "" if browser is not None else "no browser is set up",
             "search": "" if getattr(files, "embedder", None) is not None else "file search is not set up",
+            "driver": "" if getattr(svc, "driver", None) is not None else "no browser driver is set up",
         }
 
     # ---- the run -----------------------------------------------------------------
@@ -239,6 +246,7 @@ class CheckJob:
             asking = str(getattr(current_run.get(), "conversation", ""))
             if approval.origin != "check" and not asking.startswith("app:check-"):
                 return
+            self._asked += 1
             allow = not PAYS.search(approval.summary.split("\n")[0])
             with contextlib.suppress(KeyError):
                 svc.policy.decide(approval.id, allow, decided_by="check")
@@ -319,7 +327,7 @@ class CheckJob:
         conversation = f"app:check-{check.name}-{secrets.token_hex(3)}"
         row.update(state="running", conversation=conversation)
         self._say(f"{check.name}: {check.what}…")
-        start, since = time.monotonic(), tasks.bus.latest()
+        start, since, self._asked = time.monotonic(), tasks.bus.latest(), 0
         task = tasks.start(conversation, check.prompt(run), "check", attachments=ids)
         job = tasks.running.get(task["id"])
         limit = LONG_S if check.long else QUICK_S
@@ -340,5 +348,6 @@ class CheckJob:
             passed, why = False, f"still running after {limit // 60} minutes"
             run.tools = [e.get("name", "") for e in tasks.bus.since(since, conversation) if e.get("type") == "tool"]
         row.update(state="passed" if passed else "failed", why=why, seconds=round(time.monotonic() - start),
-                   steps=len(run.tools))
-        self._say(f"  {'passed' if passed else 'FAILED'} in {row['seconds']} s, {row['steps']} steps: {why}")
+                   steps=len(run.tools), approvals=self._asked)
+        asked = f", {self._asked} approval{'s' if self._asked != 1 else ''} asked" if self._asked else ""
+        self._say(f"  {'passed' if passed else 'FAILED'} in {row['seconds']} s, {row['steps']} steps{asked}: {why}")

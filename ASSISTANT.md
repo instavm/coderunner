@@ -395,7 +395,7 @@ picking dates and filters, running code, saving notes) runs without prompts.
 
 | Risk | Control |
 | --- | --- |
-| Committing actions: paying, booking, placing orders or bids, sending or posting, inviting, deleting, cancelling, changing account settings, granting access | Always a one-time approval showing exactly what will happen; "always allow" is not offered. In the browser a model judges every click, typed entry and Enter in its page context: a small decision model when one is installed (`models.decision`, e.g. tev1 or clef-flash via Ollama's decision API), otherwise the assistant's own model. If the judge cannot answer, you are asked. Payment and password fields, web chat clients and labels too long to show are always treated as committing, whatever the judge says. |
+| Committing actions: paying, booking, placing orders or bids, sending or posting, inviting, deleting, cancelling, changing account settings, granting access | Always a one-time approval showing exactly what will happen; "always allow" is not offered. In the browser a model judges every click, typed entry and Enter in its page context: a small decision model when one is installed (`models.decision`, e.g. tev1 or clef-flash via Ollama's decision API), otherwise the assistant's own model. A chat model asked as the judge is first shown nine steps already judged (a search, a calendar's next month, an order, a message sent...), because small models asked cold call harmless steps committing. If the judge cannot answer, you are asked. Payment and password fields, web chat clients and labels too long to show are always treated as committing, whatever the judge says. |
 | Leaking your data | Injected instructions can only leak your data when one task has both read your private data (memories, mail, calendar, notes, contacts) and read third-party content. In such a task, the first time data could leave towards a destination (typing into a site, opening a URL the model wrote, running code with open network access) you approve sharing with that destination once for the task. Links the page itself offers are not model-written URLs. |
 | Prompt injection from web pages, mail, notes, other people, sandbox output | Untrusted output is wrapped as `<untrusted>`, screened by the decision model when one is installed, and **taints** the run. A tainted run cannot reuse your standing grants for committing or lasting actions: messages, connector writes, schedules, deleting memories and sandbox egress ask again. Memories it saves are kept as *unverified* and are recalled later as untrusted data. Schedules created by a tainted run keep running tainted; MCP clients keep what they read for 30 minutes. |
 | The model approves its own actions | Approvals are decided only through the owner API (CLI, web UI, paired channel). The model never sees an approval endpoint. |
@@ -473,7 +473,7 @@ at 1440 x 900 (one screenshot pixel per CSS pixel, also on a Retina screen) whil
 three most recent screenshots kept, under its own system prompt word for word.
 
 Where the driver and the assistant's model do not both fit in memory, they take turns: the assistant's
-model is unloaded while the driver works (the step judge asks the driver meanwhile) and loaded again
+model is unloaded while the driver works (the step judge asks the driver meanwhile, with the same worked examples: without them Fara1.5 4B asked the owner about 6 harmless steps in 10) and loaded again
 after. Each turn costs a model load (Fara1.5-4B 10-20 s, Bonsai 2 27B 4-19 s on an M3 Pro) and the
 assistant's model reading its conversation again. Estimated from memory needs:
 
@@ -851,11 +851,13 @@ sandbox's own computer, or Chrome), with test files and test websites made for t
 | `booking` (long) | a booking taken to the page before payment | the cheapest flight's passenger page was reached, the payment page never |
 | `appliance` (long) | a document, then the maker's website | the answer is the guide's, and the guide was opened |
 | `errands` (long) | three errands in one request: a flight search, a website, the documents | all three are answered |
+| `driver` (long) | the flight search again, handed to the browser driver, which works from screenshots | the three cheapest fares are named, and `browser_task` was used |
 
 `coderunner check` runs the first seven (about five minutes with Qwen3.5 9B on an 18 GB M3 Pro), `--long`
 adds the rest, names run only those, and `--last` prints the last result (kept in `assistant/check.json`). A
 task whose need is not met here is skipped with the reason (a model that reads text only, no speech to text,
-the sandbox down, no browser, no file search). The exit code is 0 when everything that ran passed. In the app
+the sandbox down, no browser, no file search, no browser driver). Each task's line also says how many
+approvals it asked for: the check answers them, an owner would have been asked. The exit code is 0 when everything that ran passed. In the app
 the same thing is "Check" at the foot of the task list: one line per task with a tick or a cross and the time
 it took, and a click on a line opens that task's thread.
 

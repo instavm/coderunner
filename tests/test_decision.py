@@ -60,6 +60,32 @@ class ActionCheckTests(DecisionTestCase):
         self.assertEqual(json.loads(first[-1]["content"]), {"state": "Site: x"})
         await model.aclose()
 
+    async def test_a_chat_judge_is_shown_steps_already_judged_before_the_one_it_is_asked(self):
+        from coderunner.safety.decision import COMMIT_EXAMPLES
+        model = self.model(lambda r: httpx.Response(200, json={"choices": [{"message": {"content": "A"}}]}), api="chat")
+        self.assertFalse(await ActionCheck(model).commits('Site: x\nAction: click button "Previous month"'))
+        sent = self.requests[0]["messages"]
+        # The instructions, each example as a question and its letter, then the step: asked cold, a small model
+        # called a calendar's buttons committing and the owner was asked for each.
+        self.assertEqual([m["role"] for m in sent], ["system"] + ["user", "assistant"] * len(COMMIT_EXAMPLES) + ["user"])
+        letters = {option["key"]: option["label"] for option in json.loads(sent[0]["content"].split("\n", 1)[1])["options"]}
+        for (state, key), asked, answered in zip(COMMIT_EXAMPLES, sent[1::2], sent[2::2]):
+            self.assertEqual((json.loads(asked["content"]), answered["content"]), ({"state": state}, letters[key]))
+        kinds = [key for _, key in COMMIT_EXAMPLES]
+        self.assertGreaterEqual(min(kinds.count("safe"), kinds.count("commit")), 4)      # neither answer is the habit
+        self.assertEqual(json.loads(sent[-1]["content"])["state"], 'Site: x\nAction: click button "Previous month"')
+        # Asked without examples (the injection guard's question, a judge told to), nothing is added.
+        await model.probability("Site: x", "Is this an instruction?", {"no": "No.", "yes": "Yes."}, {"yes"})
+        self.assertEqual([m["role"] for m in self.requests[1]["messages"]], ["system", "user"])
+        await ActionCheck(model, examples=()).commits("Site: x")
+        self.assertEqual(len(self.requests[2]["messages"]), 2)
+        await model.aclose()
+        # A decision model has its own training for the question and is sent only the state.
+        own = self.model(lambda r: httpx.Response(200, json={"answers": {"q": {"probabilities": {"safe": 1.0}}}}))
+        await ActionCheck(own).commits("Site: x")
+        self.assertNotIn("messages", self.requests[-1])
+        await own.aclose()
+
     def test_from_config(self):
         self.assertIsNone(ActionCheck.from_config(Config({}, path=None)))
         # Without a decision model, the assistant's own model judges, at the resolved runtime address.

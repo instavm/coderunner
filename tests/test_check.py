@@ -69,7 +69,7 @@ class CheckTests(unittest.IsolatedAsyncioTestCase):
         late = f"{evening['airline']} {evening['number']} at ₹{evening['price']}"
         return {"answer": "391", "picture": "The total is Rs 1,280.", "document": "It ends on 28 February 2027; two months' notice.",
                 "video": "He comes on Thursday at 4:30; the visit costs 600 rupees.", "code": "May was highest; 299,600 in all.",
-                "files": papers, "website": library, "flights": fares, "booking": f"{cheap[0]['number']} at ₹{cheap[0]['price']}",
+                "files": papers, "website": library, "flights": fares, "driver": fares, "booking": f"{cheap[0]['number']} at ₹{cheap[0]['price']}",
                 "appliance": "Descale it every 3 months.", "errands": f"{late}. {library} {papers}"}[name]
 
     async def handle(self, channel, chat_id, text, origin="", events=None, task="", images=None):
@@ -77,8 +77,9 @@ class CheckTests(unittest.IsolatedAsyncioTestCase):
         self.seen.append((name, origin, [line.split(" (")[0][2:] for line in text.splitlines() if line.startswith("- ")],
                           list(self.svc.config.get("browser.allow"))))
         site = self.site
-        if name in ("code", "video"):
-            events({"type": "tool", "name": {"code": "run_python", "video": "file_listen"}[name], "arguments": {}})
+        if name in ("code", "video", "driver"):
+            events({"type": "tool", "name": {"code": "run_python", "video": "file_listen", "driver": "browser_task"}[name],
+                    "arguments": {}})
         if name == "booking":
             best = sites.cheapest("BLR", "DEL", sample.target_day(site.today).isoformat())[0]
             site.visits.append(f"/flights/checkout?flight={best['number'].replace(' ', '')}")
@@ -154,9 +155,14 @@ class CheckTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_long_ones_are_asked_for_and_a_booking_must_stop_before_payment(self):
         shown = await self.run_check(long=True)
-        self.assertEqual([t["name"] for t in shown["tasks"]][7:], ["flights", "booking", "appliance", "errands"])
-        self.assertTrue(all(t["state"] == "passed" for t in shown["tasks"]), shown["tasks"])
-        self.assertEqual(shown["tasks"][-1]["why"], "3 of 3 errands")
+        self.assertEqual([t["name"] for t in shown["tasks"]][7:], ["flights", "booking", "appliance", "errands", "driver"])
+        # The driver's task is skipped where no driver is set up, and run through browser_task where one is.
+        self.assertEqual((shown["tasks"][-1]["state"], shown["tasks"][-1]["why"]), ("skipped", "no browser driver is set up"))
+        self.assertTrue(all(t["state"] == "passed" for t in shown["tasks"][:-1]), shown["tasks"])
+        self.svc.driver = object()
+        driven = await self.run_check(["driver"])
+        self.assertEqual([(t["state"], t["steps"]) for t in driven["tasks"]], [("passed", 1)])
+        self.assertEqual(shown["tasks"][-2]["why"], "3 of 3 errands")
         original = self.handle
 
         async def pays(channel, chat_id, text, origin="", events=None, task="", images=None):
@@ -189,12 +195,14 @@ class CheckTests(unittest.IsolatedAsyncioTestCase):
                 current_run.reset(token)
             return "391"
         self.daemon.handle_message = handle
-        await self.run_check(["answer"])
+        shown = await self.run_check(["answer"])
+        self.assertEqual(shown["tasks"][0]["approvals"], 3)             # what an owner would have been asked
+        self.assertIn("3 approvals asked", shown["lines"][-2])
         self.assertEqual(asked, {"sandbox": True, "pay": False, "other": False, "browser": True})    # another task's is the owner's
 
     async def test_a_check_is_not_started_twice_or_without_a_model_or_for_a_name_it_does_not_have(self):
         self.assertEqual(self.job.start(["nope"]), "No such check: nope. There are: answer, picture, document, video, code, "
-                                                   "files, website, flights, booking, appliance, errands.")
+                                                   "files, website, flights, booking, appliance, errands, driver.")
         self.daemon.tasks.running["x"] = object()
         self.assertEqual(self.job.start(), "A task is running; the check waits for the model to be free.")
         self.daemon.tasks.running.clear()
@@ -218,7 +226,7 @@ class CheckTests(unittest.IsolatedAsyncioTestCase):
                                      base_url="http://127.0.0.1:8224") as client:
             self.assertEqual((await client.get("/api/check")).status_code, 401)
             first = (await client.get("/api/check", headers=admin)).json()
-            self.assertEqual((first["state"], first["result"], len(first["names"])), ("idle", None, 11))
+            self.assertEqual((first["state"], first["result"], len(first["names"])), ("idle", None, 12))
             bad = await client.post("/api/check", json={"names": ["nope"]}, headers=admin)
             self.assertEqual((bad.status_code, bad.json()["error"][:19]), (409, "No such check: nope"))
             with mock.patch.object(check_module.fixtures, "Sites", side_effect=make):
