@@ -588,7 +588,7 @@ class FileIndex:
         """Keep the index current for as long as the daemon runs."""
         if self.embedder is not None:
             await self.embedder.warm()
-        await asyncio.to_thread(self.vectors.load)
+        await self.vectors.ready()
         watch: asyncio.Task | None = None
         watched: list[pathlib.Path] | None = None
         try:

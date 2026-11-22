@@ -70,6 +70,10 @@ SCHEMA = [
         DELETE FROM file_names_src WHERE id = old.id; END""",
     "CREATE INDEX IF NOT EXISTS files_digest ON files(digest)",
     "CREATE INDEX IF NOT EXISTS files_inode ON files(inode)",
+    # The names still to be embedded, asked for on every indexing pass: without this the question read the
+    # whole table of pieces, 13 s with 518,000 of them, and the daemon answered nothing meanwhile.
+    "CREATE INDEX IF NOT EXISTS files_names_waiting ON file_chunks(id) "
+    "WHERE modality = 'name' AND code IS NULL AND embedding IS NULL",
 ]
 # Columns added after a table was first created; they fail harmlessly once present.
 MIGRATIONS = [

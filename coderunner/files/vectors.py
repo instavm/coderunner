@@ -82,9 +82,23 @@ class VectorIndex:
         self.sample: dict[str, list[Sequence[float]]] = {}
         self._groups: dict[int, list[int]] | None = None     # positions of each modality, rebuilt on change
         self._grouped = 0
+        self._loading = None            # the lock of ready()
 
     def __len__(self) -> int:
         return len(self.ids) - len(self.dead)
+
+    async def ready(self) -> None:
+        """Loaded, without holding the event loop: read off it, and once however many ask. The first search
+        after the daemon started read every code on the loop (63 s with 518,000 pieces), beside the indexer
+        reading them too, and nothing else was answered until it had."""
+        if self.loaded:
+            return
+        import asyncio
+        if self._loading is None:
+            self._loading = asyncio.Lock()
+        async with self._loading:
+            if not self.loaded:
+                await asyncio.to_thread(self.load)
 
     def load(self) -> None:
         """Read every code from disk. Built aside and swapped in whole, so a search never sees half of it."""

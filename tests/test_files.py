@@ -109,6 +109,26 @@ class FileIndexTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(readers and all(thread is not threading.main_thread() for thread in readers))
         self.assertFalse([c for c in shared.call_args_list if "FROM files f" in c.args[0]])
 
+    async def test_the_names_still_to_embed_are_found_by_an_index_and_vectors_are_read_once_off_the_loop(self):
+        import threading
+        # Asked on every pass: without an index of its own the question read every piece (13 s with 518,000).
+        for sql in ("SELECT c.id FROM file_chunks c JOIN files f ON f.path = c.path WHERE c.modality = 'name' "
+                    "AND c.code IS NULL AND c.embedding IS NULL LIMIT 5",
+                    "SELECT 1 AS x FROM file_chunks WHERE modality = 'name' AND code IS NULL AND embedding IS NULL LIMIT 1"):
+            plan = " ".join(row["detail"] for row in self.store.query("EXPLAIN QUERY PLAN " + sql))
+            self.assertIn("USING INDEX files_names_waiting", plan)
+        index, threads = self.index(), []
+        real = index.vectors.load
+
+        def load():
+            threads.append(threading.current_thread())
+            real()
+        index.vectors.load = load
+        await asyncio.gather(index.vectors.ready(), index.vectors.ready(), index.vectors.ready())
+        await index.vectors.ready()
+        self.assertEqual(len(threads), 1)                                   # however many ask
+        self.assertIsNot(threads[0], threading.main_thread())               # and never on the event loop
+
     async def test_only_shared_non_secret_files_are_indexed_and_readable(self):
         index = self.index()
         result = await index.index_once()

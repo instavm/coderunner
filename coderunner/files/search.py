@@ -304,8 +304,7 @@ class Searcher:
         that has it."""
         if self.embedder is None:
             return {}
-        if not self.vectors.loaded:
-            self.vectors.load()
+        await self.vectors.ready()
         if not len(self.vectors):
             return {}
         code_prefix = getattr(self.embedder, "code_prefix", "") if CODE_PROMPT else ""
