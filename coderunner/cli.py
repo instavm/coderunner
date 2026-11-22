@@ -528,6 +528,39 @@ def cmd_audit(args, config: Config) -> int:
 
 # ---- models ------------------------------------------------------------------
 
+def cmd_claude(args, config: Config) -> int:
+    """Remote mode: the planner on Anthropic's API with the owner's key. Not private, and said so."""
+    from .models import remote
+    if args.action == "status":
+        now = remote.active(config)
+        print(f"Remote mode is on: {now['name']} on Anthropic's API. {remote.WARNING}" if now else
+              "Remote mode is off: the model runs on this computer."
+              + (" An Anthropic key is kept." if remote.key() else ""))
+        return 0
+    try:
+        if args.action == "on":
+            if args.key_file:
+                remote.keep_key_file(args.key_file)
+            elif not remote.key():
+                remote.keep_key(getpass.getpass("Anthropic API key (not shown): "))
+            if _daemon_up(config):
+                _admin(config, "POST", "/api/remote", {"action": "on", "model": args.model})
+            else:
+                remote.turn_on(config, args.model)
+            print(f"Remote mode is on: {remote.MODELS[args.model]}.\n{remote.WARNING}\n"
+                  "File search and voice stay on this computer. `coderunner claude off` goes back to the local model.")
+        else:
+            if _daemon_up(config):
+                _admin(config, "POST", "/api/remote", {"action": "off", "forget": args.forget})
+            else:
+                remote.turn_off(config, forget=args.forget)
+            print("Remote mode is off: the model runs on this computer." + (" The key was deleted." if args.forget else ""))
+    except (ValueError, RuntimeError) as exc:
+        print(str(exc).split(": ", 1)[-1] if str(exc).startswith("400") else exc)
+        return 1
+    return 0
+
+
 def cmd_models(args, config: Config) -> int:
     from .models import manager
     if args.action == "plan":
@@ -950,6 +983,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="bench --tasks: also measure the best N candidates not measured on this machine yet, "
                         "one at a time, keep the best and delete the others' downloads")
     p.set_defaults(func=cmd_models)
+
+    p = sub.add_parser("claude", help="Use Claude on Anthropic's API as the model, with your own key (not private)")
+    p.add_argument("action", choices=["on", "off", "status"], nargs="?", default="status")
+    p.add_argument("--key-file", help="on: a file that holds your Anthropic API key (it is copied to CodeRunner's own "
+                                      "storage, readable only by you; otherwise the key is asked for, unseen)")
+    p.add_argument("--model", default="claude-haiku-5-5", choices=["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"])
+    p.add_argument("--forget", action="store_true", help="off: also delete the kept key")
+    p.set_defaults(func=cmd_claude)
 
     p = sub.add_parser("secrets", help="Secrets injected at the network boundary, never shown to the sandbox")
     p.add_argument("action", choices=["list", "set", "delete"], nargs="?", default="list")

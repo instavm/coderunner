@@ -5,6 +5,7 @@ and 0.7 threshold), with accuracy, missed commits, needless approval prompts, la
   python tests/approval_eval.py chat BASE_URL MODEL           a chat model judging itself (OpenAI API)
   python tests/approval_eval.py systemone BASE_URL MODEL      an Ollama decision model (/v1/systemone)
   python tests/approval_eval.py laya BUNDLE_DIR               a Laya Core ML bundle (pip install laya-coreml)
+  python tests/approval_eval.py claude - [MODEL]              remote mode's judge (Anthropic's API, the kept key)
 
   --units cpu_ne|cpu_gpu|all|cpu   Core ML compute units for laya (default: the bundle's own)
   --prompt production|compact      compact: a short question for Laya's 96-token Neural Engine bundle;
@@ -518,6 +519,12 @@ def latency(seconds: list[float]) -> dict:
 async def run(args) -> dict:
     if args.judge == "laya":
         judge = LayaJudge(args.target, args.units)
+    elif args.judge == "claude":
+        # Remote mode's judge: Claude through Anthropic's API, with the key CodeRunner keeps (never shown here).
+        from coderunner.core.claude import Claude
+        from coderunner.models import remote
+        claude = Claude(remote.key(), args.model or remote.DEFAULT)
+        judge = DecisionModel(claude.base_url, claude.model, api="chat", claude=claude)
     else:
         judge = DecisionModel(args.target, args.model, api=args.judge, timeout=120)
     question, criteria = PROMPTS[args.prompt]
@@ -621,7 +628,7 @@ def report(result: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("judge", choices=["chat", "systemone", "laya"])
+    parser.add_argument("judge", choices=["chat", "systemone", "laya", "claude"])
     parser.add_argument("target", help="BASE_URL for chat/systemone, the bundle directory for laya")
     parser.add_argument("model", nargs="?", default="")
     parser.add_argument("--units", default=None, choices=["cpu_ne", "cpu_gpu", "all", "cpu"])

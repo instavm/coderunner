@@ -31,7 +31,7 @@ from typing import Any, Awaitable, Callable
 
 from ..core import native
 from . import tables
-from .kinds import DATA, DOCS, OFFICE, TABLES, holds_words, is_code, kind_description
+from .kinds import DATA, DOCS, OFFICE, TABLES, holds_key, holds_words, is_code, kind_description
 
 HELPER_SOURCE = pathlib.Path(__file__).with_name("helper.swift")
 NAME_ONLY = "name only"    # part label of a file indexed by its name, without reading it
@@ -377,6 +377,8 @@ class Extractor:
     async def pieces(self, path: pathlib.Path, kind: str, repo: str | None = None) -> list[Piece]:
         title = path.name
         found = [self.name(path, kind=kind)]
+        if holds_key(path):                     # a credential: found by its name, its contents never indexed
+            return found
         if kind == "text":
             found += await self._textfile(path, repo)
         elif kind == "doc":

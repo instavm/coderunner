@@ -20,6 +20,8 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["fastmcp>=2.10"]
+# Remote mode (coderunner claude on): installed by itself the first time it is turned on.
+claude = ["anthropic>=1,<2"]
 
 [project.scripts]
 coderunner = "coderunner.cli:main"

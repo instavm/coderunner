@@ -209,7 +209,8 @@ class SetupJob(Job):
     def public(self) -> dict:
         with self._lock:
             stages = self.stages()
-        return {"configured": bool(self.config.get("models.chat")), "model": self.config.get("models.chat") or "",
+        from ..models import remote
+        return {"configured": remote.ready(self.config), "model": self.config.get("models.chat") or "",
                 **self.progress(), "stages": stages, "plan": self.planned}
 
     # ---- the briefing before anything is fetched -------------------------------

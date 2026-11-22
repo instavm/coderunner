@@ -54,6 +54,8 @@ DEFAULTS: dict[str, Any] = {
         "lock_weights": False,       # keep weights locked in RAM; can freeze a small Mac when another model loads
         "allow_licenses": ["apache-2.0", "mit", "bsd-3-clause", "bsd-2-clause"],
         "accepted_licenses": [],     # licenses the owner explicitly accepted
+        "remote": {},                # {"provider": "anthropic", "model": ...}: the planner on Anthropic's API, not
+                                     # private (models/remote.py); empty: the model on this computer
     },
     "files": {
         "roots": [],                 # folders the owner shares with the assistant (coderunner files add)

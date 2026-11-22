@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -69,6 +70,25 @@ PLURALS = {"text": "text files", "doc": "documents", "image": "images", "audio":
 def embedding_profile(model: str) -> dict:
     family = next((name for name in PROFILES if name and name in (model or "").lower()), "")
     return PROFILES[family]
+
+
+# A small file that is a credential: an API key, a token, a private key. Told by what it holds, since such
+# a file is often named anything (a key saved as "antkey" in Downloads was readable by the file tools).
+KEY_FILE_BYTES = 8192
+CREDENTIAL = re.compile(
+    rb"sk-ant-[A-Za-z0-9_-]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{32,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}"
+    rb"|AKIA[0-9A-Z]{16}|xox[abprs]-[A-Za-z0-9-]{20,}|AIza[0-9A-Za-z_-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
+
+
+def holds_key(path: pathlib.Path) -> bool:
+    """Whether this is a small file with a credential in it (never indexed, never read to a model)."""
+    try:
+        if not 0 < path.stat().st_size <= KEY_FILE_BYTES:
+            return False
+        with open(path, "rb") as handle:
+            return CREDENTIAL.search(handle.read(KEY_FILE_BYTES)) is not None
+    except OSError:
+        return False
 
 
 def kind_of(path: pathlib.Path) -> str | None:

@@ -780,6 +780,8 @@ function refreshNow() {
 const MODEL_NAMES = {"embeddinggemma-2": "EmbeddingGemma 2", "embeddinggemma-300m": "EmbeddingGemma 300M", "tev1-4b": "tev1 4B"};
 function modelName(id) {
   if (!id) return "";
+  const claude = /^claude-([a-z]+)-(\d+)(?:-(\d+))?$/.exec(String(id));       // claude-haiku-5-5 -> Claude Haiku 5.5
+  if (claude) return `Claude ${claude[1][0].toUpperCase()}${claude[1].slice(1)} ${claude[2]}${claude[3] ? "." + claude[3] : ""}`;
   const base = String(id).split("/").pop().split(":")[0].replace(/^coderunner-/, "").replace(/^hf-/, "");
   if (MODEL_NAMES[base]) return MODEL_NAMES[base];
   return base.split("-").filter(Boolean).map((word) => /^[ae]?\d+(\.\d+)?[bm]$/i.test(word) ? word.toUpperCase() :
@@ -791,16 +793,88 @@ const BROWSERS = {computer: "The assistant's own computer", chrome: "Your Chrome
 async function loadModels() {
   try {
     const status = await api("/api/status");
-    const models = status.models || {};
+    const models = status.models || {}, remote = status.remote;
+    // In remote mode Claude plans, works the web pages and judges the steps; file search and voice stay here.
+    const here = remote ? " · on this computer" : "";
+    const voice = (status.voice || []).slice(0, 1).map((name) => VOICES[name] || name).join("");   // the one in use; the rest stand by
+    const search = modelName(models.embedding || status.model?.embedding);
     const rows = [["Planning", modelName(models.chat || status.model?.model)], ["Web pages", modelName(models.driver)],
-                  ["Safety check", modelName(models.decision)], ["File search", modelName(models.embedding || status.model?.embedding)],
-                  ["Voice", (status.voice || []).slice(0, 1).map((name) => VOICES[name] || name).join("")],   // the one in use; the rest stand by
+                  ["Safety check", modelName(models.decision)], ["File search", search && search + here],
+                  ["Voice", voice && voice + here],
+                  ["Speed", remote?.step_s ? `${remote.step_s} s a step, measured` : ""],
                   ["Browser", BROWSERS[status.browser?.mode] || status.browser?.mode]];
     const dl = $("models");
     dl.replaceChildren();
     for (const [k, v] of rows) if (v) dl.append(el("dt", "", k), el("dd", "", v));
-    $("modelsLine").textContent = models.chat ? `Local · ${modelName(models.chat)}` : "";
+    const line = $("modelsLine");
+    line.replaceChildren();
+    if (remote) {
+      const where = el("span", "where", "Anthropic");
+      where.appendChild(el("span", "not-private", "Not private"));
+      line.append(el("span", "", modelName(remote.model)), where);
+    }
+    else if (models.chat) line.append(el("span", "", `Local · ${modelName(models.chat)}`));
+    line.title = remote ? "Your requests, the pages it reads and the files it opens are sent to Anthropic." : "";
+    const lead = document.querySelector("#empty p");
+    if (lead) lead.textContent = remote ?
+      "Planned by Claude on Anthropic's API, and carried out on a private Linux machine with its own browser that you can watch and take over." :
+      "Tasks run on your own computer: local models, and a private Linux machine with its own browser that you can watch and take over.";
+    loadRemote();
   } catch { /* shown once the daemon answers */ }
+}
+
+// Remote mode, under the models: on with its warning and the way back, or the offer to turn it on with a key.
+async function loadRemote() {
+  const box = $("remoteBox");
+  let remote;
+  try { remote = await api("/api/remote"); } catch { box.replaceChildren(); return; }
+  box.replaceChildren();
+  const change = async (body, button) => {
+    button.disabled = true;
+    try { await api("/api/remote", {method: "POST", body: JSON.stringify(body)}); }
+    catch (err) { box.appendChild(el("p", "setup-error", err.message)); button.disabled = false; return; }
+    box.replaceChildren(el("p", "muted small", "Switching…"));
+    whenDaemonReturns(() => location.reload());
+  };
+  if (remote.on) {
+    box.appendChild(el("p", "remote-warning", remote.warning));
+    const back = el("button", "btn", remote.local ? "Use the local model" : "Set up a local model");
+    back.onclick = () => change({action: "off"}, back);
+    box.appendChild(back);
+    return;
+  }
+  const offer = el("button", "linkish small", "Use an Anthropic key");
+  offer.type = "button";
+  offer.onclick = () => { box.replaceChildren(remoteForm(remote, change, loadRemote)); box.querySelector("input, button.primary")?.focus(); };
+  box.appendChild(offer);
+}
+
+// The form that turns remote mode on: what it means in one sentence, the key (unless one is kept), one button.
+function remoteForm(remote, change, cancel) {
+  const form = el("form", "remote-form"), key = el("input"), go = el("button", "btn primary", "Use Claude"), no = el("button", "linkish small", "Cancel");
+  key.type = "password"; key.placeholder = "Anthropic API key"; key.autocomplete = "off"; key.spellcheck = false;
+  key.setAttribute("aria-label", "Anthropic API key");
+  no.type = "button"; no.onclick = () => cancel();
+  form.appendChild(el("p", "remote-warning", remote.warning));
+  if (!remote.has_key) form.appendChild(key);
+  const row = el("div", "row"); row.append(go, no);
+  form.appendChild(row);
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    if (!remote.has_key && !key.value.trim()) { key.focus(); return; }
+    change({action: "on", ...(remote.has_key ? {} : {key: key.value.trim()})}, go);
+  };
+  return form;
+}
+
+// The daemon starts again in place after a change of model: wait for it to go, then to answer.
+function whenDaemonReturns(then, gone = false, tries = 0) {
+  setTimeout(async () => {
+    let up = true;
+    try { await api("/api/setup"); } catch { up = false; }
+    if ((gone || tries > 12) && up) { then(); return; }
+    whenDaemonReturns(then, gone || !up, tries + 1);
+  }, 1000);
 }
 
 // ---- first run: no model yet ----------------------------------------------------------
@@ -1073,6 +1147,52 @@ function renderPlan(plan, problem) {
   why.append(el("summary", "", "How these were chosen"), list);
   why.addEventListener("toggle", () => { if (why.open) why.scrollIntoView({behavior: "smooth", block: "end"}); });
   card.appendChild(why);
+  const other = el("button", "linkish setup-other", "Use an Anthropic key instead");
+  other.type = "button";
+  other.onclick = () => renderRemoteSetup(plan);
+  card.appendChild(other);
+}
+
+// The other way to start: Claude on Anthropic's API with the owner's key. Nothing to download, and not private,
+// which this screen says in place of the promise the local one makes.
+async function renderRemoteSetup(plan, problem) {
+  const here = plan.hardware.os === "mac" ? "this Mac" : "this computer";
+  const card = setupCard("Use Claude with your key", "Nothing to download. Tasks take a second or two a step.");
+  let remote;
+  try { remote = await api("/api/remote"); } catch (err) { card.append(el("p", "setup-error", err.message), setupButton("Back", () => renderPlan(plan))); return; }
+  const model = modelName(remote.models[0].id);
+  card.appendChild(el("div", "setup-label", "With an Anthropic key"));
+  const roles = el("div", "roles");
+  for (const [key, job, name, size] of [["planner", "Planning", model, "Anthropic"], ["eyes", "Vision", "Same model", ""],
+                                         ["checker", "Safety check", "Same model", ""],
+                                         ["search", "File search", `On ${here}`, "Set up later"], ["voice", "Voice", `On ${here}`, "Set up later"]]) {
+    const row = el("div", "role" + (name === model ? "" : " shared"));
+    row.append(icon(ROLE_ICONS[key]), el("span", "role-job", job), el("span", "role-model", name), el("span", "role-size", size));
+    roles.appendChild(row);
+  }
+  card.appendChild(roles);
+  card.appendChild(el("p", "setup-note", remote.warning));
+  const form = el("form", "place-form remote-key"), key = el("input");
+  key.type = "password"; key.placeholder = "Anthropic API key"; key.autocomplete = "off"; key.spellcheck = false;
+  key.setAttribute("aria-label", "Anthropic API key");
+  if (!remote.has_key) form.appendChild(key);
+  card.appendChild(form);
+  if (problem) card.appendChild(el("p", "setup-error", problem));
+  const start = async () => {
+    if (!remote.has_key && !key.value.trim()) { go.disabled = false; key.focus(); return; }
+    try { await api("/api/remote", {method: "POST", body: JSON.stringify({action: "on", ...(remote.has_key ? {} : {key: key.value.trim()})})}); }
+    catch (err) { renderRemoteSetup(plan, err.message); return; }
+    go.textContent = "Starting…";
+    whenDaemonReturns(() => location.reload());
+  };
+  const go = setupButton("Use Claude", start);
+  form.onsubmit = (event) => { event.preventDefault(); go.click(); };
+  card.appendChild(go);
+  const back = el("button", "linkish setup-other", `Run a model on ${here} instead`);
+  back.type = "button";
+  back.onclick = () => renderPlan(plan);
+  card.appendChild(back);
+  key.focus();
 }
 
 // How long a download has left, from how its percentage has moved: [[seconds, percent], ...] at each change,

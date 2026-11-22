@@ -59,7 +59,8 @@ it checks the disk before it downloads a model. `coderunner app` opens the deskt
 up yet it shows what it found on the computer, the model for each job, the size of the download and the folder
 it goes to (which can be changed), and sets everything up from one button. Files can be attached to a task
 (pictures, videos, recordings, documents) and show in its thread. `coderunner check` does each kind of task
-once on your install and says which worked.
+once on your install and says which worked. `coderunner claude on` uses Claude on Anthropic's API with your
+own key instead of a local model: faster on any computer, and not private (the app says so while it is on).
 [ASSISTANT.md](ASSISTANT.md) has the architecture, the safety model and every command.
 
 For managed cloud VMs for agents, see [InstaVM](https://instavm.io).

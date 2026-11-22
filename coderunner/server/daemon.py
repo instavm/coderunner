@@ -47,6 +47,7 @@ class Services:
     embedding_model: str = ""
     embedding_url: str = ""          # where embeddings are served, when not by the chat model's runtime
     vision: bool = False
+    remote: dict | None = None      # remote mode, when on: {"provider", "model", "name"} (models/remote.py)
     guard: Guard = field(default_factory=Guard)
     egress: EgressGuard | None = None
     sandbox: SandboxClient | None = None
@@ -114,6 +115,10 @@ class Daemon:
         from .check import CheckJob
         self.check = CheckJob(self)             # `coderunner check`: the core tasks, done once and checked
 
+    def restart_soon(self) -> None:
+        """Start again in place, shortly: a setting everything was built around has changed (remote mode)."""
+        self._after_setup({})
+
     def _after_setup(self, result: dict) -> None:
         """Setup from the app chose a model, or gave the sandbox its computer. Everything here was built for the
         configuration before it, so the daemon starts again with the new one, a few seconds on, once the app
@@ -124,7 +129,7 @@ class Daemon:
 
     async def _warm(self) -> None:
         """Let the model read the instructions and tool list now, not when the first task arrives."""
-        if not self.config.get("models.chat"):      # search mode: no chat model to warm
+        if not self.config.get("models.chat") or getattr(self.svc, "remote", None):   # search mode, or not ours to warm
             return
         try:
             await self.svc.agent.warm()
@@ -186,18 +191,28 @@ class Daemon:
                        api_token=paths.api_token, admin_token=paths.admin_token)
         svc.egress = EgressGuard(self.config, svc.policy, audit)
 
-        from ..models import manager
+        from ..models import manager, remote
         endpoint = manager.endpoint(self.config)
-        svc.llm = LLM(endpoint.base_url, endpoint.model, endpoint.api_key)
-        svc.llm.recover = self._restart_model
-        svc.llm_api_key = endpoint.api_key
-        svc.vision = endpoint.vision
         svc.embedding_model = endpoint.embedding_model or ""
         from ..safety.decision import ActionCheck, DecisionModel
         runtime = {"base_url": endpoint.base_url, "api_key": endpoint.api_key}
-        # Injection scoring needs a fast dedicated model; the assistant's own model would slow every step.
-        svc.guard = Guard(DecisionModel.from_config(self.config, model=self.config.get("models.guard") or "",
-                                                    dedicated_only=True, **runtime), audit=audit)
+        svc.remote = remote.active(self.config)
+        claude = remote.client(self.config) if svc.remote else None
+        if claude is not None:
+            # Remote mode (not private): Claude plans, sees, judges browser steps and screens untrusted text.
+            # File search and voice keep their local models; the local chat model is left set up, unloaded.
+            svc.llm, svc.llm_api_key, svc.vision = claude, "", True
+            judge = DecisionModel(claude.base_url, claude.model, api="chat", claude=claude)
+            svc.guard = Guard(judge, audit=audit)
+        else:
+            svc.llm = LLM(endpoint.base_url, endpoint.model, endpoint.api_key)
+            svc.llm.recover = self._restart_model
+            svc.llm_api_key = endpoint.api_key
+            svc.vision = endpoint.vision
+            judge = None
+            # Injection scoring needs a fast dedicated model; the assistant's own model would slow every step.
+            svc.guard = Guard(DecisionModel.from_config(self.config, model=self.config.get("models.guard") or "",
+                                                        dedicated_only=True, **runtime), audit=audit)
 
         driver = driver_for(self.config)
         self.driver = driver
@@ -214,7 +229,8 @@ class Daemon:
             except OSError as exc:
                 audit.write("browser.extension_update_failed", error=str(exc)[:200])
         svc.browser = BrowserBroker(self.config, svc.policy, audit,
-                                    decider=ActionCheck.from_config(self.config, audit, **runtime), chrome=svc.chrome,
+                                    decider=ActionCheck(judge, audit=audit) if judge is not None else
+                                    ActionCheck.from_config(self.config, audit, **runtime), chrome=svc.chrome,
                                     sandbox=(url, paths.api_token()))
 
         from ..agent.memory import Memory
@@ -268,7 +284,7 @@ class Daemon:
     def _driver(self, svc: Services):
         """The browser driver (models.driver), when one is set up: a model that acts from screenshots."""
         settings = self.config.get("models.driver") or {}
-        if not settings.get("model"):
+        if not settings.get("model") or getattr(svc, "remote", None):      # remote mode: Claude drives the browser itself
             return None
         from ..agent.driver import Driver, Swap
         from ..models.runtimes import DriverRuntime, choose_runtime
@@ -289,7 +305,7 @@ class Daemon:
                              sender_is_owner: bool = True, images: list | None = None,
                              tainted: bool = False, events=None, task: str = "") -> str:
         conversation = f"{channel}:{chat_id}"
-        if not self.config.get("models.chat"):
+        if not self.config.get("models.chat") and not getattr(getattr(self, "svc", None), "remote", None):
             return ("No local chat model is set up (search mode). Use the search tools from your own agent over "
                     "MCP (`coderunner mcp --tools search`), or run `coderunner setup` to add a model.")
         lock = self._locks.setdefault(conversation, asyncio.Lock())
@@ -343,10 +359,15 @@ class Daemon:
             "uptime": round(time.time() - self.started),
             "model": {"base_url": svc.llm.base_url, "model": svc.llm.model, "vision": svc.vision,
                       "embedding": svc.embedding_model},
-            "models": {"chat": self.config.get("models.chat") or svc.llm.model,
-                       "driver": (self.config.get("models.driver") or {}).get("model") or "",
-                       "decision": self.config.get("models.decision") or "",
-                       "embedding": self.config.get("models.embedding") or svc.embedding_model},
+            # Remote mode: Claude does the planning, the web pages and the step judging, and the app says so.
+            "remote": svc.remote and {**svc.remote, "usage": dict(getattr(svc.llm, "usage", {}) or {}),
+                                      "step_s": getattr(svc.llm, "step_seconds", lambda: None)()},
+            "models": {"chat": svc.remote["model"] if svc.remote else self.config.get("models.chat") or svc.llm.model,
+                       "driver": svc.remote["model"] if svc.remote else
+                       (self.config.get("models.driver") or {}).get("model") or "",
+                       "decision": svc.remote["model"] if svc.remote else self.config.get("models.decision") or "",
+                       "embedding": self.config.get("models.embedding") or svc.embedding_model,
+                       "local_chat": self.config.get("models.chat") or ""},
             "sandbox": {"driver": self.driver.name, "url": svc.sandbox.base_url, "healthy": await svc.sandbox.health()},
             "network": self.config.get("sandbox.network"),
             "channels": sorted(svc.channels),

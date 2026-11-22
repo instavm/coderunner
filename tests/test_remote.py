@@ -1,174 +1,310 @@
+"""Remote mode: Claude on Anthropic's API as the assistant's model, with the owner's key. Not private, and said so."""
+
+import asyncio
 import json
 import os
 import pathlib
-import subprocess
+import stat
 import tempfile
 import unittest
 from unittest import mock
 
-from coderunner.server import remote
+import httpx
 
-TS = "/fake/bin/tailscale"
-HOST = "studio.tail1234.ts.net"
+from coderunner.core.claude import Claude, convert, tools_of
+from coderunner.core.llm import LLMError
+from coderunner.files.discover import FileAccessError, Folders
+from coderunner.files.kinds import holds_key
+from coderunner.models import remote
+from coderunner.safety.decision import ActionCheck, DecisionModel
+from fakes import Svc
 
-STATUS = {"BackendState": "Running", "Self": {"DNSName": HOST + ".", "TailscaleIPs": ["100.101.102.103"]}}
-SERVING = {"TCP": {"443": {"HTTPS": True}},
-           "Web": {f"{HOST}:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8224"}}}}}
-FUNNEL = {**SERVING, "AllowFunnel": {f"{HOST}:443": True}}
-OTHER = {"TCP": {"443": {"HTTPS": True}},
-         "Web": {f"{HOST}:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:3000"}}}}}
-WHOIS = {"Node": {"Name": "phone"}, "UserProfile": {"LoginName": "owner@example.com", "DisplayName": "Owner"}}
+try:
+    import anthropic
+    import httpx2
+except ImportError:                     # the client library is installed when remote mode is first turned on
+    anthropic = httpx2 = None
 
-
-class FakeTailscale:
-    """Answers by subcommand with canned JSON and records every argv."""
-
-    def __init__(self, status=STATUS, serve=None, whois=WHOIS, fail=()):
-        self.calls = []
-        self.status, self.serve, self.whois, self.fail = status, serve or {}, whois, set(fail)
-
-    def __call__(self, argv):
-        self.calls.append(list(argv))
-        args = argv[1:]
-        key = " ".join(args[:2]) if args[:2] == ["serve", "status"] else args[0]
-        if key in self.fail:
-            return subprocess.CompletedProcess(argv, 1, "", f"{key} failed: HTTPS is not enabled")
-        out = {"status": self.status, "serve status": self.serve, "whois": self.whois}.get(key, "")
-        return subprocess.CompletedProcess(argv, 0, json.dumps(out) if out != "" else "", "")
+KEY = "sk-ant-" + "test0123456789abcdefghij" * 2
+TOOLS = [{"type": "function", "function": {"name": "browser_open", "description": "Open a page.",
+                                           "parameters": {"type": "object", "properties": {"url": {"type": "string"}}}}}]
 
 
-class StatusTests(unittest.TestCase):
-    def test_status_and_dns_name(self):
-        ts = FakeTailscale()
-        status = remote.tailscale_status(runner=ts, binary=TS)
-        self.assertEqual(ts.calls, [[TS, "status", "--json"]])
-        self.assertEqual(remote.dns_name(status), HOST)
-        self.assertEqual(remote.dns_name(runner=ts, binary=TS), HOST)
-        self.assertIsNone(remote.dns_name({"Self": {}}))
-        self.assertIsNone(remote.tailscale_status(runner=FakeTailscale(fail={"status"}), binary=TS))
-
-    def test_binary_lookup(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            app = os.path.join(tmp, "Tailscale")
-            pathlib.Path(app).touch()
-            with mock.patch.object(remote.shutil, "which", return_value=None):
-                self.assertEqual(remote.find_binary(app), app)
-                self.assertIsNone(remote.find_binary(os.path.join(tmp, "missing")))
-                with mock.patch.object(remote, "APP_BINARY", os.path.join(tmp, "missing")):
-                    ts = FakeTailscale()
-                    self.assertFalse(remote.status(runner=ts)["installed"])
-                    self.assertIsNone(remote.tailscale_status(runner=ts))
-                    with self.assertRaises(remote.RemoteError) as caught:
-                        remote.enable(8224, runner=ts)
-                    self.assertIn("not installed", str(caught.exception))
-                    self.assertEqual(ts.calls, [])
-            with mock.patch.object(remote.shutil, "which", return_value="/usr/local/bin/tailscale"):
-                self.assertEqual(remote.find_binary(app), "/usr/local/bin/tailscale")
-
-    def test_serve_status(self):
-        info = remote.status(8224, runner=FakeTailscale(serve=SERVING), binary=TS)
-        self.assertTrue(info["running"] and info["serving"])
-        self.assertEqual(info["url"], f"https://{HOST}/")
-        self.assertEqual(info["target"], "http://127.0.0.1:8224")
-        self.assertFalse(info["funnel"])
-        self.assertTrue(remote.status(8224, runner=FakeTailscale(serve=FUNNEL), binary=TS)["funnel"])
-        info = remote.status(8224, runner=FakeTailscale(serve=OTHER), binary=TS)
-        self.assertFalse(info["serving"])
-        self.assertIsNone(info["url"])
-        info = remote.status(runner=FakeTailscale(serve={}), binary=TS)
-        self.assertFalse(info["serving"])
+def message(content, stop="end_turn", usage=None):
+    return {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-haiku-5-5", "content": content,
+            "stop_reason": stop, "stop_sequence": None,
+            "usage": {"input_tokens": 12, "output_tokens": 7, "cache_read_input_tokens": 900,
+                      "cache_creation_input_tokens": 30, **(usage or {})}}
 
 
-class EnableTests(unittest.TestCase):
-    def test_enable_serves_loopback_admin_port(self):
-        ts = FakeTailscale()
-        self.assertEqual(remote.enable(8224, runner=ts, binary=TS), f"https://{HOST}/")
-        self.assertEqual(ts.calls[-1], [TS, "serve", "--bg", "--yes", "--https=443", "http://127.0.0.1:8224"])
-        self.assertFalse(any("funnel" in part for call in ts.calls for part in call))
-
-    def test_refuses_when_funnel_is_on(self):
-        for serve in (FUNNEL, {"Web": {f"{HOST}:8443": {"Handlers": {"/": {"Proxy": "127.0.0.1:8224"}}}},
-                               "AllowFunnel": {f"{HOST}:8443": True}},
-                      {"Foreground": {"abc": FUNNEL}}):
-            ts = FakeTailscale(serve=serve)
-            with self.assertRaises(remote.RemoteError) as caught:
-                remote.enable(8224, runner=ts, binary=TS)
-            self.assertIn("Funnel", str(caught.exception))
-            self.assertFalse(any(call[1:3] == ["serve", "--bg"] for call in ts.calls))
-
-    def test_funnel_on_an_unrelated_port_is_not_ours(self):
-        serve = {"Web": {f"{HOST}:8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:9000"}}}},
-                 "AllowFunnel": {f"{HOST}:8443": True}}
-        self.assertEqual(remote.funnel_ports(serve, 8224), [])
-
-    def test_refuses_to_replace_another_service_unless_forced(self):
-        ts = FakeTailscale(serve=OTHER)
-        with self.assertRaises(remote.RemoteError) as caught:
-            remote.enable(8224, runner=ts, binary=TS)
-        self.assertIn("127.0.0.1:3000", str(caught.exception))
-        self.assertEqual(remote.enable(8224, force=True, runner=ts, binary=TS), f"https://{HOST}/")
-
-    def test_refuses_when_not_connected_or_unreadable(self):
-        for status in ({"BackendState": "NeedsLogin", "Self": {}}, {"BackendState": "Running", "Self": {}}):
-            with self.assertRaises(remote.RemoteError):
-                remote.enable(8224, runner=FakeTailscale(status=status), binary=TS)
-        with self.assertRaises(remote.RemoteError):
-            remote.enable(8224, runner=FakeTailscale(fail={"serve status"}), binary=TS)
-        with self.assertRaises(remote.RemoteError) as caught:
-            remote.enable(8224, runner=FakeTailscale(fail={"serve"}), binary=TS)
-        self.assertIn("HTTPS is not enabled", str(caught.exception))
-        with self.assertRaises(remote.RemoteError):
-            remote.enable(0, runner=FakeTailscale(), binary=TS)
-
-    def test_disable(self):
-        ts = FakeTailscale(serve=SERVING)
-        self.assertEqual(remote.disable(runner=ts, binary=TS), "Remote access disabled.")
-        self.assertEqual(ts.calls[-1], [TS, "serve", "--https=443", "off"])
-        ts = FakeTailscale(serve={})
-        self.assertIn("not enabled", remote.disable(runner=ts, binary=TS))
-        self.assertNotIn([TS, "serve", "--https=443", "off"], ts.calls)
-        ts = FakeTailscale(serve=OTHER)
-        self.assertIn("Left", remote.disable(admin_port=8224, runner=ts, binary=TS))
-        self.assertNotIn([TS, "serve", "--https=443", "off"], ts.calls)
+class Home(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = pathlib.Path(self._tmp.name).resolve()
+        env = mock.patch.dict(os.environ, {"CODERUNNER_HOME": str(self.home)})
+        env.start()
+        self.addCleanup(env.stop)
 
 
-class IdentityTests(unittest.TestCase):
-    def test_decode_identity(self):
-        self.assertEqual(remote.decode_identity({"Tailscale-User-Login": "owner@example.com"}), "owner@example.com")
-        self.assertEqual(remote.decode_identity({"tailscale-user-login": "=?utf-8?q?owner=40example.com?="}),
-                         "owner@example.com")
-        self.assertEqual(remote.decode_identity({"Tailscale-User-Login": "=?utf-8?b?am9zw6lAZXhhbXBsZS5jb20=?="}),
-                         "josé@example.com")
-        self.assertEqual(remote.decode_identity(
-            {"Tailscale-User-Name": "=?utf-8?q?Jos=C3=A9?="}, "Tailscale-User-Name"), "José")
-        self.assertIsNone(remote.decode_identity({}))
-        self.assertEqual(remote.decode_identity([("Tailscale-User-Login", "a@x.com"),
-                                                 ("tailscale-user-login", "a@x.com")]), "")
+class ConversionTests(unittest.TestCase):
+    def test_a_conversation_of_the_agent_loop_becomes_messages_api_turns(self):
+        picture = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,QUJD"}}
+        system, turns = convert([
+            {"role": "system", "content": "You are the owner's assistant."},
+            {"role": "user", "content": "Today is Sunday."},
+            {"role": "user", "content": [{"type": "text", "text": "What is on this receipt?"}, picture]},
+            {"role": "assistant", "content": "Let me look.", "tool_calls": [
+                {"id": "toolu_1", "type": "function", "function": {"name": "browser_open", "arguments": '{"url": "https://a.example"}'}},
+                {"id": "toolu_2", "type": "function", "function": {"name": "browser_open", "arguments": "not json"}}]},
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "Page: A"},
+            {"role": "tool", "tool_call_id": "toolu_2", "content": ""},
+            {"role": "user", "content": [{"type": "text", "text": "Screenshot (untrusted page content):"}, picture]},
+            {"role": "assistant", "content": "", "tool_calls": []},
+        ])
+        self.assertEqual(system, [{"type": "text", "text": "You are the owner's assistant."}])
+        self.assertEqual([t["role"] for t in turns], ["user", "assistant", "user"])
+        image = {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "QUJD"}}
+        self.assertEqual(turns[0]["content"], [{"type": "text", "text": "Today is Sunday."},
+                                               {"type": "text", "text": "What is on this receipt?"}, image])
+        self.assertEqual(turns[1]["content"], [
+            {"type": "text", "text": "Let me look."},
+            {"type": "tool_use", "id": "toolu_1", "name": "browser_open", "input": {"url": "https://a.example"}},
+            {"type": "tool_use", "id": "toolu_2", "name": "browser_open", "input": {}}])
+        # Every result of the turn's calls is in the one user turn after it, ahead of what else is said there.
+        self.assertEqual(turns[2]["content"], [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "Page: A"},
+            {"type": "tool_result", "tool_use_id": "toolu_2", "content": "(no output)"},
+            {"type": "text", "text": "Screenshot (untrusted page content):"}, image])
+        self.assertEqual(tools_of(TOOLS), [{"name": "browser_open", "description": "Open a page.",
+                                            "input_schema": TOOLS[0]["function"]["parameters"]}])
+        # A picture is only ever sent as data: an address is not handed over to be fetched.
+        self.assertEqual(convert([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://x/y.png"}}]}])[1], [])
 
-    def test_whois(self):
-        ts = FakeTailscale()
-        self.assertEqual(remote.whois("100.64.0.7", runner=ts, binary=TS), "owner@example.com")
-        self.assertEqual(ts.calls, [[TS, "whois", "--json", "100.64.0.7"]])
-        self.assertIsNone(remote.whois("--help", runner=ts, binary=TS))
-        self.assertIsNone(remote.whois("100.64.0.7:443", runner=ts, binary=TS))
-        self.assertEqual(len(ts.calls), 1)
-        self.assertIsNone(remote.whois("100.64.0.8", runner=FakeTailscale(fail={"whois"}), binary=TS))
-        self.assertIsNone(remote.whois("100.64.0.8", runner=FakeTailscale(whois={"Node": {}}), binary=TS))
 
-    def test_check_owner(self):
-        owners = ["owner@example.com"]
-        lookup = {"100.64.0.7": "owner@example.com", "100.64.0.9": "guest@example.com"}.get
-        def check(headers, owners=owners):
-            return remote.check_owner(headers, owners, lookup=lookup)
-        self.assertTrue(check({}))
-        self.assertTrue(check({"Tailscale-User-Login": "anyone@example.com"}, []))
-        self.assertTrue(check({"Tailscale-User-Login": "owner@example.com", "X-Forwarded-For": "100.64.0.7"}))
-        self.assertTrue(check({"Tailscale-User-Login": "=?utf-8?q?owner=40example.com?="}))
-        self.assertFalse(check({"Tailscale-User-Login": "guest@example.com"}))
-        self.assertFalse(check({"Tailscale-User-Login": "owner@example.com", "X-Forwarded-For": "100.64.0.9"}))
-        self.assertFalse(check({"X-Forwarded-For": "100.64.0.9"}))
-        self.assertFalse(check({"X-Forwarded-For": "100.64.0.99"}))
-        self.assertTrue(check({"X-Forwarded-For": "100.64.0.7, 10.0.0.1"}))
+@unittest.skipIf(anthropic is None, "the anthropic client library is not installed")
+class ClaudeTests(unittest.IsolatedAsyncioTestCase):
+    def client(self, handler, **options):
+        self.requests = []
+
+        def record(request):
+            self.requests.append((dict(request.headers), json.loads(request.content)))
+            return handler(request)
+        return Claude(KEY, http_client=anthropic.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(record)), **options)
+
+    async def test_a_step_with_tools_is_asked_and_read_as_the_agent_loop_expects(self):
+        reply = message([{"type": "text", "text": "Opening both."},
+                         {"type": "tool_use", "id": "toolu_a", "name": "browser_open", "input": {"url": "https://a.example"}},
+                         {"type": "tool_use", "id": "toolu_b", "name": "browser_open", "input": {"url": "https://b.example"}}],
+                        stop="tool_use")
+        llm = self.client(lambda r: httpx2.Response(200, json=reply, headers={"request-id": "req_123"}))
+        got = await llm.chat([{"role": "system", "content": "Instructions."}, {"role": "user", "content": "Compare a and b."}],
+                             tools=TOOLS, think=False)
+        self.assertEqual(got["content"], "Opening both.")
+        self.assertEqual([(c["id"], c["function"]["name"], json.loads(c["function"]["arguments"])) for c in got["tool_calls"]],
+                         [("toolu_a", "browser_open", {"url": "https://a.example"}),
+                          ("toolu_b", "browser_open", {"url": "https://b.example"})])
+        self.assertEqual(got["usage"], {"prompt_tokens": 942, "completion_tokens": 7, "cache_read_input_tokens": 900,
+                                        "cache_creation_input_tokens": 30})
+        headers, sent = self.requests[0]
+        self.assertEqual((headers["x-api-key"], sent["model"]), (KEY, "claude-haiku-5-5"))
+        # The instructions and the tools are kept for the next step, and so is the conversation so far.
+        self.assertEqual(sent["system"], [{"type": "text", "text": "Instructions.", "cache_control": {"type": "ephemeral"}}])
+        self.assertEqual(sent["cache_control"], {"type": "ephemeral"})
+        # No thinking blocks to carry (the loop edits earlier turns), no sampling settings, no forced tool.
+        self.assertEqual((sent["thinking"], sent["output_config"]), ({"type": "disabled"}, {"effort": "medium"}))
+        self.assertFalse({"temperature", "top_p", "top_k", "tool_choice"} & set(sent))
+        self.assertEqual(llm.last, {"model": "claude-haiku-5-5", "request_id": "req_123"})
+        self.assertEqual((llm.usage["requests"], llm.usage["cache_read_input_tokens"]), (1, 900))
+        self.assertIsNotNone(llm.step_seconds())
+        await llm.chat([{"role": "user", "content": "Sum up."}], tools=TOOLS, tool_choice="none")
+        self.assertEqual(self.requests[1][1]["tool_choice"], {"type": "none"})
+        await llm.aclose()
+
+    async def test_a_refusal_a_cut_off_step_and_api_failures_are_said_plainly(self):
+        refused = message([], stop="refusal")
+        refused["stop_details"] = {"type": "refusal", "category": "cyber", "explanation": "x"}
+        llm = self.client(lambda r: httpx2.Response(200, json=refused))
+        with self.assertRaisesRegex(LLMError, r"Claude declined this request \(cyber\)"):
+            await llm.chat([{"role": "user", "content": "x"}])
+        await llm.aclose()
+        cut = message([{"type": "text", "text": "Opening"},
+                       {"type": "tool_use", "id": "toolu_a", "name": "browser_open", "input": {"url": "https://a.example"}},
+                       {"type": "tool_use", "id": "toolu_b", "name": "browser_open", "input": {}}], stop="max_tokens")
+        llm = self.client(lambda r: httpx2.Response(200, json=cut))
+        got = await llm.chat([{"role": "user", "content": "x"}], tools=TOOLS)
+        self.assertEqual([c["id"] for c in got["tool_calls"]], ["toolu_a"])       # the one cut off is not run
+        await llm.aclose()
+        for status, body, said in ((401, {"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}},
+                                    "did not accept the key"),
+                                   (404, {"type": "error", "error": {"type": "not_found_error", "message": "model"}}, "no model named"),
+                                   (400, {"type": "error", "error": {"type": "invalid_request_error", "message": "bad shape"}},
+                                    "refused the request"),
+                                   (429, {"type": "error", "error": {"type": "rate_limit_error", "message": "slow"}}, "limiting requests"),
+                                   (529, {"type": "error", "error": {"type": "overloaded_error", "message": "busy"}}, "returned 529")):
+            llm = self.client(lambda r, status=status, body=body: httpx2.Response(status, json=body))
+            llm._client = llm._client.with_options(max_retries=0)
+            with self.assertRaises(LLMError) as raised:
+                await llm.chat([{"role": "user", "content": "x"}])
+            self.assertIn(said, str(raised.exception))
+            self.assertNotIn(KEY, str(raised.exception))
+            await llm.aclose()
+
+        def down(request):
+            raise httpx2.ConnectError("no route")
+        llm = self.client(down)
+        llm._client = llm._client.with_options(max_retries=0)
+        with self.assertRaisesRegex(LLMError, "could not be reached"):
+            await llm.chat([{"role": "user", "content": "x"}])
+        await llm.aclose()
+
+    async def test_the_step_judge_asks_claude_for_its_letter_with_the_worked_examples(self):
+        answers = iter(["A", "B", "I cannot say"])
+        llm = self.client(lambda r: httpx2.Response(200, json=message([{"type": "text", "text": next(answers)}])))
+        check = ActionCheck(DecisionModel(llm.base_url, llm.model, api="chat", claude=llm))
+        self.assertFalse(await check.commits('Site: x\nAction: click button "Next month"'))
+        self.assertTrue(await check.commits('Site: x\nAction: click button "Pay now"'))
+        self.assertTrue(await check.commits("Site: x"))                       # no letter: the owner is asked
+        sent = self.requests[0][1]
+        self.assertIn("commit", sent["system"][0]["text"])
+        self.assertEqual(len(sent["messages"]), 19)                             # nine examples, then the step
+        self.assertEqual(json.loads(sent["messages"][-1]["content"][0]["text"])["state"],
+                         'Site: x\nAction: click button "Next month"')
+        self.assertFalse({"temperature", "tools"} & set(sent))
+        await llm.aclose()
+
+
+class KeyTests(Home):
+    async def test_the_key_is_kept_where_only_the_owner_reads_it_and_never_repeated(self):
+        given = self.home / "Downloads" / "antkey"
+        given.parent.mkdir()
+        given.write_text(f"ANTHROPIC_API_KEY={KEY}\n")
+        self.assertEqual(remote.key(), "")
+        remote.keep_key_file(str(given))
+        kept = remote.key_path()
+        self.assertEqual((kept, kept.read_text().strip(), stat.S_IMODE(kept.stat().st_mode)),
+                         (self.home / "assistant" / "anthropic-key", KEY, 0o600))
+        self.assertTrue(given.exists())                                         # the owner's own file is left alone
+        for bad in ("hello", "", "sk-ant-short"):
+            with self.assertRaises(ValueError) as refused:
+                remote.keep_key(bad)
+            self.assertNotIn(bad or "x-none", str(refused.exception))
+        with self.assertRaisesRegex(ValueError, "could not be read"):
+            remote.keep_key_file(str(self.home / "nowhere"))
+        config = Svc().config
+        self.assertIsNone(remote.active(config))                                # a key alone turns nothing on
+        with mock.patch.object(remote, "install_sdk"):
+            now = remote.turn_on(config, "claude-haiku-5-5")
+        self.assertEqual((now["model"], now["name"], remote.ready(config)), ("claude-haiku-5-5", "Claude Haiku 5.5", True))
+        self.assertNotIn(KEY, json.dumps(config.data))                          # never in the config
+        with self.assertRaises(ValueError):
+            remote.turn_on(config, "gpt-something")
+        remote.turn_off(config)
+        self.assertEqual((remote.active(config), remote.key()), (None, KEY))    # kept for next time
+        remote.turn_off(config, forget=True)
+        self.assertEqual(remote.key(), "")
+
+    async def test_a_file_that_holds_a_key_is_never_read_to_a_model_or_indexed(self):
+        shared = self.home.parent / (self.home.name + "-docs")
+        shared.mkdir()
+        self.addCleanup(lambda: __import__("shutil").rmtree(shared, ignore_errors=True))
+        (shared / "antkey").write_text(KEY + "\n")
+        (shared / "notes.txt").write_text("the staging token is " + KEY + " for now\n")
+        (shared / "deploy.txt").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n")
+        (shared / "plain.txt").write_text("Dentist on Friday. sk-ant is how their keys start.\n")
+        (shared / "long.txt").write_text("x" * 9000 + KEY)                      # a long document that quotes one
+        self.assertEqual([holds_key(shared / n) for n in ("antkey", "notes.txt", "deploy.txt", "plain.txt", "long.txt")],
+                         [True, True, True, False, False])
+        folders = Folders(Svc({"files": {"roots": [str(shared)]}}).config)
+        for name in ("antkey", "notes.txt", "deploy.txt"):
+            with self.assertRaisesRegex(FileAccessError, "may hold secrets"):
+                folders.resolve(str(shared / name))
+        self.assertEqual(folders.resolve(str(shared / "plain.txt")), (shared / "plain.txt").resolve())
+        from coderunner.files.extract import Extractor, Media
+        pieces = await Extractor(Media()).pieces(shared / "notes.txt", "text")
+        self.assertFalse(any(KEY in (piece.text or "") or "staging" in (piece.text or "") for piece in pieces))
+
+
+class DaemonTests(Home):
+    async def test_the_status_names_the_models_really_in_use_in_each_mode(self):
+        from coderunner.core import paths
+        from coderunner.core.config import Config
+        from coderunner.server.daemon import Daemon
+        paths.ensure_dirs()
+        data = {"models": {"runtime": "openai", "base_url": "http://127.0.0.1:9/v1", "chat": "coderunner-qwen3.5-9b",
+                           "embedding": "coderunner-embeddinggemma-2", "driver": {"model": "fara1.5-4b", "exclusive": True}},
+                "sandbox": {"driver": "none"}, "browser": {"mode": "dedicated"}}
+        local = Daemon(Config(json.loads(json.dumps(data)), path=paths.config_path()))
+        self.assertIsNone(local.svc.remote)
+        shown = await local.status()
+        self.assertEqual((shown["remote"], shown["models"]["chat"], shown["models"]["driver"]),
+                         (None, "coderunner-qwen3.5-9b", "fara1.5-4b"))
+        self.assertIn("browser_task", local.svc.registry.tools)
+        if anthropic is None:
+            self.skipTest("the anthropic client library is not installed")
+        remote.keep_key(KEY)
+        data["models"]["remote"] = {"provider": "anthropic", "model": "claude-haiku-5-5"}
+        away = Daemon(Config(json.loads(json.dumps(data)), path=paths.config_path()))
+        shown = await away.status()
+        # Claude plans, works the web pages and judges the steps; file search stays with the local model, and the
+        # screenshot driver is not offered to a model that is not waiting on this computer's memory.
+        self.assertEqual((shown["models"]["chat"], shown["models"]["driver"], shown["models"]["decision"],
+                          shown["models"]["embedding"], shown["models"]["local_chat"]),
+                         ("claude-haiku-5-5",) * 3 + ("coderunner-embeddinggemma-2", "coderunner-qwen3.5-9b"))
+        self.assertEqual((shown["remote"]["name"], shown["model"]["model"], shown["model"]["vision"]),
+                         ("Claude Haiku 5.5", "claude-haiku-5-5", True))
+        self.assertNotIn("browser_task", away.svc.registry.tools)
+        self.assertIs(away.svc.browser.decider.model.claude, away.svc.llm)
+        self.assertIs(away.svc.guard.model.claude, away.svc.llm)
+        self.assertNotIn(KEY, json.dumps(shown))
+        from coderunner.models import manager
+        started = mock.Mock()
+        fake = mock.Mock(name="llama.cpp", base_url="http://127.0.0.1:9/v1", running=lambda: False, start=started)
+        fake.name = "llama.cpp"
+        with mock.patch.object(manager, "choose_runtime", return_value=fake):
+            manager.ensure_running(away.config)                                 # the local model is not loaded
+            started.assert_not_called()
+            fake.running = lambda: True                                         # and one still loaded is let go
+            manager.ensure_running(away.config)
+            fake.stop.assert_called_once()
+            fake.running = lambda: False
+            manager.ensure_running(local.config)
+            started.assert_called_once()
+        for daemon in (local, away):
+            await daemon.svc.llm.aclose()
+
+
+class RouteTests(Home):
+    async def test_the_owner_turns_remote_mode_on_and_off_and_is_told_it_is_not_private(self):
+        from coderunner.agent import build_registry
+        from coderunner.server.gateway import admin_app
+        from test_gateway import ADMIN, FakeDaemon
+        svc = Svc({"models": {"chat": "coderunner-qwen3.5-9b"}})
+        svc.registry = build_registry(svc)
+        daemon = FakeDaemon(svc)
+        daemon.restart_soon = mock.Mock()
+        admin = {"Authorization": "Bearer " + ADMIN}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=admin_app(svc, daemon)),
+                                     base_url="http://127.0.0.1:8224") as client:
+            self.assertEqual((await client.get("/api/remote")).status_code, 401)
+            first = (await client.get("/api/remote", headers=admin)).json()
+            self.assertEqual((first["on"], first["has_key"], first["local"]), (False, False, "coderunner-qwen3.5-9b"))
+            self.assertEqual(first["warning"], "Your requests, the pages it reads and the files it opens are sent to "
+                                               "Anthropic. This is not private.")
+            bad = await client.post("/api/remote", json={"action": "on", "key": "nope"}, headers=admin)
+            self.assertEqual((bad.status_code, bad.json()["error"]), (400, "That is not an Anthropic API key (they start with sk-ant-)."))
+            daemon.restart_soon.assert_not_called()
+            with mock.patch.object(remote, "install_sdk"):
+                on = await client.post("/api/remote", json={"action": "on", "key": KEY}, headers=admin)
+            self.assertEqual((on.status_code, on.json()["on"], on.json()["name"], on.json()["restarting"]),
+                             (200, True, "Claude Haiku 5.5", True))
+            self.assertNotIn(KEY, on.text)
+            daemon.restart_soon.assert_called_once()
+            off = await client.post("/api/remote", json={"action": "off"}, headers=admin)
+            self.assertEqual((off.json()["on"], off.json()["has_key"]), (False, True))
+        audit = (svc.tmp / "audit.jsonl").read_text()
+        self.assertIn('"remote.changed"', audit)
+        self.assertNotIn(KEY, audit)
 
 
 if __name__ == "__main__":

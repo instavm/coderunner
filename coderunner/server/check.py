@@ -192,7 +192,7 @@ class CheckJob:
         """Start a run; returns "" or why it was not started."""
         if self.state == "running":
             return "A check is already running."
-        if not self.daemon.svc.config.get("models.chat"):
+        if not self.daemon.svc.config.get("models.chat") and not getattr(self.daemon.svc, "remote", None):
             return "No model is set up yet."
         if getattr(self.daemon.tasks, "running", None):
             return "A task is running; the check waits for the model to be free."

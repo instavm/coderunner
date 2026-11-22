@@ -85,10 +85,11 @@ def describe(site: str, path: str, action: str, role: str, name: str, *, title: 
 
 class DecisionModel:
     def __init__(self, base_url: str, model: str, *, api: str = "systemone", timeout: float = 20.0,
-                 api_key: str = "", transport=None):
+                 api_key: str = "", transport=None, claude=None):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api = api
+        self.claude = claude            # remote mode: the judge is asked through Anthropic's API (core/claude.py)
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.AsyncClient(timeout=timeout, headers=headers, trust_env=False, transport=transport)
 
@@ -113,7 +114,7 @@ class DecisionModel:
                           examples: tuple = ()) -> float:
         """Probability that the answer is one of the positive criteria keys. examples: (state, key) pairs a chat
         model is shown answered first (a decision model has its own training for this and is not shown them)."""
-        if self.api == "systemone":
+        if self.api == "systemone" and self.claude is None:
             response = await self._client.post(f"{self.base_url}/systemone", json={
                 "model": self.model, "state": state,
                 "questions": {"q": {"type": "choice", "instructions": question, "criteria": criteria}}})
@@ -131,6 +132,13 @@ class DecisionModel:
         shown = [turn for text, key in examples if key in letter
                  for turn in ({"role": "user", "content": json.dumps({"state": text})},
                               {"role": "assistant", "content": letter[key]})]
+        if self.claude is not None:
+            text = (await self.claude.ask(f"{SYSTEM}\n{json.dumps(task)}",
+                                          [*shown, {"role": "user", "content": json.dumps({"state": state})}]))
+            text = text.strip().strip('"\'*.` ')
+            if text[:1] not in labels or (len(text) > 1 and text[1].isalnum()):
+                raise ValueError(f"model answered {text[:20]!r}")
+            return 1.0 if labels[text[:1]] in positive else 0.0
         # A plain letter, not JSON: forcing a quote as the first token skewed a model's choice in testing.
         response = await self._client.post(f"{self.base_url}/chat/completions", json={
             "model": self.model, "temperature": 0, "max_tokens": 8,

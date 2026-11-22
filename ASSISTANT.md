@@ -831,6 +831,49 @@ the recommended one), `{"action": "location", "path": ..., "model": ...}` (an em
 Until setup has chosen a model the daemon starts no model runtime: an Ollama installed for something else is
 left alone on a Mac that will use llama.cpp.
 
+## Remote mode: Claude with your own Anthropic key
+
+The assistant is built to run on local models. As a setting, its model can instead be Claude on Anthropic's
+API, with a key of your own. **It is not private**: each request sends the conversation, the text of the pages
+the assistant reads and the contents of files it opens to Anthropic. The app says so where it is turned on,
+and for as long as it is on: the sidebar reads the model's name, "Anthropic" and "Not private" where it reads
+"Local · <model>" otherwise, and the Models panel carries the warning with the way back.
+
+```bash
+coderunner claude on --key-file ~/anthropic-key    # or without --key-file: the key is asked for, unseen
+coderunner claude status
+coderunner claude off                              # back to the model on this computer (--forget deletes the key)
+```
+
+In the app: "Use an Anthropic key" under Models in the Computer panel, or "Use an Anthropic key instead" on
+the first-run screen (nothing is downloaded then; file search and voice wait until a local setup is run).
+"Use the local model" in the same place switches back. The daemon starts again in place after either.
+
+What changes while it is on:
+
+* Claude Haiku 5.5 (`claude-haiku-5-5`; `--model claude-sonnet-5-5` or `claude-opus-5-5` for the others)
+  plans, reads pictures and screenshots, judges every browser step (the same question and worked examples as
+  a local judge) and screens untrusted text. The Models panel names it for planning, web pages and the
+  safety check, and `/api/status` reports it as `models.chat`, `models.driver` and `models.decision`.
+* File search, memory recall and voice keep their local models and say "on this computer".
+* The local chat model stays set up but is unloaded, and the browser driver is not used: `browser_task` is not
+  among the tools.
+* Approvals, the leak rule, the sandbox and the egress rules are unchanged.
+
+The key is kept in `assistant/anthropic-key`, readable only by you; it is never written to the config, the
+logs or the audit trail, and no message that reports a failure repeats it. Requests go through Anthropic's
+own client library (installed into CodeRunner's environment the first time remote mode is turned on), with
+thinking off and effort `medium`: the agent loop drops old screenshots and pages from earlier turns, and a
+thinking block is valid only while everything before it is unchanged. The instructions and tools are cached,
+and so is the conversation so far, so each step re-reads only what is new (the daemon's log has one line a
+request: the model that answered, the request id and the token counts, never the text). A refusal, a reply cut
+off at its limit, a rejected key, a rate limit or a network failure is said in the task's thread in a sentence.
+`GET /api/remote` says how it stands; `POST /api/remote` takes `{"action": "on", "key": ...}` (or `"key_file"`)
+or `{"action": "off"}`.
+
+A small file that holds a credential (an API key, a token, a private key: told by its contents, whatever it
+is named) is never read by the file tools and its contents are never indexed.
+
 ## Checking an install
 
 `coderunner check` does each kind of task once on this install and checks the answer, so "does it work here"

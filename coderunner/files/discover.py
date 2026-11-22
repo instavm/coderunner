@@ -24,7 +24,7 @@ from typing import Iterator
 
 from ..core import paths
 from . import attached
-from .kinds import MAX_CODE_BYTES, PROSE, is_code, is_generated, is_screenshot, kind_of
+from .kinds import MAX_CODE_BYTES, PROSE, holds_key, is_code, is_generated, is_screenshot, kind_of
 
 SECRET_DIRS = {".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".password-store", "Keychains", ".coderunner"}
 SECRET_FILES = (".env", ".env.*", "*.env", ".netrc", ".npmrc", ".pypirc", ".git-credentials", "credentials",
@@ -167,7 +167,7 @@ class Folders:
         state = paths.home().resolve()
         hidden = any(part.startswith(".") for part in real.relative_to(root).parts)
         private = any(d == real or d in real.parents for d in self.private_dirs())
-        if real == state or state in real.parents or is_secret(real) or hidden or private:
+        if real == state or state in real.parents or is_secret(real) or hidden or private or holds_key(real):
             raise FileAccessError(f"{path} may hold secrets or private app data and is never read")
         if not real.is_file():
             raise FileAccessError(f"{path} is not a file")

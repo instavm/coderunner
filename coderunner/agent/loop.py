@@ -259,7 +259,7 @@ class Agent:
             try:
                 reply = await self.llm.chat(messages, tools=self.registry.schemas(), think=think)
             except LLMError as exc:
-                final = f"I couldn't reach the local model: {exc}"
+                final = f"I couldn't get an answer from the model: {exc}"
                 break
             if not reply["tool_calls"]:
                 if not reply["content"] and not nudged:

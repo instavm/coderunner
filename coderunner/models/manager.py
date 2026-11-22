@@ -1160,7 +1160,14 @@ def ensure_running(config) -> Endpoint:
     set_up = bool(config.get("models.chat") or config.get("models.embedding") or config.get("models.base_url"))
     rt = choose_runtime(config) if set_up else None
     ep = endpoint(config)
-    if rt and rt.name in LOCAL and rt.base_url.rstrip("/") == ep.base_url and not rt.running():
+    from . import remote
+    # In remote mode the planner is not on this computer: its local model stays set up but is not loaded.
+    ours = rt is not None and rt.name in LOCAL and rt.base_url.rstrip("/") == ep.base_url
+    if ours and remote.active(config) is not None:
+        # Its memory goes back to the owner's apps: the model was still held (6.7 GB) after the switch.
+        if rt.running() and config.get("models.chat"):
+            rt.unload(config.get("models.chat")) if rt.name == "ollama" else rt.stop()
+    elif ours and not rt.running():
         rt.start()
     from .coreml import CoreMLRuntime
     embedder = CoreMLRuntime(config)

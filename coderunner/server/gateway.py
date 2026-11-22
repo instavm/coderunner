@@ -516,12 +516,46 @@ def admin_app(svc, daemon) -> Starlette:
             return JSONResponse({"error": "message is required"}, status_code=400)
         if len(files) > attached.MAX_PER_TASK:
             return JSONResponse({"error": f"At most {attached.MAX_PER_TASK} files to a message."}, status_code=400)
-        if not svc.config.get("models.chat"):
+        if not svc.config.get("models.chat") and not getattr(svc, "remote", None):
             return JSONResponse({"error": "No local chat model is set up. Run `coderunner setup`."}, status_code=409)
         conversation = str(body.get("conversation") or "")
         if not conversation.startswith("app:"):
             conversation = "app:" + secrets.token_hex(6)
         return JSONResponse(daemon.tasks.start(conversation, message, principal(request), attachments=files))
+
+    async def remote_mode(request: Request):
+        """Remote mode: the assistant's model on Anthropic's API with the owner's key (models/remote.py). GET says
+        how it stands; POST {"action": "on", "key" or "key_file", "model"} turns it on, {"action": "off"} goes
+        back to the model on this computer. The daemon starts again in place after either."""
+        from ..models import remote
+
+        def state() -> dict:
+            now = remote.active(svc.config)
+            return {"on": now is not None, **(now or {}), "has_key": bool(remote.key()), "warning": remote.WARNING,
+                    "models": [{"id": key, "name": name} for key, name in remote.MODELS.items()],
+                    "local": svc.config.get("models.chat") or ""}
+        if request.method == "GET":
+            return JSONResponse(state())
+        body = await request.json()
+        try:
+            if body.get("action") == "on":
+                if body.get("key"):
+                    remote.keep_key(str(body["key"]))
+                elif body.get("key_file"):
+                    remote.keep_key_file(str(body["key_file"]))
+                await asyncio.to_thread(remote.turn_on, svc.config, str(body.get("model") or remote.DEFAULT),
+                                        lambda line: None)
+            elif body.get("action") == "off":
+                remote.turn_off(svc.config, forget=bool(body.get("forget")))
+            else:
+                return JSONResponse({"error": "action must be on or off"}, status_code=400)
+        except (ValueError, RuntimeError) as exc:
+            return JSONResponse({**state(), "error": str(exc)}, status_code=400)
+        svc.audit.write("remote.changed", on=state()["on"], model=state().get("model", ""), origin=principal(request))
+        restart = getattr(daemon, "restart_soon", None)
+        if restart is not None:
+            restart()
+        return JSONResponse({**state(), "restarting": restart is not None})
 
     async def check(request: Request):
         """`coderunner check`: the core tasks run on this install and checked (server/check.py)."""
@@ -722,6 +756,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/tasks/{id}/cancel", cancel_task, methods=["POST"]),
         Route("/api/shots/{name}", shot, methods=["GET"]),
         Route("/api/check", check, methods=["GET", "POST"]),
+        Route("/api/remote", remote_mode, methods=["GET", "POST"]),
         Route("/api/uploads", upload, methods=["POST"]),
         Route("/api/uploads/{id}", uploaded, methods=["GET"]),
         Route("/api/conversations", conversations, methods=["GET"]),
