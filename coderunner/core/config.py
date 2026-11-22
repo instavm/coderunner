@@ -90,7 +90,8 @@ DEFAULTS: dict[str, Any] = {
         "block": ["*.local", "localhost"],
         "sensitive_hosts": [],       # extra sites where every click or keystroke needs one-time approval
     },
-    "connectors": {"enabled": []},   # e.g. ["calendar", "reminders"]
+    "connectors": {"enabled": [],    # e.g. ["calendar", "reminders"]; also settings (appearance, volume), phone (dial)
+                   "send": []},      # connectors that may send for the owner, each message approved: ["mail"]
     "channels": {},                  # per-channel settings, see coderunner/channels
     "remote": {"provider": "", "owners": []},
 }

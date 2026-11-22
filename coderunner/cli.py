@@ -717,11 +717,25 @@ def cmd_channels(args, config: Config) -> int:
 
 
 def cmd_connectors(args, config: Config) -> int:
+    from .connectors.macos import SENDERS
     enabled = list(config.get("connectors.enabled", []) or [])
-    if args.action == "enable" and args.name not in enabled:
-        enabled.append(args.name)
-    elif args.action == "disable" and args.name in enabled:
-        enabled.remove(args.name)
+    sending = list(config.get("connectors.send", []) or [])
+    if getattr(args, "send", False) and args.name not in SENDERS:
+        print(f"--send is for: {', '.join(SENDERS)}.")
+        return 1
+    if args.action == "enable" and args.name:
+        if args.name not in enabled:
+            enabled.append(args.name)
+        if args.send and args.name not in sending:
+            sending.append(args.name)
+            print(f"The assistant can now send from {args.name}. It asks you before every message, showing who it "
+                  "goes to and its whole text.")
+    elif args.action == "disable" and args.name:
+        if args.send:                           # sending off, the connector stays
+            sending = [name for name in sending if name != args.name]
+        else:
+            enabled = [name for name in enabled if name != args.name]
+            sending = [name for name in sending if name != args.name]
     elif args.action == "test":
         import asyncio
         from . import connectors
@@ -733,8 +747,9 @@ def cmd_connectors(args, config: Config) -> int:
             return 1
         return 0
     config.set("connectors.enabled", enabled)
+    config.set("connectors.send", sending)
     config.save()
-    _print({"enabled": enabled})
+    _print({"enabled": enabled, "send": sending})
     return 0
 
 
@@ -1022,7 +1037,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("connectors")
     p.add_argument("action", choices=["list", "enable", "disable", "test"], nargs="?", default="list")
-    p.add_argument("name", nargs="?", choices=["calendar", "reminders", "notes", "mail", "contacts"])
+    p.add_argument("name", nargs="?", choices=["calendar", "reminders", "notes", "mail", "contacts", "settings",
+                                               "phone"])
+    p.add_argument("--send", action="store_true",
+                   help="with enable: also let the assistant send (mail), each message approved by you; with "
+                        "disable: switch only sending off")
     p.set_defaults(func=cmd_connectors)
 
     p = sub.add_parser("remote", help="Private access from your devices over Tailscale")

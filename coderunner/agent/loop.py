@@ -103,6 +103,10 @@ class RunContext:
     images: list[tuple[str, str]] = field(default_factory=list)
     plan: list[dict] = field(default_factory=list)      # written by the model with plan_update
     told: int = 0                                       # things said to the owner on purpose (tell_owner)
+    # What this run may name without inventing it: addresses and numbers the owner wrote or their contacts
+    # returned (tools.handles), and the paths its own file searches found.
+    known: set[str] = field(default_factory=set)
+    found_files: list[str] = field(default_factory=list)
     # Called with each step as it happens (tool calls, notes, the plan), for an app showing the task live.
     events: Callable[[dict], None] | None = None
 
@@ -232,6 +236,12 @@ class Agent:
     async def _run(self, ctx: RunContext, text: str, images: list[tuple[str, str]] | None) -> str:
         if not ctx.origin_is_owner:
             ctx.taint()
+        else:
+            from .tools import handles
+            ctx.known |= handles(text)
+            for earlier in self._history(ctx.conversation):
+                if earlier.get("role") == "user" and isinstance(earlier.get("content"), str):
+                    ctx.known |= handles(earlier["content"])
         user_content: Any = text
         if images:
             user_content = [{"type": "text", "text": text}] + [

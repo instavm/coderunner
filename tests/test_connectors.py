@@ -102,16 +102,70 @@ class ArgvTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SafetyTests(unittest.TestCase):
-    def test_no_tool_can_send_mail(self):
-        names = [tool.name for tool in all_tools()]
-        self.assertFalse([n for n in names if "send" in n])
-        self.assertNotIn(".send(", macos.MAIL_DRAFT)
+    def test_mail_is_sent_only_where_the_owner_switched_sending_on(self):
+        self.assertNotIn(".send(", macos.MAIL_DRAFT)                    # a draft is still only a draft
         self.assertIn("msg.save()", macos.MAIL_DRAFT)
+        senders = [tool for tool in all_tools() if tool.send]
+        self.assertEqual([(t.name, t.connector, t.action) for t in senders], [("mail_send", "mail", "connector.send")])
+        self.assertEqual([t.name for t in all_tools() if ".send(" in t.script], ["mail_send"])
+        # Enabling Mail (to read it, to draft) does not bring sending with it.
+        reading = load_connectors(Config({"connectors": {"enabled": ["mail"]}}), system="Darwin")
+        self.assertNotIn("mail_send", {t.name for t in reading})
+        sending = load_connectors(Config({"connectors": {"enabled": ["mail"], "send": ["mail"]}}), system="Darwin")
+        self.assertIn("mail_send", {t.name for t in sending})
+        alone = load_connectors(Config({"connectors": {"enabled": [], "send": ["mail"]}}), system="Darwin")
+        self.assertEqual(alone, [])
+
+    def test_the_approval_for_a_message_shows_who_it_goes_to_and_all_of_it(self):
+        send = tools(None)["mail_send"]
+        body = "Dear Asha,\n" + "The flat is free from 1 March. " * 40 + "\nRegards"
+        args = {"to": "asha@example.com, ravi@example.org", "cc": "me@example.net", "subject": "The flat", "body": body}
+        shown = send.describe(args)
+        self.assertEqual(shown.splitlines()[0], "Send this email from your Mail account now")
+        for part in ("asha@example.com", "ravi@example.org", "me@example.net", "Subject: The flat", body):
+            self.assertIn(part, shown)
+        self.assertEqual(send.target(args), "mail:asha@example.com,ravi@example.org,me@example.net")
+        self.assertEqual(send.who(args), ["asha@example.com", "ravi@example.org", "me@example.net"])
+        with self.assertRaises(ValueError):
+            send.build({"to": "not an address", "subject": "x", "body": "y"})
+
+    def test_only_three_reversible_settings_can_be_changed(self):
+        change = tools(None)["settings_set"]
+        self.assertEqual(set(macos.SETTINGS), {"appearance", "volume", "muted"})
+        self.assertEqual(change.build({"setting": "Appearance", "value": "Dark"}), ["appearance", "dark"])
+        self.assertEqual(change.build({"setting": "volume", "value": "30%"}), ["volume", "30"])
+        self.assertEqual(change.build({"setting": "muted", "value": True}), ["muted", "true"])
+        self.assertEqual(change.describe({"setting": "volume", "value": 30}), "Set this Mac's sound volume to 30%")
+        self.assertEqual(change.describe({"setting": "muted", "value": "false"}), "Turn this Mac's sound back on")
+        self.assertEqual((change.action, change.target({"setting": "appearance", "value": "light"})), ("system.setting", "appearance"))
+        for bad in ({"setting": "firewall", "value": "off"}, {"setting": "volume", "value": "150"},
+                    {"setting": "volume", "value": "loud"}, {"setting": "appearance", "value": "pink"},
+                    {"setting": "filevault", "value": "false"}, {"setting": "", "value": "x"}):
+            with self.assertRaises(ValueError):
+                change.build(bad)
+        # The script itself refuses a name it does not know, whatever reached it.
+        self.assertIn("Not a setting the assistant may change", macos.SETTINGS_SET)
+        for word in ("do shell script", "defaults write", "sudo", "security", "password"):
+            self.assertNotIn(word, macos.SETTINGS_SET + macos.SETTINGS_GET + macos.PHONE_CALL)
+
+    def test_a_call_is_dialled_for_the_owner_and_short_numbers_are_theirs_to_dial(self):
+        call = tools(None)["phone_call"]
+        self.assertEqual(call.build({"number": "+91 98450 12345"}), ["+919845012345"])
+        self.assertEqual(call.build({"number": "(080) 4112-3456"}), ["08041123456"])
+        self.assertEqual(call.describe({"number": "+91 98450 12345", "name": "the plumber"}),
+                         "Call +919845012345 (the plumber) from this Mac. FaceTime asks you to confirm, and you do the talking.")
+        self.assertEqual((call.action, call.target({"number": "98450 12345"}), call.who({"number": "98450 12345"})),
+                         ("phone.call", "9845012345", ["9845012345"]))
+        for bad in ("112", "911", "100", "1800", "call me", "+91 98450 12345 ext 4; rm", "tel:123456789", ""):
+            with self.assertRaises(ValueError, msg=bad):
+                call.build({"number": bad})
+        self.assertIn("'tel:' + argv[0]", macos.PHONE_CALL)
 
     def test_write_and_untrusted_flags(self):
         t = tools(None)
         self.assertEqual({n for n, tool in t.items() if tool.write},
-                         {"calendar_create", "reminders_create", "notes_create", "mail_draft"})
+                         {"calendar_create", "reminders_create", "notes_create", "mail_draft", "mail_send", "settings_set",
+                          "phone_call"})
         for name in ("mail_recent", "mail_read", "notes_search", "notes_read", "calendar_events", "contacts_find"):
             self.assertTrue(t[name].untrusted, name)
         for tool in t.values():

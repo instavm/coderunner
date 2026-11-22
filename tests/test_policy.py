@@ -28,6 +28,24 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(policy.evaluate(Action("channel.send", "telegram:1", "hi")), Decision.ASK)
         self.assertIs(policy.evaluate(Action("unknown.kind", "x", "?")), Decision.ASK)
 
+    def test_sending_changing_a_setting_and_calling_always_ask_and_are_never_granted_for_good(self):
+        every = {"connectors": {"enabled": ["mail", "settings", "phone"], "send": ["mail"]},
+                 "policy": {"rules": [{"kind": kind, "target": "*", "decision": "allow"}
+                                      for kind in ("connector.send", "system.setting", "phone.call")]}}
+        policy = make_policy(every)
+        for action in (Action("connector.send", "mail:a@example.com", "send"), Action("system.setting", "volume", "set"),
+                       Action("phone.call", "9845012345", "call")):
+            self.assertIs(policy.evaluate(action), Decision.ASK, action.kind)      # an allow rule does not reach them
+            self.assertEqual(action.risk(), "high")
+        # Reading or drafting mail is not leave to send it; nor is a setting or a call open until its connector is.
+        self.assertIs(make_policy({"connectors": {"enabled": ["mail"]}}).evaluate(
+            Action("connector.send", "mail:a@example.com", "send")), Decision.DENY)
+        self.assertIs(make_policy({"connectors": {"send": ["mail"]}}).evaluate(
+            Action("connector.send", "mail:a@example.com", "send")), Decision.DENY)
+        bare = make_policy({"connectors": {"enabled": ["calendar"]}})
+        self.assertIs(bare.evaluate(Action("system.setting", "volume", "set")), Decision.DENY)
+        self.assertIs(bare.evaluate(Action("phone.call", "9845012345", "call")), Decision.DENY)
+
     def test_connectors_need_enabling(self):
         policy = make_policy({"connectors": {"enabled": ["calendar"]}})
         self.assertIs(policy.evaluate(Action("connector.read", "calendar", "read")), Decision.ALLOW)

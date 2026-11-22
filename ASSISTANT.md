@@ -404,7 +404,7 @@ picking dates and filters, running code, saving notes) runs without prompts.
 | Using your everyday browser (optional, `coderunner browser connect`) | The CodeRunner extension lets the assistant use only the tabs in its "CodeRunner" tab group (and popups those tabs open); your other tabs are never listed, read or controlled, and dragging a tab out of the group takes it back. The extension reaches the daemon through a native messaging host registered for its ID alone, over a unix socket only your account can open, with a token. The same approvals, step judge, password and payment rules and request guard apply. What differs from the dedicated profile: the group's tabs have your sign-ins and cookies; permission prompts (camera, location...) are shown to you instead of being denied; the protocol is limited to the page domains the assistant needs (no cookie, storage or browser-wide access); a popup's very first request can leave before the guard attaches to it. Chrome shows that CodeRunner is debugging the browser while the assistant works. |
 | Sandbox exfiltration | Network mode `proxy`: the VM is on a host-only network whose only way out is the egress proxy. Destinations are allow-listed or approved per host; LAN, loopback, link-local and tailnet (CGNAT) addresses are refused; connections go to the address that was checked; denials are remembered for five minutes and at most five network approvals can wait at once. Mode `none` has no egress at all (the secret-injecting fetch is disabled too). |
 | API keys | Stored on the host. Sandbox code writes `{{secret:name}}` in a header; the gateway substitutes it only over https, only for hosts you named (and the header you named, if any), and strips it from responses. |
-| Connectors | Off until enabled one by one. Writes only create calendar events (no invitations), reminders, notes and mail drafts; they run without a prompt unless the task has read untrusted content. Mail can only create drafts. One-time codes and reset links are redacted from mail. Scripts get data as arguments, never as code. |
+| Connectors | Off until enabled one by one. Writes only create calendar events (no invitations), reminders, notes and mail drafts; they run without a prompt unless the task has read untrusted content. Mail only creates drafts unless you switch sending on for it, and then every message is approved with its recipients and whole text; changing one of three Mac settings and dialling a call are likewise approved one at a time. One-time codes and reset links are redacted from mail. Scripts get data as arguments, never as code. |
 | Remote access | Tailscale Serve on your tailnet only (never Funnel). A paired-device cookie is always required; Tailscale identity headers only narrow who may use it, because local processes can forge them. |
 | Accountability | Every tool call, decision, approval and egress connection is in `~/.coderunner/assistant/audit.jsonl` (`coderunner audit`). Secrets are redacted. |
 
@@ -586,7 +586,32 @@ formats (setup installs it with Homebrew when missing).
 permission. Reads: calendar events, reminders, note search and read, recent
 mail and message bodies, contact lookup. Writes: calendar events (without
 invitations), reminders, notes, and mail drafts saved to Drafts; they ask first
-only after the task has read untrusted content. There is no send tool. Calendar queries miss recurring series that started before the range.
+only after the task has read untrusted content. Calendar queries miss recurring series that started before the range.
+
+Three things act for you outside the browser, each off until you turn it on and each asked about every time
+(one-time approval only; no rule or standing grant covers them):
+
+* **Sending mail.** `coderunner connectors enable mail --send` adds `mail_send` beside the draft tool
+  (`connectors.send` in the config; enabling Mail alone never allows sending, and `disable mail --send` takes
+  it away again). The approval shows the recipients and the whole message. A recipient that is neither in what
+  you wrote in the conversation nor in a result from your Contacts is pointed out in the approval ("Check ...:
+  not in what you asked, nor in your contacts"), since text on a page or in a mail can ask for a message to be
+  sent somewhere.
+* **A few settings of this Mac.** `coderunner connectors enable settings` adds `settings_get` and
+  `settings_set` for appearance (dark or light), sound volume and mute, and nothing else: no security, privacy,
+  account, sharing or network setting can be reached. One setting per approval; the reply says what the Mac
+  reports afterwards.
+* **Dialling a call.** `coderunner connectors enable phone` adds `phone_call`: it hands a full phone number to
+  FaceTime, which asks you to confirm, and you do the talking. Short numbers (emergency and service codes) are
+  refused. A number that is not in your request or your contacts is pointed out like a mail recipient.
+
+Texting someone else goes through the iMessage channel's `send_message`, approved per message, as before.
+These three were written and tested against stand-ins for the apps and their scripts compile; they have not
+been run against Mail, System Events or FaceTime on a real Mac.
+
+Where a file tool is given a path that does not exist, it answers with the paths this task's own searches
+returned that have a similar name, to choose from: a model that remembered a file's name but not its folder
+otherwise guessed again.
 
 ## Your files, mail, messages, notes and calendar: one index
 

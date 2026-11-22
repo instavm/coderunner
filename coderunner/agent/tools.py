@@ -9,6 +9,8 @@ actions need fresh approval.
 from __future__ import annotations
 
 import json
+import os
+import re
 import urllib.parse
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -534,10 +536,18 @@ def file_tools(svc) -> list[Tool]:
     def hold_sources(ctx, found: list[dict]) -> None:
         """What the results hold: the owner's files, and the app sources among them (mail, notes...)."""
         ctx.holds("files")
+        remember(ctx, found)
         for item in found:
             source = SOURCE_OF_KIND.get(item.get("kind", ""))
             if source:
                 ctx.holds(source)
+
+    def remember(ctx, found: list[dict]) -> None:
+        for item in found:
+            path = str(item.get("path") or "")
+            if path and path not in ctx.found_files:
+                ctx.found_files.append(path)
+        del ctx.found_files[:-200]
 
     async def read_entry(path: str, source: str, ctx) -> str:
         """An indexed Mail, Messages, Notes or Calendar entry, as indexed: the source must be chosen (and its
@@ -552,8 +562,24 @@ def file_tools(svc) -> list[Tool]:
         text = files.sources.text(path)
         return f"{path}:\n{text}" if text else f"{path} holds no text."
 
+    def similar(wanted: str, ctx) -> list[str]:
+        """Paths this task's own searches found whose names are close to one that does not exist."""
+        import difflib
+        names = {os.path.basename(path).lower(): path for path in ctx.found_files}
+        close = difflib.get_close_matches(os.path.basename(wanted).lower(), list(names), n=3, cutoff=0.5)
+        return [names[name] for name in close]
+
     async def open_file(args, ctx, verb: str):
-        path = files.resolve(args["path"])          # only shared folders; never secrets or app data
+        try:
+            path = files.resolve(args["path"])      # only shared folders; never secrets or app data
+        except Exception as exc:
+            # A path the model wrote from memory (a name it saw, a folder it guessed) is answered with the
+            # paths its searches really returned, to choose from, rather than left to guess again.
+            near = similar(str(args.get("path", "")), ctx)
+            if near and type(exc).__name__ == "FileAccessError":
+                raise type(exc)(f"{exc}. This task's searches found: " + "; ".join(near) +
+                                ". Use one of these paths exactly as written.") from None
+            raise
         if not await svc.policy.check(Action("files.read", str(path), f"{verb} {path}", tainted=ctx.tainted),
                                       origin=ctx.origin):
             raise PermissionError(f"reading {path} is not allowed")
@@ -566,6 +592,7 @@ def file_tools(svc) -> list[Tool]:
             found = files.listing(kind, limit)
             if found:
                 ctx.holds("files")
+                remember(ctx, found)
             return {"note": "No query: the most recently changed files in the shared folders.", "files": found} \
                 if found else "The shared folders have no indexed files" + (f" of kind {kind}." if kind else ".")
         found = await files.search(query, kind, limit)
@@ -633,18 +660,52 @@ def file_tools(svc) -> list[Tool]:
 
 # ---- connectors and channels --------------------------------------------
 
+EMAIL = re.compile(r"[^\s@<>\"',;()\[\]]+@[^\s@<>\"',;()\[\]]+\.[A-Za-z]{2,}")
+PHONE = re.compile(r"\+?\d[\d\s().-]{5,}\d")
+
+
+def handle(value: str) -> str:
+    """An email address or phone number in the one form they are compared in."""
+    value = str(value).strip()
+    if "@" in value:
+        return value.lower().strip(".")
+    return re.sub(r"\D", "", value)[-10:]
+
+
+def handles(text: Any) -> set[str]:
+    """Every email address and phone number written in a text (or anywhere in a tool's result)."""
+    text = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False, default=str)
+    found = {handle(match) for match in EMAIL.findall(text)}
+    return found | {handle(match) for match in PHONE.findall(text) if 7 <= len(re.sub(r"\D", "", match)) <= 15}
+
+
 def connector_tools(svc) -> list[Tool]:
     tools = []
     for spec in svc.connectors:
         async def handler(args, ctx, spec=spec):
-            kind = "connector.write" if spec.write else "connector.read"
-            summary = spec.describe(args) if hasattr(spec, "describe") else f"{spec.name} {json.dumps(args)[:300]}"
-            if not await svc.policy.check(Action(kind, spec.connector, summary, dict(args), tainted=ctx.tainted),
+            kind = getattr(spec, "action", "") or ("connector.write" if spec.write else "connector.read")
+            try:
+                # The approval shows exactly what will be sent, changed or dialled: bad arguments stop here.
+                summary = spec.describe(args) if hasattr(spec, "describe") else f"{spec.name} {json.dumps(args)[:300]}"
+                target = spec.target(args) if getattr(spec, "target", None) else spec.connector
+            except Exception as exc:
+                return f"Error: {exc}"
+            # A recipient the model names must come from somewhere: the owner's own words or their contacts.
+            # One that did not (text on a page or in a mail can ask for it) is pointed out in the approval.
+            strangers = [who for who in (spec.who(args) if getattr(spec, "who", None) else [])
+                         if handle(who) not in ctx.known]
+            if strangers:
+                summary += ("\n\nCheck " + ", ".join(strangers) + ": not in what you asked, nor in your contacts.")
+            if not await svc.policy.check(Action(kind, target, summary, dict(args), tainted=ctx.tainted),
                                           origin=ctx.origin):
-                return f"Error: {spec.connector} access was not allowed."
+                return (f"Error: the owner did not approve this ({spec.name})." if getattr(spec, "action", "")
+                        else f"Error: {spec.connector} access was not allowed.")
             if not spec.write:
                 ctx.holds(spec.connector)
-            return await spec.call(args)
+            result = await spec.call(args)
+            if spec.connector == "contacts":
+                ctx.known |= handles(result)
+            return result
         tools.append(Tool(spec.name, spec.description, spec.parameters, handler, untrusted=spec.untrusted))
     return tools
 

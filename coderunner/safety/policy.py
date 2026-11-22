@@ -71,16 +71,19 @@ DEFAULTS: dict[str, Decision] = {
     "connector.write": Decision.ALLOW,    # creates events, reminders, notes and drafts; nothing is sent
     "channel.reply": Decision.ALLOW,      # reply in the conversation the owner started
     "channel.send": Decision.ASK,         # message anyone else
+    "connector.send": Decision.ASK,       # send mail from the owner's account (connectors.send must list it)
+    "system.setting": Decision.ASK,       # change one of a few reversible settings of this Mac
+    "phone.call": Decision.ASK,           # dial a number for the owner, who then speaks
     "schedule.create": Decision.ALLOW,
     "data.share": Decision.ASK,           # see the module docstring
 }
 
 # High-risk kinds never accept standing grants, only one-time approval.
-HIGH_RISK = {"browser.sensitive", "channel.send"}
+HIGH_RISK = {"browser.sensitive", "channel.send", "connector.send", "system.setting", "phone.call"}
 # After untrusted content these ask, so injected text cannot plant lasting changes or
 # reuse the owner's earlier grants.
 TAINT_SENSITIVE = {"browser.sensitive", "channel.send", "connector.write", "egress.connect",
-                   "schedule.create", "memory.forget"}
+                   "schedule.create", "memory.forget", "connector.send", "system.setting", "phone.call"}
 
 # The agent run an action belongs to (an agent.loop.RunContext), so the leak check can see
 # what that run has read without every caller passing it along.
@@ -173,6 +176,16 @@ class Policy:
         if action.kind == "connector.write":
             enabled = self.config.get("connectors.enabled", []) or []
             if action.target.split(":")[0] not in enabled:
+                return Decision.DENY
+        if action.kind == "connector.send":
+            # Sending is switched on per connector, apart from enabling it: reading mail does not allow sending it.
+            name = action.target.split(":")[0]
+            if name not in (self.config.get("connectors.enabled", []) or []) \
+                    or name not in (self.config.get("connectors.send", []) or []):
+                return Decision.DENY
+        if action.kind in ("system.setting", "phone.call"):
+            name = {"system.setting": "settings", "phone.call": "phone"}[action.kind]
+            if name not in (self.config.get("connectors.enabled", []) or []):
                 return Decision.DENY
         if action.kind == "secret.use":
             name, _, host = action.target.partition("@")

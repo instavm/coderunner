@@ -17,7 +17,11 @@ Known limits:
   its first occurrence). Large calendars can also be slow, hence the longer
   Calendar timeout.
 - Mail ids are Mail's numeric message ids, looked up in the given mailbox.
-- mail_draft saves a draft; there is deliberately no tool that sends mail.
+- mail_draft saves a draft. mail_send exists only where the owner has switched sending on for Mail
+  (`connectors.send`), and every message is approved one at a time with its recipients and full text shown.
+- settings_set changes only the settings named in SETTINGS (appearance, sound volume, mute): reversible ones,
+  nothing to do with security, privacy, accounts or sharing. phone_call dials a number in FaceTime, which asks
+  the owner to confirm; the owner speaks, the assistant does not.
 """
 
 from __future__ import annotations
@@ -34,8 +38,10 @@ from typing import Any, Awaitable, Callable
 from .redact import redact
 
 OSASCRIPT = "/usr/bin/osascript"
-CONNECTORS = ("calendar", "reminders", "notes", "mail", "contacts")
-APPS = {"calendar": "Calendar", "reminders": "Reminders", "notes": "Notes", "mail": "Mail", "contacts": "Contacts"}
+CONNECTORS = ("calendar", "reminders", "notes", "mail", "contacts", "settings", "phone")
+SENDERS = ("mail",)             # connectors that can send for the owner once connectors.send lists them
+APPS = {"calendar": "Calendar", "reminders": "Reminders", "notes": "Notes", "mail": "Mail", "contacts": "Contacts",
+        "settings": "System Events", "phone": "FaceTime"}
 DEFAULT_TIMEOUT = 30.0
 CALENDAR_TIMEOUT = 60.0
 MAX_RANGE_DAYS = 366
@@ -311,6 +317,59 @@ function run(argv) {
 }
 """
 
+# Sends at once, from the owner's default account. Offered only where connectors.send lists mail, and each
+# message is approved by the owner with its recipients and whole text shown.
+MAIL_SEND = PRELUDE + r"""
+function run(argv) {
+  const [to, cc, subject, body] = argv;
+  const Mail = Application('Mail');
+  const msg = Mail.OutgoingMessage({subject: subject, content: body, visible: false});
+  Mail.outgoingMessages.push(msg);
+  for (const address of to.split('\n').filter(Boolean)) msg.toRecipients.push(Mail.Recipient({address: address}));
+  for (const address of cc.split('\n').filter(Boolean)) msg.ccRecipients.push(Mail.CcRecipient({address: address}));
+  msg.send();
+  return JSON.stringify({sent: true, to: to.split('\n').filter(Boolean), subject: subject});
+}
+"""
+
+SETTINGS_GET = r"""
+function run(argv) {
+  const app = Application.currentApplication();
+  app.includeStandardAdditions = true;
+  const sound = app.getVolumeSettings();
+  return JSON.stringify({appearance: Application('System Events').appearancePreferences.darkMode() ? 'dark' : 'light',
+                         volume: sound.outputVolume, muted: sound.outputMuted});
+}
+"""
+
+# One setting at a time, and only these three: the name and value were checked before they got here.
+SETTINGS_SET = r"""
+function run(argv) {
+  const [name, value] = argv;
+  const app = Application.currentApplication();
+  app.includeStandardAdditions = true;
+  if (name === 'appearance') Application('System Events').appearancePreferences.darkMode = (value === 'dark');
+  else if (name === 'volume') app.setVolume(null, {outputVolume: Number(value)});
+  else if (name === 'muted') app.setVolume(null, {outputMuted: value === 'true'});
+  else throw new Error('Not a setting the assistant may change: ' + name);
+  // What the Mac says afterwards, not what was asked for.
+  const sound = app.getVolumeSettings();
+  return JSON.stringify({changed: name, now: {
+    appearance: Application('System Events').appearancePreferences.darkMode() ? 'dark' : 'light',
+    volume: sound.outputVolume, muted: sound.outputMuted}});
+}
+"""
+
+# Hands the number to FaceTime, which shows its own "Call" confirmation. Nothing speaks for the owner.
+PHONE_CALL = r"""
+function run(argv) {
+  const app = Application.currentApplication();
+  app.includeStandardAdditions = true;
+  app.openLocation('tel:' + argv[0]);
+  return JSON.stringify({dialling: argv[0], note: 'FaceTime asks the owner to confirm the call; the owner speaks.'});
+}
+"""
+
 CONTACTS_FIND = PRELUDE + r"""
 function run(argv) {
   const [query, limitStr] = argv;
@@ -336,6 +395,7 @@ PROBES = {
     "notes": "function run(argv) { return JSON.stringify(Application('Notes').accounts.name()) }",
     "mail": "function run(argv) { return JSON.stringify(Application('Mail').accounts.name()) }",
     "contacts": "function run(argv) { return JSON.stringify(Application('Contacts').groups.name()) }",
+    "settings": "function run(argv) { return JSON.stringify([Application('System Events').appearancePreferences.darkMode()]) }",
 }
 
 
@@ -459,6 +519,10 @@ class ConnectorTool:
     post: Callable[[Any], Any] | None = None
     summary: Callable[[dict], str] | None = None
     runner: Runner | None = field(default=None, repr=False)
+    action: str = ""            # the policy kind when it is not connector.read or connector.write
+    send: bool = False          # offered only where connectors.send lists its connector
+    target: Callable[[dict], str] | None = None        # what the approval is about (recipients, a setting, a number)
+    who: Callable[[dict], list[str]] | None = None     # the people it reaches, checked against what the owner gave
 
     def describe(self, args: dict) -> str:
         if self.summary is not None:
@@ -533,6 +597,57 @@ def _describe_mail_draft(args: dict) -> str:
         lines.append(f"Cc: {_show(args['cc'])}")
     lines += [f"Subject: {args.get('subject', '')}", f"Body:\n{args.get('body', '')}"]
     return "\n".join(lines)
+
+
+def _describe_mail_send(args: dict) -> str:
+    lines = ["Send this email from your Mail account now", f"To: {_show(args.get('to', ''))}"]
+    if args.get("cc"):
+        lines.append(f"Cc: {_show(args['cc'])}")
+    lines += [f"Subject: {args.get('subject', '')}", f"Body:\n{args.get('body', '')}"]
+    return "\n".join(lines)
+
+
+# What settings_set may change, and to what. Nothing about security, privacy, accounts, sharing or networks.
+SETTINGS = {"appearance": ("dark", "light"), "volume": range(0, 101), "muted": ("true", "false")}
+
+
+def _setting(args: dict) -> list[str]:
+    name = _text(args, "setting", True).lower()
+    if name not in SETTINGS:
+        raise ValueError(f"The assistant may change only: {', '.join(SETTINGS)}.")
+    raw = args.get("value")
+    value = str(raw).lower() if isinstance(raw, bool) else str(raw if raw is not None else "").strip().lower().rstrip("%")
+    if name == "volume":
+        if not value.isdigit() or int(value) not in SETTINGS["volume"]:
+            raise ValueError("volume is a whole number from 0 to 100.")
+        value = str(int(value))
+    elif value not in SETTINGS[name]:
+        raise ValueError(f"{name} is one of: {', '.join(SETTINGS[name])}.")
+    return [name, value]
+
+
+def _describe_setting(args: dict) -> str:
+    name, value = _setting(args)
+    return {"appearance": f"Change this Mac's appearance to {value}",
+            "volume": f"Set this Mac's sound volume to {value}%",
+            "muted": "Mute this Mac's sound" if value == "true" else "Turn this Mac's sound back on"}[name]
+
+
+PHONE_NUMBER = re.compile(r"\+?\d{7,15}")
+
+
+def _number(args: dict) -> list[str]:
+    """A full phone number, digits only with an optional +. Short numbers (emergency and service codes among
+    them) are refused: those are for a person to dial."""
+    number = re.sub(r"[\s().-]", "", _text(args, "number", True))
+    if not PHONE_NUMBER.fullmatch(number):
+        raise ValueError("number must be a full phone number: 7 to 15 digits, with an optional leading +.")
+    return [number]
+
+
+def _describe_call(args: dict) -> str:
+    who = f" ({args['name']})" if args.get("name") else ""
+    return f"Call {_number(args)[0]}{who} from this Mac. FaceTime asks you to confirm, and you do the talking."
 
 
 def _redact_recent(result: Any) -> Any:
@@ -610,6 +725,27 @@ def all_tools(runner: Runner | None = None) -> list[ConnectorTool]:
         tool("contacts_find", "contacts", "Find contacts by name. Returns names, phone numbers and emails.",
              _params({"name": STR}, ["name"]), CONTACTS_FIND, lambda a: [_text(a, "name", True), "25"],
              untrusted=True, post=_contacts),
+        tool("mail_send", "mail",
+             "Send an email from the owner's Mail account. The owner sees the recipients and the whole text and "
+             "approves each message; use mail_draft when they only asked for a draft. to/cc are comma-separated "
+             "plain email addresses.",
+             _params({"to": STR, "subject": STR, "body": STR, "cc": STR}, ["to", "subject", "body"]), MAIL_SEND,
+             _mail_draft, write=True, summary=_describe_mail_send, action="connector.send", send=True,
+             target=lambda a: "mail:" + ",".join(_addresses(a, "to", True) + _addresses(a, "cc")),
+             who=lambda a: _addresses(a, "to", True) + _addresses(a, "cc")),
+        tool("settings_get", "settings", "Read this Mac's appearance (dark or light), sound volume and mute.",
+             _params({}), SETTINGS_GET, lambda a: []),
+        tool("settings_set", "settings",
+             "Change one setting of this Mac, with the owner's approval each time: appearance (dark or light), "
+             "volume (0 to 100) or muted (true or false). Nothing else can be changed.",
+             _params({"setting": {"type": "string", "enum": list(SETTINGS)}, "value": STR}, ["setting", "value"]),
+             SETTINGS_SET, _setting, write=True, summary=_describe_setting, action="system.setting",
+             target=lambda a: _setting(a)[0]),
+        tool("phone_call", "phone",
+             "Dial a phone number for the owner from this Mac (FaceTime, through their iPhone). The owner approves, "
+             "confirms in FaceTime and speaks; you cannot talk on the call. name is who it is, for the approval.",
+             _params({"number": STR, "name": STR}, ["number"]), PHONE_CALL, _number, write=True,
+             summary=_describe_call, action="phone.call", target=lambda a: _number(a)[0], who=_number),
     ]
 
 
@@ -618,7 +754,9 @@ def load_connectors(config, *, runner: Runner | None = None, system: str | None 
     if (system or platform.system()) != "Darwin":
         return []
     enabled = set(config.get("connectors.enabled", []) or [])
-    return [tool for tool in all_tools(runner) if tool.connector in enabled]
+    sending = set(config.get("connectors.send", []) or [])
+    return [tool for tool in all_tools(runner)
+            if tool.connector in enabled and (not tool.send or tool.connector in sending)]
 
 
 async def check(name: str, *, runner: Runner | None = None) -> str:
