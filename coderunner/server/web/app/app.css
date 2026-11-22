@@ -207,6 +207,15 @@ a.item:hover { transform: translateY(-1px); } a.item:focus-visible { outline: 2p
 #input { flex: 1; border: 0; outline: none; background: none; resize: none; font: inherit; color: inherit; max-height: 200px; padding: 6px 2px; }
 .attach { flex: none; width: 34px; height: 34px; border-radius: 11px; border: 0; background: none; display: grid; place-items: center; cursor: pointer; }
 .attach:hover { background: var(--surface-2); }
+.attach[hidden], .mic-state[hidden] { display: none; }
+.attach:disabled { opacity: .45; cursor: default; }
+.mic.recording { background: var(--danger); } .mic.recording .ico { stroke: #fff; fill: #fff; }
+.mic.recording:hover { background: var(--danger); filter: brightness(1.08); }
+.mic-state { flex: none; align-self: center; display: inline-flex; align-items: center; gap: 8px; margin: 0 6px; font-size: 13px;
+  color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mic-level { width: 36px; height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+.mic-level i { display: block; height: 100%; background: var(--danger); transform-origin: left; transform: scaleX(.06); transition: transform .1s linear; }
+.mic-state.working .mic-level { display: none; }
 .attach .ico { width: 19px; height: 19px; }
 .send { flex: none; width: 34px; height: 34px; border-radius: 11px; border: 0; background: var(--fill); color: #fff; font-size: 17px; }
 .send:hover:not(:disabled) { filter: brightness(1.1); }

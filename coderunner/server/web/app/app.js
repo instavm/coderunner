@@ -768,6 +768,110 @@ $("input").addEventListener("input", grow);
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("composer").requestSubmit(); }
 });
+// ---- dictation ----------------------------------------------------------------------
+// The owner speaks a task instead of typing it. The recording goes to the daemon (POST /api/voice), which
+// transcribes it on this computer; the words are put in the box for the owner to read and send themselves.
+const MIC_ICON = "M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z M6 11a6 6 0 0 0 12 0 M12 17v4";
+const STOP_ICON = "M8 8h8v8H8z";
+const DICTATION_S = 180;                  // one dictation: three minutes is a megabyte, far under the daemon's limit
+const NO_MICROPHONE = "CodeRunner cannot use the microphone. Allow it in System Settings, Privacy & Security, Microphone.";
+const dictation = {recorder: null, stream: null, audio: null, chunks: [], started: 0, timer: null, keep: true, busy: false};
+const setMic = (d, label) => { $("mic").replaceChildren(icon(d)); $("mic").setAttribute("aria-label", label); };
+setMic(MIC_ICON, "Dictate");
+
+async function startDictation() {
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); }
+  catch (err) { notice(err?.name === "NotFoundError" ? "No microphone was found on this computer." : NO_MICROPHONE); return; }
+  const recorder = new MediaRecorder(stream);
+  Object.assign(dictation, {recorder, stream, chunks: [], started: Date.now(), keep: true});
+  recorder.ondataavailable = (event) => { if (event.data.size) dictation.chunks.push(event.data); };
+  recorder.onstop = () => finishDictation(recorder.mimeType);
+  recorder.start(1000);
+  // A small live level, so the owner sees it hears them.
+  try {
+    const audio = new AudioContext(), meter = audio.createAnalyser(), heard = new Uint8Array(512);
+    meter.fftSize = 512;
+    audio.createMediaStreamSource(stream).connect(meter);
+    dictation.audio = audio;
+    dictation.level = () => {
+      meter.getByteTimeDomainData(heard);
+      let sum = 0;
+      for (const v of heard) sum += (v - 128) * (v - 128);
+      return Math.min(1, Math.sqrt(sum / heard.length) / 40);
+    };
+  } catch { dictation.level = () => 0; }
+  setMic(STOP_ICON, "Stop dictating");
+  $("mic").classList.add("recording");
+  $("micState").hidden = false;
+  $("micState").classList.remove("working");
+  dictation.timer = setInterval(() => {
+    const seconds = (Date.now() - dictation.started) / 1000;
+    $("micTime").textContent = clock(seconds).replace(/^(\d+)s$/, (m, s) => `0:${s.padStart(2, "0")}`);
+    $("micLevel").style.transform = `scaleX(${Math.max(0.06, dictation.level()).toFixed(2)})`;
+    if (seconds >= DICTATION_S) { notice("Stopped at three minutes, the longest one dictation can be."); stopDictation(true); }
+  }, 120);
+  document.addEventListener("keydown", dictationKeys, true);
+}
+
+function dictationKeys(event) {                       // Enter stops and keeps; Escape discards
+  if (event.key !== "Enter" && event.key !== "Escape") return;
+  event.preventDefault(); event.stopPropagation();
+  stopDictation(event.key === "Enter");
+}
+
+function stopDictation(keep) {
+  if (!dictation.recorder) return;
+  dictation.keep = keep;
+  clearInterval(dictation.timer);
+  document.removeEventListener("keydown", dictationKeys, true);
+  const recorder = dictation.recorder;
+  dictation.recorder = null;
+  if (recorder.state !== "inactive") recorder.stop(); else finishDictation(recorder.mimeType);
+  dictation.stream?.getTracks().forEach((track) => track.stop());
+  dictation.audio?.close().catch(() => {});
+}
+
+async function finishDictation(kind) {
+  const idle = () => {
+    dictation.busy = false;
+    setMic(MIC_ICON, "Dictate");
+    $("mic").classList.remove("recording");
+    $("mic").disabled = false;
+    $("micState").hidden = true;
+  };
+  const sound = new Blob(dictation.chunks, {type: kind || "audio/webm"});
+  dictation.chunks = [];
+  if (!dictation.keep) { idle(); return; }
+  if (!sound.size) { idle(); notice("Nothing was heard. Try again, closer to the microphone."); return; }
+  dictation.busy = true;
+  setMic(MIC_ICON, "Transcribing");
+  $("mic").classList.remove("recording");
+  $("mic").disabled = true;
+  $("micState").classList.add("working");
+  $("micTime").textContent = "Transcribing…";
+  let said = "", wrong = "";
+  try {
+    const response = await fetch("/api/voice", {method: "POST", credentials: "same-origin", body: sound,
+                                                headers: {"X-CodeRunner": "1", "Content-Type": sound.type}});
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 503) wrong = "Voice is not set up on this computer yet.";
+    else if (response.status === 413) wrong = "That recording is too long. Dictate up to three minutes at a time.";
+    else if (!response.ok) wrong = "That could not be turned into words. Try again.";
+    else said = String(data.text || "").trim();
+  } catch { wrong = "That could not be turned into words. Try again."; }
+  idle();
+  if (wrong) { notice(wrong); return; }
+  if (!said) { notice("Nothing was heard. Try again, closer to the microphone."); return; }
+  // Into the box where the cursor is, for the owner to read and send; a second dictation goes on from there.
+  const box = $("input"), at = box.selectionStart ?? box.value.length, before = box.value.slice(0, at);
+  box.setRangeText((before && !/\s$/.test(before) ? " " : "") + said, at, box.selectionEnd ?? at, "end");
+  box.dispatchEvent(new Event("input", {bubbles: true}));
+  box.focus();
+}
+
+$("mic").onclick = () => { if (dictation.recorder) stopDictation(true); else if (!dictation.busy) startDictation(); };
+
 document.querySelectorAll(".example").forEach((b) => b.onclick = () => { $("input").value = b.textContent; grow(); $("input").focus(); });
 $("newTask").onclick = () => openConversation(null);
 document.addEventListener("keydown", (e) => {
@@ -925,6 +1029,7 @@ const BROWSERS = {computer: "The assistant's own computer", chrome: "Your Chrome
 async function loadModels() {
   try {
     const status = await api("/api/status");
+    $("mic").hidden = !(status.voice || []).length;      // dictation only where a voice engine is set up
     const models = status.models || {}, remote = status.remote;
     // In remote mode Claude plans, works the web pages and judges the steps; file search and voice stay here.
     const here = remote ? " · on this computer" : "";

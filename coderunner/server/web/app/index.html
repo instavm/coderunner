@@ -44,7 +44,10 @@
       <div id="attachments" class="attachments" hidden></div>
       <div class="composer-row">
         <button id="attach" class="attach" type="button" title="Attach files" aria-label="Attach files"></button>
+        <button id="mic" class="attach mic" type="button" hidden title="Dictate. macOS dictation also works here: Edit, Start Dictation."
+                aria-label="Dictate"></button>
         <textarea id="input" rows="1" placeholder="Describe a task…" aria-label="Task"></textarea>
+        <span id="micState" class="mic-state" role="status" hidden><span class="mic-level"><i id="micLevel"></i></span><span id="micTime">0:00</span></span>
         <button id="send" class="send" type="submit" aria-label="Start task">↑</button>
       </div>
       <input id="filePick" type="file" multiple hidden>

@@ -50,6 +50,48 @@ class AppShellTests(unittest.TestCase):
         self.assertIn("if (asker !== ORIGIN) return null;", main)        # only the daemon's own page is answered
         self.assertIn("return asker === ORIGIN ? startDaemon() : false;", main)
 
+    @unittest.skipIf(shutil.which("node") is None, "node not installed")
+    def test_the_shell_lets_the_daemons_page_hear_the_microphone_and_nothing_else(self):
+        main = (appshell.app_dir() / "main.js").read_text()
+        rules = main[main.index("  const own = (url) =>"):main.index("  // The one thing the page asks of the shell")]
+        script = """
+const ORIGIN = "http://127.0.0.1:8223", handlers = {};
+const session = {defaultSession: {setPermissionRequestHandler: (f) => { handlers.ask = f; },
+                                  setPermissionCheckHandler: (f) => { handlers.check = f; }}};
+""" + rules + """
+const page = {getURL: () => ORIGIN + "/app/"}, other = {getURL: () => "https://evil.example/"};
+const ask = (contents, permission, details) => { let got; handlers.ask(contents, permission, (ok) => { got = ok; }, details); return got; };
+console.log(JSON.stringify([
+  ask(page, "media", {mediaTypes: ["audio"], requestingUrl: ORIGIN + "/app/"}),
+  ask(page, "media", {mediaTypes: ["audio", "video"], requestingUrl: ORIGIN + "/app/"}),
+  ask(page, "media", {mediaTypes: ["video"]}),
+  ask(page, "media", {}),
+  ask(other, "media", {mediaTypes: ["audio"], requestingUrl: "https://evil.example/"}),
+  ask(page, "media", {mediaTypes: ["audio"], requestingUrl: "https://evil.example/frame"}),
+  ask(page, "notifications", {}), ask(page, "geolocation", {}), ask(page, "clipboard-read", {}),
+  handlers.check(page, "media", ORIGIN, {mediaType: "audio"}),
+  handlers.check(page, "media", ORIGIN, {mediaType: "video"}),
+  handlers.check(other, "media", "https://evil.example", {mediaType: "audio"}),
+  handlers.check(page, "geolocation", ORIGIN, {}),
+]));
+"""
+        done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr[-600:])
+        self.assertEqual(json.loads(done.stdout), [True, False, False, False, False, False, True, False, False,
+                                                   True, False, False, False])
+
+    def test_dictation_puts_the_words_in_the_box_and_never_sends_them(self):
+        web = appshell.app_dir().parent / "coderunner" / "server" / "web" / "app"
+        page, markup = (web / "app.js").read_text(), (web / "index.html").read_text()
+        code = page[page.index("// ---- dictation"):page.index('document.querySelectorAll(".example")')]
+        self.assertIn('fetch("/api/voice", {method: "POST"', code)
+        self.assertIn("box.setRangeText(", code)                 # at the cursor, after what is there
+        self.assertNotIn("requestSubmit", code)                  # the owner reads it and sends it
+        self.assertNotRegex(code, r"\balert\(")
+        self.assertIn("getUserMedia({audio: true})", code)       # sound only
+        self.assertIn('$("mic").hidden = !(status.voice || []).length', page)    # only where a voice engine is set up
+        self.assertRegex(markup, r'<button id="mic"[^>]*hidden')
+
     def test_the_shell_brings_a_dead_daemon_back_unless_the_owner_stopped_it(self):
         import argparse
         from unittest import mock

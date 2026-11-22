@@ -171,9 +171,20 @@ app.whenReady().then(() => {
       if (token) details.requestHeaders["Authorization"] = `Bearer ${token}`;
       callback({requestHeaders: details.requestHeaders});
     });
-  session.defaultSession.setPermissionRequestHandler((contents, permission, callback) => {
-    callback(permission === "notifications" && contents.getURL().startsWith(ORIGIN));
+  // The page may show notifications and, for dictation, hear the microphone: sound only, never the camera,
+  // and only the daemon's own page. Everything else is refused.
+  const own = (url) => { try { return new URL(url).origin === ORIGIN; } catch { return false; } };
+  const soundOnly = (details) => {
+    const kinds = details?.mediaTypes || (details?.mediaType ? [details.mediaType] : []);
+    return kinds.length > 0 && kinds.every((kind) => kind === "audio");
+  };
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const asker = own(details?.requestingUrl || contents.getURL());
+    callback(asker && (permission === "notifications" || (permission === "media" && soundOnly(details))));
   });
+  session.defaultSession.setPermissionCheckHandler((contents, permission, origin, details) =>
+    own(origin || details?.requestingUrl || "") &&
+    (permission === "notifications" || (permission === "media" && (!details?.mediaType || details.mediaType === "audio"))));
   // The one thing the page asks of the shell: a folder picked by the owner (where to keep the models). Only the
   // daemon's own page may ask.
   ipcMain.handle("pick-folder", async (event, start) => {
