@@ -11,8 +11,8 @@ class Node_ {
   set innerHTML(value) { throw new Error("the renderer never sets HTML"); }
   all(test, found = []) { for (const c of this.childNodes) if (c.tagName) { if (test(c)) found.push(c); c.all(test, found); } return found; }
 }
-globalThis.document = {createElement: (tag) => new Node_(tag), createTextNode: (text) => ({text: String(text)})};
-const {messages, markdown, itemCards, inline, el} = await import(process.argv[2]);
+globalThis.document = {createElement: (tag) => new Node_(tag), createTextNode: (text) => ({text: String(text), get textContent() { return this.text; }, set textContent(v) { this.text = String(v); }})};
+const {messages, markdown, itemCards, inline, el, answer} = await import(process.argv[2]);
 const tag = (name) => (n) => n.tagName === name.toUpperCase();
 
 // Two short paragraphs are two messages; a long text stays one.
@@ -54,4 +54,27 @@ assert.equal(first.all((n) => n.className === "item-price")[0].textContent, "₹
 assert.equal(second.tagName, "DIV");
 assert.equal(second.all((n) => n.className === "item-letter")[0].textContent, "O");
 assert.equal(markdown(el("div"), "one\n\ntwo").all(tag("p")).length, 2);
+
+// A list whose every line opens with a bold name is marked to be shown in normal weight; other lists are not.
+assert.ok(messages("- **A** one\n- **B** two")[0].all(tag("ul"))[0].className.includes("md-calm"));
+assert.ok(!messages("- **A** one\n- plain two")[0].all(tag("ul"))[0].className.includes("md-calm"));
+
+// With cards shown, a list that goes through the same items again is not said twice: what each line adds goes
+// on its card, and the cards follow the words (or lead them when the words say "above").
+const shown = [{name: "boAt Rockerz 430 Gen 2 (60H battery, ENC)", price: "₹1,499", url: "https://shop.example/a"},
+               {name: "GOBOULT Mustang Q (70H battery)", price: "₹2,499", url: "https://shop.example/b"}];
+const reply = "Two good ones under ₹3,000:\n\n- **boAt Rockerz 430 Gen 2** at ₹1,499: rated 4.1 from 44,000 ratings.\n" +
+              "- **GOBOULT Mustang Q** at ₹2,499: rated 4.2, with noise cancelling.\n\nThe boAt is the better buy.";
+const parts = answer(reply, shown, (n) => n);
+assert.deepEqual(parts.map((p) => p.className.split(" ")[0]), ["say", "say", "items"]);
+assert.equal(parts.flatMap((p) => p.all(tag("ul"))).length, 0);
+const notes = parts[2].all((n) => n.className === "item-note").map((n) => n.textContent);
+assert.deepEqual(notes, ["Rated 4.1 from 44,000 ratings.", "Rated 4.2, with noise cancelling."]);
+assert.equal(parts[0].textContent, "Two good ones under ₹3,000.");        // no colon left pointing at nothing
+assert.equal(shown[0].note, undefined);                                  // what was given is not changed
+assert.equal(answer("The three are shown above.", shown, (n) => n)[0].className.split(" ")[0], "items");
+// A list about other things stays, and an answer without cards is as before.
+const other = answer("Shown below.\n\n- **Delivery** is free\n- **Returns** within 10 days", shown, (n) => n);
+assert.equal(other.flatMap((p) => p.all ? p.all(tag("ul")) : []).length, 1);
+assert.equal(answer("one\n\ntwo", [], (n) => n).length, 2);
 console.log("ok");

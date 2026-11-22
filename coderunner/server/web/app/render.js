@@ -141,10 +141,25 @@ export function markdown(node, text) {
   return node;
 }
 
+// A list whose every line opens with a bold name reads as a wall of headings: the names keep their place and
+// lose their weight.
+function calm(made) {
+  for (const block of made) {
+    const tag = block.tagName.toLowerCase(), lines = [...block.childNodes];
+    if ((tag === "ul" || tag === "ol") && lines.length >= 2 &&
+        lines.every((li) => (li.childNodes[0]?.tagName || "").toLowerCase() === "strong")) block.classList.add("md-calm");
+  }
+  return made;
+}
+
 // An answer as chat messages. Two or three short paragraphs are a message each, as a person would send them;
 // a longer text stays together as one message. A table, its cards or a list is a block of its own between them.
 export function messages(text, className = "say") {
-  const made = blocks(text), out = [];
+  return grouped(calm(blocks(text)), className);
+}
+
+function grouped(made, className = "say") {
+  const out = [];
   const paragraphs = made.filter((b) => b.tagName.toLowerCase() === "p").length;
   const apart = paragraphs <= 3;
   let open = null;
@@ -176,7 +191,49 @@ export function itemCards(items, picture) {
     if (item.price) card.appendChild(el("div", "item-price", String(item.price)));
     const site = siteOf(url), where = [item.seller, site].filter(Boolean)[0];
     if (where) card.appendChild(el("div", "item-seller", String(where)));
+    if (item.note) card.appendChild(el("div", "item-note", String(item.note)));
     row.appendChild(card);
   }
   return row;
+}
+
+const words = (s) => String(s).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter(Boolean);
+// Whether a line's opening name is this item: the same first words (a list says "boAt Rockerz 430 Gen 2",
+// its card "boAt Rockerz 430 Gen 2 (60H battery, ...)").
+function names(lead, item) {
+  const a = words(lead), b = words(item.name);
+  const same = Math.min(a.length, b.length, 3);
+  return same >= 2 && a.slice(0, same).join(" ") === b.slice(0, same).join(" ");
+}
+
+// An answer with the things it shows. A list that only goes through the shown items again, one line each, is
+// not said twice: what each line adds (a rating, a remark) goes on that item's card and the list is left out.
+// The cards sit under the words, or over them when the words say "above".
+export function answer(text, items, picture) {
+  const made = calm(blocks(text));
+  const shown = (items || []).slice(0, 8).map((item) => ({...item}));
+  if (!shown.length) return grouped(made);
+  for (const block of [...made]) {
+    const tag = block.tagName.toLowerCase(), lines = [...block.childNodes];
+    if ((tag !== "ul" && tag !== "ol") || lines.length < 2) continue;
+    const pairs = lines.map((li) => {
+      const lead = (li.childNodes[0]?.tagName || "").toLowerCase() === "strong" ? li.childNodes[0].textContent : "";
+      return [li, lead, lead ? shown.find((item) => names(lead, item)) : null];
+    });
+    if (!pairs.every(([, , item]) => item) || new Set(pairs.map(([, , item]) => item)).size !== pairs.length) continue;
+    for (const [li, lead, item] of pairs) {
+      let rest = li.textContent.slice(lead.length).replace(/^\s*(at|for|is|costs)?\s*/i, "");
+      if (item.price && rest.startsWith(String(item.price))) rest = rest.slice(String(item.price).length);
+      rest = rest.replace(/^[\s:;,.()–—-]+/, "").trim();
+      if (rest) item.note = rest.charAt(0).toUpperCase() + rest.slice(1);
+    }
+    const at = made.indexOf(block), before = made[at - 1];
+    made.splice(at, 1);
+    // The sentence that led into the list ("...are these:") now ends as a sentence.
+    const last = before && before.tagName.toLowerCase() === "p" ? before.childNodes[before.childNodes.length - 1] : null;
+    if (last && !last.tagName && /:\s*$/.test(last.textContent)) last.textContent = last.textContent.replace(/:\s*$/, ".");
+  }
+  const said = grouped(made), row = itemCards(shown, picture);
+  row.classList.add("say-block");
+  return /\babove\b/i.test(String(text)) ? [row, ...said] : [...said, row];
 }

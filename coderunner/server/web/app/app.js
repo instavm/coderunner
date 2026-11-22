@@ -1,7 +1,7 @@
 // CodeRunner app: tasks run in the background on the daemon; this page shows what each one does as it happens,
 // and the sandbox computer's screen, which the owner can watch or take over.
 import RFB from "./novnc/core/rfb.js";
-import {el, richText, inline, markdown, messages, itemCards} from "./render.js";
+import {el, richText, inline, markdown, answer as answered, itemCards} from "./render.js";
 
 const $ = (id) => document.getElementById(id);
 // In the desktop app on a Mac the window's own buttons sit over the page's top-left corner.
@@ -176,6 +176,8 @@ const state = {
 // A task reads as a conversation: what the assistant says along the way, one line for what it is doing now, its
 // plan ticking off, a picture of the page where that says more than words, and the answer. The calls it makes
 // (which tool, with what arguments) are not shown; they are in the audit trail for whoever wants them.
+const picture = (name) => `/api/shots/${encodeURIComponent(name)}`;
+
 class TaskView {
   constructor(task) {
     this.id = task.id;
@@ -265,7 +267,11 @@ class TaskView {
     switch (e.type) {
       case "started": this.showAttached(e.attachments); break;
       case "note": this.say(markdown(el("div", "note say"), e.text)); break;
-      case "items": this.items = this.say(itemCards(e.items, (name) => `/api/shots/${encodeURIComponent(name)}`)); break;
+      case "items":             // shown as they come; the answer places them with its words
+        this.shown = [...(this.shown || []), ...(e.items || [])];
+        this.items?.remove();
+        this.items = this.say(itemCards(this.shown, picture));
+        break;
       case "plan": this.showPlan(e.steps); break;
       case "tool":
         if (e.name === "plan_update" || e.name === "tell_owner" || e.name === "show_items") break;
@@ -392,9 +398,9 @@ class TaskView {
     this.now = null;
     // The answer is a few chat messages, not a document in a box.
     const answer = el("div", "answer" + (e.type === "failed" ? " failed" : ""));
-    for (const message of messages(e.reply || "")) answer.appendChild(message);
+    this.items?.remove();
+    for (const part of answered(e.reply || "", this.shown, picture)) answer.appendChild(part);
     this.flow.appendChild(answer);
-    if (this.items) this.flow.appendChild(this.items);        // what is better seen than read, under the words
     const took = clock((this.finished || Date.now() / 1000) - this.started);
     this.flow.appendChild(el("div", "took muted small", e.type === "cancelled" ? `Stopped after ${took}` :
                              e.type === "failed" ? `Failed after ${took}` : `Done in ${took}`));

@@ -108,6 +108,7 @@ button.check-row:hover .check-what { color: var(--accent); }
 .say-block { align-self: stretch; margin: 2px 0; }
 .answer.failed .say { box-shadow: inset 2px 0 0 var(--danger); }
 .answer a, .note a { color: var(--accent); }
+.answer a.item, .items a.item { color: inherit; }
 .md-table-wrap { overflow-x: auto; margin: 8px 0; white-space: normal; }
 /* Each column as wide as what it holds, up to a readable measure; a table wider than the thread scrolls
    sideways (a column squeezed to a word a line was the alternative). */
@@ -135,6 +136,8 @@ button.check-row:hover .check-what { color: var(--accent); }
 .md-card-value { min-width: 0; overflow-wrap: anywhere; }
 .md-h { font-weight: 600; margin: 8px 0 4px; }
 .md strong { font-weight: 580; }
+.md-calm strong { font-weight: inherit; }
+.item-note { margin-top: 5px; font-size: 12px; line-height: 1.35; color: var(--muted); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
 /* A link is the page's name with a small mark for its site. */
 a.link.named { text-decoration: none; overflow-wrap: normal; }
 a.link.named:hover { text-decoration: underline; }
