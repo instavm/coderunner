@@ -322,6 +322,8 @@ def browser_tools(svc) -> list[Tool]:
         return (f"url: {_short_address(result.get('url', ''))}\nThe page's main list, items {start + 1}-{shown} of "
                 f"{total}:\n" + "\n".join(lines) + more)
 
+    search_first = [SEARCH]
+
     async def search(args, ctx):
         """A web search, read as its list of results. Without it the planner opened addresses from memory: seven
         guessed timetable pages, none of them there, and the task ended without its trains."""
@@ -330,12 +332,13 @@ def browser_tools(svc) -> list[Tool]:
             return "Error: say what to search for."
         # A search site that answers with a challenge instead of results is left for the next one.
         opened: Any = "Error: the search could not be opened."
-        for address in (SEARCH, SEARCH_ELSE):
+        for address in sorted((SEARCH, SEARCH_ELSE), key=lambda a: a != search_first[0]):
             opened = _result(await b.navigate(address.format(urllib.parse.quote_plus(query)), tainted=ctx.tainted))
             if isinstance(opened, str):
                 continue
             listed = await list_({}, ctx)
             if "main list" in listed:
+                search_first[0] = address          # the one that answers is asked first from here on
                 return listed
         return opened if isinstance(opened, str) else "No results could be read for this search; try other words."
 
@@ -457,7 +460,8 @@ def browser_tools(svc) -> list[Tool]:
         Tool("browser_back", "Go back to the previous page.", _params({}), back, True),
         Tool("browser_tabs", "List open tabs.", _params({}), tabs, True),
         Tool("browser_handoff", "Ask the owner to complete a step themselves in the browser window (log in, "
-             "password, 2FA, CAPTCHA, payment details). Waits until they finish.",
+             "password, 2FA, CAPTCHA, payment details). Waits until they finish. reason is the one thing they are "
+             "to do, as a short sentence they read on the screen (\"Type the CAPTCHA, then click Go.\").",
              _params({"reason": STR}, ["reason"]), handoff),
     ]
     if getattr(svc, "driver", None) is not None:

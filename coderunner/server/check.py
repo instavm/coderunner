@@ -157,7 +157,7 @@ CHECKS = [
 ]
 
 
-SUITES = {"check": CHECKS, "real": realworld.TASKS}
+SUITES = {"check": CHECKS, "real": realworld.EVERY}
 REAL_STEPS = 60                     # a trip plan over several sites needs more steps than a day's ordinary task
 
 
@@ -190,8 +190,8 @@ class CheckJob:
         return {"state": self.state, "suite": self.suite, "lines": self.lines[-KEEP:], "tasks": self.tasks,
                 "result": self.result or (last() if self.state == "idle" else None),
                 "names": [{"name": c.name, "what": c.what, "long": c.long} for c in CHECKS],
-                # The twenty tasks on real websites (`coderunner check --real`), and how they went last time.
-                "real": {"names": [{"name": t.name, "what": t.what, "long": t.long, "kind": t.kind} for t in realworld.TASKS],
+                # The tasks on real websites (`coderunner check --real`: twenty everyday ones and five forms), and how they went last time.
+                "real": {"names": [{"name": t.name, "what": t.what, "long": t.long, "kind": t.kind} for t in realworld.EVERY],
                          "result": self.result if self.suite == "real" and self.result else last("real")},
                 "check": last("check")}
 
@@ -215,7 +215,8 @@ class CheckJob:
             return f"No such check: {', '.join(unknown)}. There are: {', '.join(c.name for c in pool)}."
         chosen = [c for c in pool if (c.name in names if names else long or suite == "real" or not c.long)]
         self.state, self.lines, self.result, self.suite = "running", [], None, suite
-        self.tasks = [{"name": c.name, "what": c.what, "state": "waiting", "why": "", "seconds": None, "steps": None,
+        self.tasks = [{"name": c.name, "what": c.what, "kind": getattr(c, "kind", ""), "state": "waiting", "why": "",
+                       "seconds": None, "steps": None,
                        "approvals": None, "conversation": ""} for c in chosen]
         self._job = asyncio.get_running_loop().create_task(self._run(chosen))
         return ""
@@ -265,7 +266,7 @@ class CheckJob:
             allow = not PAYS.search(approval.summary.split("\n")[0])
             if self.suite == "real":            # on real sites nothing that commits, signs in or hands over the screen
                 allow = allow and approval.kind not in realworld.COMMITS
-            self._approvals.append({"kind": approval.kind, "summary": approval.summary.split("\n")[0][:160], "allowed": allow})
+            self._approvals.append({"kind": approval.kind, "summary": approval.summary.split("\n")[0][:600], "allowed": allow})
             with contextlib.suppress(KeyError):
                 # As an owner would in the app: sharing is allowed for the task, not asked again for every site.
                 svc.policy.decide(approval.id, allow, scope="task" if approval.kind == "data.share" else "once",
@@ -328,7 +329,8 @@ class CheckJob:
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(serving, 10)
             shutil.rmtree(folder, ignore_errors=True)
-            ran = [t for t in self.tasks if t["state"] in ("passed", "failed", "blocked")]
+            ran = [t for t in self.tasks if t["state"] in ("passed", "failed", "blocked", "needs_you")]
+            waits = sum(t["state"] == "needs_you" for t in ran)       # went as far as it can without the owner
             passed = sum(t["state"] == "passed" for t in ran)
             remote = getattr(svc, "remote", None)
             self.result = {"date": datetime.datetime.now().isoformat(timespec="seconds"), "suite": self.suite,
@@ -336,9 +338,11 @@ class CheckJob:
                            "blocked": sum(t["state"] == "blocked" for t in self.tasks),
                            "passed": passed, "ran": len(ran), "skipped": sum(t["state"] == "skipped" for t in self.tasks),
                            "seconds": round(time.time() - started), "tasks": self.tasks,
-                           "ok": bool(ran) and passed == len(ran) - sum(t["state"] == "blocked" for t in self.tasks)}
+                           "needs_you": waits,
+                           "ok": bool(ran) and passed == len(ran) - waits - sum(t["state"] == "blocked" for t in self.tasks)}
             self.state = "done" if self.result["ok"] else "failed"
             self._say(f"{passed} of {len(ran)} passed" + (f", {self.result['blocked']} blocked by a site" if self.result["blocked"] else "")
+                      + (f", {waits} stopped at a step that is yours" if waits else "")
                       + (f", {self.result['skipped']} skipped" if self.result["skipped"] else "")
                       + f", in {self.result['seconds'] // 60} min {self.result['seconds'] % 60} s.")
             with contextlib.suppress(OSError):
@@ -384,10 +388,20 @@ class CheckJob:
                 visited = [e.get("url") or e.get("page") or "" for e in events if e.get("type") in ("activity", "shot")]
                 clicked = [str(e.get("label") or e.get("text") or e.get("name") or "") for e in events
                            if e.get("type") == "activity" and str(e.get("event", "")).startswith("browser.")]
-                state, why, figures = realworld.grade(check, answer, visited, self._approvals, run.tools, clicked)
+                filled = [str(e.get("option") or e.get("text") or "") for e in events if e.get("type") == "activity"
+                          and e.get("event") in ("browser.select", "browser.type")]
+                if check.chose:
+                    # What the form holds at the end counts too: a site that remembers the last state and
+                    # district shows them chosen already, and nothing is chosen again.
+                    with contextlib.suppress(Exception):
+                        shown = await asyncio.wait_for(self.daemon.svc.browser.snapshot(), 20)
+                        filled += re.findall(r'value="([^"]*)"', str(shown.get("content") or ""))
+                state, why, figures = realworld.grade(check, answer, visited, self._approvals, run.tools, clicked, filled)
+                if check.chose:
+                    figures["filled"] = [value[:60] for value in filled if value][:40]      # what the form was given
                 row.update(state=state, why=why, seconds=round(time.monotonic() - start), steps=len(run.tools),
                            approvals=self._asked, kind=check.kind, **figures)
-                self._say(f"  {state.upper() if state != 'passed' else state} in {row['seconds']} s, {row['steps']} steps, "
+                self._say(f"  {state.upper().replace('_', ' ') if state != 'passed' else state} in {row['seconds']} s, {row['steps']} steps, "
                           f"{self._asked} approvals asked ({figures['refused']} refused): {why}")
                 return
             else:

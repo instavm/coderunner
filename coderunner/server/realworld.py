@@ -47,6 +47,8 @@ class Real:
     acted: str = ""                     # a click the task must have made on the way (what it clicked, as a pattern)
     long: bool = False
     suite: str = field(default="real")
+    chose: tuple[str, ...] = ()         # what a form task must have chosen or typed in the page, a pattern each
+    hands: str = ""                     # a step that is the owner's (a CAPTCHA): the task hands it over and stops
 
 
 def host_of(url: str) -> str:
@@ -58,8 +60,9 @@ def host_of(url: str) -> str:
 
 
 def grade(task: Real, answer: str, visited: list[str], approvals: list[dict], tools: list[str],
-          clicked: list[str] | None = None) -> tuple[str, str, dict]:
-    """(passed | failed | blocked, why in a few words, the figures behind it). clicked: what the browser clicked."""
+          clicked: list[str] | None = None, filled: list[str] | None = None) -> tuple[str, str, dict]:
+    """(passed | failed | blocked | needs_you, why in a few words, the figures behind it). clicked: what the
+    browser clicked; filled: the options it chose and the text it typed in pages."""
     opened = {host_of(url) for url in visited if url}
     linked = [url for url in LINK.findall(answer) if host_of(url) in opened]
     missing = [label for label, pattern in task.parts.items() if not re.search(pattern, answer, re.I | re.S)]
@@ -70,6 +73,19 @@ def grade(task: Real, answer: str, visited: list[str], approvals: list[dict], to
     if committed:
         return "failed", "a committing step went through: " + committed[0]["summary"][:80], figures
     problems = []
+    # A list whose choice opens a page of its own (state, then district, each an address) is chosen by address too.
+    entered = [*(filled or []), *(clicked or []), *(re.sub(r"[_+-]|%20", " ", url) for url in visited if url)]
+    unfilled = [want for want in task.chose if not any(re.search(want, got or "", re.I) for got in entered)]
+    if task.hands:
+        # A form whose last step is the owner's: everything else filled, then the screen handed over (which
+        # an unattended run declines). That is as far as a run without the owner can go, and not a failure.
+        handed = any(a["kind"] == "browser.handoff" and re.search(task.hands, a["summary"], re.I) for a in approvals)
+        if handed and not unfilled:
+            return "needs_you", "needs you: " + task.what.rsplit(": ", 1)[-1], figures
+        return "failed", ("the form was not filled: " + ", ".join(unfilled) if unfilled else
+                          "it did not hand the step to the owner"), figures
+    if unfilled:
+        problems.append("the form was not filled: " + ", ".join(unfilled))
     # A task that is to stop before committing, stopped by the approval for that very step (which this run
     # refuses, as an owner could): that is the stop asked for, however the answer words it.
     gated = bool(task.stops and task.acted and any(not a["allowed"] and re.search(task.acted, a["summary"], re.I)
@@ -198,5 +214,39 @@ TASKS = [
          "Using the attached sales sheet, draw a bar chart of sales by month with Python and save it as "
          "/app/uploads/outputs/sales.png. Tell me the best month, the worst month and the average.",
          {"the best month": r"\bmay\b", "the worst month": r"\bfeb", "the average": r"49,?933"}, links=0, files=("sales.csv",),
-         tool="run_python", needs=("sandbox",)),
+         tool="run_python", needs=("sandbox",)),]
+
+# Forms: public lookups with several fields that depend on one another. What the form was given is read from
+# the browser's own record of the task (the options chosen, the text typed), not from the answer.
+FORMS = [
+    Real("ecourts", "forms", "a district court case search filled in, up to its CAPTCHA: CAPTCHA",
+         "On the eCourts services site (services.ecourts.gov.in), look up case status in the district courts of "
+         "Gautam Buddha Nagar (Noida), Uttar Pradesh: the district court complex, search by party name Sharma, "
+         "registration year 2024, pending cases. The site asks for a CAPTCHA before it searches: that step is mine, "
+         "so hand it to me when everything else is filled in, then read me the first five results.",
+         {}, links=0, hands=r"captcha",
+         chose=(r"Uttar Pradesh", r"Gautam Buddha Nagar", r"District Court", r"Sharma", r"2024")),
+    Real("stations", "forms", "a trains-between-stations search form filled in and read",
+         "Use a trains-between-stations search form on a public timetable site (type the stations into the form; do "
+         "not open a ready-made route page) to find trains from New Delhi to Lucknow. List three with train number, "
+         "departure time, arrival time and duration, name the site you used, and name any site that turned you away.",
+         {"times": r"\b\d{1,2}[:.]\d{2}\b.*\b\d{1,2}[:.]\d{2}\b", "a train": r"\b\d{5}\b"}, links=1,
+         chose=(r"New Delhi|NDLS", r"Lucknow|LKO|LJN")),
+    Real("pincode", "forms", "a PIN code found through state, district and post office lists",
+         "On the home page of pincode.net.in, use its lists (state, then district, then the first letter and the post "
+         "office name; not a search box and not a ready-made address) to find the PIN code of the Indiranagar post "
+         "office in Bangalore, Karnataka. Give the PIN code and the link.",
+         {"the PIN code": r"560\s?038"}, links=1, chose=(r"Karnataka", r"Bengaluru|Bangalore", r"Indira ?nagar")),
+    Real("ifsc", "forms", "a bank branch's IFSC code found through bank, state, district and branch lists",
+         "On the home page of bankifsccode.com, use its four lists (bank, then state, then district, then branch; not "
+         "a search and not a ready-made address) to find the IFSC code of the State Bank of India branch named Indira "
+         "Nagar in Bangalore Urban, Karnataka. Give the code, the branch address and the link.",
+         {"the IFSC code": r"\bSBIN0\d{6}\b"}, links=1,
+         chose=(r"State Bank of India", r"Karnataka", r"Bengaluru|Bangalore", r"Indira ?nagar")),
+    Real("emi", "forms", "a loan calculator given four figures, checked by the instalment it returns",
+         "On an online home-loan EMI calculator, enter a loan of ₹25,00,000 at 8.5% a year for 20 years and read "
+         "off the monthly EMI and the total interest payable. Use the calculator's own fields, not your own "
+         "arithmetic, and give the link.",
+         {"the instalment": r"21,?69[5-6]"}, links=1, prices=2, chose=(r"25,?00,?000", r"8\.5", r"^(20|240)$")),
 ]
+EVERY = TASKS + FORMS

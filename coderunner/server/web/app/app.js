@@ -383,7 +383,10 @@ class TaskView {
     // starts, and the site. The whole of what the page calls it is under the question.
     const act = /^(Click|Double-click|Triple-click) (.+) on ([\w.-]+)$/s.exec(first);
     const named = act && plainLabel(act[2].replace(/&amp;/g, "&")).split(/, |\s[·|-]\s/)[0];
-    const question = share ? `This task holds data from your ${holds}. Allow it to use that data on ${e.target}?` :
+    // The owner's turn is asked in the assistant's own words, once.
+    const turn = handoff && first.replace(/^Please finish in the CodeRunner browser: /, "").replace(/^please /i, "")
+      .replace(/^./, (c) => c.toUpperCase());
+    const question = handoff ? turn : share ? `This task holds data from your ${holds}. Allow it to use that data on ${e.target}?` :
       act ? `${act[1]} “${named}” on ${act[3].replace(/^www\./, "")}?` : first;
     card.appendChild(richText(el("div", ""), question));
     const whole = act && plainLabel(act[2]) !== named ? act[2].replace(/&amp;/g, "&") : "";
@@ -408,13 +411,19 @@ class TaskView {
     };
     if (handoff) {
       const take = el("button", "btn primary", "Take control");
-      take.onclick = () => { showComputer(true); setControl(true); setExpanded(true); };
       const done = el("button", "btn", "I'm done");
-      done.onclick = () => { setControl(false); decide(true); };
+      const finish = () => { setControl(false); setExpanded(false); decide(true); };
+      // One button leads: taking the screen first, handing it back after.
+      take.onclick = () => { showComputer(true); setControl(true); setExpanded(true); take.remove(); done.classList.add("primary"); };
+      done.onclick = finish;
       const skip = el("button", "btn danger", "Skip");
       skip.onclick = () => decide(false);
       row.append(take, done, skip);
       showComputer(true);
+      $("turnText").textContent = turn;
+      $("turnDone").onclick = finish;
+      $("turn").hidden = false;
+      $("turn").dataset.ask = e.id;
     } else {
       const allow = el("button", "btn primary", "Allow");
       allow.onclick = () => decide(true);
@@ -484,6 +493,7 @@ class TaskView {
 function closeAsk(id, allowed) {
   const entry = state.approvals.get(id);
   state.pending.delete(id);
+  if ($("turn").dataset.ask === id) $("turn").hidden = true;
   if (!entry || entry.card.classList.contains("closed")) return;
   entry.card.classList.add("closed");
   entry.row.replaceChildren(el("span", "muted small", allowed === "late" ? "Not answered in time" : allowed === null ? "Answered" :
@@ -538,9 +548,9 @@ async function openConversation(id, title, again) {
 
 let checkTimer = null;
 let checkSet = "check";             // "check": this install's own tasks; "real": the twenty on real websites
-const CHECK_MARKS = {passed: "✓", failed: "✕", blocked: "!", skipped: "–", waiting: "", running: ""};
+const CHECK_MARKS = {passed: "✓", failed: "✕", blocked: "!", needs_you: "→", skipped: "–", waiting: "", running: ""};
 const CHECK_LEADS = {check: "Each kind of task, done once on this computer and checked.",
-                     real: "Twenty everyday tasks on real websites. Nothing is signed in to, paid for or submitted."};
+                     real: "Twenty everyday tasks and five forms on real websites. Nothing is signed in to, paid for or submitted."};
 
 async function showCheck() {
   if (state.setup) return;
@@ -571,9 +581,12 @@ async function showCheck() {
     }
     box.replaceChildren(el("h1", "", "Check"), el("p", "muted", CHECK_LEADS[checkSet]), tabs);
     const list = el("div", "check-list");
+    let forms = false;
     for (const task of rows) {
+      if (task.kind === "forms" && !forms) { forms = true; list.appendChild(el("div", "check-group", "Forms")); }
       const row = el(task.conversation ? "button" : "div", "check-row " + task.state);
-      const what = el("span", "check-what", task.what.charAt(0).toUpperCase() + task.what.slice(1));
+      const named = task.what.replace(/: CAPTCHA$/, "");
+      const what = el("span", "check-what", named.charAt(0).toUpperCase() + named.slice(1));
       if (task.why && task.state !== "passed") what.appendChild(el("span", "check-why", task.why));
       const took = task.seconds != null ? clock(task.seconds) : "";
       row.append(el("span", "check-mark", CHECK_MARKS[task.state]), what,
@@ -593,9 +606,10 @@ async function showCheck() {
         const when = new Date(result.date).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
         foot.appendChild(el("span", "muted", `${result.passed} of ${result.ran} passed` +
                                               (result.blocked ? `, ${result.blocked} blocked by a site` : "") +
+                                              (result.needs_you ? `, ${result.needs_you} waiting for you` : "") +
                                               (result.skipped ? `, ${result.skipped} skipped` : "") + ` · ${modelName(result.model)} · ${when}`));
       }
-      const go = el("button", "btn primary", result ? "Run again" : real ? "Run all twenty" : "Run check");
+      const go = el("button", "btn primary", result ? "Run again" : real ? "Run all" : "Run check");
       go.disabled = other;
       go.onclick = () => { go.disabled = true; run(real ? {real: true} : {}); };
       foot.appendChild(go);

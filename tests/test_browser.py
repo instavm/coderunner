@@ -694,6 +694,17 @@ class InteractionPolicyTests(BrokerTestCase):
         self.assertFalse((await self.broker.type(2, "hunter2"))["ok"])
         self.assertEqual(browser.sent("Input.insertText"), [])
 
+    async def test_a_captcha_box_is_never_typed_into(self):
+        browser, _ = await self.load_shop()
+        browser.nodes[109] = {"nodeName": "INPUT", "attributes": ["type", "text", "id", "fcaptcha_code",
+                                                                   "placeholder", "Enter Captcha"]}
+        result = await self.broker.type(2, "x7k2m9")
+        self.assertFalse(result["ok"])
+        self.assertIn("handoff", result["error"])
+        self.assertIn("owner's step", result["error"])
+        self.assertEqual(browser.sent("Input.insertText"), [])
+        self.assertIn("browser.captcha_left", [e["event"] for e in self.audit.tail()])
+
     async def test_a_scrolled_page_is_hit_tested_where_the_click_lands(self):
         browser, _ = await self.load_shop()
         browser.scroll = (0, 5550)              # a results page's "Show more", reached by scrolling

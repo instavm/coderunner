@@ -69,6 +69,8 @@ button.check-row:hover .check-what { color: var(--accent); }
 .check-row.failed .check-mark { color: var(--danger); }
 .check-row.skipped, .check-row.waiting { color: var(--muted); }
 .check-row.blocked .check-mark { color: var(--warn); }
+.check-row.needs_you .check-mark { color: var(--accent); }
+.check-group { margin: 14px 0 4px; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .check-foot .btn, .check-foot .linkish { white-space: nowrap; flex: none; }
 .check-row.running .check-mark { width: 9px; height: 9px; margin: 0 auto; border-radius: 50%; background: var(--fill); align-self: center; animation: pulse 1.2s ease-in-out infinite; }
 .check-row.waiting .check-mark { width: 9px; height: 9px; margin: 0 auto; border-radius: 50%; border: 1.5px solid var(--line); align-self: center; }
@@ -209,6 +211,11 @@ button.check-row:hover .check-what { color: var(--accent); }
 #shell.expanded .icon-btn { background: #272725; border-color: #3a3935; color: #ecebe6; }
 #shell.expanded #screenWrap { flex: 1; aspect-ratio: auto; margin: 0 16px 16px; }
 #shell.expanded .panel-section { display: none; }
+/* While a step is the owner's, the large screen says what it is and has the button that hands it back. */
+.turn { display: none; }
+#shell.expanded .turn:not([hidden]) { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; margin: 0 16px; justify-content: center; }
+#turnText { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; color: #ecebe6; }
+#turnDone { flex: none; }
 
 @media (max-width: 1100px) {
   :root { --panel: 340px; --sidebar: 220px; }

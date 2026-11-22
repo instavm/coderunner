@@ -130,11 +130,20 @@ DENIED_PERMISSIONS = ("geolocation", "notifications", "camera", "microphone", "m
 PASSWORD_HINT = ("This is a password or one-time-code field. The owner types those, never the assistant: "
                  "call handoff(reason) so they can finish it in the CodeRunner browser window.")
 
+CAPTCHA_HINT = ("This field is for a CAPTCHA. Proving there is a person is the owner's step, never the "
+                "assistant's: fill in the rest of the form, then call handoff(reason) so they can type it in the "
+                "CodeRunner browser window, and carry on when they are done.")
+CAPTCHA_FIELD = re.compile(r"captcha|recaptcha|security[ _-]?code[ _-]?image|verification[ _-]?code", re.I)
+
+
 def field_kind(node: dict) -> str | None:
-    """'password' for secret fields, 'payment' for card fields, from a DOM.describeNode result."""
+    """'password' for secret fields, 'payment' for card fields, 'captcha' for the box a CAPTCHA is typed into,
+    from a DOM.describeNode result."""
     raw = node.get("attributes") or []
     attrs = {raw[i].lower(): raw[i + 1] for i in range(0, len(raw) - 1, 2)}
     tokens = set(attrs.get("autocomplete", "").lower().split())
+    if any(CAPTCHA_FIELD.search(attrs.get(key, "")) for key in ("id", "name", "placeholder", "aria-label", "title")):
+        return "captcha"
     if (node.get("nodeName", "").upper() == "INPUT" and attrs.get("type", "").lower() == "password") \
             or tokens & SECRET_AUTOCOMPLETE:
         return "password"
@@ -1565,6 +1574,9 @@ class BrowserBroker:
             node = (await self._send(sid, "DOM.describeNode", {"backendNodeId": backend}))["node"]
             field = "password" if element.get("password") else field_kind(node)
             own = {} if field == "password" else await self._describe(sid, target, backend) or {}
+        if field == "captcha" or CAPTCHA_FIELD.search(element.get("name") or ""):
+            self.audit.write("browser.captcha_left", page=url)
+            raise BrowserError(CAPTCHA_HINT)
         if field == "password":
             if not await self.policy.check(Action("browser.password", host, f"Type into {label} on {host}",
                                                   {"url": url, "ref": ref}, tainted), origin=self.origin):

@@ -283,6 +283,29 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((realworld.host_of("https://m.amazon.in/x"), realworld.host_of("https://www.gov.co.uk/y"),
                           realworld.host_of("booking.com/hotel")), ("amazon.in", "gov.co.uk", "booking.com"))
 
+    def test_a_form_is_graded_on_what_was_chosen_and_typed_and_a_captcha_is_the_owners(self):
+        from coderunner.server import realworld
+        forms = {t.name: t for t in realworld.FORMS}
+        self.assertEqual(sorted(forms), ["ecourts", "emi", "ifsc", "pincode", "stations"])
+        court, visited = forms["ecourts"], ["https://services.ecourts.gov.in/ecourtindia_v6/?p=casestatus/index"]
+        filled = ["Uttar Pradesh", "Gautam Buddha Nagar", "G B Nagar District Court Complex", "Sharma", "2024"]
+        asked = [{"kind": "browser.handoff", "allowed": False,
+                  "summary": "Please finish in the CodeRunner browser: type the CAPTCHA, then click Go"}]
+        said = "I couldn't finish the search: the CAPTCHA step is yours."
+        state, why, _ = realworld.grade(court, said, visited, asked, [], [], filled)
+        self.assertEqual((state, why), ("needs_you", "needs you: CAPTCHA"))
+        # The wrong district, or a search that never reached the owner's step, is a failure.
+        self.assertEqual(realworld.grade(court, said, visited, asked, [], [], ["Uttar Pradesh", "Agra", "District Court", "Sharma", "2024"])[:2],
+                         ("failed", "the form was not filled: Gautam Buddha Nagar"))
+        self.assertEqual(realworld.grade(court, said, visited, [], [], [], filled)[:2],
+                         ("failed", "it did not hand the step to the owner"))
+        self.assertEqual(realworld.grade(court, said, visited, [{**asked[0], "allowed": True}], [], [], filled)[0], "failed")
+        # A calculator's figure counts only when its own fields were given the numbers.
+        emi, page = forms["emi"], ["https://emi.example/calc"]
+        answer = "The EMI is ₹21,696 a month and the total interest is ₹27,06,944. https://emi.example/calc"
+        self.assertEqual(realworld.grade(emi, answer, page, [], [], [], ["25,00,000", "8.5", "20"])[0], "passed")
+        self.assertIn("the form was not filled", realworld.grade(emi, answer, page, [], ["run_python"], [], [])[1])
+
     def test_there_are_twenty_tasks_each_with_its_rules_and_the_first_is_the_trip(self):
         from coderunner.server import realworld
         self.assertEqual((len(realworld.TASKS), realworld.TASKS[0].name), (20, "mauritius"))
@@ -338,7 +361,7 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(svc.config.get("agent.max_steps"), 30)
         self.assertTrue(seen["text"].startswith("On amazon.in") and "do not sign in" in seen["text"])
         self.assertEqual((shown["suite"], shown["real"]["result"]["passed"], check_module.last("real")["suite"]), ("real", 1, "real"))
-        self.assertEqual(len(shown["real"]["names"]), 20)
+        self.assertEqual(len(shown["real"]["names"]), 25)                       # the twenty and the five forms
         self.assertEqual(svc.files.roots, [])                                   # no test sites or documents for these
         self.assertEqual(svc.store.query("SELECT text FROM memories"), [{"text": "the owner's own"}])   # its own are forgotten
         self.assertEqual(job.start(["nope"], suite="real")[:19], "No such check: nope")
