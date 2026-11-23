@@ -398,8 +398,9 @@ class RouteTests(Home):
             self.assertNotIn("local-key-1", json.dumps(svc.config.data))
             # The client: the server's context shared by its two slots, no slot pinning or restarts of ours.
             llm = remote.client(svc.config)
-            self.assertEqual((llm.base_url, llm.model, llm.remote, llm.provider, llm.context, llm.slots, llm.recover),
-                             (server.base_url, "bonsai2-27b", True, "openai", 32768, 2, None))
+            self.assertEqual((llm.base_url, llm.model, llm.remote, llm.provider, llm.context, llm.slots),
+                             (server.base_url, "bonsai2-27b", True, "openai", 32768, 2))
+            self.assertTrue(await llm.recover())            # a failed request is tried again once it is healthy
             await llm.aclose()
         self.assertEqual(remote.claude_model(svc.config), remote.DEFAULT)    # a Claude retry is not sent to bonsai
 

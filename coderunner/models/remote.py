@@ -198,10 +198,27 @@ def server_client(chosen: dict):
     import httpx
     from ..core.llm import LLM
     llm = LLM(chosen["base_url"], chosen["model"], server_key())
-    llm.remote, llm.provider, llm.recover = True, SERVER, None
+    llm.remote, llm.provider = True, SERVER
+    root = chosen["base_url"][:-3] if chosen["base_url"].endswith("/v1") else chosen["base_url"]
+
+    async def recover() -> bool:
+        """Not ours to restart: a request that failed (the network between, the server busy or restarting) is
+        tried once more when the server says it is healthy, within a minute. A task 75 steps in ended on one
+        dropped request."""
+        import asyncio
+        headers = {"Authorization": f"Bearer {server_key()}"} if server_key() else {}
+        async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+            for _ in range(12):
+                try:
+                    if (await client.get(f"{root}/health", headers=headers)).status_code == 200:
+                        return True
+                except httpx.HTTPError:
+                    pass
+                await asyncio.sleep(5)
+        return False
+    llm.recover = recover
     context = 32768
     try:
-        root = chosen["base_url"][:-3] if chosen["base_url"].endswith("/v1") else chosen["base_url"]
         headers = {"Authorization": f"Bearer {server_key()}"} if server_key() else {}
         props = httpx.get(f"{root}/props", headers=headers, timeout=5, trust_env=False).json()
         n_ctx = int((props.get("default_generation_settings") or {}).get("n_ctx") or 0)

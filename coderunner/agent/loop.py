@@ -482,9 +482,11 @@ class Agent:
             except LLMError as exc:
                 self.svc.audit.write("agent.model_failed", error=str(exc)[:300])
                 # Said as a person would: what stopped it and what to do, never the runtime's own error.
-                final = (f"I had to stop here. {exc}" if getattr(self.llm, "remote", False) else
-                         "I had to stop here: the model on this computer stopped answering. Nothing was changed "
-                         "by this; ask again in a moment.")
+                server = getattr(self.llm, "provider", "") == "openai"
+                final = (f"I had to stop here. {exc}" if getattr(self.llm, "remote", False) and not server else
+                         "I had to stop here: "
+                         + ("your model server" if server else "the model on this computer")
+                         + " stopped answering. Nothing was changed by this; ask again in a moment.")
                 if ctx.told:
                     final += " What I had found so far is above."
                 break

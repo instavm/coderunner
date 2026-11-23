@@ -124,7 +124,7 @@ class LLM:
             except httpx.HTTPError as exc:
                 if attempt == 1 and self.recover is not None and await self.recover():
                     continue
-                raise LLMError(f"Model runtime at {self.base_url} is unreachable: {exc}") from exc
+                raise LLMError(f"Model runtime at {self.base_url} is unreachable: {type(exc).__name__} {exc}".strip()) from exc
             if response.status_code >= 500 and attempt == 1 and self.recover is not None and await self.recover():
                 continue
             return response

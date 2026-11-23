@@ -105,6 +105,7 @@ class FakeOpenAI:
                                 Route("/v1/embeddings", embeddings, methods=["POST"]),
                                 Route("/v1/models", models, methods=["GET"]),
                                 Route("/props", props, methods=["GET"]),
+                                Route("/health", lambda request: JSONResponse({"status": "ok"}), methods=["GET"]),
                                 Route("/slots/{id:int}", slots, methods=["POST"])])
         self.server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="error"))
         self.thread = threading.Thread(target=self.server.run, daemon=True)
