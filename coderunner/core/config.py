@@ -66,7 +66,7 @@ DEFAULTS: dict[str, Any] = {
         "max_file_mb": 200,
         "scan_interval": 600,        # seconds between checks for new or changed files
     },
-    "agent": {"max_steps": 30, "tool_output_chars": 12000, "approval_timeout": 300,
+    "agent": {"max_steps": 200, "tool_output_chars": 12000, "approval_timeout": 300,
               "parallel_tasks": None,  # tasks run at once (None: two on a local model, four on a remote one)
               "step_tokens": 2048,   # most a local model may write in one step (twice this where it may think); 0: no limit
               "recall_min_similarity": "auto"},  # similarity for a memory to enter a task; auto: per model
@@ -109,10 +109,19 @@ def _merge(base: dict, override: dict) -> dict:
     return merged
 
 
+# Defaults of earlier versions: a saved config holds every setting, so an old default found in the file is not
+# a choice and gives way to today's. (A task stopped at 30 steps with its plan unwritten after the default rose.)
+RETIRED = {("agent", "max_steps"): 30}
+
+
 class Config:
     def __init__(self, data: dict | None = None, path=None):
         self.path = path or paths.config_path()
-        self.data = _merge(DEFAULTS, data or {})
+        data = copy.deepcopy(data or {})
+        for (section, key), old in RETIRED.items():
+            if isinstance(data.get(section), dict) and data[section].get(key) == old:
+                del data[section][key]
+        self.data = _merge(DEFAULTS, data)
 
     @classmethod
     def load(cls, path=None) -> "Config":

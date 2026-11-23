@@ -78,28 +78,51 @@ class ParsingTests(unittest.TestCase):
 class ThreadTests(unittest.IsolatedAsyncioTestCase):
     """The owner reads a conversation: the answer, what the model tells them on purpose, never its working."""
 
-    async def test_a_note_reaches_the_thread_only_through_the_explicit_update(self):
+    async def test_a_line_in_a_calls_say_field_is_said_in_the_thread_and_not_given_to_the_tool(self):
         with FakeOpenAI() as fake:
             svc = Svc()
             svc.sandbox = FakeSandbox()
             svc.llm = LLM(fake.base_url, "test")
             svc.registry = build_registry(svc)
             said = []
+            fake.script = [tool_call("run_python", {"code": "print(1)", "say": "Adding up the fares now."}),
+                           tool_call("run_python", {"code": "print(2)", "say": "That errored, so I'll retry."}),
+                           {"role": "assistant", "content": "It comes to ₹9,600."}]
+            ctx = RunContext(conversation="t-say", events=said.append)
+            self.assertEqual(await Agent(svc, svc.llm, svc.registry).run(ctx, "Total?"), "It comes to ₹9,600.")
+            self.assertEqual([e["text"] for e in said if e["type"] == "note"], ["Adding up the fares now."])
+            tools = {t["function"]["name"]: t["function"]["parameters"]["properties"] for t in fake.requests[0]["tools"]}
+            self.assertIn("say", tools["run_python"])
+            self.assertNotIn("say", tools["tell_owner"])
+            await svc.llm.aclose()
+
+    async def test_the_line_beside_a_step_is_said_in_the_thread_but_not_one_about_the_machinery(self):
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.sandbox = FakeSandbox()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            said = []
+            step = tool_call("run_python", {"code": "print(1)"})["tool_calls"][0]
             fake.script = [
+                {"role": "assistant", "content": "Looking at Skyscanner for the 12th.", "tool_calls": [step]},
                 {"role": "assistant", "content": "The page didn't respond on the first try, so I'll retry.",
-                 "tool_calls": [tool_call("run_python", {"code": "print(1)"})["tool_calls"][0]]},
+                 "tool_calls": [step]},
+                {"role": "assistant", "content": "Looking at Skyscanner for the 12th.", "tool_calls": [step]},
                 tool_call("tell_owner", {"text": "Three non-stop flights that day; the cheapest is IndiGo at ₹4,800."}),
                 {"role": "assistant", "content": "IndiGo 6E 204 at ₹4,800 is the cheapest."}]
             ctx = RunContext(conversation="t-thread", events=said.append)
             reply = await Agent(svc, svc.llm, svc.registry).run(ctx, "Cheapest flight?")
             self.assertEqual(reply, "IndiGo 6E 204 at ₹4,800 is the cheapest.")
             notes = [e["text"] for e in said if e["type"] == "note"]
-            self.assertEqual(notes, ["Three non-stop flights that day; the cheapest is IndiGo at ₹4,800."])
+            # Said once, as a person chatting would; the line about retrying is not shown.
+            self.assertEqual(notes, ["Looking at Skyscanner for the 12th.",
+                                     "Three non-stop flights that day; the cheapest is IndiGo at ₹4,800."])
             self.assertFalse([e for e in said if "retry" in json.dumps(e) and e["type"] != "tool"])
             # The model itself still reads what it wrote, and is told how the owner sees things.
             sent = fake.requests[-1]["messages"]
             self.assertIn("so I'll retry", json.dumps(sent))
-            self.assertIn("tell_owner is for a finding or a partial result", sent[0]["content"])
+            self.assertIn("It is shown in the thread as you go", sent[0]["content"])
             self.assertIn("never ask the owner to restart or fix the browser", sent[0]["content"])
             # An answer that opens with the update word for word keeps only what is new.
             fake.script = [tool_call("tell_owner", {"text": "I opened your cart. It has 4 items."}),

@@ -57,13 +57,39 @@ INT = {"type": "integer"}
 BOOL = {"type": "boolean"}
 
 
+# A line to the owner that any tool call may carry, shown in the thread as the task goes, as a person chatting
+# would: the thread otherwise read as a list of tool steps. Models that write nothing beside their tool calls
+# (Bonsai 2 27B, in 34 of 34 steps) fill an argument they are given.
+SAY = {"type": "string", "description": "Optional: one short line to the owner, shown in their chat as you work: "
+       "what you are looking at or what you found. Never about tools, clicks, errors or retries."}
+PLUMBING = re.compile(r"\b(browser_\w+|run_python|tool|snapshot|element|ref\b|\[\d+\]|error|retry|retrying|"
+                      r"timed? ?out|did(n.t| not) (respond|load)|try again|json|function call)", re.I)
+
+
+def progress_line(content: str | None, said: list[str]) -> str:
+    """A line for the thread from what a step carries (its say field, or text beside the call), or "" when there
+    is none to show: empty, about the machinery, a long working-out rather than a line, or said already."""
+    text = " ".join((content or "").split())
+    if not text or len(text) > 400 or PLUMBING.search(text) or text in said[-3:]:
+        return ""
+    return text
+
+
 class ToolRegistry:
     def __init__(self, svc, tools: list[Tool]):
         self.svc = svc
         self.tools = {tool.name: tool for tool in tools}
 
     def schemas(self) -> list[dict]:
-        return [tool.schema() for tool in self.tools.values()]
+        shown = []
+        for tool in self.tools.values():
+            schema = tool.schema()
+            if tool.name != "tell_owner":
+                parameters = schema["function"]["parameters"]
+                parameters = {**parameters, "properties": {**parameters.get("properties", {}), "say": SAY}}
+                schema = {**schema, "function": {**schema["function"], "parameters": parameters}}
+            shown.append(schema)
+        return shown
 
     def describe(self) -> list[dict]:
         return [{"name": t.name, "description": t.description, "parameters": t.parameters,
@@ -82,6 +108,10 @@ class ToolRegistry:
             arguments = raw_arguments or {}
         if not isinstance(arguments, dict):
             return "Error: arguments must be a JSON object."
+        line = progress_line(str(arguments.pop("say", "") or ""), ctx.said)
+        if line:
+            ctx.said.append(line)
+            ctx.emit({"type": "note", "text": line})
         missing = [key for key in tool.parameters.get("required", []) if key not in arguments]
         if missing:
             return f"Error: missing required argument(s): {', '.join(missing)}."

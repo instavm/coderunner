@@ -13,7 +13,7 @@ from ..browser.broker import NO_CHANGE
 from ..core import paths
 from ..core.llm import LLM, LLMError
 from ..safety.policy import current_run
-from .tools import ToolRegistry
+from .tools import ToolRegistry, progress_line
 
 SYSTEM = """You are a private assistant running entirely on {owner}'s own computer.
 
@@ -31,8 +31,8 @@ How you work:
 - The owner's shared folders are searchable with files_search (text, code, documents, images, audio, video).
 - Save lasting preferences and facts with memory_save. Never store secrets.
 - When a website task ends on a page whose address holds the whole search (places, dates, filters, sorting), save that address with memory_save as a shortcut, without session or tracking parameters, e.g. "booking.com one-way flight results: https://...". Next time open it directly with the new values instead of filling the forms again.
-- {owner} reads this as a conversation with a person. What reaches them: your final message, what you send with tell_owner, your plan, and your questions. Text you write beside a tool call is not shown.
-- tell_owner is for a finding or a partial result worth knowing before the end, in a sentence or two ("Three non-stop flights that day; the cheapest is IndiGo at ₹4,800. Checking a second site."). Never tell {owner} about tools, clicks, element numbers, errors, timeouts, retries, or what you are about to try (not "The page did not respond, I'll retry").
+- {owner} reads this as a chat with a person who is working on it. With your tool calls, put one short line to {owner} in a call's say field when there is something to say: what you are looking at or what you found ("Looking at Skyscanner for the 12th." / "Two non-stop flights that day; IndiGo is cheapest at ₹4,800. Now the hotels."). It is shown in the thread as you go; don't repeat a line you already wrote. Never mention tools, clicks, element numbers, errors, timeouts or retries (not "The page did not respond, I'll retry").
+- tell_owner says a finding in the thread when you have no tool call to write beside.
 - If something cannot be finished, end with what you did, what could not be done and what {owner} can do next, in plain words: no error texts, no technical names, no account of what loaded or failed along the way, and never ask {owner} to restart or fix the browser or the computer.
 - Your final message is a chat reply to {owner}, not a report, said to them as "you" (never "the owner"). Lead with the answer in a sentence or two. Plain sentences: no headings, no bold labels ("Total:"), bold at most once, for the one figure or name that is the answer. A list or a table only when {owner} has to compare several things side by side. Link a source by its name where you mention it, as [Sony WH-CH520](https://...), not as a list of addresses at the end. Say only what was asked plus anything that changes the decision; a caveat is one sentence. No recap of what you did, no "Based on...", no offer at the end. For products or places {owner} will want to look at, call show_items rather than describing each.
 - Two good answers. Asked what a dinner cost: "You paid **₹1,240** at Sagar on 14 March, by card. That includes ₹59 of tax." Asked to compare a phone at two shops: "Amazon is cheaper: **₹50,999** for the [Pixel 10a 256 GB](https://www.amazon.in/dp/B0EXAMPLE), against ₹53,199 on [Flipkart](https://www.flipkart.com/pixel-10a). Amazon's price assumed a Bengaluru pincode, so yours may differ slightly.\""""
@@ -105,6 +105,12 @@ UNDONE = re.compile(r"\b(I )?(couldn.t|could not|was unable to|wasn.t able to|wa
                     r"extract|capture|add|see|read)|\bunfinished\b|^I had to stop here|^I stopped after|\bI.m stopping here|"
                     r"\bI (haven.t|have not) (yet )?(written|found|finished|done|checked|got)|"
                     r"^I got stuck", re.I | re.M)
+OUT_OF_ROOM = ("You have gathered more than fits; the earlier pages were let go. Without calling any tools, write "
+               "your reply to me now from what you have found: the answer first, with a link to the page each figure "
+               "came from, then one sentence on what is unfinished. No bold labels, no offer at the end.")
+WRAP_FROM, WRAP_EVERY = 30, 25
+WRAP_NUDGE = ("[Reminder, not a new request] {steps} steps so far. If what you have found already answers my request, "
+              "write the answer now; carry on only for what is still missing.")
 # Asked for links and given none: the reply is written again once, linked to the pages it came from. (Two real
 # tasks out of four answered with prices and reviews and no link at all.)
 WANTS_LINKS = re.compile(r"\blinks?\b|\burls?\b|\bsources?\b|\bcite\b", re.I)
@@ -309,6 +315,26 @@ class Agent:
                 tail = "\n</untrusted>" if text.rstrip().endswith("</untrusted>") else ""
                 messages[i] = {**messages[i], "content": text[:keep] + CUT + tail}
 
+    def _compact(self, messages: list[dict], head: int, ctx: "RunContext", room: int) -> list[dict] | None:
+        """The task's conversation made to fit for its answer once it is full: the instructions and the request,
+        what it said in the thread and its plan, and its latest steps in about half the room. None when even
+        that does not fit (the instructions alone larger than the room)."""
+        said = "\n".join(f"- {line}" for line in ctx.said[-30:])
+        note = ("[What you found earlier, as you told me while working]\n" + said if said else "") + (
+            "\n" + PLAN_REMINDER + render_plan(ctx.plan) if ctx.plan else "")
+        kept = messages[:head] + ([{"role": "user", "content": note.strip()}] if note.strip() else [])
+        budget = room / 2 - self._size(kept, [0, 0])
+        if budget <= 0:
+            return None
+        tail: list[dict] = []
+        for i in range(len(messages) - 1, head - 1, -1):
+            if self._size(tail + [messages[i]], [0, 0]) > budget:
+                break
+            tail.insert(0, messages[i])
+        while tail and not (tail[0].get("role") == "assistant" and tail[0].get("tool_calls")):
+            tail.pop(0)                         # a tool's result goes with the call that asked for it
+        return kept + tail
+
     def _room(self, context: int, conversation: str) -> int:
         """Tokens this task's conversation may hold: the runtime's context less what the other slots hold."""
         turns = getattr(self.svc, "turns", None)
@@ -355,9 +381,15 @@ class Agent:
         that, every change of task read the whole conversation again. extra: tool_choice="none" for a reply
         written without tools (the tools stay in the request, so it extends the one before)."""
         turns = getattr(self.svc, "turns", None)
+        slot = getattr(ctx.events, "slot", None)
+        if getattr(self.llm, "provider", "") == "openai" and slot is not None and slot < max(1, self.llm.slots - 1):
+            # The owner's own server serves its slots at once: no turns, but each task keeps to its slot, so what
+            # it has read stays read (the judge has the last one). Unpinned, a judge call or the other task could
+            # take a slot holding 20,000 tokens of conversation, read again at ~500 a second: 40 s a step.
+            return await self.llm.chat(messages, tools=self.registry.schemas(), think=think, id_slot=slot, **capped,
+                                       **extra)
         if turns is None or getattr(self.llm, "remote", False):
             return await self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped, **extra)
-        slot = getattr(ctx.events, "slot", None)
         async with turns.turn(ctx.conversation):
             return await self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped, **extra,
                                        **({"id_slot": slot} if slot is not None else {}))
@@ -379,7 +411,9 @@ class Agent:
                     {"role": "user", "content": await self._context(text, ctx)},
                     {"role": "user", "content": user_content}]
         self.svc.audit.write("agent.start", conversation=ctx.conversation, origin=ctx.origin)
-        max_steps = int(self.svc.config.get("agent.max_steps", 30))
+        # Not a budget a task works within: a stop for one that goes round in circles. At 30, long tasks (a trip
+        # planned from flights, hotels and a day-by-day plan) ended with "I'd need more steps to finish".
+        max_steps = int(self.svc.config.get("agent.max_steps", 200))
         # auto: reason before the first step and after a failed one; routine steps (the next click after
         # reading what changed) answer directly, which on a laptop saves ~15 s of generation per step.
         thinking = str(self.svc.config.get("agent.thinking", "auto")).lower()
@@ -391,13 +425,18 @@ class Agent:
         just_failed: dict[tuple[str, str], int] = {}        # calls that failed since the last step that worked
         scrolls = 0
         cuts = 0                                    # replies cut off for length
-        limit = 0 if getattr(self.llm, "remote", False) else int(self.svc.config.get("agent.step_tokens", 2048) or 0)
+        # Claude needs no cap of ours; a model we or the owner serve does (a step that wrote 4,700 tokens of
+        # code took 166 s on a 27B server).
+        uncapped = getattr(self.llm, "remote", False) and getattr(self.llm, "provider", "") != "openai"
+        limit = 0 if uncapped else int(self.svc.config.get("agent.step_tokens", 2048) or 0)
         singles = 0                                 # single browser actions in a row
         stuck = 0                                   # browser steps in a row that failed or changed nothing
         handover = "browser_task" in self.registry.tools
         context = int(getattr(self.llm, "context", 0) or self.svc.config.get("models.context", 32768) or 32768)
         known = [0, 0]                              # messages the runtime has counted, and its count of them
+        head = len(messages)                        # the instructions, the thread so far and the request
         ran_out = False                             # the steps ran out before an answer
+        closing = ""                                # the request for an answer when the steps or the room ran out
         for step in range(max_steps):
             self._drop_old_images(messages)
             room = self._room(context, ctx.conversation)
@@ -412,9 +451,18 @@ class Agent:
                 if removed:
                     self.svc.audit.write("agent.trimmed", results=len(removed), room=room)
             if self._size(messages, known) > 0.95 * room:
+                # Full: what it read before the latest step makes way, and it answers from what it has found (a
+                # task that ran 160 steps ended with only "I had to stop here", its findings unsaid).
                 self.svc.audit.write("agent.too_long", size=self._size(messages, known), room=room)
                 final = TOO_LONG + (" What I had found so far is above." if ctx.told else "")
+                compact = self._compact(messages, head, ctx, room)
+                if compact is not None:
+                    messages[:], known, closing = compact, [0, 0], OUT_OF_ROOM
                 break
+            if step >= WRAP_FROM and (step - WRAP_FROM) % WRAP_EVERY == 0:
+                # Not a limit: a long task is asked, now and then, whether what it has already answers the request
+                # (a 27B searched on for 160 steps after it had three review sites' picks).
+                messages.append({"role": "user", "content": WRAP_NUDGE.format(steps=step)})
             # Each request only extends the one before: hybrid models such as Qwen3.5 can resume only from a
             # cache checkpoint near the end of the previous prompt, so a message that came and went (or an
             # edit to the instructions) means re-reading the whole conversation, ~80 s for 20K tokens on a
@@ -465,10 +513,14 @@ class Agent:
                 if reply["content"]:
                     messages.append({"role": "assistant", "content": final})
                 break
-            # What the model writes beside its tool calls is its own working: kept in the conversation it reads,
-            # not shown. The thread is told things only through tell_owner, the plan, questions and the answer
-            # ("The browser didn't respond on the first try, so I'll retry" used to be put in front of the owner).
+            # What the model writes beside its tool calls is a line to the owner, shown in the thread as it works,
+            # as a person chatting would ("Looking at Skyscanner for the 12th."): the thread read as a list of
+            # tool steps. A line about the machinery stays out ("The browser didn't respond, so I'll retry").
             messages.append({"role": "assistant", "content": reply["content"], "tool_calls": reply["tool_calls"]})
+            line = progress_line(reply["content"], ctx.said)
+            if line:
+                ctx.said.append(line)
+                ctx.emit({"type": "note", "text": line})
             step_start = len(messages)
             failed = False
             for call in reply["tool_calls"]:
@@ -518,8 +570,10 @@ class Agent:
         else:
             # Out of steps: what the model found so far is still worth an answer.
             final = "I stopped after reaching the step limit. Tell me how you'd like to continue."
+            closing = OUT_OF_STEPS
+        if closing:
             ran_out = True
-            messages.append({"role": "user", "content": OUT_OF_STEPS})
+            messages.append({"role": "user", "content": closing})
             try:
                 # Same tools as every other request, only switched off: a request without them is a different
                 # prompt from its start, which made the runtime read the whole conversation again (24,000 tokens).

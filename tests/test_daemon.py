@@ -242,6 +242,18 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ConfigFileTests(unittest.TestCase):
+    def test_an_old_default_written_into_the_file_gives_way_to_todays(self):
+        import json
+        from coderunner.core.config import Config
+        path = pathlib.Path(tempfile.mkdtemp()) / "config.json"
+        # A file written whole by an earlier version: its old step limit is not a choice.
+        path.write_text(json.dumps({"agent": {"max_steps": 30, "tool_output_chars": 12000}}))
+        self.assertEqual(Config.load(path).get("agent.max_steps"), 200)
+        path.write_text(json.dumps({"agent": {"max_steps": 45}}))
+        self.assertEqual(Config.load(path).get("agent.max_steps"), 45)
+
+
 class OneDaemonTests(unittest.TestCase):
     def test_a_second_daemon_on_the_same_home_is_refused_until_the_first_is_gone(self):
         import os

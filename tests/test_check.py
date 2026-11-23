@@ -357,8 +357,9 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         row = shown["tasks"][0]
         self.assertEqual((row["state"], row["kind"], row["approvals"], row["refused"], row["links"], row["sites"]),
                          ("passed", "cart", 2, 1, 1, ["amazon.in"]))
-        self.assertEqual((seen["buy"], seen["share"], seen["steps"]), (False, True, 60))       # and the limit is put back
-        self.assertEqual(svc.config.get("agent.max_steps"), 30)
+        # At least the real tasks' steps (the default is above them now), and the limit is put back.
+        self.assertEqual((seen["buy"], seen["share"], seen["steps"]), (False, True, 200))
+        self.assertEqual(svc.config.get("agent.max_steps"), 200)
         self.assertTrue(seen["text"].startswith("On amazon.in") and "do not sign in" in seen["text"])
         self.assertEqual((shown["suite"], shown["real"]["result"]["passed"], check_module.last("real")["suite"]), ("real", 1, "real"))
         self.assertEqual(len(shown["real"]["names"]), 25)                       # the twenty and the five forms

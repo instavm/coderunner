@@ -239,6 +239,8 @@ class Daemon:
             svc.llm, svc.llm_api_key, svc.vision = claude, "", True
             if svc.remote["provider"] == remote.SERVER:
                 judge = DecisionModel(claude.base_url, claude.model, api="chat", api_key=remote.server_key())
+                if claude.slots > 1:
+                    judge.slot = claude.slots - 1       # its own slot, after the tasks' (tasks.limit)
             else:
                 judge = DecisionModel(claude.base_url, claude.model, api="chat", claude=claude)
             # The injection guard stays off unless asked for (models.remote.guard): a general model asked the

@@ -309,11 +309,20 @@ class ServerDaemonTests(Home):
             svc = daemon.svc
             self.assertEqual((svc.remote["provider"], svc.llm.model, svc.llm.base_url), ("openai", "bonsai2-27b", server.base_url))
             judge = svc.browser.decider.model
-            self.assertEqual((judge.base_url, judge.model, judge.api, judge.slot), (server.base_url, "bonsai2-27b", "chat", None))
+            self.assertEqual((judge.base_url, judge.model, judge.api), (server.base_url, "bonsai2-27b", "chat"))
             self.assertNotIn("browser_task", svc.registry.tools)          # it sees pages itself: no driver loaded here
-            self.assertEqual(limit(svc), 2)
+            self.assertEqual((limit(svc), judge.slot), (1, 1))             # two slots: one task, and the judge's
             self.assertTrue(svc.agent._system().startswith("You are the owner's assistant. You run on the owner's own "
                                                            "model server;"))
+            # A task's steps go to its own slot, under the cap a served model has.
+            from coderunner.agent.loop import RunContext
+
+            def events(event):
+                pass
+            events.slot = 0
+            server.script = [{"role": "assistant", "content": "Done."}]
+            await svc.agent.run(RunContext(conversation="t-slot", events=events), "hi")
+            self.assertEqual((server.requests[-1]["id_slot"], server.requests[-1]["max_tokens"]), (0, 4096))
             shown = await daemon.status()
             self.assertEqual((shown["models"]["chat"], shown["remote"]["host"]), ("bonsai2-27b", f"127.0.0.1:{server.port}"))
             await svc.llm.aclose()

@@ -1,6 +1,7 @@
 """Two tasks at once: a place each, turns at the model, and the rest waiting in a queue."""
 
 import asyncio
+import json
 import unittest
 from unittest import mock
 
@@ -284,6 +285,35 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
             reply = await agent.run(RunContext(conversation="app:two"), "hello")
             self.assertEqual(len(fake.requests), before)
             self.assertTrue(reply.startswith(loop_module.TOO_LONG))
+            await svc.llm.aclose()
+
+
+    async def test_a_task_that_fills_its_room_answers_from_what_it_found(self):
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.llm.context = 100000
+            svc.registry = build_registry(svc)
+
+            async def looked(args, ctx):
+                return "x" * 1400                  # a short result each time: nothing the trims let go
+            svc.registry.tools["lookup"] = Tool("lookup", "Look up a review.", {
+                "type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}, looked)
+            agent = Agent(svc, svc.llm, svc.registry)
+            step = lambda n: {"role": "assistant", "content": "", "tool_calls": [{"id": f"c{n}", "type": "function",
+                              "function": {"name": "lookup", "arguments": f'{{"q": "review {n}", "say": "Read review {n}."}}'}}]}
+            fake.script = [step(n) for n in range(10)] + [{"role": "assistant", "content": "The Sony WH-CH720N, from two sites."}]
+            rooms = iter([100000] * 10 + [6000] * 5)
+            with mock.patch.object(agent, "_room", side_effect=lambda context, conversation: next(rooms)):
+                ctx = RunContext(conversation="app:full")
+                reply = await agent.run(ctx, "Best headphones?")
+            self.assertEqual(reply, "The Sony WH-CH720N, from two sites.")
+            sent = fake.requests[-1]["messages"]
+            self.assertEqual(sent[-1]["content"], loop_module.OUT_OF_ROOM)
+            self.assertIn("- Read review 9.", json.dumps(sent))            # what it said along the way
+            self.assertEqual([m["content"] for m in sent if m["role"] == "user"][1], "Best headphones?")
+            self.assertLess(len(sent), 12)                                  # the middle steps let go
+            self.assertTrue(ctx.incomplete)
             await svc.llm.aclose()
 
 

@@ -82,8 +82,9 @@ def limit(svc) -> int:
         return max(1, int(set_by_owner))
     away = getattr(svc, "remote", None)
     if away and away.get("provider") == "openai":
-        # The owner's own server: as many as it has slots, each task in one (two on a 27B over a 64K context).
-        return max(1, int(getattr(getattr(svc, "llm", None), "slots", 2) or 2))
+        # The owner's own server: a task in each of its slots but the last, which the step judge keeps (with two
+        # slots, one task at a time; start it with -np 3 for two).
+        return max(1, int(getattr(getattr(svc, "llm", None), "slots", 2) or 2) - 1)
     return 4 if away else 2
 
 
