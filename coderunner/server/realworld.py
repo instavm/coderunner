@@ -135,7 +135,7 @@ TASKS = [
          "Which are the three best-reviewed noise-cancelling headphones under ₹25,000 right now, according to at "
          "least two review sites? Give a table with the model, what each site says about it, and a current price in "
          "India with a link.",
-         {"a table": r"\|.*\|", "noise cancelling": r"noise[- ]cancel"}, links=2, prices=2),
+         {"a table": r"\|.*\|", "noise cancelling": r"noise[- ]cancel|\bANC\b"}, links=2, prices=2),
     Real("flight", "travel", "the cheapest non-stop flight on a date, from two travel sites",
          "What is the cheapest non-stop flight from Bengaluru to Delhi on 15 January 2027, one way, for one adult? "
          "Check two travel sites and give the airline, departure time, price and link from each.",
@@ -250,3 +250,69 @@ FORMS = [
          {"the instalment": r"21,?69[5-6]"}, links=1, prices=2, chose=(r"25,?00,?000", r"8\.5", r"^(20|240)$")),
 ]
 EVERY = TASKS + FORMS
+
+# Research (`coderunner check --research`): questions answered from several pages, most with an answer that does
+# not change, so the grade says whether it is right and not only whether it has the parts. A few need today's
+# figures (a rate, star counts, a month's statistics) and are graded on their parts, like the tasks above.
+RESEARCH = [
+    Real("pi5chip", "research", "a computer's chip, its maker, cores and clock, from the maker's page",
+         "Which chip does the Raspberry Pi 5 use, which company makes that chip, and what CPU cores and clock speed "
+         "does it have? Cite the official Raspberry Pi product page.",
+         {"the chip": r"BCM\s?2712", "the maker": r"broadcom", "the cores": r"cortex[- ]?a76", "the clock": r"2\.4\s?GHz"},
+         links=1, suite="research"),
+    Real("moonlanding", "research", "a space mission's landing: date, lander, rover and rocket, from official sources",
+         "Which Indian mission first landed near the Moon's south pole? Give the landing date, the names of its lander "
+         "and rover, and the rocket that launched it, from ISRO's own site or another official source.",
+         {"the mission": r"chandrayaan[- ]?3", "the date": r"23(rd)?\s+aug|aug\w*\s+23|2023-08-23",
+          "the lander": r"vikram", "the rover": r"pragyan", "the rocket": r"LVM[- ]?3|GSLV[- ]?Mk[- ]?III"},
+         links=1, suite="research"),
+    Real("nobel", "research", "two prizes of one year: who won and what for, from the prize's own site",
+         "Who won the 2024 Nobel Prize in Physics, and who won the 2024 Nobel Prize in Chemistry? Say in a line what "
+         "each prize was for, from nobelprize.org.",
+         {"Hopfield": r"hopfield", "Hinton": r"hinton", "Baker": r"baker", "Hassabis": r"hassabis", "Jumper": r"jumper",
+          "neural networks": r"neural net", "proteins": r"protein"}, links=1, suite="research"),
+    Real("pymatch", "research", "when a language feature arrived, its specifications and the release date",
+         "In which Python version did structural pattern matching (the match statement) arrive, which PEPs specify "
+         "it, and on what date was that version released? Cite python.org pages.",
+         {"the version": r"3\.10", "PEP 634": r"PEP[- ]?634", "the date": r"oct\w*\.?\s+4|4(th)?\s+oct|2021-10-04",
+          "the year": r"2021"}, links=1, suite="research"),
+    Real("literacy", "research", "the highest and lowest of a census figure across states, with sources",
+         "According to the 2011 Census of India, which state had the highest literacy rate and which had the lowest, "
+         "and what were the two rates? Cite your sources.",
+         {"Kerala": r"kerala", "Kerala's rate": r"9[34](\.\d+)?\s?%", "Bihar": r"bihar", "Bihar's rate": r"6[1-3](\.\d+)?\s?%"},
+         links=1, suite="research"),
+    Real("worldcup", "research", "a chain of facts about one match, each found from the one before",
+         "In the FIFA World Cup that Lionel Messi first won: which country hosted it, who scored for the losing side "
+         "in the final, and what was the score after extra time and on penalties? Link your sources.",
+         {"the host": r"qatar", "the scorer": r"mbapp", "after extra time": r"3\s?[-–—:]\s?3", "on penalties": r"4\s?[-–—:]\s?2"},
+         links=1, suite="research"),
+    Real("peaks", "research", "three mountains compared in a table: heights, countries, first ascents",
+         "Compare the three highest mountains in the world in a table: height in metres, the countries each stands in, "
+         "and the year each was first climbed, with a source link.",
+         {"a table": r"\|.*\|", "Everest": r"8,?84[89]", "K2": r"8,?611", "Kangchenjunga": r"8,?586",
+          "first ascents": r"1953.*1954.*1955|1953.*1955.*1954"}, links=1, suite="research"),
+    Real("modelcards", "research", "three model cards read for their context length and licence",
+         "From their official model cards on Hugging Face, what context length and licence do Qwen2.5-7B-Instruct, "
+         "Llama-3.1-8B-Instruct and Mistral-7B-Instruct-v0.3 each have? Give a table with a link to each card.",
+         {"a table": r"\|.*\|", "Apache": r"apache", "Llama's licence": r"llama\s?3\.1\s+(community\s+)?licen[cs]e|community licen[cs]e",
+          "128K": r"128\s?[Kk]|131,?072", "32K": r"32\s?[Kk]|32,?768"}, links=2, suite="research"),
+    Real("passportfee", "research", "a government fee under two schemes, from the government's site",
+         "What is the fee for a fresh 36-page Indian passport for an adult under the normal scheme and under Tatkaal, "
+         "according to the Passport Seva site? Give both amounts and the link.",
+         {"normal": r"1,?500", "Tatkaal": r"3,?500", "the scheme": r"tatk?aa?l"}, links=1, prices=2, suite="research"),
+    Real("reporate", "research", "a central bank's current rate, when it last changed and by how much",
+         "What is the Reserve Bank of India's policy repo rate right now, when was it last changed, and by how much? "
+         "Cite the RBI's own site.",
+         {"a rate": r"\d\.\d{1,2}\s?%", "a date": r"20\d\d", "the change": r"basis points|bps|\bcut\b|raised|reduced|unchanged"},
+         links=1, suite="research"),
+    Real("upi", "research", "a payment system's start, its operator, and a recent month's volume",
+         "When was UPI launched in India, which organisation runs it, and how many UPI transactions were made in the "
+         "most recent month that NPCI's own statistics page shows? Give the month, the figure and the link.",
+         {"the launch year": r"2016", "the operator": r"NPCI|national payments corporation",
+          "a volume": r"\d[\d,.]*\s*(billion|crore|bn|million|mn)"}, links=1, suite="research"),
+    Real("llmrepos", "research", "three open-source projects compared from their own repository pages",
+         "Compare llama.cpp, Ollama and vLLM from their GitHub pages: the number of stars, the licence and the latest "
+         "release version of each, in a table with links.",
+         {"a table": r"\|.*\|", "licences": r"MIT|apache", "star counts": r"\d[\d,.]*\s?[kK]\b|\d{2,3},\d{3}"},
+         links=3, suite="research", long=True),
+]

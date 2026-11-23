@@ -157,7 +157,9 @@ CHECKS = [
 ]
 
 
-SUITES = {"check": CHECKS, "real": realworld.EVERY}
+SUITES = {"check": CHECKS, "real": realworld.EVERY, "research": realworld.RESEARCH}
+WEB = ("real", "research")          # the sets run on real websites
+ANSWER_CHARS = 6000                 # of each answer kept in the result, to read one model's against another's
 REAL_STEPS = 60                     # a trip plan over several sites needs more steps than a day's ordinary task
 
 
@@ -185,6 +187,7 @@ class CheckJob:
         self._asked = 0                     # approvals the current task asked for (an owner would have been asked)
         self._approvals: list[dict] = []    # and what each was, for the tasks on real sites
         self.suite = "check"
+        self.minutes = 0                    # a time limit for every task of the run, instead of each one's own
 
     def public(self) -> dict:
         return {"state": self.state, "suite": self.suite, "lines": self.lines[-KEEP:], "tasks": self.tasks,
@@ -193,14 +196,16 @@ class CheckJob:
                 # The tasks on real websites (`coderunner check --real`: twenty everyday ones and five forms), and how they went last time.
                 "real": {"names": [{"name": t.name, "what": t.what, "long": t.long, "kind": t.kind} for t in realworld.EVERY],
                          "result": self.result if self.suite == "real" and self.result else last("real")},
-                "check": last("check")}
+                "check": last("check"), "research": last("research")}
 
     def _say(self, line: str) -> None:
         self.lines.append(line)
         del self.lines[:-KEEP]
 
-    def start(self, names: list[str] | None = None, long: bool = False, suite: str = "check") -> str:
-        """Start a run; returns "" or why it was not started. suite "real": the tasks on real websites."""
+    def start(self, names: list[str] | None = None, long: bool = False, suite: str = "check", minutes: int = 0) -> str:
+        """Start a run; returns "" or why it was not started. suite "real": the tasks on real websites; "research":
+        questions answered from several pages. minutes: one time limit for every task (to compare models of
+        different speeds on what they can do, not on how fast)."""
         if suite not in SUITES:
             return "There is no such set of checks."
         pool = SUITES[suite]
@@ -213,8 +218,8 @@ class CheckJob:
         unknown = [n for n in names or [] if n not in {c.name for c in pool}]
         if unknown:
             return f"No such check: {', '.join(unknown)}. There are: {', '.join(c.name for c in pool)}."
-        chosen = [c for c in pool if (c.name in names if names else long or suite == "real" or not c.long)]
-        self.state, self.lines, self.result, self.suite = "running", [], None, suite
+        chosen = [c for c in pool if (c.name in names if names else long or suite in WEB or not c.long)]
+        self.state, self.lines, self.result, self.suite, self.minutes = "running", [], None, suite, max(0, int(minutes or 0))
         self.tasks = [{"name": c.name, "what": c.what, "kind": getattr(c, "kind", ""), "state": "waiting", "why": "",
                        "seconds": None, "steps": None,
                        "approvals": None, "conversation": ""} for c in chosen]
@@ -264,7 +269,7 @@ class CheckJob:
                 return
             self._asked += 1
             allow = not PAYS.search(approval.summary.split("\n")[0])
-            if self.suite == "real":            # on real sites nothing that commits, signs in or hands over the screen
+            if self.suite in WEB:               # on real sites nothing that commits, signs in or hands over the screen
                 allow = allow and approval.kind not in realworld.COMMITS
             self._approvals.append({"kind": approval.kind, "summary": approval.summary.split("\n")[0][:600], "allowed": allow})
             with contextlib.suppress(KeyError):
@@ -280,7 +285,7 @@ class CheckJob:
         try:
             able = await self._able()
             needs = {need for c in chosen for need in c.needs} if self.suite == "check" else set()
-            if self.suite == "real":
+            if self.suite in WEB:
                 config.set("agent.max_steps", max(int(steps_before or 30), REAL_STEPS))
             if "browser" in needs and not able["browser"]:
                 # The assistant's own computer reaches this Mac at the sandbox's gateway address, not at loopback.
@@ -335,6 +340,7 @@ class CheckJob:
             remote = getattr(svc, "remote", None)
             self.result = {"date": datetime.datetime.now().isoformat(timespec="seconds"), "suite": self.suite,
                            "model": remote["model"] if remote else config.get("models.chat") or "",
+                           "minutes": self.minutes,
                            "blocked": sum(t["state"] == "blocked" for t in self.tasks),
                            "passed": passed, "ran": len(ran), "skipped": sum(t["state"] == "skipped" for t in self.tasks),
                            "seconds": round(time.time() - started), "tasks": self.tasks,
@@ -375,6 +381,8 @@ class CheckJob:
         task = tasks.start(conversation, check.prompt + realworld.RULES if real else check.prompt(run), "check", attachments=ids)
         job = tasks.running.get(task["id"])
         limit = (LONG_S if check.long else realworld.LIMIT_S) if real else LONG_S if check.long else QUICK_S
+        limit = self.minutes * 60 or limit
+        answer = ""
         try:
             if job is not None:
                 await asyncio.wait_for(asyncio.shield(job), limit)
@@ -400,7 +408,7 @@ class CheckJob:
                 if check.chose:
                     figures["filled"] = [value[:60] for value in filled if value][:40]      # what the form was given
                 row.update(state=state, why=why, seconds=round(time.monotonic() - start), steps=len(run.tools),
-                           approvals=self._asked, kind=check.kind, **figures)
+                           approvals=self._asked, kind=check.kind, answer=answer[:ANSWER_CHARS], **figures)
                 self._say(f"  {state.upper().replace('_', ' ') if state != 'passed' else state} in {row['seconds']} s, {row['steps']} steps, "
                           f"{self._asked} approvals asked ({figures['refused']} refused): {why}")
                 return
@@ -415,6 +423,6 @@ class CheckJob:
         row.update(state="passed" if passed else "failed", why=why, seconds=round(time.monotonic() - start),
                    steps=len(run.tools), approvals=self._asked)
         if real:
-            row["kind"] = check.kind
+            row.update(kind=check.kind, answer=answer[:ANSWER_CHARS])
         asked = f", {self._asked} approval{'s' if self._asked != 1 else ''} asked" if self._asked else ""
         self._say(f"  {'passed' if passed else 'FAILED'} in {row['seconds']} s, {row['steps']} steps{asked}: {why}")

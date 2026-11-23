@@ -604,7 +604,12 @@ def admin_app(svc, daemon) -> Starlette:
             job.stop()
             return JSONResponse(job.public())
         names = [str(n) for n in body.get("names") or []] if isinstance(body.get("names"), list) else []
-        problem = job.start(names or None, long=bool(body.get("long")), suite="real" if body.get("real") else "check")
+        suite = str(body.get("suite") or ("real" if body.get("real") else "check"))
+        try:
+            minutes = max(0, int(body.get("minutes") or 0))
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "minutes must be a whole number"}, status_code=400)
+        problem = job.start(names or None, long=bool(body.get("long")), suite=suite, minutes=minutes)
         if problem:
             return JSONResponse({**job.public(), "error": problem}, status_code=409)
         svc.audit.write("check.started", origin=principal(request), names=names, long=bool(body.get("long")))

@@ -316,6 +316,72 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         for task in realworld.TASKS:
             self.assertTrue(task.parts and task.prompt and task.what, task.name)
 
+    def test_each_research_question_passes_its_right_answer_and_fails_a_wrong_one(self):
+        from coderunner.server import realworld
+        src = "https://en.wikipedia.org/wiki/A https://www.example.org/b https://www.example.org/c"
+        right = {
+            "pi5chip": ("The Raspberry Pi 5 uses the Broadcom BCM2712: four Arm Cortex-A76 cores at 2.4GHz. " + src,
+                        "BCM2712", "BCM2711"),
+            "moonlanding": ("Chandrayaan-3's lander Vikram touched down on 23 August 2023 with the rover Pragyan; it "
+                            "was launched on an LVM3. " + src, "Pragyan", "Pragati"),
+            "nobel": ("Physics: John Hopfield and Geoffrey Hinton, for machine learning with artificial neural networks. "
+                      "Chemistry: David Baker for protein design, Demis Hassabis and John Jumper for protein structure "
+                      "prediction. " + src, "Hassabis", "Hassan"),
+            "pymatch": ("Python 3.10, released on October 4, 2021; PEP 634 specifies it (PEP 635 and 636 explain it). " + src,
+                        "3.10", "3.11"),
+            "literacy": ("Kerala had the highest rate, 94.0%, and Bihar the lowest, 61.8%. " + src, "61.8%", "71.8%"),
+            "worldcup": ("Qatar hosted the 2022 final; Kylian Mbappé scored a hat-trick for France. It was 3–3 after "
+                         "extra time and Argentina won 4–2 on penalties. " + src, "4–2", "5–4"),
+            "peaks": ("| Mountain | Height | Countries | First climbed |\n|---|---|---|---|\n| Everest | 8,849 m | Nepal, China | 1953 |\n"
+                      "| K2 | 8,611 m | Pakistan, China | 1954 |\n| Kangchenjunga | 8,586 m | Nepal, India | 1955 |\n" + src,
+                      "8,611", "8,511"),
+            "modelcards": ("| Model | Context | Licence |\n|---|---|---|\n| Qwen2.5-7B-Instruct | 131,072 | Apache 2.0 |\n"
+                           "| Llama-3.1-8B-Instruct | 128K | Llama 3.1 Community License |\n| Mistral-7B-Instruct-v0.3 | 32K | "
+                           "Apache 2.0 |\n" + src, "32K", "16K"),
+            "passportfee": ("₹1,500 under the normal scheme and ₹3,500 under Tatkaal. " + src, "₹3,500", "₹2,000"),
+            "reporate": ("The repo rate is 5.50%, cut by 50 basis points on 6 June 2025. " + src, "5.50%", "low"),
+            "upi": ("UPI was launched in April 2016 and is run by NPCI. In October 2026 it handled 21.3 billion "
+                    "transactions. " + src, "billion", "lots of"),
+            "llmrepos": ("| Project | Stars | Licence | Release |\n|---|---|---|---|\n| llama.cpp | 90.1k | MIT | b7000 |\n"
+                         "| Ollama | 155k | MIT | v0.12 |\n| vLLM | 60.2k | Apache-2.0 | v0.11 |\n" + src, "MIT", "GPL"),
+        }
+        self.assertEqual(sorted(right), sorted(t.name for t in realworld.RESEARCH))
+        visited = ["https://en.wikipedia.org/wiki/A", "https://www.example.org/b"]
+        for task in realworld.RESEARCH:
+            answer, fact, wrong = right[task.name]
+            state, why, _ = realworld.grade(task, answer, visited, [], [])
+            self.assertEqual(state, "passed", f"{task.name}: {why}")
+            changed = answer.replace(fact, wrong)
+            if task.name == "llmrepos":
+                changed = changed.replace("Apache-2.0", "BSD")
+            self.assertEqual(realworld.grade(task, changed, visited, [], [])[0], "failed", task.name)
+
+    async def test_a_research_run_keeps_each_answer_and_has_one_time_limit(self):
+        import os, tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = mock.patch.dict(os.environ, {"CODERUNNER_HOME": tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        (pathlib.Path(tmp.name) / "assistant").mkdir()
+        svc = Svc({"models": {"chat": "coderunner-test"}})
+        svc.vision, svc.browser, svc.files = True, object(), Files()
+        svc.sandbox = mock.Mock(health=mock.AsyncMock(return_value=True))
+        daemon = FakeDaemon(svc)
+        daemon.tasks = tasks_module.Tasks(daemon, tasks_module.EventBus(svc.store))
+        answer = "The Raspberry Pi 5 uses the Broadcom BCM2712, four Cortex-A76 cores at 2.4 GHz: https://www.raspberrypi.com/products/raspberry-pi-5/"
+
+        async def handle(channel, chat_id, text, origin="", events=None, task="", images=None):
+            events({"type": "activity", "event": "browser.open", "url": "https://www.raspberrypi.com/products/raspberry-pi-5/"})
+            return answer
+        daemon.handle_message = handle
+        job = check_module.CheckJob(daemon)
+        self.assertEqual(job.start(["pi5chip"], suite="research", minutes=45), "")
+        await job._job
+        row = job.public()["tasks"][0]
+        self.assertEqual((row["state"], row["answer"]), ("passed", answer))
+        self.assertEqual((check_module.last("research")["minutes"], job.public()["research"]["suite"]), (45, "research"))
+
     async def test_a_real_task_runs_as_a_task_of_the_app_and_refuses_every_committing_step(self):
         import os, tempfile
         from coderunner.safety.policy import current_run

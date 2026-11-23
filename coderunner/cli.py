@@ -264,13 +264,15 @@ def cmd_check(args, config: Config) -> int:
         return 1
     if args.last:
         shown = _admin(config, "GET", "/api/check")
-        result = shown["real"]["result"] if args.real else shown.get("check") or shown.get("result")
+        result = (shown["real"]["result"] if args.real else shown.get("research") if args.research
+                  else shown.get("check") or shown.get("result"))
         if not result:
             print("No check has been run yet.")
             return 1
         return _print_check(result)
     try:
-        _admin(config, "POST", "/api/check", {"names": args.names, "long": args.long, "real": args.real})
+        _admin(config, "POST", "/api/check", {"names": args.names, "long": args.long, "real": args.real,
+                                              "suite": "research" if args.research else "", "minutes": args.minutes})
     except RuntimeError as exc:
         try:
             print(json.loads(str(exc).split(": ", 1)[1])["error"])
@@ -979,6 +981,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="twenty tasks and five forms on real websites (a trip planned, prices compared, a cart taken "
                         "to the step before payment, a court case search...): nothing is signed in to, paid for "
                         "or submitted")
+    p.add_argument("--research", action="store_true",
+                   help="twelve questions answered from several real pages, most with an answer that can be checked")
+    p.add_argument("--minutes", type=int, default=0, help="one time limit for every task, in minutes")
     p.set_defaults(func=cmd_check)
 
     p = sub.add_parser("chat", help="Talk to the assistant; approvals are asked here")
