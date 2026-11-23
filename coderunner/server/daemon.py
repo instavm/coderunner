@@ -265,9 +265,12 @@ class Daemon:
                     audit.write("browser.extension_updated")
             except OSError as exc:
                 audit.write("browser.extension_update_failed", error=str(exc)[:200])
-        svc.browser = BrowserBroker(self.config, svc.policy, audit,
-                                    decider=ActionCheck(judge, audit=audit) if judge is not None else
-                                    ActionCheck.from_config(self.config, audit, **runtime), chrome=svc.chrome,
+        decider = ActionCheck(judge, audit=audit) if judge is not None else \
+            ActionCheck.from_config(self.config, audit, **runtime)
+        if decider is not None and claude is None and decider.model.base_url == svc.llm.base_url.rstrip("/"):
+            from .tasks import limit
+            decider.model.slot = limit(svc)     # the slot after the tasks' (runtimes.py starts one more)
+        svc.browser = BrowserBroker(self.config, svc.policy, audit, decider=decider, chrome=svc.chrome,
                                     sandbox=(url, paths.api_token()))
 
         if self.config.get("browser.mode") == "computer":

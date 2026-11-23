@@ -1,10 +1,12 @@
 """The browser driver: Fara1.5's format, the step loop over the broker's checked actions, taking turns with
 the assistant's model, and picking a driver per machine."""
 
+import asyncio
 import contextlib
 import dataclasses
 import json
 import unittest
+from unittest import mock
 from datetime import datetime
 
 from fakes import FakeOpenAI, Svc, tool_call
@@ -283,20 +285,59 @@ class SwapTests(unittest.IsolatedAsyncioTestCase):
         svc = Svc()
         svc.llm = LLM("http://127.0.0.1:8082/v1", "coderunner-bonsai-2-27b")
         judge = type("Judge", (), {"base_url": "http://127.0.0.1:8082/v1", "model": "coderunner-bonsai-2-27b",
-                                   "api": "chat"})()
+                                   "api": "chat", "slot": 2})()
         svc.browser = type("Browser", (), {"decider": type("Check", (), {"model": judge})()})()
         svc.driver = type("D", (), {"llm": LLM("http://127.0.0.1:8083/v1", "coderunner-fara1.5-4b")})()
         async with Swap(svc, FakeRuntime("prism", log), FakeRuntime("driver", log)):
             self.assertEqual(log, ["stop prism", "start driver"])
-            self.assertEqual((judge.base_url, judge.model), ("http://127.0.0.1:8083/v1", "coderunner-fara1.5-4b"))
+            self.assertEqual((judge.base_url, judge.model, judge.slot),
+                             ("http://127.0.0.1:8083/v1", "coderunner-fara1.5-4b", None))   # not a slot there
         self.assertEqual(log, ["stop prism", "start driver", "stop driver", "start prism"])
-        self.assertEqual((judge.base_url, judge.model), ("http://127.0.0.1:8082/v1", "coderunner-bonsai-2-27b"))
+        self.assertEqual((judge.base_url, judge.model, judge.slot), ("http://127.0.0.1:8082/v1", "coderunner-bonsai-2-27b", 2))
         log.clear()
         async with Swap(svc, FakeRuntime("ollama", log), FakeRuntime("driver", log)):
             pass                            # Ollama keeps serving embeddings: only the chat model is unloaded
         self.assertEqual(log, ["unload coderunner-bonsai-2-27b", "start driver", "stop driver", "start ollama"])
         await svc.llm.aclose()
         await svc.driver.llm.aclose()
+
+    async def test_the_tasks_slots_get_the_instructions_back_when_the_model_returns(self):
+        from coderunner.server.tasks import Turns
+        log = []
+        svc = Svc()
+        svc.turns = Turns()
+        svc.llm = mock.Mock(remote=False, model="coderunner-qwen3.5-9b",
+                            reset_slot=mock.AsyncMock(side_effect=lambda slot: log.append(f"reset {slot}")))
+        svc.browser = type("Browser", (), {"decider": None})()
+        async with Swap(svc, FakeRuntime("llama.cpp", log), FakeRuntime("driver", log)):
+            pass
+        self.assertEqual(log, ["stop llama.cpp", "start driver", "stop driver", "start llama.cpp", "reset 0", "reset 1"])
+
+    async def test_a_task_stopped_while_driving_stays_stopped_when_its_model_does_not_come_back(self):
+        log = []
+        svc = Svc()
+        svc.llm = LLM("http://127.0.0.1:8082/v1", "coderunner-qwen3.5-9b")
+        svc.browser = type("Browser", (), {"decider": None})()
+        planner = FakeRuntime("llama.cpp", log)
+
+        def fails():
+            raise RuntimeError("llama-server exited with code 1")
+        planner.start = fails
+
+        async def drive():
+            async with Swap(svc, planner, FakeRuntime("driver", log)):
+                await asyncio.sleep(10)
+        job = asyncio.create_task(drive())
+        await asyncio.sleep(0.05)
+        job.cancel()
+        with self.assertRaises(asyncio.CancelledError):     # before, the restart's error took its place
+            await job
+        self.assertIn("driver.planner_restart_failed",
+                      [json.loads(line)["event"] for line in (svc.tmp / "audit.jsonl").read_text().splitlines()])
+        with self.assertRaises(RuntimeError):                # not stopped: the owner hears the model failed
+            async with Swap(svc, planner, FakeRuntime("driver", log)):
+                pass
+        await svc.llm.aclose()
 
 
 class PickTests(unittest.TestCase):

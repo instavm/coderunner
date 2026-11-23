@@ -350,16 +350,32 @@ class Swap:
         await asyncio.to_thread(self.driver.start)
         judge = getattr(getattr(self.svc.browser, "decider", None), "model", None)
         if judge is not None and judge.model == getattr(self.svc.llm, "model", None):
-            self._judge = (judge, judge.base_url, judge.model, judge.api)
-            judge.base_url, judge.model, judge.api = self.driver.base_url.rstrip("/"), self.svc.driver.llm.model, "chat"
+            self._judge = (judge, judge.base_url, judge.model, judge.api, judge.slot)
+            # The driver's server has its own slots: the judge's place on the assistant's is not one of them.
+            judge.base_url, judge.model, judge.api, judge.slot = (self.driver.base_url.rstrip("/"),
+                                                                  self.svc.driver.llm.model, "chat", None)
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, kind, *exc):
         if self._judge:
-            judge, judge.base_url, judge.model, judge.api = self._judge
+            judge, judge.base_url, judge.model, judge.api, judge.slot = self._judge
             self._judge = None
         await asyncio.to_thread(self.driver.stop)
-        await asyncio.to_thread(self.planner.start)
+        try:
+            await asyncio.to_thread(self.planner.start)
+            # Started again, the server has nothing read: the tasks' slots get the instructions back from the
+            # kept file (0.1 s each) rather than read them for 18 s on the next step.
+            reset = getattr(self.svc.llm, "reset_slot", None)
+            if reset is not None and getattr(self.svc, "turns", None) is not None:
+                from ..server.tasks import limit
+                for slot in range(limit(self.svc)):
+                    await reset(slot)
+        except Exception as error:
+            if kind is None or not issubclass(kind, asyncio.CancelledError):
+                raise
+            # Stopped while driving: a model that does not come back is the next task's to start, and must not
+            # turn the stop into a failed step the task carries on from (a hotel search ran six more minutes).
+            self.svc.audit.write("driver.planner_restart_failed", error=str(error)[:200])
 
     def _unload_planner(self) -> None:
         if getattr(self.planner, "name", "") == "ollama":

@@ -486,6 +486,15 @@ names its own slot in llama.cpp's server (started with one slot per place and on
 conversation stays read while the other has the model. Two tasks working on the same site leave two seconds
 between one's step and the other's.
 
+The slots share the model's context (32K tokens), so they are kept small. The warm-up at start reads the
+instructions once in the first slot and keeps that reading in a file (`run/slots/instructions-<model>.bin`, about
+370 MB for Qwen3.5 9B); every task's slot is put back to it when the task starts and when it ends, about 0.1 s each,
+including after the server has slept. The step judge has the slot after the tasks'. Each task keeps its
+conversation within the room the others leave (the context less the judge's 3K and what the other slots hold,
+counted from the server's own token counts): past 85% of it, old pages go, then other long results, and a step
+whose results would not fit (six pages opened at once) has them cut. A task that still cannot fit says so in a
+sentence instead of failing.
+
 ### A browser driver for website tasks
 
 `coderunner models driver` adds a second model trained to use websites from screenshots: Microsoft's

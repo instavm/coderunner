@@ -101,6 +101,16 @@ OUT_OF_STEPS = ("You have used all the steps for this task. Without calling any 
 REMIND_EVERY = 6      # steps between plan reminders while the plan stays the same
 TRIM_AT = 0.6         # old pages are dropped once the conversation fills this share of the model's context
 CHARS_PER_TOKEN = 3.5
+# The local runtime's context is shared by every slot (the tasks' and the judge's), so a task keeps its
+# conversation within the room the others leave. Overflowing it stopped 4 of 22 real tasks in one run.
+FIT = 0.85            # share of its room a task's conversation may fill before older results go
+JUDGE_ROOM = 3000     # tokens the step judge's slot holds: its instructions, examples and one state
+WARM_ROOM = 5000      # a task slot holding only the instructions, until the warm-up has measured them
+NEW_CHARS = 3.0       # characters per token for text the model has not read yet (page text runs short)
+IMAGE_TOKENS = 1200
+CUT = "\n[the rest was cut to save space]"
+TOO_LONG = ("I had to stop here: this task gathered more than I can keep in mind at once. Asking for one part "
+            "at a time will work better.")
 
 
 @dataclass
@@ -195,9 +205,21 @@ class Agent:
         return CONTEXT.format(now=now, memories=memories)
 
     async def warm(self) -> None:
-        """Have the runtime read the instructions and tool list once, so the first task does not wait for it."""
-        await self.llm.chat([{"role": "system", "content": self._system()}, {"role": "user", "content": "Ready?"}],
-                            tools=self.registry.schemas(), think=False, max_tokens=1)
+        """Have the runtime read the instructions and tool list once, so the first task does not wait for it.
+        Where tasks take turns on llama.cpp, each has its own slot (_turn); the first slot's reading is then copied
+        to the others, so a second task does not start by reading the 4,800-token instructions again (18.8 s on
+        Qwen3.5-9B, M3 Pro; the copy takes well under a second)."""
+        slots = getattr(self.svc, "turns", None) is not None and not getattr(self.llm, "remote", False)
+        reply = await self.llm.chat([{"role": "system", "content": self._system()},
+                                     {"role": "user", "content": "Ready?"}],
+                                    tools=self.registry.schemas(), think=False, max_tokens=1,
+                                    **({"id_slot": 0} if slots else {}))
+        self.warm_tokens = int((reply.get("usage") or {}).get("prompt_tokens") or 0)
+        if slots:
+            # The file (about 370 MB for Qwen3.5-9B) is kept: each task's slot is put back to it when the task
+            # starts and ends (server.tasks), and after the server has slept and lost what it read.
+            from ..server.tasks import limit
+            await self.llm.copy_slot(0, range(1, limit(self.svc)))
 
     def _recall_threshold(self) -> float:
         """Similarity above which a memory is clearly relevant: set in config, or known per embedding model."""
@@ -214,22 +236,56 @@ class Agent:
             messages[index] = {"role": messages[index]["role"], "content": "[earlier screenshot removed]"}
 
     @staticmethod
-    def _drop_old_pages(messages: list[dict], context: int) -> None:
-        """Old pages are dropped only when the conversation nears the model's context, and then all but the
-        last one at once. Any edit to earlier messages makes the runtime read the conversation again from
-        the start (hybrid models such as Bonsai 2 cannot resume from the middle): with a trim every few
-        pages, booking.com runs spent most of their time re-reading 12,000-20,000 tokens at 60-75 tok/s,
-        four to five minutes each time."""
-        size = sum(len(m["content"]) for m in messages if isinstance(m.get("content"), str)) / CHARS_PER_TOKEN
-        if size < TRIM_AT * context:
+    def _drop_old(messages: list[dict], before: int, pages_only: bool) -> list[tuple[int, int]]:
+        """Old results are dropped only when the conversation nears its room, and then all of them at once
+        (pages first, everything long if that is not enough). Any edit to earlier messages makes the runtime
+        read the conversation again from the start (hybrid models cannot resume from the middle): with a trim
+        every few pages, booking.com runs spent most of their time re-reading 12,000-20,000 tokens at 60-75
+        tok/s, four to five minutes each time. Returns (index, characters removed) for each."""
+        removed = []
+        for index, m in enumerate(messages[:before]):
+            text = m.get("content")
+            if (m.get("role") != "tool" or not isinstance(text, str) or len(text) <= BIG_RESULT
+                    or text.endswith(DROPPED) or (pages_only and not text.startswith(PAGE_PREFIX))):
+                continue
+            short = text.split("\n", 1)[0] + "\n" + DROPPED
+            messages[index] = {**m, "content": short}
+            removed.append((index, len(text) - len(short)))
+        return removed
+
+    @staticmethod
+    def _cut_step(messages: list[dict], start: int, over: int) -> None:
+        """The results of one step (six pages opened at once, say) are cut to fit, `over` characters in all."""
+        big = [i for i in range(start, len(messages)) if messages[i].get("role") == "tool"
+               and isinstance(messages[i].get("content"), str) and len(messages[i]["content"]) > BIG_RESULT]
+        if not big:
             return
-        pages = [i for i, m in enumerate(messages) if m.get("role") == "tool"
-                 and isinstance(m.get("content"), str) and m["content"].startswith(PAGE_PREFIX)
-                 and len(m["content"]) > BIG_RESULT and not m["content"].endswith(DROPPED)]
-        if len(pages) > 1:
-            for index in pages[:-1]:
-                opener = messages[index]["content"].split("\n", 1)[0]
-                messages[index] = {**messages[index], "content": opener + "\n" + DROPPED}
+        total = sum(len(messages[i]["content"]) for i in big)
+        keep = max(BIG_RESULT, (total - over) // len(big))
+        for i in big:
+            text = messages[i]["content"]
+            if len(text) > keep:
+                tail = "\n</untrusted>" if text.rstrip().endswith("</untrusted>") else ""
+                messages[i] = {**messages[i], "content": text[:keep] + CUT + tail}
+
+    def _room(self, context: int, conversation: str) -> int:
+        """Tokens this task's conversation may hold: the runtime's context less what the other slots hold."""
+        turns = getattr(self.svc, "turns", None)
+        if turns is None or getattr(self.llm, "remote", False):
+            return context
+        from ..server.tasks import limit
+        warm = getattr(self, "warm_tokens", 0) or WARM_ROOM
+        others = [size for name, size in turns.sizes.items() if name != conversation]
+        idle = max(0, limit(self.svc) - 1 - len(others))
+        return context - JUDGE_ROOM - sum(max(warm, size) for size in others) - idle * warm
+
+    @staticmethod
+    def _size(messages: list[dict], known: list[int]) -> int:
+        """Tokens the conversation holds: as the runtime counted it at the last reply, plus what came since."""
+        count, tokens = known
+        rest = messages[count:]
+        chars = sum(len(m["content"]) for m in rest if isinstance(m.get("content"), str))
+        return tokens + int(chars / NEW_CHARS) + IMAGE_TOKENS * sum(isinstance(m.get("content"), list) for m in rest)
 
     def _transcript(self, ctx: RunContext, messages: list[dict]) -> None:
         """With agent.transcript on, keep every message of the run (page text included) for debugging, locally."""
@@ -296,10 +352,25 @@ class Agent:
         singles = 0                                 # single browser actions in a row
         stuck = 0                                   # browser steps in a row that failed or changed nothing
         handover = "browser_task" in self.registry.tools
+        context = int(getattr(self.llm, "context", 0) or self.svc.config.get("models.context", 32768) or 32768)
+        known = [0, 0]                              # messages the runtime has counted, and its count of them
         for step in range(max_steps):
             self._drop_old_images(messages)
-            self._drop_old_pages(messages, int(getattr(self.llm, "context", 0)
-                                                   or self.svc.config.get("models.context", 32768) or 32768))
+            room = self._room(context, ctx.conversation)
+            if self._size(messages, known) > min(TRIM_AT * context, FIT * room):
+                pages = [i for i, m in enumerate(messages) if m.get("role") == "tool"
+                         and str(m.get("content", "")).startswith(PAGE_PREFIX)]
+                removed = self._drop_old(messages, pages[-1] if pages else 0, pages_only=True)
+                if self._size(messages, known) > FIT * room:
+                    last = max((i for i, m in enumerate(messages) if m.get("tool_calls")), default=0)
+                    removed += self._drop_old(messages, last, pages_only=False)
+                known[1] = max(0, known[1] - int(sum(n for i, n in removed if i < known[0]) / CHARS_PER_TOKEN))
+                if removed:
+                    self.svc.audit.write("agent.trimmed", results=len(removed), room=room)
+            if self._size(messages, known) > 0.95 * room:
+                self.svc.audit.write("agent.too_long", size=self._size(messages, known), room=room)
+                final = TOO_LONG + (" What I had found so far is above." if ctx.told else "")
+                break
             # Each request only extends the one before: hybrid models such as Qwen3.5 can resume only from a
             # cache checkpoint near the end of the previous prompt, so a message that came and went (or an
             # edit to the instructions) means re-reading the whole conversation, ~80 s for 20K tokens on a
@@ -325,6 +396,12 @@ class Agent:
                 if ctx.told:
                     final += " What I had found so far is above."
                 break
+            usage = reply.get("usage") or {}
+            if usage.get("prompt_tokens"):
+                known = [len(messages), int(usage["prompt_tokens"])]
+                turns = getattr(self.svc, "turns", None)
+                if turns is not None and getattr(ctx.events, "slot", None) is not None:    # the app's tasks
+                    turns.sizes[ctx.conversation] = known[1] + int(usage.get("completion_tokens") or 0)
             if limit and reply.get("finish_reason") == "length":
                 cuts += 1
                 self.svc.audit.write("agent.reply_cut", step=step, limit=capped["max_tokens"], times=cuts)
@@ -346,6 +423,7 @@ class Agent:
             # not shown. The thread is told things only through tell_owner, the plan, questions and the answer
             # ("The browser didn't respond on the first try, so I'll retry" used to be put in front of the owner).
             messages.append({"role": "assistant", "content": reply["content"], "tool_calls": reply["tool_calls"]})
+            step_start = len(messages)
             failed = False
             for call in reply["tool_calls"]:
                 function = call.get("function", {})
@@ -381,6 +459,9 @@ class Agent:
                         if handover and stuck == STUCK_BEFORE_HINT:
                             result += HANDOVER_HINT.format(count=stuck)
                 messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result})
+            over = self._size(messages, known) - FIT * room
+            if over > 0:
+                self._cut_step(messages, step_start, int(over * NEW_CHARS))
             if ctx.images:
                 parts: list[dict] = [{"type": "text", "text": "Screenshot (untrusted page content):"}]
                 parts += [{"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}

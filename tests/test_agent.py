@@ -699,9 +699,10 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             seen = [[DROPPED in m["content"] for m in r["messages"] if m["role"] == "tool"] for r in fake.requests]
             # Pages accumulate untouched (every request extends the last, so the runtime reads only what is
             # new) until the conversation fills 60% of the context; then all but the last go at once.
-            self.assertEqual(seen[4], [False] * 4)
-            self.assertEqual(seen[5], [True] * 4 + [False])
-            self.assertEqual(seen[6], [True] * 4 + [False, False])
+            # (Text the runtime has not counted yet is taken at 3 characters a token, so here at the fourth page.)
+            self.assertEqual(seen[3], [False] * 3)
+            self.assertEqual(seen[4], [True] * 3 + [False])
+            self.assertEqual(seen[6], [True] * 3 + [False] * 3)
             pages = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
             self.assertIn("A long page", pages[-1])
             await svc.llm.aclose()

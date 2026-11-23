@@ -156,5 +156,32 @@ class LLM:
         response.raise_for_status()
         return [m["id"] for m in response.json().get("data", [])]
 
+    async def copy_slot(self, source: int, targets) -> int:
+        """llama.cpp only: keep what one slot has read (the instructions, after the warm-up) in a file under
+        --slot-save-path, and put it in the other slots. Returns how many were filled; elsewhere, or on any
+        failure, none, and those slots read the instructions themselves when first used."""
+        root = self.base_url.removesuffix("/v1")
+        try:
+            saved = await self._client.post(f"{root}/slots/{source}", params={"action": "save"},
+                                             json={"filename": f"instructions-{self.model}.bin"})
+        except httpx.HTTPError:
+            return 0
+        if saved.status_code >= 400:
+            return 0
+        return sum([await self.reset_slot(target) for target in targets])
+
+    async def reset_slot(self, slot: int) -> bool:
+        """Put a slot back to holding only the instructions (the file copy_slot kept). All slots share one
+        context, so a finished task's conversation left in its slot crowds the running ones: two stale
+        conversations of 15-18K tokens each filled 32K and stopped a task. Restoring is about 0.1 s; a slot
+        the server cannot fill (no file, another runtime) is left as it is."""
+        root = self.base_url.removesuffix("/v1")
+        try:
+            done = await self._client.post(f"{root}/slots/{slot}", params={"action": "restore"},
+                                           json={"filename": f"instructions-{self.model}.bin"})
+        except httpx.HTTPError:
+            return False
+        return done.status_code < 400
+
     async def aclose(self) -> None:
         await self._client.aclose()

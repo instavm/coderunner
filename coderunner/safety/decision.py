@@ -90,6 +90,9 @@ class DecisionModel:
         self.model = model
         self.api = api
         self.claude = claude            # remote mode: the judge is asked through Anthropic's API (core/claude.py)
+        # On the assistant's own llama.cpp runtime: the slot kept for the judge, after the tasks' slots, so a
+        # judgement never lands in a task's slot and throws away the conversation it holds (set by the daemon).
+        self.slot: int | None = None
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.AsyncClient(timeout=timeout, headers=headers, trust_env=False, transport=transport)
 
@@ -142,6 +145,7 @@ class DecisionModel:
         # A plain letter, not JSON: forcing a quote as the first token skewed a model's choice in testing.
         response = await self._client.post(f"{self.base_url}/chat/completions", json={
             "model": self.model, "temperature": 0, "max_tokens": 8,
+            **({"id_slot": self.slot} if self.slot is not None else {}),
             # No reasoning: Ollama reads reasoning_effort, llama.cpp reads chat_template_kwargs.
             "reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False},
             "messages": [{"role": "system", "content": f"{SYSTEM}\n{json.dumps(task)}"},

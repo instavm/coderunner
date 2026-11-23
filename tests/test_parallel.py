@@ -7,6 +7,8 @@ from unittest import mock
 import httpx
 
 from coderunner.agent import Agent, RunContext, build_registry
+from coderunner.agent import loop as loop_module
+from coderunner.agent.tools import Tool
 from coderunner.core.llm import LLM
 from coderunner.server import tasks as tasks_module
 from coderunner.server.gateway import admin_app
@@ -148,6 +150,45 @@ class PlaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(svc.turns._busy)
             await svc.llm.aclose()
 
+    async def test_the_warm_up_reads_the_instructions_once_and_copies_them_to_the_other_task_slot(self):
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.turns = tasks_module.Turns()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            await Agent(svc, svc.llm, svc.registry).warm()
+            self.assertEqual([w.get("id_slot") for w in fake.warmed], [0])
+            self.assertEqual(fake.slot_actions, [(0, "save", "instructions-test.bin"), (1, "restore", "instructions-test.bin")])
+            # Three at once: the instructions are copied to both other slots.
+            svc.config.set("agent.parallel_tasks", 3)
+            fake.slot_actions.clear()
+            await Agent(svc, svc.llm, svc.registry).warm()
+            self.assertEqual([a[:2] for a in fake.slot_actions], [(0, "save"), (1, "restore"), (2, "restore")])
+            await svc.llm.aclose()
+
+    async def test_a_task_starts_and_ends_with_its_slot_holding_only_the_instructions(self):
+        svc = Svc()
+        svc.turns = tasks_module.Turns()
+        svc.llm = mock.Mock(remote=False, reset_slot=mock.AsyncMock(return_value=True))
+        daemon = FakeDaemon(svc)
+
+        async def handle(channel, chat_id, text, origin="", events=None, task="", images=None):
+            svc.turns.sizes["app:" + chat_id] = 18000
+            return "done"
+        daemon.handle_message = handle
+        tasks = tasks_module.Tasks(daemon, tasks_module.EventBus(svc.store))
+        tasks.start("app:one", "first", "owner")
+        tasks.start("app:two", "second", "owner")
+        await asyncio.sleep(0.05)
+        self.assertEqual(sorted(c.args for c in svc.llm.reset_slot.await_args_list), [(0,), (0,), (1,), (1,)])
+        self.assertEqual(svc.turns.sizes, {})               # what a finished task held is no longer counted
+
+    async def test_a_runtime_without_slots_is_warmed_as_before(self):
+        llm = LLM("http://127.0.0.1:9/v1", "test")
+        self.assertEqual(await llm.copy_slot(0, [1]), 0)    # nothing there: no copy, no error
+        self.assertEqual(await llm.copy_slot(0, []), 0)
+        await llm.aclose()
+
     async def test_the_open_task_is_told_to_the_daemon(self):
         svc = Svc()
         svc.registry = build_registry(svc)
@@ -161,6 +202,76 @@ class PlaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(reply.json(), {"conversation": "app:two", "shown": True})
         self.assertEqual(svc.turns.focus, "app:two")
         svc.browser.focus.assert_awaited_once_with("app:two")
+
+
+def page(n: int, chars: int) -> str:
+    return f'<untrusted source="browser_open">\nurl: https://example.com/{n}\n' + "w" * chars + "\n</untrusted>"
+
+
+class RoomTests(unittest.IsolatedAsyncioTestCase):
+    """The runtime's context is shared by every slot: a task keeps its conversation within what is left."""
+
+    def agent(self, svc):
+        svc.registry = build_registry(svc)
+        return Agent(svc, svc.llm, svc.registry)
+
+    def test_the_room_is_the_context_less_the_judge_and_the_other_slots(self):
+        svc = Svc()
+        svc.turns, svc.llm = tasks_module.Turns(), mock.Mock(remote=False)
+        agent = self.agent(svc)
+        agent.warm_tokens = 4800
+        self.assertEqual(agent._room(32768, "app:one"), 32768 - loop_module.JUDGE_ROOM - 4800)
+        svc.turns.sizes.update({"app:one": 9000, "app:two": 15000})        # the other task holds 15K
+        self.assertEqual(agent._room(32768, "app:one"), 32768 - loop_module.JUDGE_ROOM - 15000)
+        svc.llm.remote = True                                               # a remote model has its own
+        self.assertEqual(agent._room(32768, "app:one"), 32768)
+
+    def test_old_pages_go_first_then_other_long_results_and_one_step_is_cut_to_fit(self):
+        messages = [{"role": "system", "content": "s"},
+                    {"role": "tool", "content": page(1, 9000)}, {"role": "tool", "content": "r" * 5000},
+                    {"role": "tool", "content": page(2, 9000)}, {"role": "tool", "content": "short"}]
+        removed = Agent._drop_old(messages, 3, pages_only=True)
+        self.assertEqual([i for i, _ in removed], [1])
+        self.assertTrue(messages[1]["content"].endswith(loop_module.DROPPED))
+        self.assertEqual(len(messages[2]["content"]), 5000)                  # not a page: kept this time
+        self.assertEqual([i for i, _ in Agent._drop_old(messages, 3, pages_only=False)], [2])
+        self.assertEqual(messages[4]["content"], "short")
+        step = [{"role": "tool", "content": page(n, 12000)} for n in range(6)]
+        messages += step
+        Agent._cut_step(messages, 5, 6 * 9000)
+        for m in messages[5:]:
+            self.assertLess(len(m["content"]), 3200)
+            self.assertTrue(m["content"].endswith(loop_module.CUT + "\n</untrusted>"))
+
+    async def test_six_pages_at_once_are_cut_and_a_task_that_cannot_fit_stops_in_a_sentence(self):
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.turns = tasks_module.Turns()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.llm.context = 16000
+            svc.registry = build_registry(svc)
+            async def opened(args, ctx):
+                return page(1, 11000)
+            svc.registry.tools["browser_open"] = Tool("browser_open", "Open a page.", {
+                "type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}, opened)
+            agent = Agent(svc, svc.llm, svc.registry)
+            agent.warm_tokens = 1000
+            calls = {"role": "assistant", "content": "", "tool_calls": [
+                {"id": f"c{n}", "type": "function",
+                 "function": {"name": "browser_open", "arguments": f'{{"url": "https://example.com/{n}"}}'}}
+                for n in range(6)]}
+            fake.script = [calls, {"role": "assistant", "content": "done"}]
+            await agent.run(RunContext(conversation="app:one"), "compare six pages")
+            sent = sum(len(m["content"]) for m in fake.requests[-1]["messages"] if m["role"] == "tool")
+            self.assertLess(sent / loop_module.NEW_CHARS, loop_module.FIT * agent._room(16000, "app:one"))
+            self.assertIn(loop_module.CUT, fake.requests[-1]["messages"][-1]["content"])
+            # Instructions alone larger than the room: no request that would fail, a plain sentence instead.
+            svc.llm.context = 3000
+            before = len(fake.requests)
+            reply = await agent.run(RunContext(conversation="app:two"), "hello")
+            self.assertEqual(len(fake.requests), before)
+            self.assertTrue(reply.startswith(loop_module.TOO_LONG))
+            await svc.llm.aclose()
 
 
 if __name__ == "__main__":

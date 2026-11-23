@@ -74,6 +74,13 @@ class EventBus:
         return [{**json.loads(r["data"]), "seq": r["seq"]} for r in rows]
 
 
+def limit(svc) -> int:
+    """How many tasks run at once: two on a local model (they take turns at it, see Turns), more where the
+    model is not on this computer. agent.parallel_tasks sets it."""
+    set_by_owner = svc.config.get("agent.parallel_tasks") if hasattr(svc, "config") else None
+    return max(1, int(set_by_owner or (4 if getattr(svc, "remote", None) else 2)))
+
+
 class Turns:
     """One model turn at a time, shared between the tasks that are running.
 
@@ -84,6 +91,7 @@ class Turns:
 
     def __init__(self):
         self.focus = ""                     # the conversation open in the app
+        self.sizes: dict[str, int] = {}     # tokens each running task's conversation holds in the shared context
         self._busy = False
         self._order = 0
         self._waiting: list[tuple[int, int, asyncio.Future]] = []
@@ -169,11 +177,7 @@ class Tasks:
         return self.get(task_id)
 
     def limit(self) -> int:
-        """How many tasks run at once: two on a local model (they take turns at it, see Turns), more where the
-        model is not on this computer. agent.parallel_tasks sets it."""
-        svc = self.daemon.svc
-        set_by_owner = svc.config.get("agent.parallel_tasks") if hasattr(svc, "config") else None
-        return max(1, int(set_by_owner or (4 if getattr(svc, "remote", None) else 2)))
+        return limit(self.daemon.svc)
 
     def _launch(self, job: tuple) -> None:
         task_id, emit = job[0], job[4]
@@ -204,6 +208,7 @@ class Tasks:
                     attachments, getattr(getattr(svc, "files", None), "media", None), bool(getattr(svc, "vision", False)),
                     sandbox=svc.config.get("sandbox.driver") != "none")
                 text = f"{prompt}\n\n{note}".strip() if note else prompt
+            await self._fresh_slot(emit.slot)
             reply = await self.daemon.handle_message(channel, chat_id, text, origin=origin, events=emit,
                                                      task=task_id, **({"images": images} if images else {}))
         except asyncio.CancelledError:
@@ -218,6 +223,10 @@ class Tasks:
             if status == "done" and emit.shots["since"]:
                 await self._capture(emit, 0, again=True)        # how the page stood when it finished
             self.slots.pop(task_id, None)
+            turns = getattr(self.daemon.svc, "turns", None)
+            if turns is not None:
+                turns.sizes.pop(conversation, None)
+            await self._fresh_slot(emit.slot)
             browser = getattr(self.daemon.svc, "browser", None)
             if browser is not None and hasattr(browser, "tidy"):
                 with contextlib.suppress(Exception):            # its own pages are not left to pile up
@@ -229,6 +238,15 @@ class Tasks:
             if made:
                 emit({"type": "files", "files": made})
             self._next()                        # a task that was waiting for a place starts now
+
+    async def _fresh_slot(self, slot) -> None:
+        """A task's place in the local runtime holds only the instructions when it starts and when it ends
+        (LLM.reset_slot): the context is shared, so what a finished task read would crowd the others."""
+        llm = getattr(self.daemon.svc, "llm", None)
+        if slot is None or llm is None or getattr(llm, "remote", False) or not hasattr(llm, "reset_slot"):
+            return
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(llm.reset_slot(slot), 10)
 
     # ---- pictures of the page ----------------------------------------------
 

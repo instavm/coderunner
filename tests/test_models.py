@@ -16,6 +16,7 @@ from unittest import mock
 
 import httpx
 
+from coderunner.core import paths
 from coderunner.core.config import Config
 from coderunner.safety import decision as decision_module
 from coderunner.models import bench, catalog, evidence, fit, hardware, licenses, manager, runtimes, smoketest
@@ -858,7 +859,8 @@ class RuntimeTests(TempHome):
             cmd = rt.command(rt._state()["active"])
         self.assertEqual(cmd, ["llama-server", "-m", "/m/q.gguf", "--mmproj", "/m/mmproj.gguf", "--jinja", "-c", "32768",
                                "--host", "127.0.0.1", "--port", "8081", "--cache-ram", "0", "-np", "3",
-                               "--kv-unified", "--alias", "coderunner-qwen3.5-9b", "--sleep-idle-seconds", "600"])
+                               "--kv-unified", "--slot-save-path", str(paths.assistant_dir() / "run" / "slots"),
+                               "--alias", "coderunner-qwen3.5-9b", "--sleep-idle-seconds", "600"])
         self.assertTrue(rt.vision(entry))
         self.assertEqual(rt.base_url, "http://127.0.0.1:8081/v1")
         with self.assertRaisesRegex(RuntimeError, "not been downloaded"):

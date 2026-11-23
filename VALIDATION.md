@@ -589,6 +589,37 @@ mail, changing a setting and dialling a call were looked at with stand-in approv
 data, not raised by the connectors, which were not enabled or run; the first run's "Use Claude instead" path
 in a window; remote mode on Linux; Sonnet or Opus as the remote model.
 
+### Two tasks at once, and the shared context, on the local model (November 23, same Mac)
+
+Qwen3.5 9B in llama.cpp at 23 tok/s (checked first, against 20 measured before, so the Mac was not in its slow
+sleep-wake state). Two tasks that need the model and the sandbox but no browser (a Fibonacci sum, a bill split),
+each alone and then both at once, with the server's slots read every 0.3 s:
+
+| | alone, one after the other | both at once |
+|---|---|---|
+| as first built | 15.1 + 19.2 = 33.3 s | 47.4 s |
+| first slot copied to the second | 17.1 + 13.1 = 30.2 s | 38.4 s |
+| slots reset from the kept file at each task's start and end | 21.1 + 16.1 = 37.2 s | 35.2 s |
+
+The tasks used slots 0 and 1 and were never at the model together. As first built, the second task's slot was
+empty and its first request read the 4,834-token instructions for 18.8 s; copying the first slot's reading
+(llama.cpp's slot save and restore) takes about 0.1 s. In the second row the joint run's first Fibonacci step
+thought for 24 s against 12.7 s alone; the time between one request and the next was about 15 ms. After the
+change no request but the warm-up at start read more than 239 tokens. Run-to-run variation in thinking length
+is as large as the differences here, so the rows say the extra cost is gone, not that one is faster.
+
+The day before, 4 of 22 tasks in the local run of the real-website bench (`laptop`, `hotel`, `restaurant`,
+`islands`) ended with "the model on this computer stopped answering". The server's log gave the reason for all
+eight such errors: the slots share one 32K context (`--kv-unified`), and the sum of what they held passed it
+(18,011 + 15,874; 17,730 + 15,627; 28,375 + 4,749) or one conversation passed it alone (28,547 tokens before the
+request that failed). Before tasks named their slots, a conversation's earlier reading stayed in the slot it had
+left. The trim then in place dropped only old pages, at 60% of the context by an estimate of 3.5 characters a
+token that left out the tool list. `islands` opened six pages in one step and went from about 6K tokens to over
+32K before the trim could run. `restaurant` had started while `hotel`, which the bench had stopped at its time
+limit, was still running: the stop had arrived while the driver had the model, the planning model failed to
+start again, and that failure took the stop's place, so `hotel` went on for six more minutes in the same slot.
+Each of these is fixed as ASSISTANT.md's "More than one task at a time" describes, and the stop is kept.
+
 ## Not yet validated
 
 * CodeRunner's own Ollama on Linux: the archives' checksums are the release's own, their layout (`bin/ollama`)

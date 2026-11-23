@@ -77,8 +77,24 @@ class FakeOpenAI:
             self.requests.append(body)
             return JSONResponse({"data": [{"embedding": [1.0, 0.0]} for _ in body["input"]]})
 
-        app = Starlette(routes=[Route("/v1/chat/completions", chat, methods=["POST"]),
-                                Route("/v1/embeddings", embeddings, methods=["POST"])])
+        self.warmed: list[dict] = []
+        self.slot_actions: list[tuple[int, str, str]] = []
+
+        async def chat_or_warm(request: Request):
+            body = await request.json()
+            if body.get("max_tokens") == 1:
+                self.warmed.append(body)
+            return await chat(request)
+
+        async def slots(request: Request):       # llama.cpp's slot save and restore
+            body = await request.json()
+            self.slot_actions.append((int(request.path_params["id"]), request.query_params.get("action", ""),
+                                      body.get("filename", "")))
+            return JSONResponse({"id_slot": int(request.path_params["id"])})
+
+        app = Starlette(routes=[Route("/v1/chat/completions", chat_or_warm, methods=["POST"]),
+                                Route("/v1/embeddings", embeddings, methods=["POST"]),
+                                Route("/slots/{id:int}", slots, methods=["POST"])])
         self.server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="error"))
         self.thread = threading.Thread(target=self.server.run, daemon=True)
 
