@@ -211,6 +211,16 @@ def _fingerprint(plan: dict) -> tuple:
     return plan["hit"], plan["frame"], plan["label"], plan["kind"]
 
 
+def _shown_url(url: str, host: str) -> str:
+    """A link's address as the judge reads it: the path on the same site, the whole address on another."""
+    if not url:
+        return ""
+    parts = urllib.parse.urlsplit(url)
+    same = (parts.hostname or "").lower() == host.lower()
+    shown = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    return (shown if same else f"{parts.hostname}{shown}")[:200]
+
+
 # ---- broker ---------------------------------------------------------------
 
 class BrowserBroker:
@@ -1506,7 +1516,8 @@ class BrowserBroker:
                 plan = await self._click_plan(sid, target, element)
             kind = plan["kind"]
             if kind == "browser.interact" and await self._commits(
-                    host, url, "click", plan["role"], plan["name"] or plan["text"], nearby=plan["label"]):
+                    host, url, "click", plan["role"], plan["name"] or plan["text"], nearby=plan["label"],
+                    opens=_shown_url(plan.get("opens", ""), host)):
                 kind = "browser.sensitive"
             summary = f"{('Click', 'Double-click', 'Triple-click')[clicks - 1]} {plan['label']} on {host}"
             # Whether the owner is shown this exact plan; if so it must not change at all before the click.
@@ -1666,7 +1677,7 @@ class BrowserBroker:
         # pointer does not matter (menus restyle them on hover); a different covering element does.
         return {"hit": "element" if cover is None else hit.get("backendNodeId"), "frame": hit.get("frameId"),
                 "label": label, "kind": "browser.sensitive" if risky else "browser.interact",
-                "text": text, "name": name, "role": element["role"]}
+                "text": text, "name": name, "role": element["role"], "opens": own.get("opens", "")}
 
     async def _node_at(self, sid: str, target: str, x: float, y: float) -> dict:
         """The node under window point (x, y), where a mouse event there lands. Chrome's hit test takes page

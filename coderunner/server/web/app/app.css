@@ -113,14 +113,15 @@ button.check-row:hover .check-what { color: var(--accent); }
 .answer a, .note a { color: var(--accent); }
 .answer a.item, .items a.item { color: inherit; }
 .md-table-wrap { overflow-x: auto; margin: 8px 0; white-space: normal; }
-/* Each column as wide as what it holds, up to a readable measure; a table wider than the thread scrolls
-   sideways (a column squeezed to a word a line was the alternative). */
-.md-table { border-collapse: collapse; font-size: 13.5px; width: max-content; min-width: 100%; }
-.md-table td, .md-table th { max-width: 300px; min-width: 64px; }
+/* The table fits the thread, its text wrapping, while every column keeps a readable width; only a table with
+   more columns than that allows scrolls sideways. (Scrolled by default, a third column was out of sight with
+   the computer panel open, and macOS shows no scrollbar to say so.) */
+.md-table { border-collapse: collapse; font-size: 13.5px; width: 100%; }
+.md-table td, .md-table th { min-width: 7.5em; }
 .md-table th, .md-table td { text-align: left; padding: 7px 18px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top;
   overflow-wrap: normal; word-break: normal; }
 .md-table th:last-child, .md-table td:last-child { padding-right: 0; }
-.md-table td:first-child { white-space: nowrap; font-weight: 550; }
+.md-table td:first-child { font-weight: 550; }
 /* A link in a table is one line: the site and the start of its path, the rest on hover. */
 .md-table a.link { display: inline-block; max-width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 .md-table th { color: var(--muted); font-weight: 600; font-size: 12.5px; }
@@ -424,12 +425,12 @@ button.setup-other:hover { color: var(--accent); }
 .disk { margin-top: 16px; text-align: left; }
 .diskbar { height: 7px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .diskbar .take { display: block; height: 100%; background: var(--fill); border-radius: 4px; }
-.diskbar.tight .take, .dot.tight { background: var(--danger); }
+.diskbar.tight .take, .disk-sizes .dot.tight { background: var(--danger); }
 .disk .setup-error { font-size: 13px; margin-top: 8px; }
 .disk-line { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; margin: 8px 2px 0; font-size: 12.5px; }
 .disk-sizes { white-space: nowrap; }
 .disk-sizes b { font-weight: 600; }
-.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: 7px; }
+.disk-sizes .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: 7px; }
 .place { display: flex; gap: 9px; align-items: baseline; min-width: 0; }
 .place-path { min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .linkish { border: 0; background: none; color: var(--accent); padding: 0; cursor: pointer; font: inherit; }

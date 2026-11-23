@@ -620,6 +620,37 @@ limit, was still running: the stop had arrived while the driver had the model, t
 start again, and that failure took the stop's place, so `hotel` went on for six more minutes in the same slot.
 Each of these is fixed as ASSISTANT.md's "More than one task at a time" describes, and the stop is kept.
 
+### Four long real tasks again, typed into the Electron app (November 23, same Mac)
+
+The four tasks that had run out of time the day before (`mauritius`, `headphones`, `flight`, `visa`), each
+typed into the app's own task box in a new thread, one at a time, and judged afterwards by the bench's own
+grader (`server/realworld.py`). In the app a task ends after 30 steps, not at the bench's ten minutes:
+
+| task | time | outcome |
+|---|---|---|
+| mauritius | 643 s | failed: eight minutes on Skyscanner's date picker, whose search never loaded; no flights, hotels or plan |
+| headphones | 751 s | failed: a fair table of three, one review site each and no links (asked for) |
+| flight | 1,330 s | answered: Skyscanner's dated result (SpiceJet 06:10, ₹8,877, after the driver set the search in 195 s); MakeMyTrip's price came from its route page, not the date, after the driver used all its steps in 644 s |
+| visa | 692 s | failed: one official link of two; a passport office "Click Here" link was judged committing and waited 300 s |
+| visa, after the changes below | 2,118 s | failed: the driver, judging its own clicks while the planner was unloaded, flagged 4 of 7 ("Share", "Non-citizens…", "Additional Information"), each waiting 300 s; Mauritius's rule came out wrong |
+
+The time goes to steps of about 20 s on the 9B model (reading a page's changes at about 230 tokens a second, then
+writing), to the driver's handovers (195 to 644 s each), and to approvals nobody answers. The first request after
+the server's idle sleep generated at 2.5 tokens a second, against 20, while about 3 GB of swap was in use.
+
+Changed after these runs: a reply asked for links and given none is written again once, with links to the pages
+it read; the reply after the step limit is held to the same rules as any other and goes through the task's own
+slot and turn; a link's address is shown to the step judge (with it a "Click Here" to a visa page is safe, and
+links that close an account, unsubscribe or delete a payee still commit; the judge benchmark is unchanged, 0 of
+57 commits missed, since its steps carry no address); and once an approval of a task expires unanswered, its next
+ones wait 30 s, not 300. Two worked examples of vague links added to the judge made it miss Airbnb's "Request to
+book" in the benchmark and were taken out again. Not yet run again: the driver's own judging of clicks on plain
+page text (div, li, p), the most expensive failure here.
+
+The app showed a task started from a new thread twice, one copy stuck at "0s" (the thread was read while the
+task's start event arrived); a stopped task's dot was the brand blue of a working one; and a three-column table
+hid its third column behind a sideways scroll that macOS does not show. All three are fixed and seen in the app.
+
 ## Not yet validated
 
 * CodeRunner's own Ollama on Linux: the archives' checksums are the release's own, their layout (`bin/ollama`)

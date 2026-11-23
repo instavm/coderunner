@@ -97,7 +97,15 @@ BIG_RESULT = 1500     # browser results longer than this hold a page, or a large
 DROPPED = "[earlier page text removed to save space; take a new snapshot if you need it]\n</untrusted>"
 PLAN_REMINDER = "[Reminder of your plan, not a new request]\n"
 OUT_OF_STEPS = ("You have used all the steps for this task. Without calling any tools, write your reply to me now "
-                "from what you have found, and say briefly what is unfinished.")
+                "from what you have found: the answer first, with a link to the page each figure came from, then "
+                "one sentence on what is unfinished. No bold labels, no steps for me to follow, no offer at the end.")
+# Asked for links and given none: the reply is written again once, linked to the pages it came from. (Two real
+# tasks out of four answered with prices and reviews and no link at all.)
+WANTS_LINKS = re.compile(r"\blinks?\b|\burls?\b|\bsources?\b|\bcite\b", re.I)
+HAS_LINK = re.compile(r"https?://")
+ADD_LINKS = ("Your reply has no links, and I asked for them. Without calling any tools, write the same reply again "
+             "with a link to the page each item or figure came from, as [name](https://...), using only addresses "
+             "of pages you opened in this task.")
 REMIND_EVERY = 6      # steps between plan reminders while the plan stays the same
 TRIM_AT = 0.6         # old pages are dropped once the conversation fills this share of the model's context
 CHARS_PER_TOKEN = 3.5
@@ -156,6 +164,7 @@ class RunContext:
     shown: int = 0                                      # items shown to the owner as cards (show_items)
     told: int = 0                                       # things said to the owner on purpose (tell_owner)
     said: list[str] = field(default_factory=list)      # and what they were, so the answer does not repeat them
+    unanswered: int = 0                                 # approvals the owner let expire in this run (safety.policy)
     # What this run may name without inventing it: addresses and numbers the owner wrote or their contacts
     # returned (tools.handles), and the paths its own file searches found.
     known: set[str] = field(default_factory=set)
@@ -331,16 +340,18 @@ class Agent:
         finally:
             current_run.reset(token)
 
-    async def _turn(self, ctx: RunContext, messages: list[dict], think: bool | None, capped: dict) -> dict:
+    async def _turn(self, ctx: RunContext, messages: list[dict], think: bool | None, capped: dict,
+                    **extra: Any) -> dict:
         """One reply from the model. On a local model tasks take turns (server.tasks.Turns) and each keeps its
         own slot in the runtime, so its conversation stays read while the other task has the model: without
-        that, every change of task read the whole conversation again."""
+        that, every change of task read the whole conversation again. extra: tool_choice="none" for a reply
+        written without tools (the tools stay in the request, so it extends the one before)."""
         turns = getattr(self.svc, "turns", None)
         if turns is None or getattr(self.llm, "remote", False):
-            return await self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped)
+            return await self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped, **extra)
         slot = getattr(ctx.events, "slot", None)
         async with turns.turn(ctx.conversation):
-            return await self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped,
+            return await self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped, **extra,
                                        **({"id_slot": slot} if slot is not None else {}))
 
     async def _run(self, ctx: RunContext, text: str, images: list[tuple[str, str]] | None) -> str:
@@ -442,6 +453,8 @@ class Agent:
                     messages.append({"role": "user", "content": "Write your reply to me now, based on what you have so far."})
                     continue
                 final = reply["content"] or "(no response)"
+                if reply["content"]:
+                    messages.append({"role": "assistant", "content": final})
                 break
             # What the model writes beside its tool calls is its own working: kept in the conversation it reads,
             # not shown. The thread is told things only through tell_owner, the plan, questions and the answer
@@ -500,9 +513,22 @@ class Agent:
             try:
                 # Same tools as every other request, only switched off: a request without them is a different
                 # prompt from its start, which made the runtime read the whole conversation again (24,000 tokens).
-                reply = await self.llm.chat(messages, tools=self.registry.schemas(), tool_choice="none", think=False,
-                                            **({"max_tokens": limit} if limit else {}))
-                final = reply["content"] or final
+                reply = await self._turn(ctx, messages, False, {"max_tokens": limit} if limit else {},
+                                         tool_choice="none")
+                if reply["content"]:
+                    final = reply["content"]
+                    messages.append({"role": "assistant", "content": final})
+            except LLMError:
+                pass
+        read_pages = any(m.get("role") == "tool" and str(m.get("content", "")).startswith(PAGE_PREFIX) for m in messages)
+        if WANTS_LINKS.search(text) and not HAS_LINK.search(final) and read_pages and messages[-1].get("role") == "assistant":
+            messages.append({"role": "user", "content": ADD_LINKS})
+            try:
+                reply = await self._turn(ctx, messages, False, {"max_tokens": limit} if limit else {},
+                                         tool_choice="none")
+                if HAS_LINK.search(reply["content"] or ""):
+                    final = reply["content"]
+                    self.svc.audit.write("agent.links_added", conversation=ctx.conversation)
             except LLMError:
                 pass
         final = without_repeats(final, ctx.said)

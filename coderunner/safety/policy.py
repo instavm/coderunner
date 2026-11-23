@@ -85,6 +85,8 @@ HIGH_RISK = {"browser.sensitive", "channel.send", "connector.send", "system.sett
 TAINT_SENSITIVE = {"browser.sensitive", "channel.send", "connector.write", "egress.connect",
                    "schedule.create", "memory.forget", "connector.send", "system.setting", "phone.call"}
 
+AWAY_WAIT = 30.0    # seconds an approval waits once an earlier one of the same task expired unanswered
+
 # The agent run an action belongs to (an agent.loop.RunContext), so the leak check can see
 # what that run has read without every caller passing it along.
 current_run: contextvars.ContextVar[Any] = contextvars.ContextVar("coderunner_run", default=None)
@@ -220,6 +222,11 @@ class Policy:
         decision = self.evaluate(action)
         timeout = wait if wait is not None else float(self.config.get("agent.approval_timeout", 300))
         run, destination = current_run.get(), self._leak_destination(action)
+        if wait is None and getattr(run, "unanswered", 0):
+            # The owner let an approval of this task expire: they are away. The next ones are still shown, but
+            # the task waits a short while for each, not the full time again (four expired one after another
+            # held a real task for twenty minutes). Declining is the safe side.
+            timeout = min(timeout, AWAY_WAIT)
         if decision is not Decision.DENY and destination is not None and destination not in run.shared \
                 and ANYWHERE not in run.shared:
             sources = sorted(run.private_sources)
@@ -302,6 +309,9 @@ class Policy:
             return await asyncio.wait_for(asyncio.shield(future), timeout)
         except asyncio.TimeoutError:
             self._finish(approval_id, "expired", "once", "timeout")
+            run = current_run.get()
+            if run is not None and hasattr(run, "unanswered"):
+                run.unanswered += 1
             return False
         finally:
             self._waiters.pop(approval_id, None)

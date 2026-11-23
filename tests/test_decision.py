@@ -38,6 +38,14 @@ class ActionCheckTests(DecisionTestCase):
         self.assertEqual([e["commits"] for e in events], [True, False])
         await model.aclose()
 
+    def test_a_link_says_where_it_goes(self):
+        from coderunner.browser.broker import _shown_url
+        state = describe("passport.govmu.org", "/passport/", "click", "link", "Click Here",
+                         opens=_shown_url("https://passport.govmu.org/English/Visa-in-Mauritius.aspx", "passport.govmu.org"))
+        self.assertEqual(state.splitlines()[3], "Link opens: /English/Visa-in-Mauritius.aspx")
+        self.assertEqual(_shown_url("https://pay.example/c?x=1", "shop.example"), "pay.example/c?x=1")
+        self.assertNotIn("Link opens", describe("shop.example", "/", "click", "button", "Go"))
+
     async def test_failures_ask_the_owner(self):
         model = self.model(lambda r: httpx.Response(500, text="model not loaded"))
         self.assertTrue(await ActionCheck(model, audit=self.audit).commits("Site: x"))

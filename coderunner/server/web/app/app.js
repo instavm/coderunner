@@ -176,6 +176,7 @@ const state = {
   approvals: new Map(),         // approval id -> {conversation, view}
   pending: new Set(),           // approval ids still waiting
   running: new Map(),           // task id -> {conversation, label}
+  loading: null,                // {id, events}: the thread being read, and its live events held meanwhile
   lastSeq: 0,
 };
 
@@ -500,12 +501,19 @@ async function openConversation(id, title, again) {
   state.views.clear();
   $("thread").replaceChildren();
   $("title").textContent = id ? trunc(title || "Task", 90) : "New task";
-  if (!id) { $("thread").appendChild(emptyState); loadConversations(); $("input").focus(); return; }
+  if (!id) { state.loading = null; $("thread").appendChild(emptyState); loadConversations(); $("input").focus(); return; }
+  // Live events for this thread that arrive while it is read are held, then applied after what was read:
+  // drawn as they came, a task just started would be drawn twice.
+  const loading = state.loading = {id, events: []};
   try { data = data || await api(`/api/conversations/${encodeURIComponent(id)}`); }
-  catch (err) { notice(err.message); return; }
+  catch (err) { if (state.loading === loading) state.loading = null; notice(err.message); return; }
+  if (state.loading !== loading) return;      // another thread was opened meanwhile
+  state.loading = null;
   if (kept !== null) setTimeout(() => { $("thread").scrollTop = kept; }, 0);
   for (const task of data.tasks) state.views.set(task.id, new TaskView(task));
   for (const e of data.events) state.views.get(e.task)?.apply(e);
+  const read = Math.max(0, ...data.events.map((e) => e.seq || 0));
+  for (const e of loading.events) if ((e.seq || 0) > read) showEvent(e);
   loadConversations();
   scrollDown();
 }
@@ -521,6 +529,7 @@ const CHECK_LEADS = {check: "Each kind of task, done once on this computer and c
 async function showCheck() {
   if (state.setup) return;
   state.conversation = "check";             // not a conversation: no task's events belong to it
+  state.loading = null;
   state.views.clear();
   $("title").textContent = "Check";
   $("composer").hidden = true;              // this screen runs checks; a task is written from a thread
@@ -607,6 +616,23 @@ function scrollDown() { const t = $("thread"); t.scrollTop = t.scrollHeight; }
 
 // ---- live events ---------------------------------------------------------------
 
+// One live event of the thread on screen, drawn into its task.
+function showEvent(e) {
+  let view = state.views.get(e.task);
+  if (!view && e.type === "started") {
+    view = new TaskView({id: e.task, prompt: e.prompt, created: e.ts, status: "running"});
+    state.views.set(e.task, view);
+  }
+  const nearBottom = $("thread").scrollHeight - $("thread").scrollTop - $("thread").clientHeight < 160;
+  view?.apply(e);
+  // The reader at the end follows what arrives. An answer longer than the window is shown from its first
+  // line, not its last: they were waiting to read it.
+  const answer = ["done", "failed"].includes(e.type) ? view?.answer : null, thread = $("thread");
+  if (nearBottom && answer && answer.offsetHeight > thread.clientHeight - 90)
+    thread.scrollTop += answer.getBoundingClientRect().top - thread.getBoundingClientRect().top - 14;
+  else if (nearBottom) scrollDown();
+}
+
 function listen() {
   const source = new EventSource(`/api/events?since=${state.lastSeq || -1}`);
   source.onmessage = (message) => {
@@ -615,19 +641,8 @@ function listen() {
     if (e.type === "started") state.running.set(e.task, {conversation: e.conversation, label: "Starting"});
     if (["done", "failed", "cancelled"].includes(e.type)) state.running.delete(e.task);
     if (e.conversation === state.conversation) {
-      let view = state.views.get(e.task);
-      if (!view && e.type === "started") {
-        view = new TaskView({id: e.task, prompt: e.prompt, created: e.ts, status: "running"});
-        state.views.set(e.task, view);
-      }
-      const nearBottom = $("thread").scrollHeight - $("thread").scrollTop - $("thread").clientHeight < 160;
-      view?.apply(e);
-      // The reader at the end follows what arrives. An answer longer than the window is shown from its first
-      // line, not its last: they were waiting to read it.
-      const answer = ["done", "failed"].includes(e.type) ? view?.answer : null, thread = $("thread");
-      if (nearBottom && answer && answer.offsetHeight > thread.clientHeight - 90)
-        thread.scrollTop += answer.getBoundingClientRect().top - thread.getBoundingClientRect().top - 14;
-      else if (nearBottom) scrollDown();
+      if (state.loading?.id === e.conversation) state.loading.events.push(e);
+      else showEvent(e);
     } else if (e.type === "activity" && e.event === "approval.requested") {
       notify("CodeRunner needs you", e.summary || "A task is waiting for you");
     }

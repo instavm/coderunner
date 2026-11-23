@@ -3,6 +3,7 @@ import tempfile
 import pathlib
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from coderunner.core.audit import AuditLog
 from coderunner.core.config import Config
@@ -124,6 +125,26 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
                                                wait=0.05))
             code = Action("sandbox.exec", "main", "Run in the sandbox: ...")
             self.assertFalse(await policy.check(code, wait=0.05))
+        finally:
+            current_run.reset(token)
+
+    async def test_after_one_approval_expires_the_task_waits_briefly_for_the_next(self):
+        from coderunner.safety import policy as module
+        policy = make_policy({"agent": {"approval_timeout": 0.2}})
+        run = SimpleNamespace(content_tainted=False, private_sources=set(), shared=set(), unanswered=0)
+        token = current_run.set(run)
+        try:
+            with mock.patch.object(module, "AWAY_WAIT", 0.01):
+                step = Action("browser.sensitive", "shop.com", "Click Share")
+                started = asyncio.get_running_loop().time()
+                self.assertFalse(await policy.check(step))
+                self.assertGreaterEqual(asyncio.get_running_loop().time() - started, 0.2)
+                self.assertEqual(run.unanswered, 1)
+                started = asyncio.get_running_loop().time()
+                self.assertFalse(await policy.check(step))
+                self.assertLess(asyncio.get_running_loop().time() - started, 0.15)
+                self.assertEqual(run.unanswered, 2)
+                self.assertEqual(policy.pending(), [])
         finally:
             current_run.reset(token)
 

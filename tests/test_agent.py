@@ -670,6 +670,34 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("step limit", reply)
             await svc.llm.aclose()
 
+    async def test_asked_for_links_and_given_none_writes_again_once(self):
+        class Scrolling(FakeBrowser):
+            async def scroll(self, direction="down", amount=600, tab=None, tainted=False):
+                return {"ok": True, "url": "https://shop.example/p", "content": "Sony WH-1 ₹9,990"}
+
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.browser = Scrolling("")
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            linked = "The [Sony WH-1](https://shop.example/p) is ₹9,990."
+            fake.script = [tool_call("browser_scroll", {"direction": "down"}),
+                           {"role": "assistant", "content": "The Sony WH-1 is ₹9,990."},
+                           {"role": "assistant", "content": linked}]
+            reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-links"),
+                                                               "Find a headphone price with a link.")
+            self.assertEqual(reply, linked)
+            self.assertEqual(fake.requests[-1]["tool_choice"], "none")
+            self.assertEqual(fake.requests[-1]["messages"][-2]["content"], "The Sony WH-1 is ₹9,990.")
+            # Not asked for links, or already linked: one request fewer.
+            count = len(fake.requests)
+            fake.script = [tool_call("browser_scroll", {"direction": "down"}),
+                           {"role": "assistant", "content": "The Sony WH-1 is ₹9,990."}]
+            reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-links2"),
+                                                               "What does the Sony WH-1 cost?")
+            self.assertEqual((reply, len(fake.requests) - count), ("The Sony WH-1 is ₹9,990.", 2))
+            await svc.llm.aclose()
+
     async def test_plan_is_shown_at_every_step(self):
         with FakeOpenAI() as fake:
             svc = Svc()

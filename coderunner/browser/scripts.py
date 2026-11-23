@@ -20,9 +20,12 @@ DESCRIBE_JS = r"""function(closest) {
   const field = el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && !/^(submit|button|reset|image)$/.test(type));
   const form = el.form || el.closest('form');
   const submit = form && form.querySelector('button[type=submit],input[type=submit],input[type=image],button:not([type])');
+  // Where a link goes (a page of a website, not a script): what a vague "Click Here" does is said by it.
+  const link = el.closest('a[href]');
+  const opens = link && /^https?:/.test(link.href) ? clean(link.href).slice(0, 300) : '';
   return {tag: el.tagName.toLowerCase(), type, autocomplete: (el.getAttribute('autocomplete') || '').toLowerCase(),
           text: field ? clean(el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name) : text(el),
-          submit: submit ? text(submit) : '', truncated};
+          submit: submit ? text(submit) : '', opens, truncated};
 }""".replace("LIMIT", str(TEXT_LIMIT))
 FOCUSED_JS = r"""(() => {
   let el = document.activeElement;

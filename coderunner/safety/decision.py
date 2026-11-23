@@ -70,12 +70,14 @@ COMMIT_EXAMPLES = (
 
 
 def describe(site: str, path: str, action: str, role: str, name: str, *, title: str = "", typed: str = "",
-             nearby: str = "") -> str:
-    """A browser step as the judge sees it."""
+             nearby: str = "", opens: str = "") -> str:
+    """A browser step as the judge sees it. opens: where a link goes (a path on the same site)."""
     lines = [f"Site: {site}"]
     if title:
         lines.append(f"Page title: {title}")
     lines += [f"Page path: {path}", f"Action: {action} {role} {json.dumps(name, ensure_ascii=False)}"]
+    if opens:
+        lines.append(f"Link opens: {opens}")
     if typed:
         lines.append(f"Text to type: {json.dumps(typed, ensure_ascii=False)}")
     if nearby:
