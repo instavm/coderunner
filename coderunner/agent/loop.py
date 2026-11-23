@@ -88,6 +88,56 @@ def call_key(name: str, arguments: Any) -> tuple[str, str]:
         return name, str(arguments)
 
 
+# A search or page this run already made: said in its result, and a long task that keeps going over the same
+# ground answers from what it has. A 27B on the owner's server, its older pages trimmed away, searched "Sony
+# WH-1000XM5 price Amazon India" nine ways between steps 38 and 131, after it had three review sites' picks;
+# 84 of another run's 160 calls were repeats. On 50 recorded runs the stop fired only on those going in circles.
+REPEAT_SEARCH = ("\nNote: you searched for nearly this at step {step}. If it did not give you what you need then, "
+                 "it will not now: try another source, or answer with what you have.")
+REPEAT_OPEN = "\nNote: you opened this page at step {step} already."
+REPEATS_BEFORE_ANSWER = 3     # repeats after WRAP_FROM steps
+GOING_ROUND = ("You are going over ground you have already covered (the same searches and pages again). Without "
+               "calling any tools, write your reply to me now from what you have found: the answer first, with a link "
+               "to the page each figure came from, then one sentence on anything you could not get. No bold labels, "
+               "no offer at the end.")
+FILLER = {"a", "an", "the", "in", "of", "for", "to", "and", "on", "at", "with", "best", "site", "price", "prices",
+          "review", "reviews", "vs"}
+
+
+def query_words(query: str) -> frozenset[str]:
+    return frozenset(w for w in re.findall(r"[a-z0-9]+", query.lower())
+                     if w not in FILLER and not re.fullmatch(r"20\d\d", w))
+
+
+class Repeats:
+    """The searches and pages of one run, and the step each was first made at."""
+
+    def __init__(self):
+        self.queries: list[tuple[frozenset[str], int]] = []
+        self.pages: dict[str, int] = {}
+
+    def check(self, name: str, arguments: Any, step: int) -> str:
+        """A note for a call that repeats an earlier one, or ""."""
+        try:
+            args = json.loads(arguments) if isinstance(arguments, str) else arguments
+        except ValueError:
+            return ""
+        if not isinstance(args, dict):
+            return ""
+        if name == "browser_search" and isinstance(args.get("query"), str):
+            words = query_words(args["query"])
+            earlier = next((at for seen, at in self.queries
+                            if len(words ^ seen) <= 1 and len(words & seen) >= 2), None)
+            self.queries.append((words, step))
+            return REPEAT_SEARCH.format(step=earlier + 1) if earlier is not None else ""
+        if name == "browser_open" and isinstance(args.get("url"), str):
+            url = args["url"].split("#")[0].rstrip("/")
+            if url in self.pages:
+                return REPEAT_OPEN.format(step=self.pages[url] + 1)
+            self.pages[url] = step
+        return ""
+
+
 def render_plan(steps: list[dict]) -> str:
     return "\n".join(f"{i}. [{step.get('status', 'todo')}] {step.get('step', '')}" for i, step in enumerate(steps, 1))
 
@@ -437,7 +487,14 @@ class Agent:
         head = len(messages)                        # the instructions, the thread so far and the request
         ran_out = False                             # the steps ran out before an answer
         closing = ""                                # the request for an answer when the steps or the room ran out
+        repeats = Repeats()
+        late_repeats = 0                            # repeated searches and pages after WRAP_FROM steps
         for step in range(max_steps):
+            if late_repeats >= REPEATS_BEFORE_ANSWER:
+                self.svc.audit.write("agent.going_round", step=step, repeats=late_repeats)
+                final = "I stopped: I was going over the same searches again."
+                closing = GOING_ROUND
+                break
             self._drop_old_images(messages)
             room = self._room(context, ctx.conversation)
             if self._size(messages, known) > min(TRIM_AT * context, FIT * room):
@@ -538,8 +595,12 @@ class Agent:
                 else:
                     plan_before = [dict(item) for item in ctx.plan]
                     ctx.emit({"type": "tool", "id": call.get("id", ""), "name": name, "arguments": arguments})
+                    again = repeats.check(name, arguments, step)
                     result = await self.registry.invoke(name, arguments, ctx)
                     failed = result.startswith("Error:") or "\nError:" in result[:200]
+                    if again and not failed:
+                        result += again
+                        late_repeats += step >= WRAP_FROM
                     ctx.emit({"type": "tool_done", "id": call.get("id", ""), "name": name, "ok": not failed,
                               "preview": result[:300]})
                     if ctx.plan != plan_before:
@@ -574,7 +635,9 @@ class Agent:
             final = "I stopped after reaching the step limit. Tell me how you'd like to continue."
             closing = OUT_OF_STEPS
         if closing:
-            ran_out = True
+            # Steps or room that ran out leave the task unfinished; one that went round in circles answered from
+            # what it had, and says itself if something is missing (UNDONE).
+            ran_out = closing != GOING_ROUND
             messages.append({"role": "user", "content": closing})
             try:
                 # Same tools as every other request, only switched off: a request without them is a different

@@ -472,6 +472,56 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual("list: 28 items; browser_list reads them one line each" in opened, hinted)
                 await svc.llm.aclose()
 
+    def test_repeats_are_the_same_search_however_worded(self):
+        from coderunner.agent.loop import Repeats
+        seen = Repeats()
+        self.assertEqual(seen.check("browser_search", '{"query": "Sony WH-1000XM5 price Amazon India"}', 4), "")
+        # Reworded, filler and a year added: the same search.
+        again = seen.check("browser_search", {"query": "Sony WH-1000XM5 prices in India, Amazon 2026"}, 9)
+        self.assertIn("at step 5", again)
+        # Another product, or the same one somewhere else, is a new search.
+        self.assertEqual(seen.check("browser_search", {"query": "Bose QuietComfort Ultra price Amazon India"}, 10), "")
+        self.assertEqual(seen.check("browser_search", {"query": "Sony WH-1000XM5 Flipkart Croma price"}, 11), "")
+        self.assertEqual(seen.check("browser_open", {"url": "https://a.example/x#top"}, 12), "")
+        self.assertIn("at step 13", seen.check("browser_open", {"url": "https://a.example/x/"}, 20))
+        self.assertEqual(seen.check("run_python", {"code": "1"}, 21), "")
+        self.assertEqual(seen.check("browser_search", "{not json", 22), "")
+
+    async def test_a_long_task_going_over_the_same_ground_answers_from_what_it_has(self):
+        from coderunner.agent.loop import GOING_ROUND, WRAP_FROM, REPEATS_BEFORE_ANSWER
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.browser = FakeBrowser("A page")
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            fresh = [tool_call("browser_open", {"url": f"https://shop.example/{n}"}) for n in range(WRAP_FROM)]
+            again = [tool_call("browser_open", {"url": "https://shop.example/3"})] * REPEATS_BEFORE_ANSWER
+            fake.script = fresh + again + [{"role": "assistant", "content": "The XM5 is ₹24,990 on [Shop](https://shop.example/3)."}]
+            ctx = RunContext(conversation="t-round")
+            reply = await Agent(svc, svc.llm, svc.registry).run(ctx, "best headphones under 25k")
+            self.assertEqual(reply, "The XM5 is ₹24,990 on [Shop](https://shop.example/3).")
+            last = fake.requests[-1]
+            self.assertEqual(last["messages"][-1]["content"], GOING_ROUND)
+            self.assertEqual(last.get("tool_choice"), "none")
+            self.assertFalse(ctx.incomplete)               # it answered; only "couldn't..." in it marks it unfinished
+            tools = [m["content"] for m in last["messages"] if m["role"] == "tool"]
+            self.assertEqual(sum("you opened this page at step 4" in t for t in tools), REPEATS_BEFORE_ANSWER)
+            await svc.llm.aclose()
+
+    async def test_an_early_repeat_is_noted_and_the_task_goes_on(self):
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.browser = FakeBrowser("A page")
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            fake.script = [tool_call("browser_open", {"url": "https://shop.example/1"})] * 4 + [
+                {"role": "assistant", "content": "done"}]
+            reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-early"), "price")
+            self.assertEqual(reply, "done")
+            tools = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
+            self.assertEqual(["at step 1 already" in t for t in tools], [False, True, True, True])
+            await svc.llm.aclose()
+
     async def test_a_link_that_opens_a_new_tab_is_followed(self):
         class Popping(FakeBrowser):
             async def click(self, ref, tab=None, tainted=False):
