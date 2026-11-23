@@ -97,6 +97,19 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         # Stopped before it started: it never runs.
         self.assertTrue(self.tasks.cancel(four["id"]))
         self.assertEqual((self.tasks.get(four["id"])["status"], self.kinds(four)[-1]), ("cancelled", "cancelled"))
+        # The list names each conversation's latest task: a window opened now knows what is running.
+        listed = {c["conversation"]: (c["task"], c["status"]) for c in self.tasks.conversations()}
+        self.assertEqual(listed["app:two"], (two["id"], "running"))
+        self.assertEqual(listed["app:three"], (three["id"], "queued"))
+        # A task asking for the owner from a thread that is not open is listed as waiting until answered.
+        def asked(event, approval):
+            self.bus.publish({"type": "activity", "event": event, "id": approval, "task": two["id"],
+                              "conversation": "app:two"})
+        waiting = lambda: {c["conversation"]: c["waiting"] for c in self.tasks.conversations()}  # noqa: E731
+        asked("approval.requested", "a1")
+        self.assertEqual((waiting()["app:two"], waiting()["app:one"]), (True, False))
+        asked("approval.decided", "a1")
+        self.assertFalse(waiting()["app:two"])
         # The first ends: the third takes its place, the same place.
         self.gates["one"].set()
         await asyncio.sleep(0.05)

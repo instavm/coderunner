@@ -484,7 +484,9 @@ reply at a time: a step is a reply and then a wait that needs no model (a page l
 answer to an approval), so while one waits the other has the model. The task open in the app goes first. Each
 names its own slot in llama.cpp's server (started with one slot per place and one for the step judge), so its
 conversation stays read while the other has the model. Two tasks working on the same site leave two seconds
-between one's step and the other's.
+between one's step and the other's. A task that asks for you while another thread is open shows "Needs you"
+in the list, and the computer panel says "Another task needs you"; what is running is read from the list as
+well as from live events, so a window opened mid-task does not show the computer as idle.
 
 The slots share the model's context (32K tokens), so they are kept small. The warm-up at start reads the
 instructions once in the first slot and keeps that reading in a file (`run/slots/instructions-<model>.bin`, about

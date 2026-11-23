@@ -311,11 +311,31 @@ class Tasks:
         return self.store.one("SELECT * FROM tasks WHERE id = ?", (task_id,))
 
     def conversations(self, prefix: str = "app:", limit: int = 100) -> list[dict]:
+        """Newest first, with each one's latest task and whether that task waits for the owner (an approval or
+        a turn on the computer): a task asking from another thread showed "Working…" in the list."""
+        rows = self._conversations(prefix, limit)
+        for row in rows:
+            row["waiting"] = False
+            if row["status"] == "running":
+                asked: set = set()
+                for found in self.store.query("SELECT data FROM task_events WHERE conversation = ? AND task = ? "
+                                              "AND data LIKE '%\"approval.%' ORDER BY seq",
+                                              (row["conversation"], row["task"])):
+                    e = json.loads(found["data"])
+                    if e.get("event") == "approval.requested":
+                        asked.add(e.get("id"))
+                    elif e.get("event") == "approval.decided":
+                        asked.discard(e.get("id"))
+                row["waiting"] = bool(asked)
+        return rows
+
+    def _conversations(self, prefix: str, limit: int) -> list[dict]:
         return self.store.query(
             "SELECT conversation, MIN(created) AS created, MAX(created) AS updated, "
             "(SELECT prompt FROM tasks t2 WHERE t2.conversation = t.conversation ORDER BY created LIMIT 1) AS title, "
             "(SELECT status FROM tasks t3 WHERE t3.conversation = t.conversation ORDER BY created DESC LIMIT 1) "
-            "AS status FROM tasks t WHERE conversation LIKE ? GROUP BY conversation ORDER BY updated DESC LIMIT ?",
+            "AS status, (SELECT id FROM tasks t4 WHERE t4.conversation = t.conversation ORDER BY created DESC LIMIT 1) "
+            "AS task FROM tasks t WHERE conversation LIKE ? GROUP BY conversation ORDER BY updated DESC LIMIT ?",
             (prefix + "%", limit))
 
     def tasks(self, conversation: str) -> list[dict]:

@@ -34,7 +34,7 @@ How you work:
 - {owner} reads this as a conversation with a person. What reaches them: your final message, what you send with tell_owner, your plan, and your questions. Text you write beside a tool call is not shown.
 - tell_owner is for a finding or a partial result worth knowing before the end, in a sentence or two ("Three non-stop flights that day; the cheapest is IndiGo at ₹4,800. Checking a second site."). Never tell {owner} about tools, clicks, element numbers, errors, timeouts, retries, or what you are about to try (not "The page did not respond, I'll retry").
 - If something cannot be finished, end with what you did, what could not be done and what {owner} can do next, in plain words: no error texts, no technical names, no account of what loaded or failed along the way, and never ask {owner} to restart or fix the browser or the computer.
-- Your final message is a chat reply to {owner}, not a report. Lead with the answer in a sentence or two. Plain sentences: no headings, no bold labels ("Total:"), bold at most once, for the one figure or name that is the answer. A list or a table only when {owner} has to compare several things side by side. Link a source by its name where you mention it, as [Sony WH-CH520](https://...), not as a list of addresses at the end. Say only what was asked plus anything that changes the decision; a caveat is one sentence. No recap of what you did, no "Based on...", no offer at the end. For products or places {owner} will want to look at, call show_items rather than describing each.
+- Your final message is a chat reply to {owner}, not a report, said to them as "you" (never "the owner"). Lead with the answer in a sentence or two. Plain sentences: no headings, no bold labels ("Total:"), bold at most once, for the one figure or name that is the answer. A list or a table only when {owner} has to compare several things side by side. Link a source by its name where you mention it, as [Sony WH-CH520](https://...), not as a list of addresses at the end. Say only what was asked plus anything that changes the decision; a caveat is one sentence. No recap of what you did, no "Based on...", no offer at the end. For products or places {owner} will want to look at, call show_items rather than describing each.
 - Two good answers. Asked what a dinner cost: "You paid **₹1,240** at Sagar on 14 March, by card. That includes ₹59 of tax." Asked to compare a phone at two shops: "Amazon is cheaper: **₹50,999** for the [Pixel 10a 256 GB](https://www.amazon.in/dp/B0EXAMPLE), against ₹53,199 on [Flipkart](https://www.flipkart.com/pixel-10a). Amazon's price assumed a Bengaluru pincode, so yours may differ slightly.\""""
 # The instructions and the tool list (~3,000 tokens) stay the same for every task, so the runtime keeps them
 # read: the first request of a task then reads ~25 new tokens instead of all of it (0.9 s instead of 48 s
@@ -113,6 +113,29 @@ TOO_LONG = ("I had to stop here: this task gathered more than I can keep in mind
             "at a time will work better.")
 
 
+def without_repeats(final: str, said: list[str]) -> str:
+    """An answer that opens with an update already in the thread, word for word, keeps only what is new: the
+    owner read "I opened your Amazon.in cart. It has 4 items..." twice, as an update and again as the answer."""
+    def words(text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip()
+
+    answer = words(final)
+    for note in sorted((words(n) for n in said), key=len, reverse=True):
+        if not note or not answer.startswith(note) or not words(answer[len(note):]):
+            continue
+        # The same point in the answer as written, so the rest keeps its own lines.
+        counted, index, gap = 0, len(final) - len(final.lstrip()), False
+        while index < len(final) and counted < len(note):
+            if final[index].isspace():
+                gap = True
+            else:
+                counted += 1 + (gap and counted > 0)
+                gap = False
+            index += 1
+        return final[index:].strip()
+    return final
+
+
 @dataclass
 class RunContext:
     conversation: str
@@ -132,6 +155,7 @@ class RunContext:
     plan: list[dict] = field(default_factory=list)      # written by the model with plan_update
     shown: int = 0                                      # items shown to the owner as cards (show_items)
     told: int = 0                                       # things said to the owner on purpose (tell_owner)
+    said: list[str] = field(default_factory=list)      # and what they were, so the answer does not repeat them
     # What this run may name without inventing it: addresses and numbers the owner wrote or their contacts
     # returned (tools.handles), and the paths its own file searches found.
     known: set[str] = field(default_factory=set)
@@ -481,6 +505,7 @@ class Agent:
                 final = reply["content"] or final
             except LLMError:
                 pass
+        final = without_repeats(final, ctx.said)
         self._remember(ctx.conversation, "user", text)
         self._remember(ctx.conversation, "assistant", final)
         self.svc.audit.write("agent.finish", conversation=ctx.conversation, origin=ctx.origin, tainted=ctx.tainted)

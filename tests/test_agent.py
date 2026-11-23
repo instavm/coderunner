@@ -101,6 +101,11 @@ class ThreadTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("so I'll retry", json.dumps(sent))
             self.assertIn("tell_owner is for a finding or a partial result", sent[0]["content"])
             self.assertIn("never ask the owner to restart or fix the browser", sent[0]["content"])
+            # An answer that opens with the update word for word keeps only what is new.
+            fake.script = [tool_call("tell_owner", {"text": "I opened your cart. It has 4 items."}),
+                           {"role": "assistant", "content": "I opened your cart.  It has 4 items.\nCheckout is yours."}]
+            reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-thread2"), "Cart?")
+            self.assertEqual(reply, "Checkout is yours.")
 
     async def test_a_tool_that_fails_and_a_model_that_stops_answering_are_said_without_plumbing(self):
         with FakeOpenAI() as fake:

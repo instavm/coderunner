@@ -139,6 +139,14 @@ function describeTool(name, raw) {
 }
 
 // What was clicked or typed into, as it reads on the page: without the kind of control or the page's own text.
+// Share of the shorter text's words that the other has too (0 to 1), case and punctuation aside.
+function sameWords(a, b) {
+  const words = (t) => new Set(String(t).toLowerCase().match(/[\p{L}\p{N}]+/gu) || []);
+  const x = words(a), y = words(b);
+  if (!x.size || !y.size) return 0;
+  const [small, big] = x.size <= y.size ? [x, y] : [y, x];
+  return [...small].filter((w) => big.has(w)).length / small.size;
+}
 const plainLabel = (label) => trunc(String(label || "").replace(/^(button|link|option|textbox|searchbox|combobox|checkbox|radio|tab|menuitem|switch|listitem|heading)\s+/i, "")
   .replace(/\s*\(page text .*$/i, "").replace(/^"(.*)"$/, "$1").replace(/"\s*->.*$/, "").replace(/^"|"$/g, ""), 60);
 
@@ -281,7 +289,7 @@ class TaskView {
     if (e.seq) this.seq = e.seq;
     switch (e.type) {
       case "started": this.showAttached(e.attachments); break;
-      case "note": this.say(markdown(el("div", "note say"), e.text)); break;
+      case "note": this.lastNote = {text: e.text, node: this.say(markdown(el("div", "note say"), e.text))}; break;
       case "items":             // shown as they come; the answer places them with its words
         this.shown = [...(this.shown || []), ...(e.items || [])];
         this.items?.remove();
@@ -417,6 +425,9 @@ class TaskView {
     const answer = el("div", "answer" + (e.type === "failed" ? " failed" : ""));
     this.items?.remove();
     for (const part of answered(e.reply || "", this.shown, picture)) answer.appendChild(part);
+    // An answer that says again what the last update said (a small model does, in other words) replaces it:
+    // the thread read the same three sentences twice.
+    if (this.lastNote && sameWords(this.lastNote.text, e.reply || "") >= 0.7) this.lastNote.node.remove();
     this.flow.appendChild(answer);
     this.answer = answer;
     const took = clock((this.finished || Date.now() / 1000) - this.started);
@@ -444,7 +455,16 @@ function closeAsk(id, allowed) {
 // ---- conversations ----------------------------------------------------------
 
 async function loadConversations() {
-  const list = await api("/api/conversations").catch(() => []);
+  const list = await api("/api/conversations").catch(() => null);
+  if (!list) return;
+  // What is running comes from the list too: a task started before this window opened (or while it was
+  // reconnecting) sends no "started" here, and the computer panel said "Idle" while it worked.
+  const now = new Map(list.filter((c) => c.task && ["running", "queued"].includes(c.status))
+                         .map((c) => [c.task, state.running.get(c.task) || {conversation: c.conversation, label: "Working"}]));
+  state.running.clear();
+  for (const [id, info] of now) state.running.set(id, info);
+  state.othersWaiting = list.some((c) => c.waiting && c.conversation !== state.conversation);
+  refreshNow();
   const nav = $("conversations");
   nav.replaceChildren();
   for (const c of list) {
@@ -454,7 +474,7 @@ async function loadConversations() {
     const t = el("div", "t");
     const waiting = [...state.approvals.values()].some((a) => a.conversation === c.conversation &&
                                                        !a.card.classList.contains("closed"));
-    const status = waiting ? "waiting" : c.status;
+    const status = waiting || c.waiting ? "waiting" : c.status;
     t.append(el("span", "dot " + status), el("span", "label", trunc(c.title || "Attached files", 60)));
     const sub = status === "running" ? "Working…" : status === "waiting" ? "Needs you" : status === "queued" ? "Queued" :
                 status === "failed" ? "Failed" : status === "cancelled" ? "Stopped" :
@@ -612,7 +632,7 @@ function listen() {
       notify("CodeRunner needs you", e.summary || "A task is waiting for you");
     }
     if (["started", "done", "failed", "cancelled"].includes(e.type) ||
-        (e.type === "activity" && e.event === "approval.requested")) {
+        (e.type === "activity" && ["approval.requested", "approval.decided"].includes(e.event))) {
       if (e.type !== "started" && e.conversation !== state.conversation) notify("Task finished", trunc(e.reply, 120));
       loadConversations();
     }
@@ -1043,7 +1063,10 @@ function refreshNow() {
   const busy = state.running.size > 0;
   // Without a screen the word is why (starting, stopped, not installed), not "Connecting" again every few seconds.
   $("computerState").textContent = control ? "You're in control" : rfb ? (busy ? "Working" : "Idle") : screenWord || (busy ? "Working" : "Connecting");
-  $("nowLine").textContent = busy ? (state.nowText || "Working…") : "Idle";
+  // The line speaks for the open task while it runs; otherwise for the others (its last words went stale).
+  const open = [...state.running.values()].some((r) => r.conversation === state.conversation);
+  $("nowLine").textContent = !busy ? "Idle" : open ? (state.nowText || "Working…") :
+    state.othersWaiting ? "Another task needs you" : "Working on another task";
 }
 
 // A model's id as an owner reads it: coderunner-bonsai-2-27b -> Bonsai 2 27B.

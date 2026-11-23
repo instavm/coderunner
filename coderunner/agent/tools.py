@@ -776,8 +776,9 @@ def plan_tools(svc) -> list[Tool]:
         if not text:
             return "Nothing was said."
         ctx.told += 1
+        ctx.said.append(text[:1200])
         ctx.emit({"type": "note", "text": text[:1200]})
-        return "The owner has been told."
+        return "Said in the thread. Your answer at the end does not repeat it."
 
     async def show(args, ctx):
         """Cards under the answer for things better seen than read. Each field is the model's own structure
