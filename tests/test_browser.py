@@ -1415,6 +1415,16 @@ LISTING = (b"""<!doctype html><html><head><title>Chargers</title></head><body>
 </body></html>""")
 
 
+# Boxes without words, as a screenshot driver clicks them by point: one with nothing around it, one in a search
+# form, one beside a pay line.
+WORDLESS = b"""<title>Boxes</title><style>div.box{position:absolute;width:40px;height:40px;background:#ccc}</style>
+<div class="box" style="left:10px;top:10px" onclick="document.title='empty'"></div>
+<section style="position:absolute;left:100px;top:0"><p>FROM Bengaluru TO New Delhi DEPART 15/01/2027</p>
+  <div class="box" style="position:static" onclick="document.title='form'"></div></section>
+<section style="position:absolute;left:400px;top:0"><p>Pay Rs 460 securely</p>
+  <div class="box" style="position:static" onclick="document.title='paid'"></div></section>"""
+
+
 class _Fixture(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/away":
@@ -1425,6 +1435,7 @@ class _Fixture(http.server.BaseHTTPRequestHandler):
         port = str(self.server.server_port).encode()
         body = FIXTURE.replace(b"PORT", port) if self.path == "/" else DRAWN if self.path == "/drawn" else \
             CONTROLS if self.path == "/controls" else LISTING if self.path == "/list" else \
+            WORDLESS if self.path == "/boxes" else \
             b"<title>Next</title><h2>Second page</h2>"
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1523,6 +1534,26 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
             chosen = await self.broker.type_focused("Large")
             self.assertTrue(chosen["ok"], chosen)
             self.assertEqual(await self.page("document.getElementById('pick').value"), "Large")
+
+    async def test_a_box_without_words_is_told_by_the_words_around_it_and_one_with_none_is_not_asked(self):
+        self.assertTrue((await self.broker.navigate(self.base + "/boxes"))["ok"])
+        judge = self.broker.decider
+        async with self.broker.screens_only():
+            # Nothing in or around it: clicked without the judge or the owner.
+            self.assertTrue((await self.broker.click_at(30, 30))["ok"])
+            self.assertEqual((judge.states, self.asked, await self.page("document.title")), ([], [], "empty"))
+            # In a search form: the judge reads the form's words, and it is clicked.
+            box = await self.page("(() => { const r = document.querySelectorAll('div.box')[1].getBoundingClientRect();"
+                                  " return [r.x + 20, r.y + 20]; })()")
+            self.assertTrue((await self.broker.click_at(*box))["ok"])
+            self.assertIn('click div without words, in "FROM Bengaluru TO New Delhi', judge.states[-1])
+            self.assertEqual((self.asked, await self.page("document.title")), ([], "form"))
+            # Beside a pay line: judged committing, asked, refused here.
+            box = await self.page("(() => { const r = document.querySelectorAll('div.box')[2].getBoundingClientRect();"
+                                  " return [r.x + 20, r.y + 20]; })()")
+            self.assertFalse((await self.broker.click_at(*box))["ok"])
+            self.assertEqual(self.asked, ["browser.sensitive"])
+            self.assertNotEqual(await self.page("document.title"), "paid")
 
     async def test_a_slider_is_set_by_typing_the_number_it_should_move_to(self):
         self.assertTrue((await self.broker.navigate(self.base + "/controls"))["ok"])

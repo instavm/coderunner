@@ -23,9 +23,24 @@ DESCRIBE_JS = r"""function(closest) {
   // Where a link goes (a page of a website, not a script): what a vague "Click Here" does is said by it.
   const link = el.closest('a[href]');
   const opens = link && /^https?:/.test(link.href) ? clean(link.href).slice(0, 300) : '';
+  // An element without words of its own (an icon, a box a screenshot driver clicked by point) is told by its
+  // icon's label, else by the words around it: "div \"\"" told the judge and the owner nothing.
+  let own = field ? clean(el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name) : text(el);
+  let icon = '', around = '';
+  if (!own) {
+    const pic = el.querySelector('img[alt], svg title, [aria-label], [title]');
+    icon = pic ? clean(pic.getAttribute('alt') || pic.getAttribute('aria-label') || pic.getAttribute('title') ||
+                       pic.textContent).slice(0, 80) : '';
+    // A near container's words only: the whole page, or a region of it, would say what is elsewhere.
+    for (let up = el.parentElement, n = 0; up && n < 4 && !around && up !== document.body
+         && up !== document.documentElement; up = up.parentElement, n++) {
+      const words = String(up.innerText || '').replace(/\s+/g, ' ').trim();
+      if (words.length > 400) break;
+      around = words.slice(0, 160);
+    }
+  }
   return {tag: el.tagName.toLowerCase(), type, autocomplete: (el.getAttribute('autocomplete') || '').toLowerCase(),
-          text: field ? clean(el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name) : text(el),
-          submit: submit ? text(submit) : '', opens, truncated};
+          text: own, icon, around, submit: submit ? text(submit) : '', opens, truncated};
 }""".replace("LIMIT", str(TEXT_LIMIT))
 FOCUSED_JS = r"""(() => {
   let el = document.activeElement;

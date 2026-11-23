@@ -38,6 +38,23 @@ class ActionCheckTests(DecisionTestCase):
         self.assertEqual([e["commits"] for e in events], [True, False])
         await model.aclose()
 
+    def test_a_click_on_page_text_is_shown_examples_of_such_clicks(self):
+        from coderunner.safety.decision import COMMIT_EXAMPLES, TEXT_EXAMPLES, examples_for
+        text = describe("passport.govmu.org", "/passport/", "click", "li", "Non-citizens", nearby='li "Non-citizens"')
+        button = describe("shop.example", "/", "click", "button", "Add to cart")
+        self.assertEqual(examples_for(text), COMMIT_EXAMPLES + TEXT_EXAMPLES)
+        self.assertEqual(examples_for(button), COMMIT_EXAMPLES)
+        self.assertEqual(examples_for(describe("x.example", "/", "type and press Enter", "div", "Search")), COMMIT_EXAMPLES)
+
+    async def test_the_judge_asks_with_the_examples_for_the_step(self):
+        model = self.model(lambda r: httpx.Response(200, json={"choices": [{"message": {"content": "A"}}]}), api="chat")
+        check = ActionCheck(model, audit=self.audit)
+        self.assertFalse(await check.commits(describe("gov.example", "/", "click", "p", "Fees", nearby='p "Fees"')))
+        self.assertFalse(await check.commits(describe("gov.example", "/", "click", "link", "Fees")))
+        shown = [len(r["messages"]) for r in self.requests]
+        self.assertEqual(shown[0] - shown[1], 8)       # four more examples, a question and an answer each
+        await model.aclose()
+
     def test_a_link_says_where_it_goes(self):
         from coderunner.browser.broker import _shown_url
         state = describe("passport.govmu.org", "/passport/", "click", "link", "Click Here",

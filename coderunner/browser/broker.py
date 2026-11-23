@@ -1515,9 +1515,17 @@ class BrowserBroker:
             async with self._acting(target, sid, tainted):
                 plan = await self._click_plan(sid, target, element)
             kind = plan["kind"]
-            if kind == "browser.interact" and await self._commits(
-                    host, url, "click", plan["role"], plan["name"] or plan["text"], nearby=plan["label"],
-                    opens=_shown_url(plan.get("opens", ""), host)):
+            # A box with no words in or around it (a driver's click on an empty part of a form) commits nothing a
+            # person could name, and an approval of 'Click div ""' is one nobody can answer: it is not asked.
+            wordless = not (plan["name"] or plan["text"] or plan.get("around") or plan.get("opens")) \
+                and plan["role"] in decision.TEXT_TAGS
+            # One without words is put to the judge by the words it sits in: asked as 'div ""', Fara1.5 called
+            # two of three harmless ones committing (tests/approval_eval.py, driver set).
+            role, name, near = plan["role"], plan["name"] or plan["text"], plan["label"]
+            if not name and plan.get("around"):
+                role, name, near = f"{role} without words, in", plan["around"][:80], plan["around"]
+            if kind == "browser.interact" and not wordless and await self._commits(
+                    host, url, "click", role, name, nearby=near, opens=_shown_url(plan.get("opens", ""), host)):
                 kind = "browser.sensitive"
             summary = f"{('Click', 'Double-click', 'Triple-click')[clicks - 1]} {plan['label']} on {host}"
             # Whether the owner is shown this exact plan; if so it must not change at all before the click.
@@ -1663,8 +1671,10 @@ class BrowserBroker:
         backend = element["backend"]
         hit = await self._node_at(sid, target, x, y)
         own = await self._describe(sid, target, backend) or {}
-        name, text = element["name"], own.get("text", "")
-        label = f'{element["role"]} {json.dumps(name or text, ensure_ascii=False)}'
+        name, text = element["name"], own.get("text", "") or own.get("icon", "")
+        around = "" if name or text else own.get("around", "")
+        label = f'{element["role"]} {json.dumps(name or text, ensure_ascii=False)}' if name or text or not around \
+            else f'{element["role"]} in {json.dumps(around[:80], ensure_ascii=False)}'
         if name and text and text != name:
             label += f" (page text {json.dumps(text, ensure_ascii=False)})"
         cover = await self._covering(sid, target, backend, hit)
@@ -1677,7 +1687,7 @@ class BrowserBroker:
         # pointer does not matter (menus restyle them on hover); a different covering element does.
         return {"hit": "element" if cover is None else hit.get("backendNodeId"), "frame": hit.get("frameId"),
                 "label": label, "kind": "browser.sensitive" if risky else "browser.interact",
-                "text": text, "name": name, "role": element["role"], "opens": own.get("opens", "")}
+                "text": text, "name": name, "role": element["role"], "opens": own.get("opens", ""), "around": around}
 
     async def _node_at(self, sid: str, target: str, x: float, y: float) -> dict:
         """The node under window point (x, y), where a mouse event there lands. Chrome's hit test takes page

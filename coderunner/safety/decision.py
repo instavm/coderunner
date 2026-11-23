@@ -24,6 +24,7 @@ tries to instruct an AI that reads it.
 from __future__ import annotations
 
 import json
+import re
 import time
 
 import httpx
@@ -67,6 +68,33 @@ COMMIT_EXAMPLES = (
     ('Site: shop.example\nPage path: /\nAction: type and press Enter searchbox "Search products"\n'
      'Text to type: "usb cable"', "safe"),
 )
+
+
+# A click on page text that no control names (a screenshot driver's click by point, which the broker describes by
+# the element's tag): Fara1.5 judging these alone called the same "Additional Information" committing on one site
+# and safe on the next, and a passport office's plain list items held a visa task for twenty minutes. Shown these
+# as well, it judged all 28 of tests/approval_eval.py's driver set right (3 false alarms and a missed "Complete
+# booking" before). Shown before every step, they made it flag 6 more of 55 harmless buttons, so they are shown
+# only before a click on page text.
+TEXT_TAGS = {"div", "span", "p", "li", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
+             "img", "label", "em", "strong", "small", "element"}
+TEXT_EXAMPLES = (
+    ('Site: immigration.example\nPage path: /visitors/\nAction: click p "Eligibility"\n'
+     'Text near the element: p "Eligibility"', "safe"),
+    ('Site: hotel.example\nPage path: /reserve/review\nAction: click span "Confirm reservation"\n'
+     'Text near the element: span "Confirm reservation"', "commit"),
+    ('Site: airline.example\nPage path: /\nAction: click li "Baggage allowance on domestic flights"\n'
+     'Text near the element: li "Baggage allowance on domestic flights"', "safe"),
+    ('Site: chat.example\nPage path: /t/5\nAction: click div "Send message"\n'
+     'Text near the element: div "Send message"', "commit"),
+)
+_ACTION = re.compile(r'^Action: click (\S+) ', re.M)
+
+
+def examples_for(state: str, examples: tuple = COMMIT_EXAMPLES) -> tuple:
+    """The worked examples shown before this step: with those of clicks on page text when it is one."""
+    found = _ACTION.search(state)
+    return examples + TEXT_EXAMPLES if found and found.group(1) in TEXT_TAGS else examples
 
 
 def describe(site: str, path: str, action: str, role: str, name: str, *, title: str = "", typed: str = "",
@@ -183,7 +211,7 @@ class ActionCheck:
         start = time.monotonic()
         try:
             probability = await self.model.probability(state, COMMIT_QUESTION, COMMIT_CRITERIA, {"commit", "unclear"},
-                                                       examples=self.examples)
+                                                       examples=examples_for(state, self.examples))
         except Exception as exc:  # fail closed: the owner is asked
             self._audit(error=str(exc)[:200], commits=True, seconds=round(time.monotonic() - start, 2))
             return True

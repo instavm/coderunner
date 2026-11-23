@@ -644,8 +644,18 @@ slot and turn; a link's address is shown to the step judge (with it a "Click Her
 links that close an account, unsubscribe or delete a payee still commit; the judge benchmark is unchanged, 0 of
 57 commits missed, since its steps carry no address); and once an approval of a task expires unanswered, its next
 ones wait 30 s, not 300. Two worked examples of vague links added to the judge made it miss Airbnb's "Request to
-book" in the benchmark and were taken out again. Not yet run again: the driver's own judging of clicks on plain
-page text (div, li, p), the most expensive failure here.
+book" in the benchmark and were taken out again.
+
+The driver's own judging came next. `tests/approval_eval.py --sets driver` holds 34 clicks of the kind a screenshot
+driver makes on page text no control names (19 harmless, 15 committing; six of them on boxes with no words of their
+own). Fara1.5 4B, which judges while it drives where the planner is unloaded, flipped on these: the same
+"Additional Information" was committing on one site and safe on the next, and a box was put to it as 'div ""'. Now
+such a click is put with the words it sits in, is shown four worked examples of clicks on page text (only before
+such a click: shown before every step they made it flag 6 more of 55 harmless buttons), and a box with no words in
+or around it is not asked about at all, since nobody could answer 'Click div ""'. Fara went from 24 of 28 (a missed
+"Complete booking", three false alarms) to 34 of 34, Qwen3.5 9B to 34 of 34, the other sets unchanged. The check's
+driver task (a flight search done from screenshots) had failed at 15 minutes with 30 approvals asked; afterwards it
+passed in 475 s with none, the judge clearing all 37 of its clicks.
 
 The app showed a task started from a new thread twice, one copy stuck at "0s" (the thread was read while the
 task's start event arrived); a stopped task's dot was the brand blue of a working one; and a three-column table
