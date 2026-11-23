@@ -46,7 +46,7 @@ from .cdp import CDPError, CDPPipe
 from .errors import BrowserError
 from .page import PAGE_CHARS, ax_value, cut, page_changes, render_ax, short_url, squash
 from .scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, LIST_JS, OPTIONS_JS, SCROLL_JS, SELECT_ALL_JS,
-                      SELECT_OPTION_JS, SETTLE_JS)
+                      SELECT_OPTION_JS, SETTLE_JS, SLIDER_JS)
 from .urls import is_local_ip, local_problem, page_host, parse_url, same_site
 
 
@@ -123,6 +123,7 @@ CHORDS = {
     ("Home", "Shift"): "moveToBeginningOfLineAndModifySelection",
     ("End", "Shift"): "moveToEndOfLineAndModifySelection", ("Shift", "Tab"): "",
 }
+SLIDER_PRESSES = 200        # arrow keys at most to move a slider drawn by the page's script
 KEYSTROKE_CHARS = 100       # typed key by key up to this length, as a person (and Playwright) does; longer is inserted
 # Before reading the page after an action: how long to wait for it to start changing (typed text often brings
 # suggestions about a second later), then for it to stay still, and at most in all (seconds).
@@ -1450,6 +1451,11 @@ class BrowserBroker:
             found = self._rebound(target, ref)
             if found is not None:
                 return found
+            # A small model drops a digit ([39] for the page's only [639]): it is named, not taken for it.
+            like = [n for n in self._refs.get(target, {}) if str(ref).isdigit() and str(n).endswith(str(ref))
+                    and str(n) != str(ref)]
+            if len(like) == 1:
+                raise BrowserError(f"Unknown element [{ref}] in this tab; did you mean [{like[0]}]?") from None
             raise BrowserError(f"Unknown element [{ref}] in this tab; take a new snapshot") from None
 
     def _rebound(self, target: str, ref: Any) -> dict | None:
@@ -1794,6 +1800,8 @@ class BrowserBroker:
                 typed=text, nearby=f"field text: {own.get('text', '')}; submit button: {own.get('submit', '')}")
             await self._allow("browser.sensitive" if risky else "browser.interact", host, summary, tainted, **detail)
         async with self._acting(target, sid, tainted):
+            if element["role"] == "slider":
+                return await self._slide(target, sid, backend, text, tainted)
             try:
                 await self._send(sid, "DOM.focus", {"backendNodeId": backend})
             except CDPError:
@@ -1826,6 +1834,37 @@ class BrowserBroker:
             if field is None:
                 result["_audit"] = {"text": text}
             return result
+
+    async def _slide(self, target: str, sid: str, backend: int, text: str, tainted: bool) -> dict:
+        """Typing a number into a slider sets it (a price filter's "Max."): typed text, clicks and arrow keys
+        on the slider's cover did nothing, and a hotel search spent five minutes on one in a run."""
+        try:
+            wanted = float(re.sub(r"[^\d.\-]", "", text))
+        except ValueError:
+            raise BrowserError("A slider is set by typing the number it should move to") from None
+        obj = await self._object(sid, backend, await self._world(sid, target))
+        watch = self._watch_navigation(sid, target)
+        state = await self._call(sid, obj, SLIDER_JS, {"value": wanted}) or {}
+        if not state.get("range") and state.get("now") is not None:
+            await self._send(sid, "DOM.focus", {"backendNodeId": backend})
+            for _ in range(SLIDER_PRESSES):         # drawn by the page's script: moved a key at a time
+                now = state["now"]
+                if now == wanted:
+                    break
+                await self._key(sid, "ArrowRight" if now < wanted else "ArrowLeft")
+                after = await self._call(sid, obj, SLIDER_JS, {"value": None}) or {}
+                if after.get("now") in (None, now):
+                    break                           # it does not move with keys
+                state = after
+                if (now - wanted) * (after["now"] - wanted) <= 0:
+                    break                           # reached, or a step past it
+        navigated = await self._settle(sid, watch)
+        result = await self._observe(target, sid, await self._result(target, navigated=navigated), tainted,
+                                     "load" if navigated else "type")
+        stands = state.get("text") or state.get("now")
+        result["note"] = (f"The slider now stands at {stands} (from {state.get('min')} to {state.get('max')})."
+                          if stands is not None else "This slider does not say where it stands; check the page.")
+        return result
 
     async def _char(self, sid: str, char: str) -> None:
         code = ord(char.upper()) if char.isalnum() else 32 if char == " " else 0

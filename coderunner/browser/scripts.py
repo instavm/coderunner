@@ -61,6 +61,25 @@ OPTIONS_JS = r"""function() {
     : null;
 }"""
 
+# A slider is set, not typed into. A range input takes the value through the element's own setter and hears
+# the events a drag sends (in the isolated world a framework's own value tracker still sees the change); a
+# slider drawn with ARIA reports where it stands, and is moved with arrow keys by the caller.
+SLIDER_JS = r"""function(value) {
+  const aria = (name) => this.getAttribute('aria-' + name);
+  if (this.tagName === 'INPUT' && this.type === 'range' && value !== null) {
+    const min = Number(this.min || 0), max = Number(this.max || 100);
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    set.call(this, String(Math.min(max, Math.max(min, Number(value)))));
+    this.dispatchEvent(new Event('input', {bubbles: true}));
+    this.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+  const range = this.tagName === 'INPUT' && this.type === 'range';
+  const number = (text) => (text === null || text === '' ? null : Number(text));
+  return {range, now: number(range ? this.value : aria('valuenow')),
+          min: number(range ? (this.min || '0') : aria('valuemin')),
+          max: number(range ? (this.max || '100') : aria('valuemax')),
+          text: aria('valuetext') || ''};
+}"""
 SELECT_ALL_JS = r"""function() {
   try { if (typeof this.select === 'function') { this.select(); return; } } catch (e) {}
   const range = document.createRange(); range.selectNodeContents(this);

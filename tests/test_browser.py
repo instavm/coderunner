@@ -542,6 +542,14 @@ class RenumberedTests(BrokerTestCase):
         with self.assertRaisesRegex(BrowserError, "Unknown element"):
             self.broker._ref("T", 61)
 
+    def test_a_number_missing_a_digit_is_named_not_taken(self):
+        self.page((639, "button", "Try now"), (12, "link", "Home"))
+        with self.assertRaisesRegex(BrowserError, r"did you mean \[639\]\?"):
+            self.broker._ref("T", 39)
+        self.page((639, "button", "Try now"), (739, "button", "Later"))
+        with self.assertRaisesRegex(BrowserError, "take a new snapshot"):    # two would do: no guess
+            self.broker._ref("T", 39)
+
 
 class OwnTabsTests(BrokerTestCase):
     """Two tasks at once each have their own tabs: neither sees, acts on or closes the other's."""
@@ -1386,6 +1394,15 @@ overflow-y: scroll; } #list div { height: 40px; } #name { position: absolute; le
 <select id="pick" aria-label="Size"><option>Small</option><option>Medium</option><option>Large</option></select>
 <span id="word" ondblclick="document.getElementById('out').textContent = 'double ' + this.textContent">wordy</span>
 <div id="menu" onmouseover="document.getElementById('out').textContent = 'menu open'">Menu</div>
+<div style="position: absolute; left: 400px; top: 200px; width: 200px"><input id="max" type="range" aria-label="Max."
+ min="0" max="20000" step="500" value="20000" oninput="window.inputs = (window.inputs || 0) + 1"
+ onchange="document.getElementById('price').textContent = 'max ' + this.value">
+<div style="position: absolute; inset: 0"></div></div>
+<div id="stars" role="slider" tabindex="0" aria-label="Stars" aria-valuemin="1" aria-valuemax="5" aria-valuenow="1"
+ style="position: absolute; left: 400px; top: 240px" onkeydown="const n = +this.getAttribute('aria-valuenow') +
+ (event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0);
+ this.setAttribute('aria-valuenow', Math.max(1, Math.min(5, n)))">stars</div>
+<div id="price" style="position: absolute; left: 400px; top: 270px"></div>
 <div id="out"></div><div id="tall"></div></body></html>""")
 
 # A shop page: a short menu, five product cards and a footer. The cards are the page's main list.
@@ -1506,6 +1523,21 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
             chosen = await self.broker.type_focused("Large")
             self.assertTrue(chosen["ok"], chosen)
             self.assertEqual(await self.page("document.getElementById('pick').value"), "Large")
+
+    async def test_a_slider_is_set_by_typing_the_number_it_should_move_to(self):
+        self.assertTrue((await self.broker.navigate(self.base + "/controls"))["ok"])
+        await self.broker.snapshot()
+        refs = self.refs()
+        # A range input under a cover, as booking.com's price filter: set, and the page hears it once.
+        moved = await self.broker.type(refs["Max."], "₹8,000")
+        self.assertIn("stands at 8000 (from 0 to 20000)", moved["note"])
+        self.assertEqual(await self.page("[document.getElementById('price').textContent, window.inputs]"),
+                         ["max 8000", 1])
+        # One drawn by the page's script moves with arrow keys, to the number asked for.
+        moved = await self.broker.type(refs["Stars"], "4")
+        self.assertIn("stands at 4 (from 1 to 5)", moved["note"])
+        self.assertEqual(await self.page("document.getElementById('stars').getAttribute('aria-valuenow')"), "4")
+        self.assertIn("typing the number", (await self.broker.type(refs["Stars"], "four"))["error"])
 
     async def test_points_on_drawn_controls_reach_them(self):
         # A point on ::before content hits the pseudo-element, not an element: booking.com's one-way radio

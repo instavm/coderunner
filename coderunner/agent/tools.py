@@ -449,8 +449,8 @@ def browser_tools(svc) -> list[Tool]:
         Tool("browser_type", "Type text into element [ref] (it focuses the field: no click first) and return what "
              "changed. When suggestions appear (as "
              "in place and airport fields), the one matching your text is picked for you and named in the result; "
-             "pick=false keeps only the typed text. Never use for passwords or one-time codes; use "
-             "browser_handoff instead.",
+             "pick=false keeps only the typed text. A slider (a price range, say) is set by typing the number it "
+             "should move to. Never use for passwords or one-time codes; use browser_handoff instead.",
              _params({"ref": INT, "text": STR, "submit": BOOL, "pick": BOOL}, ["ref", "text"]), type_, True),
         Tool("browser_find", "Find where the current page mentions some text (the whole page, also beyond what a "
              "snapshot shows) and get those lines with their element refs. Cheaper than reading the whole page.",
