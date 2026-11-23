@@ -661,6 +661,35 @@ The app showed a task started from a new thread twice, one copy stuck at "0s" (t
 task's start event arrived); a stopped task's dot was the brand blue of a working one; and a three-column table
 hid its third column behind a sideways scroll that macOS does not show. All three are fixed and seen in the app.
 
+### The owner's own model server, and a Claude retry (November 23-24)
+
+A Linux machine with an NVIDIA GPU served Ternary Bonsai 2 27B (PQ2_0) through llama.cpp's OpenAI-compatible
+API on the tailnet: 64K context over two slots, images, tool calls, 28.6 tokens a second written and about 510
+read. With it as the model (`/api/remote {"action": "server"}`) the Mac loaded no model for planning, pages or
+judging; free memory went from 15% to 56-63%.
+
+| run | time | result |
+|---|---|---|
+| mauritius and headphones at once, before the changes below | 1,550 and 1,732 s | both failed (no plan; no table), 34 and 42 steps, both at the 30-step budget |
+| mauritius, slots pinned | 1,028 s | flights, a hotel, costs and links; no day-by-day plan: still stopped at 30 steps, saved in the dev home's config |
+| headphones, no step budget | 1,867 s | 160 steps, then "I had to stop here": the conversation was full and nothing was answered |
+| headphones, answering from what it found | 1,526 s | one request dropped at step 75 ended it |
+| headphones, the request tried again | 2,521 s | a table of three with what two sites say and an Amazon price and link each; full once, answered from its findings |
+
+What changed: each task keeps to a slot of the server and the judge to the last (unpinned, a 20,000-token
+conversation was read again at 510 tokens a second, about 40 s a step); a step's writing is capped as on a
+local model (one step wrote 4,700 tokens of code in 166 s); the 30-step budget became a 200-step stop, with a
+reminder every 25 steps after the 30th, and an old 30 saved in a config gives way; a full conversation answers
+from the request, what it said along the way, its plan and its latest steps; a request that fails is sent again
+once the server's /health answers. Bonsai wrote nothing beside its tool calls (34 of 34 steps), so every tool
+gained an optional `say` line, shown in the thread as a chat message: 74 in one run. It still searches long
+after it has enough: 139 steps for the headphones table.
+
+Try with Claude, on the local model's Mauritius plan (which said it could not write the day-by-day plan): the
+same request ran in the same thread on Claude Haiku 5.5 in 45 s and stopped short as well, with dated
+Skyscanner fares and no hotels, noting that the local answer's hotel prices had not been checked against any
+site (none of its three hotel links was a page it had opened).
+
 ## Not yet validated
 
 * CodeRunner's own Ollama on Linux: the archives' checksums are the release's own, their layout (`bin/ollama`)
