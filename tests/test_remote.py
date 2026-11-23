@@ -259,6 +259,17 @@ class DaemonTests(Home):
         self.assertIsNone(away.svc.guard.model)                               # the guard is off unless asked for
         self.assertTrue(away.svc.agent._system().startswith("You are the owner's assistant. You run on Anthropic's API;"))
         self.assertTrue(local.svc.agent._system().startswith("You are a private assistant running entirely on"))
+        # One task sent to Claude from the local setup: its own agent, without the screenshot driver, told it runs
+        # on Anthropic's API; the local agent and remote mode are untouched.
+        with mock.patch.object(remote, "install_sdk"):
+            once = await local.claude_agent()
+        self.assertEqual((once.llm.model, once is local.svc.agent, local.svc.remote), ("claude-haiku-5-5", False, None))
+        self.assertNotIn("browser_task", once.registry.tools)
+        self.assertIn("browser_open", once.registry.tools)
+        self.assertTrue(once._system().startswith("You are the owner's assistant. You run on Anthropic's API;"))
+        self.assertIs(await local.claude_agent(), once)                      # built once
+        self.assertIs(await away.claude_agent(), away.svc.agent)             # in remote mode, the one already there
+        await once.llm.aclose()
         self.assertEqual((away.svc.llm.context, away.svc.llm.tool_output_chars), (150_000, 40_000))
         self.assertEqual((away.svc.browser.page_chars, page.LINK_CHARS, local.svc.browser.page_chars), (36_000, 200, 12_000))
         self.assertNotIn(KEY, json.dumps(shown))
@@ -277,6 +288,35 @@ class DaemonTests(Home):
             started.assert_called_once()
         for daemon in (local, away):
             await daemon.svc.llm.aclose()
+
+
+class ServerDaemonTests(Home):
+    async def test_on_the_owners_server_it_plans_judges_and_drives_and_tasks_take_its_slots(self):
+        from coderunner.core import paths
+        from coderunner.core.config import Config
+        from coderunner.server.daemon import Daemon
+        from coderunner.server.tasks import limit
+        from fakes import FakeOpenAI
+        from coderunner.browser import page
+        self.addCleanup(setattr, page, "LINK_CHARS", page.LINK_CHARS)
+        paths.ensure_dirs()
+        with FakeOpenAI() as server:
+            config = Config({"models": {"runtime": "openai", "base_url": "http://127.0.0.1:9/v1",
+                                        "chat": "coderunner-qwen3.5-9b", "driver": {"model": "fara1.5-4b"}},
+                             "sandbox": {"driver": "none"}, "browser": {"mode": "dedicated"}}, path=paths.config_path())
+            remote.use_server(config, server.base_url, "bonsai2-27b", "local-key-1")
+            daemon = Daemon(config)
+            svc = daemon.svc
+            self.assertEqual((svc.remote["provider"], svc.llm.model, svc.llm.base_url), ("openai", "bonsai2-27b", server.base_url))
+            judge = svc.browser.decider.model
+            self.assertEqual((judge.base_url, judge.model, judge.api, judge.slot), (server.base_url, "bonsai2-27b", "chat", None))
+            self.assertNotIn("browser_task", svc.registry.tools)          # it sees pages itself: no driver loaded here
+            self.assertEqual(limit(svc), 2)
+            self.assertTrue(svc.agent._system().startswith("You are the owner's assistant. You run on the owner's own "
+                                                           "model server;"))
+            shown = await daemon.status()
+            self.assertEqual((shown["models"]["chat"], shown["remote"]["host"]), ("bonsai2-27b", f"127.0.0.1:{server.port}"))
+            await svc.llm.aclose()
 
 
 class RouteTests(Home):
@@ -310,6 +350,77 @@ class RouteTests(Home):
         audit = (svc.tmp / "audit.jsonl").read_text()
         self.assertIn('"remote.changed"', audit)
         self.assertNotIn(KEY, audit)
+
+    async def test_the_owners_own_model_server_is_checked_then_used_with_its_key_kept_apart(self):
+        from coderunner.agent import build_registry
+        from coderunner.server.gateway import admin_app
+        from fakes import FakeOpenAI
+        from test_gateway import ADMIN, FakeDaemon
+        svc = Svc({"models": {"chat": "coderunner-qwen3.5-9b"}})
+        svc.registry = build_registry(svc)
+        daemon = FakeDaemon(svc)
+        daemon.restart_soon = mock.Mock()
+        admin = {"Authorization": "Bearer " + ADMIN}
+        with FakeOpenAI() as server:
+            server.served = ["bonsai2-27b"]
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=admin_app(svc, daemon)),
+                                         base_url="http://127.0.0.1:8224") as client:
+                wrong = await client.post("/api/remote", headers=admin, json={
+                    "action": "server", "base_url": server.base_url, "model": "other", "key": "local-key-1"})
+                self.assertEqual((wrong.status_code, wrong.json()["error"]),
+                                 (400, "That server serves bonsai2-27b, not other."))
+                gone = await client.post("/api/remote", headers=admin, json={
+                    "action": "server", "base_url": "http://127.0.0.1:9/v1", "model": "bonsai2-27b"})
+                self.assertEqual(gone.json()["error"], "No model server answered at http://127.0.0.1:9/v1.")
+                daemon.restart_soon.assert_not_called()
+                on = await client.post("/api/remote", headers=admin, json={
+                    "action": "server", "base_url": server.base_url + "/", "model": "bonsai2-27b", "key": "local-key-1"})
+                shown = on.json()
+                self.assertEqual((on.status_code, shown["on"], shown["provider"], shown["model"], shown["base_url"]),
+                                 (200, True, "openai", "bonsai2-27b", server.base_url))
+                self.assertEqual(shown["warning"], "Your requests, the pages it reads and the files it opens are sent "
+                                                   f"to your model server at 127.0.0.1:{server.port}.")
+                self.assertNotIn("local-key-1", on.text)
+                daemon.restart_soon.assert_called_once()
+            self.assertEqual(server.authorizations[-1], "Bearer local-key-1")
+            # The key is kept apart, readable by the owner only, and never in the config.
+            self.assertEqual(remote.server_key(), "local-key-1")
+            self.assertEqual(remote.server_key_path().stat().st_mode & 0o777, 0o600)
+            self.assertNotIn("local-key-1", json.dumps(svc.config.data))
+            # The client: the server's context shared by its two slots, no slot pinning or restarts of ours.
+            llm = remote.client(svc.config)
+            self.assertEqual((llm.base_url, llm.model, llm.remote, llm.provider, llm.context, llm.slots, llm.recover),
+                             (server.base_url, "bonsai2-27b", True, "openai", 32768, 2, None))
+            await llm.aclose()
+        self.assertEqual(remote.claude_model(svc.config), remote.DEFAULT)    # a Claude retry is not sent to bonsai
+
+    async def test_one_task_is_sent_to_claude_only_with_a_kept_key_and_remote_mode_stays_off(self):
+        from coderunner.agent import build_registry
+        from coderunner.server.gateway import admin_app
+        from test_gateway import ADMIN, FakeDaemon
+        svc = Svc({"models": {"chat": "coderunner-qwen3.5-9b"}})
+        svc.registry = build_registry(svc)
+        daemon = FakeDaemon(svc)
+        daemon.restart_soon = mock.Mock()
+        daemon.tasks = mock.Mock(start=mock.Mock(return_value={"id": "t1"}))
+        admin = {"Authorization": "Bearer " + ADMIN}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=admin_app(svc, daemon)),
+                                     base_url="http://127.0.0.1:8224") as client:
+            retry = {"message": "Find three hotels", "conversation": "app:abc", "remote": True}
+            first = await client.post("/api/tasks", json=retry, headers=admin)
+            self.assertEqual((first.status_code, first.json()["needs_key"]), (409, True))
+            daemon.tasks.start.assert_not_called()
+            kept = await client.post("/api/remote", json={"action": "key", "key": KEY}, headers=admin)
+            self.assertEqual((kept.status_code, kept.json()["has_key"], kept.json()["on"]), (200, True, False))
+            self.assertNotIn(KEY, kept.text)
+            daemon.restart_soon.assert_not_called()                 # only kept: remote mode is as it was
+            sent = await client.post("/api/tasks", json=retry, headers=admin)
+            self.assertEqual(sent.status_code, 200)
+            args, options = daemon.tasks.start.call_args
+            self.assertEqual((args[:2], options["remote"]), (("app:abc", "Find three hotels"), "Claude Haiku 5.5"))
+            await client.post("/api/tasks", json={**retry, "remote": False}, headers=admin)
+            self.assertNotIn("remote", daemon.tasks.start.call_args[1])
+        self.assertNotIn(KEY, (svc.tmp / "audit.jsonl").read_text())
 
 
 if __name__ == "__main__":

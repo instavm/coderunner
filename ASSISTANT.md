@@ -977,6 +977,34 @@ off at its limit, a rejected key, a rate limit or a network failure is said in t
 `GET /api/remote` says how it stands; `POST /api/remote` takes `{"action": "on", "key": ...}` (or `"key_file"`)
 or `{"action": "off"}`.
 
+### One task on Claude, when the local model did not get there
+
+When an answer from the local model says the task was not done ("I couldn't find…", "unfinished", the steps
+ran out, the model stopped answering), the thread shows **Try with Claude** under it, with "Sends this task to
+Anthropic. Not private." beside it. Pressed, the same request runs once more in the same thread on Claude
+(Haiku 5.5, or the model chosen for remote mode), labelled "On Claude Haiku 5.5 · not private"; remote mode
+itself stays off and the next task is local again. Claude sees the thread so far, the local model's attempt
+included. Without a kept key the key is asked for in place and only kept (`POST /api/remote
+{"action": "key", "key": ...}`); nothing restarts. Only the thread's latest answer carries the button.
+
+### Your own model server
+
+The assistant's model can also be one you serve yourself on another computer (a GPU machine on your tailnet,
+say) through an OpenAI-compatible API such as llama.cpp's `llama-server`. A Mac short of memory then loads
+no model of its own for planning or web pages:
+
+```bash
+curl -X POST http://127.0.0.1:8224/api/remote -H "Authorization: Bearer $(cat ~/.coderunner/assistant/admin-token)" \
+  -d '{"action": "server", "base_url": "http://100.64.0.5:8080/v1", "model": "bonsai2-27b", "key": "..."}'
+```
+
+The server has to answer with that model before it is used. It then plans, sees, judges browser steps and
+drives the browser itself, as Claude does in remote mode (no screenshot driver is loaded here); file search and
+voice stay local. Its key, if it has one, is kept in `assistant/server-key`, readable only by you. Its context
+and slots are read from llama.cpp's `/props`: each task keeps to its share, and as many tasks run at once as
+it has slots. The Models panel names the model and says where requests go; "Use the local model" switches back.
+Try with Claude is still offered under an answer that says the task was not done.
+
 A small file that holds a credential (an API key, a token, a private key: told by its contents, whatever it
 is named) is never read by the file tools and its contents are never indexed.
 

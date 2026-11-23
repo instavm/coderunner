@@ -177,6 +177,7 @@ const state = {
   pending: new Set(),           // approval ids still waiting
   running: new Map(),           // task id -> {conversation, label}
   loading: null,                // {id, events}: the thread being read, and its live events held meanwhile
+  remoteOn: false,              // remote mode: every task is on Claude already, so none is offered there again
   lastSeq: 0,
 };
 
@@ -206,6 +207,7 @@ class TaskView {
     this.seq = 0;
     this.steps = 0;
     this.root = el("article", "task");
+    this.prompt = task.prompt || "";
     this.bubble = el("div", "bubble-user", task.prompt);
     this.bubble.hidden = !task.prompt;          // files alone, with no words
     this.root.appendChild(this.bubble);
@@ -289,7 +291,11 @@ class TaskView {
     if (e.seq && e.seq <= this.seq) return;
     if (e.seq) this.seq = e.seq;
     switch (e.type) {
-      case "started": this.showAttached(e.attachments); break;
+      case "started":
+        this.showAttached(e.attachments);
+        // A task sent to Claude says so under its words, once: what it read went to Anthropic.
+        if (e.remote) this.root.insertBefore(el("div", "on-claude muted small", `On ${e.remote} · not private`), this.flow);
+        break;
       case "note": this.lastNote = {text: e.text, node: this.say(markdown(el("div", "note say"), e.text))}; break;
       case "items":             // shown as they come; the answer places them with its words
         this.shown = [...(this.shown || []), ...(e.items || [])];
@@ -434,6 +440,10 @@ class TaskView {
     const took = clock((this.finished || Date.now() / 1000) - this.started);
     this.flow.appendChild(el("div", "took muted small", e.type === "cancelled" ? `Stopped after ${took}` :
                              e.type === "failed" ? `Failed after ${took}` : `Done in ${took}`));
+    // The model on this computer said it did not get there: one button tries the same task on Claude. Only
+    // under the thread's latest answer, so it does not stay above the retry once that has run.
+    $("thread").querySelectorAll(".retry").forEach((row) => row.remove());
+    if (e.incomplete && !e.remote && !state.remoteOn && this.prompt) this.flow.appendChild(retryOnClaude(this.prompt));
     state.running.delete(this.id);
     refreshNow();
   }
@@ -1103,7 +1113,11 @@ async function loadModels() {
     const status = await api("/api/status");
     $("mic").hidden = !(status.voice || []).length;      // dictation only where a voice engine is set up
     const models = status.models || {}, remote = status.remote;
-    // In remote mode Claude plans, works the web pages and judges the steps; file search and voice stay here.
+    // On Claude every task is there already, so none is offered there again; on the owner's own server it is.
+    const server = remote?.provider === "openai";
+    state.remoteOn = !!remote && !server;
+    // In remote mode Claude (or the owner's server) plans, works the web pages and judges the steps; file search
+    // and voice stay here.
     const here = remote ? " · on this computer" : "";
     const voice = (status.voice || []).slice(0, 1).map((name) => VOICES[name] || name).join("");   // the one in use; the rest stand by
     const search = modelName(models.embedding || status.model?.embedding);
@@ -1117,15 +1131,19 @@ async function loadModels() {
     for (const [k, v] of rows) if (v) dl.append(el("dt", "", k), el("dd", "", v));
     const line = $("modelsLine");
     line.replaceChildren();
-    if (remote) {
+    if (server) line.append(el("span", "", `${modelName(remote.model)} · ${remote.host}`));
+    else if (remote) {
       const where = el("span", "where", "Anthropic");
       where.appendChild(el("span", "not-private", "Not private"));
       line.append(el("span", "", modelName(remote.model)), where);
     }
     else if (models.chat) line.append(el("span", "", `Local · ${modelName(models.chat)}`));
-    line.title = remote ? "Your requests, the pages it reads and the files it opens are sent to Anthropic." : "";
+    line.title = server ? `Your requests, the pages it reads and the files it opens are sent to your model server at ${remote.host}.` :
+      remote ? "Your requests, the pages it reads and the files it opens are sent to Anthropic." : "";
     const lead = document.querySelector("#empty p");
-    if (lead) lead.textContent = remote ?
+    if (lead) lead.textContent = server ?
+      "Planned by your own model server, and carried out on a private Linux machine with its own browser that you can watch and take over." :
+      remote ?
       "Planned by Claude on Anthropic's API, and carried out on a private Linux machine with its own browser that you can watch and take over." :
       "Tasks run on your own computer: local models, and a private Linux machine with its own browser that you can watch and take over.";
     loadRemote();
@@ -1156,6 +1174,40 @@ async function loadRemote() {
   offer.type = "button";
   offer.onclick = () => { box.replaceChildren(remoteForm(remote, change, loadRemote)); box.querySelector("input, button.primary")?.focus(); };
   box.appendChild(offer);
+}
+
+// Under an answer that says the task was not done: the same task once more on Claude, said plainly to be not
+// private. Without a kept key, the key is asked for in place (kept only; remote mode stays off).
+function retryOnClaude(prompt) {
+  const row = el("div", "retry"), go = el("button", "btn", "Try with Claude");
+  row.append(go, el("span", "muted small", "Sends this task to Anthropic. Not private."));
+  const send = async () => {
+    go.disabled = true;
+    try {
+      await api("/api/tasks", {method: "POST", body: JSON.stringify({message: prompt, conversation: state.conversation, remote: true})});
+      row.remove();
+    } catch (err) { go.disabled = false; notice(err.message); }
+  };
+  go.onclick = async () => {
+    let remote;
+    try { remote = await api("/api/remote"); } catch (err) { notice(err.message); return; }
+    if (remote.has_key) { send(); return; }
+    const form = el("form", "retry-key"), key = el("input"), save = el("button", "btn primary", "Try with Claude");
+    key.type = "password"; key.placeholder = "Anthropic API key (sk-ant-…)"; key.autocomplete = "off";
+    form.append(key, save);
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      if (!key.value.trim()) { key.focus(); return; }
+      save.disabled = true;
+      try { await api("/api/remote", {method: "POST", body: JSON.stringify({action: "key", key: key.value.trim()})}); }
+      catch (err) { save.disabled = false; notice(err.message); return; }
+      form.remove(); send();
+    };
+    go.hidden = true;
+    row.prepend(form);
+    key.focus();
+  };
+  return row;
 }
 
 // The form that turns remote mode on: what it means in one sentence, the key (unless one is kept), one button.

@@ -517,28 +517,48 @@ def admin_app(svc, daemon) -> Starlette:
             return JSONResponse({"error": "message is required"}, status_code=400)
         if len(files) > attached.MAX_PER_TASK:
             return JSONResponse({"error": f"At most {attached.MAX_PER_TASK} files to a message."}, status_code=400)
-        if not svc.config.get("models.chat") and not getattr(svc, "remote", None):
+        # {"remote": true}: this one task on Claude with the kept key (the owner's retry of a task the local model
+        # did not finish). Not private, which the app says on the button that sends it.
+        on_claude = ""
+        from ..models import remote
+        if body.get("remote") and (getattr(svc, "remote", None) or {}).get("provider") != remote.PROVIDER:
+            if not remote.key():
+                return JSONResponse({"error": "No Anthropic key is kept.", "needs_key": True}, status_code=409)
+            on_claude = remote.MODELS[remote.claude_model(svc.config)]
+        elif not svc.config.get("models.chat") and not getattr(svc, "remote", None):
             return JSONResponse({"error": "No model is set up yet."}, status_code=409)
         conversation = str(body.get("conversation") or "")
         if not conversation.startswith("app:"):
             conversation = "app:" + secrets.token_hex(6)
-        return JSONResponse(daemon.tasks.start(conversation, message, principal(request), attachments=files))
+        return JSONResponse(daemon.tasks.start(conversation, message, principal(request), attachments=files,
+                                               **({"remote": on_claude} if on_claude else {})))
 
     async def remote_mode(request: Request):
         """Remote mode: the assistant's model on Anthropic's API with the owner's key (models/remote.py). GET says
         how it stands; POST {"action": "on", "key" or "key_file", "model"} turns it on, {"action": "off"} goes
-        back to the model on this computer. The daemon starts again in place after either."""
+        back to the model on this computer. The daemon starts again in place after either. {"action": "key",
+        "key"} only keeps the key, for single tasks sent to Claude; nothing restarts. {"action": "server",
+        "base_url", "model", "key"} uses the owner's own OpenAI-compatible model server instead."""
         from ..models import remote
 
         def state() -> dict:
             now = remote.active(svc.config)
-            return {"on": now is not None, **(now or {}), "has_key": bool(remote.key()), "warning": remote.WARNING,
+            warning = remote.server_warning(now["host"]) if now and now["provider"] == remote.SERVER else remote.WARNING
+            return {"on": now is not None, **(now or {}), "has_key": bool(remote.key()), "warning": warning,
                     "models": [{"id": key, "name": name} for key, name in remote.MODELS.items()],
                     "local": svc.config.get("models.chat") or ""}
         if request.method == "GET":
             return JSONResponse(state())
         body = await request.json()
         try:
+            if body.get("action") == "key":
+                # Only kept, for a task sent to Claude now and then; remote mode stays as it is.
+                if body.get("key"):
+                    remote.keep_key(str(body["key"]))
+                else:
+                    remote.keep_key_file(str(body.get("key_file") or ""))
+                svc.audit.write("remote.key_kept", origin=principal(request))
+                return JSONResponse(state())
             if body.get("action") == "on":
                 if body.get("key"):
                     remote.keep_key(str(body["key"]))
@@ -546,10 +566,24 @@ def admin_app(svc, daemon) -> Starlette:
                     remote.keep_key_file(str(body["key_file"]))
                 await asyncio.to_thread(remote.turn_on, svc.config, str(body.get("model") or remote.DEFAULT),
                                         lambda line: None)
+            elif body.get("action") == "server":
+                # The owner's own OpenAI-compatible server: it has to answer, with that model, before it is used.
+                base_url, model = str(body.get("base_url") or "").rstrip("/"), str(body.get("model") or "")
+                key = str(body.get("key") or "")
+                try:
+                    async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+                        listed = (await client.get(f"{base_url}/models", headers={"Authorization": f"Bearer {key}"}
+                                                   if key else {})).json()
+                    served = [m.get("id") for m in listed.get("data", [])]
+                except Exception:
+                    raise ValueError(f"No model server answered at {base_url}.") from None
+                if model not in served:
+                    raise ValueError(f"That server serves {', '.join(map(str, served)) or 'no model'}, not {model}.")
+                remote.use_server(svc.config, base_url, model, key)
             elif body.get("action") == "off":
                 remote.turn_off(svc.config, forget=bool(body.get("forget")))
             else:
-                return JSONResponse({"error": "action must be on or off"}, status_code=400)
+                return JSONResponse({"error": "action must be on, off, key or server"}, status_code=400)
         except (ValueError, RuntimeError) as exc:
             return JSONResponse({**state(), "error": str(exc)}, status_code=400)
         svc.audit.write("remote.changed", on=state()["on"], model=state().get("model", ""), origin=principal(request))

@@ -233,10 +233,14 @@ class Daemon:
         svc.remote = remote.active(self.config)
         claude = remote.client(self.config) if svc.remote else None
         if claude is not None:
-            # Remote mode (not private): Claude plans, sees, judges browser steps and screens untrusted text.
-            # File search and voice keep their local models; the local chat model is left set up, unloaded.
+            # Remote mode: Claude, or the owner's own model server, plans, sees, judges browser steps and screens
+            # untrusted text. File search and voice keep their local models; the local chat model is left set
+            # up, unloaded.
             svc.llm, svc.llm_api_key, svc.vision = claude, "", True
-            judge = DecisionModel(claude.base_url, claude.model, api="chat", claude=claude)
+            if svc.remote["provider"] == remote.SERVER:
+                judge = DecisionModel(claude.base_url, claude.model, api="chat", api_key=remote.server_key())
+            else:
+                judge = DecisionModel(claude.base_url, claude.model, api="chat", claude=claude)
             # The injection guard stays off unless asked for (models.remote.guard): a general model asked the
             # guard's question took the page snapshot's own reading hints for instructions and flagged 7 ordinary
             # pages in about 80. Wrapping, taint, approvals and the leak rule are what stop a steered task.
@@ -352,18 +356,43 @@ class Daemon:
 
     async def handle_message(self, channel: str, chat_id: str, text: str, *, origin: str = "",
                              sender_is_owner: bool = True, images: list | None = None,
-                             tainted: bool = False, events=None, task: str = "") -> str:
+                             tainted: bool = False, events=None, task: str = "", remote: bool = False) -> str:
+        """remote: this one message on Claude (the owner's retry of a task the local model did not finish)."""
         conversation = f"{channel}:{chat_id}"
-        if not self.config.get("models.chat") and not getattr(getattr(self, "svc", None), "remote", None):
+        if not remote and not self.config.get("models.chat") and not getattr(getattr(self, "svc", None), "remote", None):
             return ("No local chat model is set up (search mode). Use the search tools from your own agent over "
                     "MCP (`coderunner mcp --tools search`), or run `coderunner setup` to add a model.")
+        agent = await self.claude_agent() if remote else self.svc.agent
         lock = self._locks.setdefault(conversation, asyncio.Lock())
         async with lock:
             ctx = RunContext(conversation=conversation, origin=origin or conversation, channel=channel,
                              chat_id=chat_id, origin_is_owner=sender_is_owner, events=events)
             if tainted:
                 ctx.taint()
-            return await self.svc.agent.run(ctx, text, images=images)
+            if remote:
+                self.svc.audit.write("task.remote", conversation=conversation, model=agent.llm.model)
+            return await agent.run(ctx, text, images=images)
+
+    async def claude_agent(self):
+        """An agent on Anthropic's API for one task the owner sent there, with the kept key, beside the local model
+        (remote mode itself stays off: the next task is local again). It plans, sees and works the web pages
+        itself, so the local screenshot driver is left out; the step judge, approvals, wrapping and the leak rule
+        are the assistant's own, unchanged. Built once and kept, like the local agent."""
+        from ..models import remote
+        if (getattr(self.svc, "remote", None) or {}).get("provider") == remote.PROVIDER:
+            return self.svc.agent                       # remote mode is on: every task is on Claude already
+        if not remote.key():
+            raise ValueError("No Anthropic key is kept.")
+        chosen = remote.claude_model(self.config)
+        kept = getattr(self, "_claude", None)
+        if kept is None or kept.llm.model != chosen:
+            await asyncio.to_thread(remote.install_sdk, lambda line: None)
+            from ..core.claude import Claude
+            from ..agent.loop import Agent
+            from ..agent.tools import ToolRegistry
+            tools = [tool for name, tool in self.svc.registry.tools.items() if name != "browser_task"]
+            self._claude = kept = Agent(self.svc, Claude(remote.key(), chosen), ToolRegistry(self.svc, tools))
+        return kept
 
     async def _on_channel_message(self, message) -> str | None:
         text = message.text

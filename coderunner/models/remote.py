@@ -69,9 +69,59 @@ def forget_key() -> None:
     key_path().unlink(missing_ok=True)
 
 
+# The owner's own model server (an OpenAI-compatible API, such as llama.cpp's on another computer of theirs):
+# chosen like Anthropic, so a Mac short of memory loads no model of its own. Its key, when it has one, is kept
+# like the Anthropic key.
+SERVER = "openai"
+
+
+def server_key_path() -> pathlib.Path:
+    return paths.assistant_dir() / "server-key"
+
+
+def server_key() -> str:
+    try:
+        return server_key_path().read_text().strip()
+    except OSError:
+        return ""
+
+
+def server_warning(host: str) -> str:
+    return f"Your requests, the pages it reads and the files it opens are sent to your model server at {host}."
+
+
+def use_server(config, base_url: str, model: str, api_key: str = "") -> dict:
+    """Remote mode on the owner's own server: base_url is its OpenAI-compatible API (ending in /v1)."""
+    from urllib.parse import urlsplit
+    base_url = (base_url or "").strip().rstrip("/")
+    parts = urlsplit(base_url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("Give the server's address, such as http://100.64.0.5:8080/v1.")
+    if not (model or "").strip():
+        raise ValueError("Give the name of the model the server serves.")
+    path = server_key_path()
+    if api_key.strip():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(api_key.strip() + "\n")
+        os.replace(tmp, path)
+    else:
+        path.unlink(missing_ok=True)
+    config.set("models.remote", {"provider": SERVER, "base_url": base_url, "model": model.strip()})
+    config.save()
+    return active(config)
+
+
 def active(config) -> dict | None:
-    """{"provider", "model", "name"} while remote mode is on and its key is here, else None."""
+    """{"provider", "model", "name"} while remote mode is on and its key is here, else None. On the owner's own
+    server also "base_url" and "host"."""
     chosen = (config.get("models.remote") if config is not None else None) or {}
+    if chosen.get("provider") == SERVER and chosen.get("base_url") and chosen.get("model"):
+        from urllib.parse import urlsplit
+        return {"provider": SERVER, "model": chosen["model"], "name": chosen["model"], "base_url": chosen["base_url"],
+                "host": urlsplit(chosen["base_url"]).netloc, "effort": "medium"}
     if chosen.get("provider") != PROVIDER or not key():
         return None
     model = chosen.get("model") or DEFAULT
@@ -130,5 +180,40 @@ def client(config, **options):
     chosen = active(config)
     if chosen is None:
         return None
+    if chosen["provider"] == SERVER:
+        return server_client(chosen)
     from ..core.claude import Claude
     return Claude(key(), chosen["model"], effort=chosen["effort"], **options)
+
+
+def claude_model(config) -> str:
+    """The Claude model a single task sent to Anthropic runs on: remote mode's choice when that is Claude."""
+    chosen = (config.get("models.remote") if config is not None else None) or {}
+    return chosen.get("model") if chosen.get("provider") == PROVIDER and chosen.get("model") in MODELS else DEFAULT
+
+
+def server_client(chosen: dict):
+    """The owner's model server as the assistant's model: no slots of ours to pin, no runtime of ours to restart.
+    Its context per task is read from llama.cpp's /props where it has one, else 32K."""
+    import httpx
+    from ..core.llm import LLM
+    llm = LLM(chosen["base_url"], chosen["model"], server_key())
+    llm.remote, llm.provider, llm.recover = True, SERVER, None
+    context = 32768
+    try:
+        root = chosen["base_url"][:-3] if chosen["base_url"].endswith("/v1") else chosen["base_url"]
+        headers = {"Authorization": f"Bearer {server_key()}"} if server_key() else {}
+        props = httpx.get(f"{root}/props", headers=headers, timeout=5, trust_env=False).json()
+        n_ctx = int((props.get("default_generation_settings") or {}).get("n_ctx") or 0)
+        slots = max(1, int(props.get("total_slots") or 1))
+        if n_ctx:
+            # Whether the slots share it cannot be told from here (both kinds report the whole figure): each task
+            # keeps to its share.
+            context = n_ctx // slots
+        llm.slots = slots
+    except Exception:
+        llm.slots = 1
+    llm.context = context
+    # A larger model than the Mac's reads more of a page at once and keeps links whole enough to cite.
+    llm.page_chars, llm.link_chars = 16_000, 200
+    return llm

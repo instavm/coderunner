@@ -43,6 +43,8 @@ class FakeOpenAI:
         self.requests: list[dict] = []
         self.judged: list[str] = []
         self.judge = lambda state: False
+        self.served = ["test"]                  # the models /v1/models lists
+        self.authorizations: list[str] = []
         self.port = free_port()
 
         async def chat(request: Request):
@@ -92,8 +94,17 @@ class FakeOpenAI:
                                       body.get("filename", "")))
             return JSONResponse({"id_slot": int(request.path_params["id"])})
 
+        async def models(request: Request):       # what an OpenAI-compatible server lists
+            self.authorizations.append(request.headers.get("authorization", ""))
+            return JSONResponse({"object": "list", "data": [{"id": name} for name in self.served]})
+
+        async def props(request: Request):        # llama.cpp's own description of itself
+            return JSONResponse({"default_generation_settings": {"n_ctx": 65536}, "total_slots": 2})
+
         app = Starlette(routes=[Route("/v1/chat/completions", chat_or_warm, methods=["POST"]),
                                 Route("/v1/embeddings", embeddings, methods=["POST"]),
+                                Route("/v1/models", models, methods=["GET"]),
+                                Route("/props", props, methods=["GET"]),
                                 Route("/slots/{id:int}", slots, methods=["POST"])])
         self.server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="error"))
         self.thread = threading.Thread(target=self.server.run, daemon=True)

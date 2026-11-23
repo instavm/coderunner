@@ -547,3 +547,10 @@ button.setup-other:hover { color: var(--accent); }
   .role-job { display: none; }
   .disk-line { flex-direction: column; gap: 4px; }
 }
+
+/* Under an answer the local model did not finish: one button to try it on Claude, and what that means. */
+.retry { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0 2px; }
+.retry-key { display: flex; gap: 8px; flex: 1 1 320px; }
+.retry-key input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+  background: var(--surface); color: inherit; font: inherit; }
+.on-claude { margin: 4px 2px 0; text-align: right; }

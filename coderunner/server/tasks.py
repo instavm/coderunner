@@ -78,7 +78,13 @@ def limit(svc) -> int:
     """How many tasks run at once: two on a local model (they take turns at it, see Turns), more where the
     model is not on this computer. agent.parallel_tasks sets it."""
     set_by_owner = svc.config.get("agent.parallel_tasks") if hasattr(svc, "config") else None
-    return max(1, int(set_by_owner or (4 if getattr(svc, "remote", None) else 2)))
+    if set_by_owner:
+        return max(1, int(set_by_owner))
+    away = getattr(svc, "remote", None)
+    if away and away.get("provider") == "openai":
+        # The owner's own server: as many as it has slots, each task in one (two on a 27B over a 64K context).
+        return max(1, int(getattr(getattr(svc, "llm", None), "slots", 2) or 2))
+    return 4 if away else 2
 
 
 class Turns:
@@ -149,8 +155,11 @@ class Tasks:
 
     # ---- starting and stopping -------------------------------------------
 
-    def start(self, conversation: str, prompt: str, origin: str, attachments: list[str] | None = None) -> dict:
-        """attachments: ids of files the owner attached in the app (files/attached.py)."""
+    def start(self, conversation: str, prompt: str, origin: str, attachments: list[str] | None = None,
+              remote: str = "") -> dict:
+        """attachments: ids of files the owner attached in the app (files/attached.py). remote: the name of the
+        Anthropic model this one task runs on, when the owner asked for it (a retry of a task the local model
+        did not finish); empty for the assistant's own model."""
         from ..files import attached
         task_id = secrets.token_hex(6)
         now = time.time()
@@ -165,8 +174,10 @@ class Tasks:
 
         emit.task, emit.conversation = task_id, conversation
         emit.shots = {"count": 0, "page": "", "at": 0.0, "since": 0, "busy": False}
+        emit.remote, emit.incomplete = remote, False
         files = [info for info in map(attached.describe, (attachments or [])[:attached.MAX_PER_TASK]) if info]
-        emit({"type": "started", "prompt": prompt, **({"attachments": files} if files else {})})
+        emit({"type": "started", "prompt": prompt, **({"attachments": files} if files else {}),
+              **({"remote": remote} if remote else {})})
         job = (task_id, conversation, prompt, origin, emit, [info["id"] for info in files])
         if queued:
             # As many tasks as this computer runs well at once are running: this one starts when one ends.
@@ -210,7 +221,8 @@ class Tasks:
                 text = f"{prompt}\n\n{note}".strip() if note else prompt
             await self._fresh_slot(emit.slot)
             reply = await self.daemon.handle_message(channel, chat_id, text, origin=origin, events=emit,
-                                                     task=task_id, **({"images": images} if images else {}))
+                                                     task=task_id, **({"images": images} if images else {}),
+                                                     **({"remote": True} if emit.remote else {}))
         except asyncio.CancelledError:
             status, reply = "cancelled", "Stopped."
         except Exception as exc:        # the app shows the failure instead of waiting for ever
@@ -233,7 +245,10 @@ class Tasks:
                     await asyncio.wait_for(browser.tidy(scope=conversation), 10)
             self.store.execute("UPDATE tasks SET status = ?, reply = ?, finished = ? WHERE id = ?",
                                (status, reply, time.time(), task_id))
-            emit({"type": status, "reply": reply})
+            # An answer that says the task was not done, or a failure: the app can offer it again on Claude.
+            undone = status == "failed" or (status == "done" and getattr(emit, "incomplete", False))
+            emit({"type": status, "reply": reply, **({"incomplete": True} if undone else {}),
+                  **({"remote": emit.remote} if emit.remote else {})})
             made = kept.produced(outputs)       # a chart, a sheet, a document its code wrote: shown under the answer
             if made:
                 emit({"type": "files", "files": made})

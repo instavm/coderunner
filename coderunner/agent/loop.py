@@ -99,6 +99,12 @@ PLAN_REMINDER = "[Reminder of your plan, not a new request]\n"
 OUT_OF_STEPS = ("You have used all the steps for this task. Without calling any tools, write your reply to me now "
                 "from what you have found: the answer first, with a link to the page each figure came from, then "
                 "one sentence on what is unfinished. No bold labels, no steps for me to follow, no offer at the end.")
+# An answer that says the task was not done: the app offers to try it again on Claude (when the owner has a key).
+UNDONE = re.compile(r"\b(I )?(couldn.t|could not|was unable to|wasn.t able to|was not able to|did not manage to|"
+                    r"was blocked|can.t|cannot) (complete|finish|do|find|get|reach|load|open|confirm|verify|locate|"
+                    r"extract|capture|add|see|read)|\bunfinished\b|^I had to stop here|^I stopped after|\bI.m stopping here|"
+                    r"\bI (haven.t|have not) (yet )?(written|found|finished|done|checked|got)|"
+                    r"^I got stuck", re.I | re.M)
 # Asked for links and given none: the reply is written again once, linked to the pages it came from. (Two real
 # tasks out of four answered with prices and reviews and no link at all.)
 WANTS_LINKS = re.compile(r"\blinks?\b|\burls?\b|\bsources?\b|\bcite\b", re.I)
@@ -165,6 +171,7 @@ class RunContext:
     told: int = 0                                       # things said to the owner on purpose (tell_owner)
     said: list[str] = field(default_factory=list)      # and what they were, so the answer does not repeat them
     unanswered: int = 0                                 # approvals the owner let expire in this run (safety.policy)
+    incomplete: bool = False                            # the answer says the task was not done (UNDONE)
     # What this run may name without inventing it: addresses and numbers the owner wrote or their contacts
     # returned (tools.handles), and the paths its own file searches found.
     known: set[str] = field(default_factory=set)
@@ -211,8 +218,9 @@ class Agent:
         if getattr(self.llm, "remote", False):
             # Remote mode: the model is not on the owner's computer, and is not told that it is.
             first, rest = text.split("\n", 1)
-            text = (f"You are {owner}'s assistant. You run on Anthropic's API; your tools act on {owner}'s own "
-                    f"computer.\n{rest}")
+            where = (f"on {owner}'s own model server" if getattr(self.llm, "provider", "") == "openai"
+                     else "on Anthropic's API")
+            text = f"You are {owner}'s assistant. You run {where}; your tools act on {owner}'s own computer.\n{rest}"
         return text
 
     async def _context(self, text: str, ctx: RunContext) -> str:
@@ -389,6 +397,7 @@ class Agent:
         handover = "browser_task" in self.registry.tools
         context = int(getattr(self.llm, "context", 0) or self.svc.config.get("models.context", 32768) or 32768)
         known = [0, 0]                              # messages the runtime has counted, and its count of them
+        ran_out = False                             # the steps ran out before an answer
         for step in range(max_steps):
             self._drop_old_images(messages)
             room = self._room(context, ctx.conversation)
@@ -509,6 +518,7 @@ class Agent:
         else:
             # Out of steps: what the model found so far is still worth an answer.
             final = "I stopped after reaching the step limit. Tell me how you'd like to continue."
+            ran_out = True
             messages.append({"role": "user", "content": OUT_OF_STEPS})
             try:
                 # Same tools as every other request, only switched off: a request without them is a different
@@ -532,6 +542,12 @@ class Agent:
             except LLMError:
                 pass
         final = without_repeats(final, ctx.said)
+        ctx.incomplete = ran_out or bool(UNDONE.search(final))
+        if ctx.events is not None:
+            try:
+                ctx.events.incomplete = ctx.incomplete     # read by the task runner (server.tasks) for the app
+            except AttributeError:
+                pass
         self._remember(ctx.conversation, "user", text)
         self._remember(ctx.conversation, "assistant", final)
         self.svc.audit.write("agent.finish", conversation=ctx.conversation, origin=ctx.origin, tainted=ctx.tainted)

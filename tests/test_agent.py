@@ -670,6 +670,35 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("step limit", reply)
             await svc.llm.aclose()
 
+    async def test_an_answer_that_says_the_task_was_not_done_is_marked_for_the_app(self):
+        from coderunner.agent.loop import UNDONE
+        for said, undone in [("I couldn't find a non-stop flight on either site.", True),
+                             ("The Sony WH-1 is ₹9,990. I could not confirm the second shop's price.", True),
+                             ("Unfinished: the hotels.", True), ("I had to stop here: the model stopped answering.", True),
+                             ("I'm stopping here on the hotels. I also haven't written the itinerary yet.", True),
+                             ("The cheapest is IndiGo at 06:10 for ₹4,812.", False),
+                             ("You can't go wrong with the first one.", False)]:
+            self.assertEqual(bool(UNDONE.search(said)), undone, said)
+        with FakeOpenAI() as fake:
+            svc = Svc({"agent": {"max_steps": 2}})
+            svc.sandbox = FakeSandbox()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+
+            def events(event):
+                pass
+            fake.script = [{"role": "assistant", "content": "It is 42."}]
+            ctx = RunContext(conversation="t-done", events=events)
+            await Agent(svc, svc.llm, svc.registry).run(ctx, "what is 6 times 7")
+            self.assertEqual((ctx.incomplete, events.incomplete), (False, False))
+            # Out of steps, whatever the last reply says.
+            fake.script = [tool_call("run_python", {"code": "print(1)"})] * 2 + [
+                {"role": "assistant", "content": "Here is what I have: 1."}]
+            ctx = RunContext(conversation="t-out", events=events)
+            await Agent(svc, svc.llm, svc.registry).run(ctx, "loop")
+            self.assertEqual((ctx.incomplete, events.incomplete), (True, True))
+            await svc.llm.aclose()
+
     async def test_asked_for_links_and_given_none_writes_again_once(self):
         class Scrolling(FakeBrowser):
             async def scroll(self, direction="down", amount=600, tab=None, tainted=False):
