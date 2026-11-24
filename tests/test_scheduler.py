@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pathlib
 import tempfile
 import unittest
@@ -6,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from coderunner.core.audit import AuditLog
-from coderunner.agent.scheduler import Scheduler, is_one_shot, parse_spec
+from coderunner.agent.scheduler import Scheduler, canonical, is_one_shot, parse_spec
 from coderunner.core.store import Store
 
 NY = ZoneInfo("America/New_York")
@@ -78,6 +79,32 @@ class ParseSpecTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "use one of"):
             parse_spec("whenever", FRI)
 
+    def test_several_times_a_day_run_at_the_earliest_still_to_come(self):
+        self.assertEqual(parse_spec("daily 09:00,14:00,20:00", FRI), ny(2026, 10, 9, 14, 0))
+        self.assertEqual(parse_spec("daily 09:00, 14:00 and 20:00", ny(2026, 10, 9, 14, 0)), ny(2026, 10, 9, 20, 0))
+        self.assertEqual(parse_spec("daily 20:00,9:00,14:00", ny(2026, 10, 9, 20, 30)), ny(2026, 10, 10, 9, 0))
+        self.assertEqual(parse_spec("Daily at 09:00, 14:00", ny(2026, 10, 9, 8, 59)), ny(2026, 10, 9, 9, 0))
+        self.assertEqual(parse_spec("weekdays 09:00,17:30", FRI), ny(2026, 10, 9, 17, 30))
+        self.assertEqual(parse_spec("weekdays 09:00,17:30", ny(2026, 10, 9, 18, 0)), ny(2026, 10, 12, 9, 0))
+        self.assertEqual(parse_spec("weekly mon 09:00,17:00", ny(2026, 10, 12, 10, 0)), ny(2026, 10, 12, 17, 0))
+        self.assertEqual(parse_spec("daily 09:00,09:00", FRI), ny(2026, 10, 10, 9, 0))
+
+    def test_canonical_spec(self):
+        self.assertEqual(canonical("Daily at 20:00,9:00 and 14:00"), "daily 09:00, 14:00, 20:00")
+        self.assertEqual(canonical("weekdays  9:00"), "weekdays 09:00")
+        self.assertEqual(canonical("Weekly Monday 17:00, 09:00"), "weekly mon 09:00, 17:00")
+        self.assertEqual(canonical("every  2h"), "every 2h")
+        self.assertEqual(canonical("daily 09:00, 14:00, 20:00"), "daily 09:00, 14:00, 20:00")
+        with self.assertRaises(ValueError):
+            canonical("twice a day")
+
+    def test_invalid_time_lists(self):
+        for spec in ("daily 09:00,", "daily ,09:00", "daily 09:00,,10:00", "daily 09:00 14:00", "daily 09:00,25:00",
+                     "weekdays 09:00,9am", "daily " + ",".join(f"{h:02d}:30" for h in range(24)) + ",00:00"):
+            with self.subTest(spec=spec), self.assertRaises(ValueError):
+                parse_spec(spec, FRI)
+        self.assertEqual(parse_spec("daily " + ",".join(f"{h:02d}:00" for h in range(24)), FRI), ny(2026, 10, 9, 11, 0))
+
     def test_naive_now_rejected(self):
         with self.assertRaises(ValueError):
             parse_spec("daily 08:00", datetime(2026, 10, 9, 10, 0))
@@ -131,6 +158,23 @@ class DstTests(unittest.TestCase):
     def test_weekly_across_transition(self):
         result = parse_spec("weekly mon 08:00", ny(2026, 10, 30, 12, 0))
         self.assertEqual((result.day, result.hour, result.utcoffset()), (2, 8, timedelta(hours=-5)))
+
+    def test_several_times_through_fall_back_each_run_once(self):
+        runs, now = [], ny(2026, 11, 1, 0, 0)
+        for _ in range(4):
+            now = parse_spec("daily 01:15,01:45,09:00", now)
+            runs.append((now.day, now.hour, now.minute, now.utcoffset()))
+        edt, est = timedelta(hours=-4), timedelta(hours=-5)
+        self.assertEqual(runs, [(1, 1, 15, edt), (1, 1, 45, edt), (1, 9, 0, est), (2, 1, 15, est)])
+
+    def test_a_skipped_time_comes_after_a_later_time_of_the_same_day(self):
+        # 02:30 does not exist on spring-forward day and runs at 03:30 EDT, after 03:00 EDT.
+        first = parse_spec("daily 02:30,03:00", ny(2026, 3, 8, 0, 0))
+        self.assertEqual((first.day, first.hour, first.minute), (8, 3, 0))
+        second = parse_spec("daily 02:30,03:00", first)
+        self.assertEqual((second.day, second.hour, second.minute), (8, 3, 30))
+        third = parse_spec("daily 02:30,03:00", second)
+        self.assertEqual((third.day, third.hour, third.minute), (9, 2, 30))
 
 
 class Harness:
@@ -208,6 +252,36 @@ class ManageTests(SchedulerTestCase):
         self.assertEqual(self.s.get(row["id"])["next_run"], ny(2026, 10, 21, 8, 0).timestamp())
         self.assertFalse(self.s.set_enabled(999, True))
 
+    def test_spec_is_stored_in_one_form(self):
+        row = self.s.add("deals", "Daily 20:00,9:00 and 14:00", "Find deals", "app", "c1", now=FRI)
+        self.assertEqual(row["spec"], "daily 09:00, 14:00, 20:00")
+        self.assertEqual(row["next_run"], ny(2026, 10, 9, 14, 0).timestamp())
+
+    def test_update_changes_what_is_given(self):
+        row = self.s.add("deals", "daily 09:00", "Find deals", "app", "c1", now=FRI)
+        updated = self.s.update(row["id"], spec="daily 09:00,14:00,20:00", now=FRI)
+        self.assertEqual((updated["spec"], updated["prompt"], updated["name"]), ("daily 09:00, 14:00, 20:00", "Find deals", "deals"))
+        self.assertEqual(updated["next_run"], ny(2026, 10, 9, 14, 0).timestamp())
+        renamed = self.s.update(row["id"], name=" Deal hunt ", prompt=" Find deals on two sites ")
+        self.assertEqual((renamed["name"], renamed["prompt"]), ("Deal hunt", "Find deals on two sites"))
+        self.assertEqual(renamed["next_run"], updated["next_run"])       # the time is kept when the spec is
+        self.assertEqual(self.s.update(row["id"]), renamed)              # nothing to change
+        self.assertIsNone(self.s.update(999, name="x"))
+        for bad in ({"spec": "twice a day"}, {"spec": "at 2026-10-01 09:00"}, {"name": " "}, {"prompt": ""}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.s.update(row["id"], now=FRI, **bad)
+        self.assertEqual(self.s.get(row["id"]), renamed)                 # a refused change changes nothing
+        updates = self.events("schedule.update")
+        self.assertEqual([e["fields"] for e in updates], [["spec"], ["name", "prompt"]])
+
+    async def test_update_sets_a_finished_one_shot_again(self):
+        row = self.s.add("once", "in 10m", "p", now=FRI)
+        await self.s.tick(FRI + timedelta(minutes=10))
+        self.assertFalse(self.s.get(row["id"])["enabled"])
+        again = self.s.update(row["id"], spec="in 1h", now=FRI + timedelta(minutes=20))
+        self.assertTrue(again["enabled"])
+        self.assertEqual(again["next_run"], (FRI + timedelta(minutes=80)).timestamp())
+
     async def test_reenabling_a_past_one_shot_fails(self):
         row = self.s.add("once", "at 2026-10-09 11:00", "p", now=FRI)
         await self.s.tick(ny(2026, 10, 9, 11, 0))
@@ -264,6 +338,19 @@ class TickTests(SchedulerTestCase):
         self.assertEqual(await self.s.tick(late), 0)
         self.assertEqual(self.h.runs, ["brief"])
         self.assertEqual(self.s.get(row["id"])["next_run"], ny(2026, 10, 10, 8, 0).timestamp())
+
+    async def test_several_times_a_day_each_run_once_and_missed_ones_collapse(self):
+        row = self.s.add("deals", "daily 09:00,14:00,20:00", "p", now=ny(2026, 10, 9, 8, 0))
+        self.assertEqual(await self.s.tick(ny(2026, 10, 9, 9, 0)), 1)
+        self.assertEqual(self.s.get(row["id"])["next_run"], ny(2026, 10, 9, 14, 0).timestamp())
+        self.assertEqual(await self.s.tick(ny(2026, 10, 9, 13, 59)), 0)
+        self.assertEqual(await self.s.tick(ny(2026, 10, 9, 14, 1)), 1)
+        self.assertEqual(self.s.get(row["id"])["next_run"], ny(2026, 10, 9, 20, 0).timestamp())
+        # Off from before 20:00 until the next afternoon: one catch-up run, then the next time still to come.
+        self.assertEqual(await self.s.tick(ny(2026, 10, 10, 15, 0)), 1)
+        self.assertEqual(await self.s.tick(ny(2026, 10, 10, 15, 0)), 0)
+        self.assertEqual(self.s.get(row["id"])["next_run"], ny(2026, 10, 10, 20, 0).timestamp())
+        self.assertEqual(self.h.runs, ["deals"] * 3)
 
     async def test_missed_interval_runs_once_and_keeps_phase(self):
         row = self.s.add("poll", "every 1h", "p", now=FRI)
@@ -399,6 +486,111 @@ class ConcurrencyTests(SchedulerTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await task
         self.assertEqual(len(self.events("schedule.error")), 1)
+
+
+class RoutineToolTests(unittest.IsolatedAsyncioTestCase):
+    """Routines set up, changed and removed from a conversation, as the model does it."""
+
+    def setUp(self):
+        from fakes import Svc
+        from coderunner.agent import ToolRegistry
+        from coderunner.agent.tools import schedule_tools
+        self.svc = Svc()
+        h = Harness()
+        self.svc.scheduler = Scheduler(self.svc.store, self.svc.audit, h.run_task, h.deliver, tz="America/New_York")
+        self.registry = ToolRegistry(self.svc, schedule_tools(self.svc))
+        self.shown = []
+
+    def ctx(self, chat="c1", owner=True, tainted=False):
+        from coderunner.agent import RunContext
+        ctx = RunContext(conversation=f"app:{chat}", origin="owner" if owner else "telegram:someone", channel="app",
+                         chat_id=chat, origin_is_owner=owner, events=self.shown.append)
+        if tainted:
+            ctx.taint()
+        return ctx
+
+    async def call(self, name, args, ctx):
+        return await self.registry.invoke(name, args, ctx)
+
+    async def asked(self, name, args, ctx):
+        """Starts the call and returns it with the approval it waits for."""
+        call = asyncio.create_task(self.call(name, args, ctx))
+        for _ in range(300):
+            pending = self.svc.policy.pending()
+            if pending:
+                return call, pending[0]
+            await asyncio.sleep(0.01)
+        self.fail(f"{name} did not ask: {await call}")
+
+    def lines(self):
+        return [(e["action"], e["name"], e["spec"]) for e in self.shown if e["type"] == "routine"]
+
+    def approvals(self):
+        return self.svc.store.query("SELECT kind, status FROM approvals ORDER BY created")
+
+    async def test_the_owner_sets_up_and_changes_a_routine_in_their_conversation_without_being_asked(self):
+        made = await self.call("schedule_create", {"name": "Deal hunt", "spec": "daily 09:00",
+                                                   "prompt": "Find the best deals on amazon.in"}, self.ctx())
+        self.assertTrue(made.startswith("Created routine 1 'Deal hunt' (daily 09:00)"), made)
+        row = self.svc.scheduler.get(1)
+        self.assertEqual((row["channel"], row["chat_id"]), ("app", "c1"))
+        self.assertFalse(self.svc.store.get_kv("schedule:tainted:1"))
+        # "Do it 3 times a day", in the next message: no id, this conversation's routine.
+        changed = await self.call("schedule_update", {"spec": "daily 9:00, 14:00, 20:00"}, self.ctx())
+        self.assertTrue(changed.startswith("Updated routine 1 'Deal hunt' (daily 09:00, 14:00, 20:00)"), changed)
+        self.assertEqual(self.svc.scheduler.get(1)["spec"], "daily 09:00, 14:00, 20:00")
+        self.assertEqual(self.approvals(), [])                          # never asked
+        listed = json.loads(await self.call("schedule_list", {}, self.ctx()))
+        self.assertEqual([(r["id"], r["this_conversation"]) for r in listed], [(1, True)])
+        # From another conversation it is not "this conversation's".
+        self.assertIn("no routine", await self.call("schedule_update", {"spec": "daily 10:00"}, self.ctx("c2")))
+        self.assertFalse(json.loads(await self.call("schedule_list", {}, self.ctx("c2")))[0]["this_conversation"])
+        removed = json.loads(await self.call("schedule_delete", {}, self.ctx()))
+        self.assertEqual((removed["removed"], removed["name"]), (True, "Deal hunt"))
+        self.assertEqual(self.svc.scheduler.list(), [])
+        self.assertEqual(self.lines(), [("created", "Deal hunt", "daily 09:00"),
+                                        ("updated", "Deal hunt", "daily 09:00, 14:00, 20:00"),
+                                        ("removed", "Deal hunt", "daily 09:00, 14:00, 20:00")])
+
+    async def test_after_untrusted_content_or_for_someone_else_the_owner_is_asked(self):
+        args = {"name": "Deal hunt", "spec": "daily 09:00", "prompt": "Find deals"}
+        call, approval = await self.asked("schedule_create", args, self.ctx(tainted=True))
+        self.assertEqual((approval.kind, approval.target), ("schedule.create", "daily 09:00"))
+        self.svc.policy.decide(approval.id, True)
+        self.assertTrue((await call).startswith("Created routine"))
+        self.assertTrue(self.svc.store.get_kv("schedule:tainted:1"))   # its runs start untrusted
+        # Changed after untrusted content: asked again.
+        call, approval = await self.asked("schedule_update", {"spec": "daily 09:00,20:00"}, self.ctx(tainted=True))
+        self.assertEqual(approval.kind, "schedule.update")
+        self.svc.policy.decide(approval.id, False)
+        self.assertIn("did not approve", await call)
+        self.assertEqual(self.svc.scheduler.get(1)["spec"], "daily 09:00")
+        # The owner rewriting its prompt in their own words: not asked, and its runs are trusted again.
+        await self.call("schedule_update", {"prompt": "Find deals on amazon.in"}, self.ctx())
+        self.assertFalse(self.svc.store.get_kv("schedule:tainted:1"))
+        # Someone else asking in their own chat is asked about, and nothing is made when declined.
+        call, approval = await self.asked("schedule_create", args, self.ctx("c9", owner=False))
+        self.assertEqual(approval.kind, "schedule.create")
+        self.svc.policy.decide(approval.id, False)
+        self.assertIn("did not approve", await call)
+        self.assertEqual(len(self.svc.scheduler.list()), 1)
+        # A spec that is not understood is said at once, before anyone is asked.
+        self.assertIn("unrecognised schedule", await self.call(
+            "schedule_create", {**args, "spec": "twice a day"}, self.ctx(tainted=True)))
+        self.assertEqual([a["kind"] for a in self.approvals()], ["schedule.create", "schedule.update", "schedule.create"])
+
+    async def test_several_routines_in_a_conversation_are_named_by_id(self):
+        for name in ("Deals", "News"):
+            await self.call("schedule_create", {"name": name, "spec": "daily 09:00", "prompt": name}, self.ctx())
+        await self.call("schedule_create", {"name": "Theirs", "spec": "daily 09:00", "prompt": "x"}, self.ctx("c9"))
+        said = await self.call("schedule_update", {"spec": "daily 10:00"}, self.ctx())
+        self.assertIn("several routines: 1 'Deals' (daily 09:00), 2 'News' (daily 09:00)", said)
+        self.assertIn("Updated routine 2", await self.call("schedule_update", {"id": 2, "name": "Headlines"}, self.ctx()))
+        # Someone else sees and changes only the routines of their own chat.
+        other = self.ctx("c9", owner=False)
+        self.assertEqual([r["name"] for r in json.loads(await self.call("schedule_list", {}, other))], ["Theirs"])
+        self.assertIn("no routine 1", await self.call("schedule_delete", {"id": 1}, other))
+        self.assertEqual(len(self.svc.scheduler.list()), 3)
 
 
 if __name__ == "__main__":

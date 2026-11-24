@@ -13,6 +13,7 @@ import os
 import re
 import urllib.parse
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import httpx
@@ -559,29 +560,110 @@ def memory_tools(svc) -> list[Tool]:
 
 
 def schedule_tools(svc) -> list[Tool]:
+    """Routines: tasks that run later or repeatedly, their results posted in the conversation they were made in.
+    The owner asking in their own conversation needs no approval; a routine set up or changed after reading
+    untrusted content, or for someone else, does (safety.policy), and its runs stay untrusted."""
+    from .scheduler import canonical
+
+    def here(row: dict, ctx) -> bool:
+        return row["channel"] == (ctx.channel or "") and row["chat_id"] == str(ctx.chat_id or "")
+
+    def steered(ctx) -> bool:
+        return bool(ctx.tainted or not ctx.origin_is_owner)
+
+    def when(stamp) -> str:
+        return datetime.fromtimestamp(stamp, svc.scheduler.tz).strftime("%a %d %b %H:%M") if stamp else ""
+
+    def mark(id: int, tainted: bool) -> None:
+        # A prompt written after reading untrusted content keeps running as untrusted.
+        svc.store.set_kv(f"schedule:tainted:{id}", tainted)
+
+    def pick(args, ctx) -> dict | str:
+        """The routine meant: by id, or this conversation's only one."""
+        if args.get("id") is not None:
+            row = svc.scheduler.get(int(args["id"]))
+            if row is None or not (ctx.origin_is_owner or here(row, ctx)):
+                return f"Error: there is no routine {args['id']}."
+            return row
+        mine = [row for row in svc.scheduler.list() if here(row, ctx)]
+        if len(mine) == 1:
+            return mine[0]
+        if not mine:
+            return "Error: this conversation has no routine; give the id from schedule_list."
+        return "Error: this conversation has several routines: " + ", ".join(
+            f"{row['id']} '{row['name']}' ({row['spec']})" for row in mine) + ". Give the id."
+
     async def create(args, ctx):
-        summary = f"Schedule '{args['name']}' ({args['spec']}) to run:\n{args['prompt']}"
-        if not await svc.policy.check(Action("schedule.create", args["spec"], summary, dict(args),
-                                             tainted=ctx.tainted), origin=ctx.origin):
-            return "Error: the owner did not approve this schedule."
-        created = svc.scheduler.add(args["name"], args["spec"], args["prompt"], ctx.channel, ctx.chat_id)
-        if ctx.tainted:
-            # A prompt written after reading untrusted content keeps running as untrusted.
-            svc.store.set_kv(f"schedule:tainted:{created['id']}", True)
-        return created
+        spec = canonical(args["spec"])          # an unclear spec is said before anyone is asked about it
+        summary = f"Set up the routine '{args['name']}' ({spec}) to run:\n{args['prompt']}"
+        tainted = steered(ctx)
+        if not await svc.policy.check(Action("schedule.create", spec, summary, {**args, "spec": spec},
+                                             tainted=tainted), origin=ctx.origin):
+            return "Error: the owner did not approve this routine."
+        created = svc.scheduler.add(args["name"], spec, args["prompt"], ctx.channel, ctx.chat_id)
+        if tainted:
+            mark(created["id"], True)
+        ctx.emit({"type": "routine", "action": "created", "id": created["id"], "name": created["name"],
+                  "spec": created["spec"]})
+        return (f"Created routine {created['id']} '{created['name']}' ({created['spec']}); first run "
+                f"{when(created['next_run'])}. Each run posts its results here.")
+
+    async def update(args, ctx):
+        row = pick(args, ctx)
+        if isinstance(row, str):
+            return row
+        fields = {key: str(args[key]) for key in ("name", "spec", "prompt") if str(args.get(key) or "").strip()}
+        if not fields:
+            return "Error: say what to change: spec, prompt or name."
+        if "spec" in fields:
+            fields["spec"] = canonical(fields["spec"])
+        tainted = steered(ctx)
+        summary = f"Change the routine '{row['name']}': " + "; ".join(f"{key} {value}" for key, value in fields.items())
+        if not await svc.policy.check(Action("schedule.update", fields.get("spec", row["spec"]), summary,
+                                             {"id": row["id"], **fields}, tainted=tainted), origin=ctx.origin):
+            return "Error: the owner did not approve this change."
+        updated = svc.scheduler.update(row["id"], **fields)
+        if tainted:
+            mark(row["id"], True)
+        elif "prompt" in fields:
+            mark(row["id"], False)              # the owner's own words now
+        ctx.emit({"type": "routine", "action": "updated", "id": updated["id"], "name": updated["name"],
+                  "spec": updated["spec"]})
+        return (f"Updated routine {updated['id']} '{updated['name']}' ({updated['spec']}); next run "
+                f"{when(updated['next_run'])}.")
 
     async def list_(args, ctx):
-        return svc.scheduler.list()
+        rows = [row for row in svc.scheduler.list() if ctx.origin_is_owner or here(row, ctx)]
+        rows.sort(key=lambda row: not here(row, ctx))
+        return [{"id": row["id"], "name": row["name"], "spec": row["spec"], "prompt": row["prompt"],
+                 "this_conversation": here(row, ctx), "enabled": row["enabled"],
+                 "next_run": when(row["next_run"]) if row["enabled"] else "",
+                 "last_run": when(row["last_run"]), "last_status": row["last_status"] or ""} for row in rows]
 
     async def delete(args, ctx):
-        return {"removed": svc.scheduler.remove(int(args["id"]))}
+        row = pick(args, ctx)
+        if isinstance(row, str):
+            return row
+        removed = svc.scheduler.remove(row["id"])
+        if removed:
+            mark(row["id"], False)
+            ctx.emit({"type": "routine", "action": "removed", "id": row["id"], "name": row["name"],
+                      "spec": row["spec"]})
+        return {"removed": removed, "id": row["id"], "name": row["name"]}
 
     return [
-        Tool("schedule_create", "Run a task later or repeatedly. spec examples: 'every 2h', 'daily 08:00', "
-             "'weekdays 09:30', 'weekly mon 09:00', 'at 2026-10-12 18:00', 'in 30m'. The result is sent to this "
-             "conversation.", _params({"name": STR, "spec": STR, "prompt": STR}, ["name", "spec", "prompt"]), create),
-        Tool("schedule_list", "List scheduled tasks.", _params({}), list_),
-        Tool("schedule_delete", "Delete a scheduled task by id.", _params({"id": INT}, ["id"]), delete),
+        Tool("schedule_create", "Set up a routine: a task run later or repeatedly, each run's results posted in this "
+             "conversation. spec: 'every 2h', 'daily 08:00', 'daily 09:00,14:00,20:00', 'weekdays 09:30', "
+             "'weekly mon 09:00', 'at 2026-10-12 18:00', 'in 30m'. prompt: the whole task, as each run should do "
+             "it. When the owner asks for something recurring, create it first; if they would want a result now, "
+             "then do the task now and answer with it.",
+             _params({"name": STR, "spec": STR, "prompt": STR}, ["name", "spec", "prompt"]), create),
+        Tool("schedule_update", "Change a routine's spec, prompt or name (\"do it 3 times a day\": spec "
+             "'daily 09:00,14:00,20:00'). Leave id out for this conversation's routine.",
+             _params({"id": INT, "spec": STR, "prompt": STR, "name": STR}), update),
+        Tool("schedule_list", "List routines, this conversation's first (this_conversation).", _params({}), list_),
+        Tool("schedule_delete", "Remove a routine. Leave id out for this conversation's routine.",
+             _params({"id": INT}), delete),
     ]
 
 
