@@ -26,13 +26,14 @@ How you work:
 - In the browser, when you already see the elements you need, do them in one browser_batch call (every field of a form, then the button that searches). Typing into a place or airport field picks the matching suggestion for you.
 - To find a page, search for it with browser_search; open an address directly only when you know it or a page gave it.
 - On a page of results (search results, products, flights, hotels, movies, rows), read the items with browser_list instead of snapshots, scrolling or going back and forth; open an item's link for its details.
+- Dates, figures and names in your answer come from the pages you read in this task, not from what you remember: where the two differ, the page is right. Take them from the line that answers the question, not from a nearby line with a date or figure you expected.
 - Steps that pay, book, send, post, delete or change settings wait for {owner}'s approval. If a step is not allowed, do not retry it or look for a way around: it is {owner}'s to take. Say it as a person would ("It is in the cart; I stopped before checkout."), never as something a policy or an approval blocked.
 - A password, a one-time code, a sign-in or a CAPTCHA is {owner}'s step: never type or solve it. Fill in everything else, call browser_handoff so {owner} does that step on the screen, and carry on from the result when they are done. Do not end the task to ask for it.
 - For a long task (more than about five steps), first write a short plan with plan_update and keep it current as steps finish or the approach changes. Short tasks need no plan.
 - The owner's shared folders are searchable with files_search (text, code, documents, images, audio, video).
 - Save lasting preferences and facts with memory_save. Never store secrets.
 - When a website task ends on a page whose address holds the whole search (places, dates, filters, sorting), save that address with memory_save as a shortcut, without session or tracking parameters, e.g. "booking.com one-way flight results: https://...". Next time open it directly with the new values instead of filling the forms again.
-- {owner} reads this as a chat with a person who is working on it. With your tool calls, put one short line to {owner} in a call's say field when there is something to say: what you are looking at or what you found ("Looking at Skyscanner for the 12th." / "Two non-stop flights that day; IndiGo is cheapest at ₹4,800. Now the hotels."). It is shown in the thread as you go; don't repeat a line you already wrote. Never mention tools, clicks, element numbers, errors, timeouts or retries (not "The page did not respond, I'll retry").
+- {owner} reads this as a chat with a person who is working on it. With your tool calls, put one short line to {owner} in a call's say field when there is something to say: what you are looking at or what you found ("Looking at Skyscanner for the 12th." / "Two non-stop flights that day; IndiGo is cheapest at ₹4,800. Now the hotels."). It is shown in the thread as you go; don't repeat a line you already wrote, but your final message is still the whole answer, as if it were the only thing {owner} reads. Never mention tools, clicks, element numbers, errors, timeouts or retries (not "The page did not respond, I'll retry").
 - tell_owner says a finding in the thread when you have no tool call to write beside.
 - If something cannot be finished, end with what you did, what could not be done and what {owner} can do next, in plain words: no error texts, no technical names, no account of what loaded or failed along the way, and never ask {owner} to restart or fix the browser or the computer.
 - Your final message is a chat reply to {owner}, not a report, said to them as "you" (never "the owner"). Lead with the answer in a sentence or two. Plain sentences: no headings, no bold labels ("Total:"), bold at most once, for the one figure or name that is the answer. A list or a table only when {owner} has to compare several things side by side. Link a source by its name where you mention it, as [Sony WH-CH520](https://...), not as a list of addresses at the end. Say only what was asked plus anything that changes the decision; a caveat is one sentence. No recap of what you did, no "Based on...", no offer at the end. For products or places {owner} will want to look at, call show_items rather than describing each.
@@ -96,6 +97,11 @@ def call_key(name: str, arguments: Any) -> tuple[str, str]:
 REPEAT_SEARCH = ("\nNote: you searched for nearly this at step {step}. If it did not give you what you need then, "
                  "it will not now: try another source, or answer with what you have.")
 REPEAT_OPEN = "\nNote: you opened this page at step {step} already."
+# The same call giving back the same thing: a 27B read one Wikipedia section with browser_snapshot 78 times,
+# scrolling between, for a score that was in its first reading.
+SAME_RESULT = ("\nNote: this gave back exactly what it gave at step {step}. Reading it again will not change it: use "
+               "what it says, or try something else.")
+OWN_STEPS = {"plan_update", "tell_owner", "show_items"}
 REPEATS_BEFORE_ANSWER = 3     # repeats after WRAP_FROM steps
 GOING_ROUND = ("You are going over ground you have already covered (the same searches and pages again). Without "
                "calling any tools, write your reply to me now from what you have found: the answer first, with a link "
@@ -111,11 +117,12 @@ def query_words(query: str) -> frozenset[str]:
 
 
 class Repeats:
-    """The searches and pages of one run, and the step each was first made at."""
+    """The searches, pages and results of one run, and the step each was first made or given at."""
 
     def __init__(self):
         self.queries: list[tuple[frozenset[str], int]] = []
         self.pages: dict[str, int] = {}
+        self.results: dict[tuple[str, str], tuple[int, int]] = {}
 
     def check(self, name: str, arguments: Any, step: int) -> str:
         """A note for a call that repeats an earlier one, or ""."""
@@ -136,6 +143,17 @@ class Repeats:
             if url in self.pages:
                 return REPEAT_OPEN.format(step=self.pages[url] + 1)
             self.pages[url] = step
+        return ""
+
+    def same(self, name: str, arguments: Any, result: str, step: int) -> str:
+        """A note for a call that gave back exactly what the same call gave before, or ""."""
+        if name in OWN_STEPS:
+            return ""
+        key, digest = call_key(name, arguments), hash(result)
+        earlier = self.results.get(key)
+        if earlier is not None and earlier[0] == digest:
+            return SAME_RESULT.format(step=earlier[1] + 1)
+        self.results[key] = (digest, step)
         return ""
 
 
@@ -182,6 +200,18 @@ IMAGE_TOKENS = 1200
 CUT = "\n[the rest was cut to save space]"
 TOO_LONG = ("I had to stop here: this task gathered more than I can keep in mind at once. Asking for one part "
             "at a time will work better.")
+
+
+# An answer that opens by pointing at the thread instead of answering: "The answer is complete and already shared
+# in the thread. To summarize the key findings:" (a 27B, after saying its finding as it worked).
+META_OPENING = re.compile(r"^\s*(?:(?:the|my) answer is (?:complete|above|already)[^.\n]*[.:!]\s*|[^.\n]{0,80}\balready "
+                          r"(?:shared|given|said|posted|written) (?:in|above)[^.\n]*[.:!]\s*|(?:to summari[sz]e|in summary)"
+                          r"[^:\n]{0,60}:\s*)+", re.I)
+
+
+def without_meta(final: str) -> str:
+    rest = META_OPENING.sub("", final, count=1)
+    return rest if rest.strip() else final
 
 
 def without_repeats(final: str, said: list[str]) -> str:
@@ -613,9 +643,12 @@ class Agent:
                     again = repeats.check(name, arguments, step)
                     result = await self.registry.invoke(name, arguments, ctx)
                     failed = result.startswith("Error:") or "\nError:" in result[:200]
-                    if again and not failed:
-                        result += again
-                        late_repeats += step >= WRAP_FROM
+                    if not failed:
+                        same = repeats.same(name, arguments, result, step)      # recorded either way
+                        again = again or same
+                        if again:
+                            result += again
+                            late_repeats += step >= WRAP_FROM
                     ctx.emit({"type": "tool_done", "id": call.get("id", ""), "name": name, "ok": not failed,
                               "preview": result[:300]})
                     if ctx.plan != plan_before:
@@ -675,7 +708,7 @@ class Agent:
                     self.svc.audit.write("agent.links_added", conversation=ctx.conversation)
             except LLMError:
                 pass
-        final = without_repeats(final, ctx.said)
+        final = without_meta(without_repeats(final, ctx.said))
         ctx.incomplete = ran_out or bool(UNDONE.search(final))
         if ctx.events is not None:
             try:
