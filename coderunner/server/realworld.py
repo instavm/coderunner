@@ -284,7 +284,7 @@ def _language(words: str, times: int = 5) -> str:
 
 
 GERMAN = _language("und|mit|für|ist|nicht|der|die|das|den|dem|bei|auf|ein|eine|liegt|kostet|unter")
-FRENCH = _language("avec|pour|dans|est|sont|le|la|les|des|du|une|et|au|aux")
+FRENCH = _language("avec|pour|dans|est|sont|le|la|les|des|du|une|et|au|aux|sur|par|mois|voici")
 SPANISH = _language("con|para|por|sale|llega|el|los|las|del|una|que|es|y")
 PORTUGUESE = _language("não|é|mais|com|para|os|da|uma|que|em|são|preço")
 TIMES = r"\b\d{1,2}[:.]\d{2}\b.*\b\d{1,2}[:.]\d{2}\b"
