@@ -18,6 +18,9 @@ import httpx
 THINK = re.compile(r"<think>.*?</think>\s*", re.S)
 MARK = "QZX7"                               # where the probe's request sits in a rendered prompt
 EFFORTS = ("medium", "high", "low")         # reasoning efforts tried for one that renders like reasoning off
+# A server's answer to a request for a model it does not serve (llama.cpp's router, llama-swap, vLLM, Ollama).
+MODEL_MISSING = re.compile(r"model\b.{0,60}\b(not found|does not exist|not exist|unknown|no such|not available|"
+                           r"not loaded|not served|invalid)|\b(unknown|invalid|no such) model", re.I | re.S)
 TOOL_CALL_TAG = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
 
 
@@ -83,6 +86,10 @@ class LLM:
         # Restarts a local runtime that crashed or got stuck (a GPU out of memory leaves llama.cpp unable to
         # compute until it is restarted); returns whether it is serving again. Set by the daemon.
         self.recover: Callable[[], Awaitable[bool]] | None = None
+        # Another name for the model when the server stops serving this one (an upgrade on the owner's server
+        # renames it); None when there is none. renamed is told the new name. Set for a model server of the owner's.
+        self.rename: Callable[[], Awaitable[str | None]] | None = None
+        self.renamed: Callable[[str], None] | None = None
         self.think_kwargs: dict = {}        # template settings for a step with reasoning (see settle_thinking)
         self.steady_thinking = False        # no setting keeps the prompt the same: a task keeps to one
         self._settled = False
@@ -136,6 +143,13 @@ class LLM:
             if tool_choice:
                 payload["tool_choice"] = tool_choice
         response = await self._post(payload)
+        if response.status_code in (400, 404) and self.rename is not None and MODEL_MISSING.search(response.text):
+            name = await self.rename()
+            if name and name != self.model:
+                self.model = payload["model"] = name
+                if self.renamed is not None:
+                    self.renamed(name)
+                response = await self._post(payload)
         if response.status_code == 400 and quiet:
             self._always_thinks = True
             return await self.chat(messages, tools, tool_choice, **options)

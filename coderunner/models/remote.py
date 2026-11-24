@@ -192,6 +192,23 @@ def claude_model(config) -> str:
     return chosen.get("model") if chosen.get("provider") == PROVIDER and chosen.get("model") in MODELS else DEFAULT
 
 
+def successor(served: list[str], current: str) -> str | None:
+    """The name to use when the server no longer serves current: the newest Bonsai it serves (Bonsai2.5 after
+    Bonsai2), one of the same size first; else its only model. None while current is still served."""
+    if current in served or not served:
+        return None
+
+    def version(name: str) -> float:
+        found = re.search(r"bonsai[\s_-]*v?(\d+(?:[._]\d+)?)", name, re.I)
+        return float(found.group(1).replace("_", ".")) if found else 0.0
+
+    sizes = set(re.findall(r"\d+b\b", current.lower()))
+    bonsai = [name for name in served if "bonsai" in name.lower()]
+    if bonsai:
+        return max(bonsai, key=lambda name: (version(name), bool(sizes & set(re.findall(r"\d+b\b", name.lower())))))
+    return served[0] if len(served) == 1 else None
+
+
 def server_client(chosen: dict):
     """The owner's model server as the assistant's model: no slots of ours to pin, no runtime of ours to restart.
     Its context per task is read from llama.cpp's /props where it has one, else 32K."""
@@ -217,6 +234,13 @@ def server_client(chosen: dict):
                 await asyncio.sleep(5)
         return False
     llm.recover = recover
+
+    async def rename() -> str | None:
+        try:
+            return successor(await llm.list_models(), llm.model)
+        except Exception:
+            return None
+    llm.rename = rename
     context = 32768
     try:
         headers = {"Authorization": f"Bearer {server_key()}"} if server_key() else {}

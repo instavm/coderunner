@@ -242,6 +242,14 @@ class Daemon:
                 judge = DecisionModel(claude.base_url, claude.model, api="chat", api_key=remote.server_key())
                 if claude.slots > 1:
                     judge.slot = claude.slots - 1       # its own slot, after the tasks' (tasks.limit)
+
+                def renamed(name: str) -> None:
+                    """The server renamed its model (an upgrade): the step judge and the settings follow."""
+                    judge.model = name
+                    svc.remote.update(model=name, name=name)
+                    self.config.set("models.remote", {**(self.config.get("models.remote") or {}), "model": name})
+                    audit.write("remote.renamed", model=name)
+                claude.renamed = renamed
             else:
                 judge = DecisionModel(claude.base_url, claude.model, api="chat", claude=claude)
             # The injection guard stays off unless asked for (models.remote.guard): a general model asked the

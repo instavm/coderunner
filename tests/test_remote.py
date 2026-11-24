@@ -325,7 +325,50 @@ class ServerDaemonTests(Home):
             self.assertEqual((server.requests[-1]["id_slot"], server.requests[-1]["max_tokens"]), (0, 4096))
             shown = await daemon.status()
             self.assertEqual((shown["models"]["chat"], shown["remote"]["host"]), ("bonsai2-27b", f"127.0.0.1:{server.port}"))
+            # The server renamed its model in an upgrade: the judge and the settings follow the planner.
+            svc.llm.renamed("bonsai2.5-27b")
+            self.assertEqual((judge.model, svc.remote["model"], config.get("models.remote")["model"]),
+                             ("bonsai2.5-27b",) * 3)
             await svc.llm.aclose()
+
+
+class RenameTests(unittest.IsolatedAsyncioTestCase):
+    def test_the_newest_bonsai_of_the_same_size_replaces_a_name_the_server_dropped(self):
+        self.assertIsNone(remote.successor(["bonsai2-27b", "bonsai2.5-27b"], "bonsai2-27b"))
+        self.assertEqual(remote.successor(["Bonsai2.5-8B", "Bonsai2.5-27B-Q4_K_M"], "bonsai2-27b"), "Bonsai2.5-27B-Q4_K_M")
+        self.assertEqual(remote.successor(["bonsai2-27b-old", "bonsai-2_5-27b"], "bonsai2-27b"), "bonsai-2_5-27b")
+        self.assertEqual(remote.successor(["qwen4-32b"], "bonsai2-27b"), "qwen4-32b")
+        self.assertIsNone(remote.successor(["qwen4-32b", "gemma5-27b"], "bonsai2-27b"))
+        self.assertIsNone(remote.successor([], "bonsai2-27b"))
+
+    async def test_a_step_refused_for_its_model_name_is_sent_again_under_the_name_served(self):
+        sent = []
+
+        def answer(request):
+            if request.url.path.endswith("/models"):
+                return httpx.Response(200, json={"data": [{"id": "Bonsai2.5-27B"}]})
+            body = json.loads(request.content)
+            sent.append(body["model"])
+            if body["model"] != "Bonsai2.5-27B":
+                return httpx.Response(404, json={"error": {"message": f"model '{body['model']}' not found"}})
+            return httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
+
+        with mock.patch.object(httpx, "get", side_effect=httpx.ConnectError("no props")):
+            llm = remote.server_client({"base_url": "http://server/v1", "model": "bonsai2-27b"})
+        llm._client = httpx.AsyncClient(base_url="http://server/v1", transport=httpx.MockTransport(answer))
+        told = []
+        llm.renamed = told.append
+        reply = await llm.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual((reply["content"], sent, told, llm.model),
+                         ("hi", ["bonsai2-27b", "Bonsai2.5-27B"], ["Bonsai2.5-27B"], "Bonsai2.5-27B"))
+        # Another failure is not taken for a renamed model.
+        llm.model = "other"
+        sent.clear()
+        llm._client = httpx.AsyncClient(base_url="http://server/v1", transport=httpx.MockTransport(
+            lambda request: httpx.Response(400, json={"error": {"message": "context too long"}})))
+        with self.assertRaises(LLMError):
+            await llm.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(llm.model, "other")
 
 
 class RouteTests(Home):
@@ -390,7 +433,14 @@ class RouteTests(Home):
                 self.assertEqual(shown["warning"], "Your requests, the pages it reads and the files it opens are sent "
                                                    f"to your model server at 127.0.0.1:{server.port}.")
                 self.assertNotIn("local-key-1", on.text)
-                daemon.restart_soon.assert_called_once()
+                # After an upgrade the server serves Bonsai2.5 only: the old name switches to it.
+                server.served = ["bonsai2.5-27b"]
+                again = await client.post("/api/remote", headers=admin, json={
+                    "action": "server", "base_url": server.base_url, "model": "bonsai2-27b", "key": "local-key-1"})
+                self.assertEqual((again.status_code, again.json()["model"]), (200, "bonsai2.5-27b"))
+                server.served = ["bonsai2-27b"]
+                remote.use_server(svc.config, server.base_url, "bonsai2-27b", "local-key-1")
+                self.assertEqual(daemon.restart_soon.call_count, 2)
             self.assertEqual(server.authorizations[-1], "Bearer local-key-1")
             # The key is kept apart, readable by the owner only, and never in the config.
             self.assertEqual(remote.server_key(), "local-key-1")

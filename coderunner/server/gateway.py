@@ -577,6 +577,10 @@ def admin_app(svc, daemon) -> Starlette:
                     served = [m.get("id") for m in listed.get("data", [])]
                 except Exception:
                     raise ValueError(f"No model server answered at {base_url}.") from None
+                # A name the server dropped in an upgrade (bonsai2 to bonsai2.5) is taken as its successor; the
+                # answer names the model used.
+                if model not in served and "bonsai" in model.lower():
+                    model = next((name for name in [remote.successor(served, model)] if name and "bonsai" in name.lower()), model)
                 if model not in served:
                     raise ValueError(f"That server serves {', '.join(map(str, served)) or 'no model'}, not {model}.")
                 remote.use_server(svc.config, base_url, model, key)
