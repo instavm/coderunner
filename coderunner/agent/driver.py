@@ -337,16 +337,21 @@ class Driver:
 class Swap:
     """Frees memory for the driver where it cannot sit beside the assistant's model: the assistant's model is
     unloaded while the driver runs and loaded again after (measured on an 18 GB M3 Pro: Bonsai 2 27B loads in
-    4-19 s and Fara1.5-4B in 10-20 s). The step judge asks the driver while the assistant's model is away."""
+    4-19 s and Fara1.5-4B in 10-20 s). The step judge asks the driver while the assistant's model is away.
+
+    planner None: the assistant's model is on the owner's model server, so nothing here is unloaded and the
+    driver stays loaded after (its server frees it when idle). The judge still asks the driver meanwhile: a
+    judge call on the server's other slot made it drop the task's slot, read again at the next step."""
 
     def __init__(self, svc, planner, driver):
         self.svc = svc
-        self.planner = planner      # the assistant's model runtime
+        self.planner = planner      # the assistant's model runtime, or None for a model on a server
         self.driver = driver        # the driver's runtime
         self._judge: tuple | None = None
 
     async def __aenter__(self):
-        await asyncio.to_thread(self._unload_planner)
+        if self.planner is not None:
+            await asyncio.to_thread(self._unload_planner)
         await asyncio.to_thread(self.driver.start)
         judge = getattr(getattr(self.svc.browser, "decider", None), "model", None)
         if judge is not None and judge.model == getattr(self.svc.llm, "model", None):
@@ -360,6 +365,8 @@ class Swap:
         if self._judge:
             judge, judge.base_url, judge.model, judge.api, judge.slot = self._judge
             self._judge = None
+        if self.planner is None:
+            return
         await asyncio.to_thread(self.driver.stop)
         try:
             await asyncio.to_thread(self.planner.start)

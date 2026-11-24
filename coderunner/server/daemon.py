@@ -339,13 +339,18 @@ class Daemon:
     def _driver(self, svc: Services):
         """The browser driver (models.driver), when one is set up: a model that acts from screenshots."""
         settings = self.config.get("models.driver") or {}
-        if not settings.get("model") or getattr(svc, "remote", None):      # remote mode: Claude drives the browser itself
+        from ..models import remote
+        served = getattr(svc, "remote", None)
+        # Claude drives the browser itself. With the owner's model server, the local driver can work the pages
+        # (models.driver.with_server) while the server plans: nothing on this Mac has to make room for it.
+        if not settings.get("model") or served and (served["provider"] != remote.SERVER or not settings.get("with_server")):
             return None
         from ..agent.driver import Driver, Swap
         from ..models.runtimes import DriverRuntime, choose_runtime
         runtime = DriverRuntime(self.config)
         alias = (runtime._state().get("active") or {}).get("alias") or settings["model"]
-        swap = Swap(svc, choose_runtime(self.config), runtime) if settings.get("exclusive") else None
+        swap = Swap(svc, None, runtime) if served else \
+            Swap(svc, choose_runtime(self.config), runtime) if settings.get("exclusive") else None
         from ..models import catalog
         try:
             fmt = settings.get("format") or catalog.get(settings["model"])["driver"]["format"]
@@ -443,7 +448,7 @@ class Daemon:
             "remote": svc.remote and {**svc.remote, "usage": dict(getattr(svc.llm, "usage", {}) or {}),
                                       "step_s": getattr(svc.llm, "step_seconds", lambda: None)()},
             "models": {"chat": svc.remote["model"] if svc.remote else self.config.get("models.chat") or svc.llm.model,
-                       "driver": svc.remote["model"] if svc.remote else
+                       "driver": svc.remote["model"] if svc.remote and svc.driver is None else
                        (self.config.get("models.driver") or {}).get("model") or "",
                        "decision": svc.remote["model"] if svc.remote else self.config.get("models.decision") or "",
                        "embedding": self.config.get("models.embedding") or svc.embedding_model,

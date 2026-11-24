@@ -301,6 +301,21 @@ class SwapTests(unittest.IsolatedAsyncioTestCase):
         await svc.llm.aclose()
         await svc.driver.llm.aclose()
 
+    async def test_with_the_model_on_a_server_nothing_is_unloaded_and_the_judge_still_follows(self):
+        log = []
+        svc = Svc()
+        svc.llm = LLM("http://server:8080/v1", "bonsai2-27b")
+        judge = type("Judge", (), {"base_url": "http://server:8080/v1", "model": "bonsai2-27b", "api": "chat", "slot": 1})()
+        svc.browser = type("Browser", (), {"decider": type("Check", (), {"model": judge})()})()
+        svc.driver = type("D", (), {"llm": LLM("http://127.0.0.1:8083/v1", "coderunner-fara1.5-4b")})()
+        async with Swap(svc, None, FakeRuntime("driver", log)):
+            self.assertEqual((judge.base_url, judge.slot), ("http://127.0.0.1:8083/v1", None))
+        # The driver stays loaded for the next browser task; the server's slots were never touched.
+        self.assertEqual(log, ["start driver"])
+        self.assertEqual((judge.base_url, judge.model, judge.slot), ("http://server:8080/v1", "bonsai2-27b", 1))
+        await svc.llm.aclose()
+        await svc.driver.llm.aclose()
+
     async def test_the_tasks_slots_get_the_instructions_back_when_the_model_returns(self):
         from coderunner.server.tasks import Turns
         log = []
