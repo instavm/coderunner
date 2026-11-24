@@ -375,9 +375,9 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_batch_fills_a_form_in_one_call_and_stops_where_it_must(self):
         class Recording(FakeBrowser):
-            def __init__(self, page_text, fail=None, navigate_on=None):
+            def __init__(self, page_text, fail=None, navigate_on=None, change=None):
                 super().__init__(page_text)
-                self.done, self.fail, self.navigate_on = [], fail, navigate_on
+                self.done, self.fail, self.navigate_on, self.change = [], fail, navigate_on, change
 
             async def _act(self, name, *args, **kw):
                 self.done.append((name, args, {k: v for k, v in kw.items() if k != "tainted"}))
@@ -385,7 +385,13 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
                     return {"ok": False, "error": "Element [9] is gone; take a new snapshot"}
                 if name == self.navigate_on:
                     return {"ok": True, "navigated": True, "url": "https://flights.example/results", "content": "Results"}
-                return {"ok": True, "url": "https://flights.example/", "changes": f"+ {name} done"}
+                if name == self.change == "select":         # redrawn in place, too much to show as changes
+                    return {"ok": True, "navigated": False, "url": "https://flights.example/",
+                            "content": "Results " + "r" * 3000}
+                if name == self.change == "click":          # a single-page app's new route
+                    return {"ok": True, "navigated": False, "url": "https://flights.example/results#top",
+                            "changes": "+ Results"}
+                return {"ok": True, "url": "https://flights.example/#form", "changes": f"+ {name} done"}
 
             async def type(self, ref, text, submit=False, tab=None, tainted=False, clear=True, pick=False):
                 return await self._act("type", ref, text, submit=submit, pick=pick)
@@ -398,25 +404,36 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
 
         form = {"steps": [{"action": "type", "ref": 4, "text": "Bengaluru"}, {"action": "type", "ref": 5, "text": "Delhi"},
                           {"action": "select", "ref": 6, "option": "1 adult"}, {"action": "click", "ref": 7}]}
-        for fail, navigate_on, expected in ((None, None, 4), ("select", None, 3), (None, "type", 1)):
+        form["steps"].append({"action": "type", "ref": 8, "text": "2"})
+        for fail, navigate_on, change, expected in ((None, None, None, 5), ("select", None, None, 3),
+                                                    (None, "type", None, 1), (None, None, "select", 3),
+                                                    (None, None, "click", 4)):
             with FakeOpenAI() as fake:
                 svc = Svc()
-                svc.browser = Recording("", fail=fail, navigate_on=navigate_on)
+                svc.browser = Recording("", fail=fail, navigate_on=navigate_on, change=change)
                 svc.llm = LLM(fake.base_url, "test")
                 svc.registry = build_registry(svc)
                 fake.script = [tool_call("browser_batch", form), {"role": "assistant", "content": "searched"}]
                 await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-batch"), "search flights")
                 result = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"][0]
                 self.assertEqual(len(svc.browser.done), expected)
-                if expected == 4:
+                if expected == 5:
                     self.assertEqual(svc.browser.done[0], ("type", (4, "Bengaluru"), {"submit": False, "pick": True}))
                     self.assertIn("Step 4 (click [7])", result)
                     self.assertIn("+ type done", result)                         # each step's changes in turn
+                    self.assertNotIn("not done", result)                         # a move after # is no new page
                 elif fail:
                     self.assertIn("Step 3 (select [6]) Error: Element [9] is gone", result)
-                    self.assertIn("steps 4-4 were not taken", result)
+                    self.assertIn("steps 4-5 were not taken", result)
                 else:
-                    self.assertIn("steps 2-4 were not taken: their numbers belong to the page before", result)
+                    # Stopped at the step that changed the page, which comes in full; the rest is marked.
+                    left = [f"Step {k} ({a} [{r}]): not done: the page changed"
+                            for k, a, r in ((2, "type", 5), (3, "select", 6), (4, "click", 7), (5, "type", 8))]
+                    self.assertIn("\n".join(left[expected - 1:]), result)
+                    self.assertEqual(result.count("not done"), 5 - expected)
+                    self.assertIn(f"Step {expected} changed the page", result)
+                    if change == "select":
+                        self.assertIn("r" * 3000, result)
                 await svc.llm.aclose()
 
     async def test_a_long_list_comes_one_line_per_item_with_the_way_on(self):

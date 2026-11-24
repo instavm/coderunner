@@ -390,12 +390,17 @@ def browser_tools(svc) -> list[Tool]:
 
     async def batch(args, ctx):
         """Several numbered steps in one call, each checked as its own tool is. It stops at the first error, and
-        after a step that opened a new page, whose numbers the later steps do not know. Each step's changes are
-        returned in turn (a suggestion list that typing brought), the last in full."""
+        after a step that changed the page: one that opened a new page, moved the address (a single-page app's
+        route) or redrew the page too much to show as changes. The later steps' numbers were read from the page
+        before, and an element a site redrew in place can hold another item under the same number. Each step's
+        changes are returned in turn (a suggestion list that typing brought), the last in full."""
         steps = [s for s in (args.get("steps") or []) if isinstance(s, dict)][:BATCH_STEPS]
         if not steps:
             return "Error: steps is empty; give a list of {action, ref, ...}"
-        parts = []
+        def label(i: int, step: dict) -> str:
+            return f"Step {i} ({step.get('action', '')}{' [' + str(step.get('ref')) + ']' if 'ref' in step else ''})"
+
+        parts, address = [], ""
         for i, step in enumerate(steps, 1):
             action = str(step.get("action", ""))
             try:
@@ -415,19 +420,24 @@ def browser_tools(svc) -> list[Tool]:
                 parts.append(f"Error: step {i} ({action}) needs a numeric ref")
                 break
             raw = await _followed(raw, ctx)
-            label = f"Step {i} ({action}{' [' + str(step.get('ref')) + ']' if 'ref' in step else ''})"
             if raw.get("ok") is False:
-                parts.append(f"{label} Error: {raw.get('error', 'browser action failed')}"
+                parts.append(f"{label(i, step)} Error: {raw.get('error', 'browser action failed')}"
                              + (f"; steps {i + 1}-{len(steps)} were not taken" if i < len(steps) else ""))
                 break
+            now = str(raw.get("url") or "").split("#")[0]
+            changed = bool(raw.get("navigated") or "content" in raw or (address and now and now != address))
+            address = now or address
             text = _text(raw)
-            last = i == len(steps) or raw.get("navigated")
-            if not last and len(text) > BATCH_STEP_CHARS:
+            if not (i == len(steps) or changed) and len(text) > BATCH_STEP_CHARS:
                 text = text[:BATCH_STEP_CHARS] + " …"
-            parts.append(f"{label}:\n{text}")
-            if raw.get("navigated") and i < len(steps):
-                parts.append(f"Step {i} opened a new page, so steps {i + 1}-{len(steps)} were not taken: their "
-                             "numbers belong to the page before. Look at this page and go on.")
+            parts.append(f"{label(i, step)}:\n{text}")
+            if changed and i < len(steps):
+                # That step's result comes in full above (the whole page, or every change on a moved address);
+                # the rest is left for the model to send again from it.
+                parts.append("\n".join(f"{label(k, later)}: not done: the page changed"
+                                       for k, later in enumerate(steps[i:], i + 1))
+                             + f"\nStep {i} changed the page, so the element numbers of the later steps may now "
+                             "point elsewhere. Look at the page above and go on.")
                 break
         return "\n\n".join(parts)
 
@@ -467,7 +477,7 @@ def browser_tools(svc) -> list[Tool]:
         Tool("browser_batch", "Several steps on the current page in one call, such as every field of a form and then "
              "its search button: steps is a list of {action: click|type|select|press, ref, text, submit, option, "
              "key}. They run in order with the same checks as the single tools; it stops at the first error or when "
-             "a step opens a new page. Returns what each step changed.",
+             "a step changes the page (a new page or address). Returns what each step changed.",
              _params({"steps": {"type": "array", "items": {"type": "object", "properties": {
                  "action": {"type": "string", "enum": ["click", "type", "select", "press"]}, "ref": INT, "text": STR,
                  "submit": {"type": "boolean"}, "option": STR, "key": STR}, "required": ["action"]}}}, ["steps"]),
