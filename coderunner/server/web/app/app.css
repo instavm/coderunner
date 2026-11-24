@@ -110,6 +110,7 @@ button.check-row:hover .check-what { color: var(--accent); }
 .say-block { align-self: stretch; margin: 2px 0; }
 .md-table-wrap.say-block { background: var(--surface); border-radius: 14px; padding: 4px 14px; }
 .answer.failed .say { box-shadow: inset 2px 0 0 var(--danger); }
+.so-far { padding-left: 4px; }
 .answer a, .note a { color: var(--accent); }
 .answer a.item, .items a.item { color: inherit; }
 .md-table-wrap { overflow-x: auto; margin: 8px 0; white-space: normal; }

@@ -37,6 +37,7 @@ How you work:
 - Only your final message reaches {owner}, as a chat reply. A call's say field may carry a few words on what you are doing ("Checking Skyscanner for the 12th"), shown briefly as a status line; leave it out when there is nothing new. Never mention tools, clicks, element numbers, errors, timeouts or retries.
 - tell_owner keeps a finding you will want in the answer (a price, a choice you made), when you have no tool call to write beside. Your final message still holds everything.
 - When a site will not show what you need, get it from another site that has it before deciding it cannot be done. When only part can be found, answer with that part in the form asked (a table with the rows you have) and say in one sentence what is missing.
+- Never put a placeholder, a "typical" range or a guess where a figure you did not find should be; say it is still missing.
 - If something cannot be finished, end with what you did, what could not be done and what {owner} can do next, in plain words: no error texts, no technical names, no account of what loaded or failed along the way, and never ask {owner} to restart or fix the browser or the computer.
 - Your final message is a chat reply to {owner}, not a report, said to them as "you" (never "the owner"), in the language {owner} wrote the request in. Lead with the answer in a sentence or two. Plain sentences: no headings, no bold labels ("Total:"), bold at most once, for the one figure or name that is the answer. A list or a table only when {owner} has to compare several things side by side. Link a source by its name where you mention it, as [Sony WH-CH520](https://...), not as a list of addresses at the end. Say only what was asked plus anything that changes the decision; a caveat is one sentence. No recap of what you did, no "Based on...", no offer at the end. For products or places {owner} will want to look at, call show_items rather than describing each.
 - Two good answers. Asked what a dinner cost: "You paid **₹1,240** at Sagar on 14 March, by card. That includes ₹59 of tax." Asked to compare a phone at two shops: "Amazon is cheaper: **₹50,999** for the [Pixel 10a 256 GB](https://www.amazon.in/dp/B0EXAMPLE), against ₹53,199 on [Flipkart](https://www.flipkart.com/pixel-10a). Amazon's price assumed a Bengaluru pincode, so yours may differ slightly.\""""
@@ -107,8 +108,8 @@ OWN_STEPS = {"plan_update", "tell_owner", "show_items"}
 REPEATS_BEFORE_ANSWER = 3     # repeats after WRAP_FROM steps
 GOING_ROUND = ("You are going over ground you have already covered (the same searches and pages again). Without "
                "calling any tools, write your reply to me now from what you have found: the answer first, with a link "
-               "to the page each figure came from, then one sentence on anything you could not get. No bold labels, "
-               "no offer at the end.")
+               "to the page each figure came from, then one plain sentence on anything still missing. No headings, "
+               "no labels, no offer at the end.")
 FILLER = {"a", "an", "the", "in", "of", "for", "to", "and", "on", "at", "with", "best", "site", "price", "prices",
           "review", "reviews", "vs"}
 
@@ -173,27 +174,47 @@ def dropped(text: str) -> str:
     """A result let go: its first line (the untrusted tag of a page) and a note. A result with no line break
     keeps only its start, or the note would make it longer."""
     return text.split("\n", 1)[0][:200] + "\n" + DROPPED
+# The closing requests ask for one plain sentence on what is missing, never a part of its own: asked for "one
+# sentence on what is unfinished", a 6-night Mauritius plan ended "What's unfinished: The three hotel options..."
+# under a heading, beside a hotel line that said "placeholder, typically ~₹12,000-₹20,000/night".
 OUT_OF_STEPS = ("You have used all the steps for this task. Without calling any tools, write your reply to me now "
-                "from what you have found: the answer first, with a link to the page each figure came from, then "
-                "one sentence on what is unfinished. No bold labels, no steps for me to follow, no offer at the end.")
+                "from what you have found: the answer first, complete on its own, with a link to the page each figure "
+                "came from, then one plain sentence on what is still missing. No headings, no labels, no steps for me "
+                "to follow, no offer at the end.")
 # An answer that says the task was not done: the app offers to try it again on Claude (when the owner has a key).
 UNDONE = re.compile(r"\b(I )?(couldn.t|could not|was unable to|wasn.t able to|was not able to|did not manage to|"
                     r"was blocked|can.t|cannot) (complete|finish|do|find|get|reach|load|open|confirm|verify|locate|"
                     r"extract|capture|add|see|read)|\bunfinished\b|^I had to stop here|^I stopped after|\bI.m stopping here|"
-                    r"\bI (haven.t|have not) (yet )?(written|found|finished|done|checked|got)|"
+                    r"\bI (haven.t|have not) (yet )?(written|found|finished|done|checked|got)|\bstill missing\b|"
                     r"^I got stuck", re.I | re.M)
 OUT_OF_ROOM = ("You have gathered more than fits; the earlier pages were let go. Without calling any tools, write "
                "your reply to me now from what you have found: the answer first, with a link to the page each figure "
-               "came from, then one sentence on what is unfinished. No bold labels, no offer at the end.")
+               "came from, then one plain sentence on what is still missing. No headings, no labels, no offer at the end.")
 WRAP_FROM, WRAP_EVERY = 30, 25
 WRAP_NUDGE = ("[Reminder, not a new request] {steps} steps so far. If what you have found already answers my request, "
               "write the answer now; carry on only for what is still missing.")
-# A run with a deadline (a check's time limit) is told once, near the end, to answer: a booking.com search worked
-# 30 minutes and 88 steps, had found hotels and prices, and was stopped with no answer written.
-TIME_NUDGE = ("[Reminder, not a new request] Time is nearly up: about {minutes} left before this task is stopped. Stop "
-              "searching. Without calling any tools, write your reply to me now from what you have found: the answer "
-              "first, with a link to the page each figure came from, then one sentence on what is unfinished.")
+# A run with a deadline (a check's time limit) writes an answer from what it has near the end: a booking.com search
+# worked 30 minutes and 88 steps, had found hotels and prices, and was stopped with no answer written. That answer
+# is posted at once as an interim one and the run carries on with what is missing: a Mauritius plan that answered
+# at its limit left its hotels as "placeholder, not yet confirmed". The limit is soft; the hard stop is at
+# HARD_STOP times it, and shortly before that the run writes its final answer (TIME_UP).
+INTERIM = ("[Reminder, not a new request] {why} Without calling any tools, write your reply to me now from what you "
+           "have found: the answer first, with a link to the page each figure came from, then one plain sentence on "
+           "what you are still working on. No headings, no labels, no offer at the end. You will carry on after it.")
+TIME_NUDGE = INTERIM.replace("{why}", "About {minutes} of the time for this task left.")
+STEPS_NUDGE = INTERIM.replace("{why}", "That is {steps} steps so far.")
+# Said after an interim answer, so the run goes on in the same conversation (appended, so nothing is read again).
+CARRY_ON = ("[Not a new request] Now carry on, with tools again, with only what is still missing. When you have it, "
+            "write the whole answer again, complete on its own, not only what changed. If nothing is missing, reply "
+            "with only the word DONE.")
+NOTHING_MORE = re.compile(r"^\W*done\W*$", re.I)
+TIME_UP = ("[Reminder, not a new request] The time for this task is up. Without calling any tools, write your whole "
+           "reply to me now from what you have found: the answer first, complete on its own, with a link to the page "
+           "each figure came from, then one plain sentence on what is still missing. No headings, no labels, no offer "
+           "at the end.")
 TIME_SHARE, TIME_LEAD_S = 0.15, 120     # told when this share of the time is left, and at least this long before
+HARD_STOP = 2                           # a run with a time limit is stopped at this many times it (server.tasks)
+STEP_BUDGETS = 3                        # agent.max_steps steps, an interim answer, and again, up to this many times
 
 
 def time_lead(total: float) -> float:
@@ -313,8 +334,11 @@ class RunContext:
     # returned (tools.handles), and the paths its own file searches found.
     known: set[str] = field(default_factory=set)
     found_files: list[str] = field(default_factory=list)
-    # When a caller will stop this run (time.monotonic()), 0 for never: before then it is told, once, to answer.
+    # When a caller's time limit is up (time.monotonic()), 0 for none: before then it writes an interim answer and
+    # carries on, until its final answer shortly before stop_at, the hard stop (0: HARD_STOP times the limit).
     deadline: float = 0.0
+    stop_at: float = 0.0
+    interim: str = ""                                   # the latest interim answer posted to the thread
     # Called with each step as it happens (tool calls, notes, the plan), for an app showing the task live.
     events: Callable[[dict], None] | None = None
 
@@ -577,6 +601,26 @@ class Agent:
             return await self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped, **extra,
                                        **({"id_slot": slot} if slot is not None else {}))
 
+    async def _interim(self, ctx: RunContext, messages: list[dict], prompt: str, limit: int) -> str:
+        """An answer from what the run has so far, posted to the thread at once as an interim one; the run then
+        carries on with what is missing. Appended, never written into earlier messages: the runtime keeps what it
+        has read only while each request extends the one before."""
+        messages.append({"role": "user", "content": prompt})
+        text = ""
+        try:
+            reply = await self._turn(ctx, messages, False, {"max_tokens": limit} if limit else {}, tool_choice="none")
+            if reply.get("content"):
+                messages.append({"role": "assistant", "content": reply["content"]})
+                text = without_meta(reply["content"]).strip()
+        except LLMError:
+            pass
+        if text and not NOTHING_MORE.match(text):
+            ctx.interim = text
+            ctx.emit({"type": "interim", "text": text})
+        self.svc.audit.write("agent.interim", conversation=ctx.conversation, chars=len(text))
+        messages.append({"role": "user", "content": CARRY_ON})
+        return text
+
     async def _run(self, ctx: RunContext, text: str, images: list[tuple[str, str]] | None) -> str:
         if not ctx.origin_is_owner:
             ctx.taint()
@@ -595,8 +639,9 @@ class Agent:
                     {"role": "user", "content": user_content}]
         self.svc.audit.write("agent.start", conversation=ctx.conversation, origin=ctx.origin)
         # Not a budget a task works within: a stop for one that goes round in circles. At 30, long tasks (a trip
-        # planned from flights, hotels and a day-by-day plan) ended with "I'd need more steps to finish".
-        max_steps = int(self.svc.config.get("agent.max_steps", 200))
+        # planned from flights, hotels and a day-by-day plan) ended with "I'd need more steps to finish". Reaching
+        # it posts an interim answer and grants it again, up to STEP_BUDGETS times in all.
+        max_steps = max(1, int(self.svc.config.get("agent.max_steps", 200)))
         # auto: reason before the first step and after a failed one; routine steps (the next click after
         # reading what changed) answer directly, which on a laptop saves ~15 s of generation per step.
         thinking = str(self.svc.config.get("agent.thinking", "auto")).lower()
@@ -628,9 +673,16 @@ class Agent:
         closing = ""                                # the request for an answer when the steps or the room ran out
         repeats = Repeats()
         late_repeats = 0                            # repeated searches and pages after WRAP_FROM steps
-        # The moment to be told the time is nearly up, when the run has a deadline (0: none, or told already).
-        hurry_at = ctx.deadline - time_lead(ctx.deadline - time.monotonic()) if ctx.deadline else 0.0
-        for step in range(max_steps):
+        # When the run has a deadline: the moment it writes an interim answer (0: none, or written already), and the
+        # moment, shortly before its hard stop, it writes its final one.
+        hurry_at = final_at = 0.0
+        if ctx.deadline:
+            now = time.monotonic()
+            total = max(0.0, ctx.deadline - now)
+            stop_at = ctx.stop_at or now + HARD_STOP * total
+            hurry_at = ctx.deadline - time_lead(total)
+            final_at = stop_at - time_lead(max(0.0, stop_at - ctx.deadline))
+        for step in range(max_steps * STEP_BUDGETS):
             if late_repeats >= REPEATS_BEFORE_ANSWER:
                 self.svc.audit.write("agent.going_round", step=step, repeats=late_repeats)
                 final = "I stopped: I was going over the same searches again."
@@ -654,13 +706,22 @@ class Agent:
                 # Not a limit: a long task is asked, now and then, whether what it has already answers the request
                 # (a 27B searched on for 160 steps after it had three review sites' picks).
                 messages.append({"role": "user", "content": WRAP_NUDGE.format(steps=step)})
+            if step and step % max_steps == 0:
+                # The steps ran out again: what it has is posted, and it goes on with another budget.
+                self.svc.audit.write("agent.step_budget", step=step)
+                await self._interim(ctx, messages, STEPS_NUDGE.format(steps=step), limit)
+            if final_at and time.monotonic() >= final_at:
+                self.svc.audit.write("agent.time_up", step=step)
+                final = ctx.interim or stopped_reply(ctx)       # if even the closing reply does not come
+                closing = TIME_UP
+                break
             if hurry_at and time.monotonic() >= hurry_at:
                 # Appended, not written into an earlier message: an edit makes the runtime read it all again.
                 left = max(0, ctx.deadline - time.monotonic())
                 minutes = max(1, round(left / 60))
-                messages.append({"role": "user", "content": TIME_NUDGE.format(
-                    minutes=f"{minutes} minute{'s' if minutes != 1 else ''}")})
                 self.svc.audit.write("agent.time_nearly_up", step=step, left=round(left))
+                await self._interim(ctx, messages, TIME_NUDGE.format(
+                    minutes=f"{minutes} minute{'s' if minutes != 1 else ''}"), limit)
                 hurry_at = 0.0
             # Each request only extends the one before: hybrid models such as Qwen3.5 can resume only from a
             # cache checkpoint near the end of the previous prompt, so a message that came and went (or an
@@ -782,8 +843,8 @@ class Agent:
                 ctx.images.clear()
             self._transcript(ctx, messages)
         else:
-            # Out of steps: what the model found so far is still worth an answer.
-            final = "I stopped after reaching the step limit. Tell me how you'd like to continue."
+            # Out of steps, every budget of them: what the model found so far is still worth an answer.
+            final = ctx.interim or "I stopped after reaching the step limit. Tell me how you'd like to continue."
             closing = OUT_OF_STEPS
         if closing:
             # Steps or room that ran out leave the task unfinished; one that went round in circles answered from
@@ -800,8 +861,13 @@ class Agent:
                     messages.append({"role": "assistant", "content": final})
             except LLMError:
                 pass
+        # Nothing was missing after the interim answer: that answer, whole, is the final one.
+        again = bool(ctx.interim) and bool(NOTHING_MORE.match(final))
+        if again:
+            final = ctx.interim
         read_pages = any(m.get("role") == "tool" and str(m.get("content", "")).startswith(PAGE_PREFIX) for m in messages)
-        if WANTS_LINKS.search(text) and not HAS_LINK.search(final) and read_pages and messages[-1].get("role") == "assistant":
+        if (WANTS_LINKS.search(text) and not HAS_LINK.search(final) and read_pages and not again
+                and messages[-1].get("role") == "assistant"):
             messages.append({"role": "user", "content": ADD_LINKS})
             try:
                 reply = await self._turn(ctx, messages, False, {"max_tokens": limit} if limit else {},

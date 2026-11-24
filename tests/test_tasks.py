@@ -158,3 +158,50 @@ class Harness(unittest.IsolatedAsyncioTestCase):
             self.assertLess(by_name["flights"]["seconds"], 3)
             self.assertTrue(by_name["library"]["passed"], by_name["library"])
             self.assertEqual(tasks.load()[-1]["passed"], result["passed"])
+
+
+class TimeLimitTests(unittest.IsolatedAsyncioTestCase):
+    """A task with a time limit (the check's) posts an interim answer, works on past the limit, and is stopped at
+    twice it."""
+
+    async def test_an_interim_answer_is_kept_with_the_task_and_the_hard_stop_is_at_twice_the_limit(self):
+        import asyncio
+        import time
+        from coderunner.server import tasks as server_tasks
+        from fakes import Svc
+        from test_gateway import FakeDaemon
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"CODERUNNER_HOME": home}):
+            (pathlib.Path(home) / "assistant").mkdir()
+            svc = Svc({"models": {"chat": "coderunner-test"}})
+            daemon = FakeDaemon(svc)
+            runner = server_tasks.Tasks(daemon, server_tasks.EventBus(svc.store))
+            seen = {}
+
+            async def handle(channel, chat_id, text, origin="", events=None, task="", images=None):
+                seen["hard"] = events.stop_at - events.deadline
+                events({"type": "interim", "text": "Taj at ₹18,200 so far."})
+                await asyncio.sleep(0.3)            # past the 0.2 s limit: not stopped there
+                seen["past"] = True
+                await asyncio.sleep(60)
+            daemon.handle_message = handle
+            began = time.monotonic()
+            task = runner.start("app:t", "Hotels?", "check", time_limit=0.2)
+            await asyncio.sleep(0.05)
+            self.assertEqual(runner.so_far(task["id"]), ("Taj at ₹18,200 so far.", True))
+            row = await runner.wait(task["id"])
+            took = time.monotonic() - began
+            self.assertTrue(seen["past"])
+            self.assertTrue(0.38 <= took < 1.5, took)
+            self.assertAlmostEqual(seen["hard"], 0.2, places=2)
+            # Stopped for good: as a task the owner stops, from what it had found.
+            self.assertEqual((row["status"], row["reply"]), ("cancelled", "Stopped before I found anything."))
+            kinds = [(e["type"], e.get("text")) for e in runner.bus.since(0, "app:t")]
+            # Kept with the task's events, so a reopened thread shows it, before how the task ended.
+            self.assertLess(kinds.index(("interim", "Taj at ₹18,200 so far.")), [k for k, _ in kinds].index("cancelled"))
+            # A task with no time limit is never stopped by one.
+            async def quick(channel, chat_id, text, origin="", events=None, task="", images=None):
+                seen["limit"] = getattr(events, "stop_at", 0)
+                return "ok"
+            daemon.handle_message = quick
+            row = await runner.wait(runner.start("app:u", "Hi", "owner")["id"])
+            self.assertEqual((row["status"], row["reply"], seen["limit"]), ("done", "ok", 0))

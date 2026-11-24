@@ -307,6 +307,7 @@ class TaskView {
         else if (e.event === "approval.decided") closeAsk(e.id, e.status === "approved" ? true : e.status === "denied" ? false : "late");
         else if (e.ok !== false) this.setNow(describeActivity(e));
         break;
+      case "interim": this.showInterim(e.text); break;
       case "done": case "failed": case "cancelled": this.finish(e); break;
       case "queued": this.setNow("Waiting its turn"); break;
       case "resumed": this.setNow("Thinking"); break;
@@ -415,6 +416,17 @@ class TaskView {
     if (check) card.appendChild(el("div", "ask-caution", check[1]));
   }
 
+  // An answer written at the time limit or the step budget while the task carries on: chat messages like the
+  // answer, above the line that still says it is working. The final answer, whole, follows as the next ones.
+  showInterim(text) {
+    if (!text) return;
+    const answer = el("div", "answer interim");
+    for (const part of answered(text, [], picture)) answer.appendChild(part);
+    answer.appendChild(el("div", "so-far muted small", "So far"));
+    this.say(answer);
+    this.interim = {answer, text};
+  }
+
   finish(e) {
     this.status = e.type;
     this.finished = e.ts;
@@ -422,10 +434,12 @@ class TaskView {
     this.now = null;
     // The answer is a few chat messages, not a document in a box.
     const answer = el("div", "answer" + (e.type === "failed" ? " failed" : ""));
-    this.items?.remove();
     for (const part of answered(e.reply || "", this.shown, picture)) answer.appendChild(part);
-    this.flow.appendChild(answer);
-    this.answer = answer;
+    // Nothing was missing after the interim answer: it is the answer, not said twice.
+    const same = e.type === "done" && this.interim && this.interim.text.trim() === String(e.reply || "").trim();
+    if (same) this.interim.answer.querySelector(".so-far")?.remove();
+    else { this.items?.remove(); this.flow.appendChild(answer); }
+    this.answer = same ? this.interim.answer : answer;
     const took = clock((this.finished || Date.now() / 1000) - this.started);
     this.flow.appendChild(el("div", "took muted small", e.type === "cancelled" ? `Stopped after ${took}` :
                              e.type === "failed" ? `Failed after ${took}` : `Done in ${took}`));

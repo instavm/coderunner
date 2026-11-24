@@ -560,6 +560,54 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((row["state"], row["answer"]), ("passed", answer))
         self.assertEqual((check_module.last("research")["minutes"], job.public()["research"]["suite"]), (45, "research"))
 
+    async def test_the_answer_at_the_time_limit_and_the_final_answer_are_both_graded(self):
+        import os, tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = mock.patch.dict(os.environ, {"CODERUNNER_HOME": tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        (pathlib.Path(tmp.name) / "assistant").mkdir()
+        svc = Svc({"models": {"chat": "coderunner-test"}})
+        svc.vision, svc.browser, svc.files = True, object(), Files()
+        svc.sandbox = mock.Mock(health=mock.AsyncMock(return_value=True))
+        daemon = FakeDaemon(svc)
+        daemon.tasks = tasks_module.Tasks(daemon, tasks_module.EventBus(svc.store))
+        page = "https://www.raspberrypi.com/products/raspberry-pi-5/"
+        so_far = f"The Raspberry Pi 5 uses the Broadcom BCM2712 ([product page]({page})). I am still checking its cores."
+        whole = f"The Raspberry Pi 5 uses the Broadcom BCM2712, four Cortex-A76 cores at 2.4 GHz: {page}"
+
+        async def handle(channel, chat_id, text, origin="", events=None, task="", images=None):
+            events({"type": "activity", "event": "browser.open", "url": page})
+            if "pi5chip" in chat_id:
+                events({"type": "interim", "text": so_far})
+                await asyncio.sleep(0.45)           # past its 0.3 s limit, before the hard stop at 0.6 s
+                return whole
+            await asyncio.sleep(60)                 # never answers: stopped at twice its limit
+        daemon.handle_message = handle
+        job = check_module.CheckJob(daemon)
+        with mock.patch.object(check_module.realworld, "LIMIT_S", 0.3):
+            self.assertEqual(job.start(["pi5chip", "moonlanding"], suite="research"), "")
+            await job._job
+        rows = {row["name"]: row for row in job.public()["tasks"]}
+        chip = rows["pi5chip"]
+        # At the limit: the interim answer, missing the cores and clock. By the end: the whole answer.
+        self.assertEqual((chip["state"], chip["answer"]), ("failed", so_far))
+        self.assertIn("missing the cores, the clock", chip["why"])
+        self.assertEqual((chip["state_final"], chip["answer_final"]), ("passed", whole), chip["why_final"])
+        self.assertLessEqual(chip["seconds"], chip["seconds_final"])
+        moon = rows["moonlanding"]
+        self.assertEqual((moon["state"], moon["state_final"]), ("failed", "failed"))
+        self.assertIn("still running", moon["why"])
+        self.assertIn("still running", moon["why_final"])
+        self.assertEqual(moon["answer_final"], "Stopped before I found anything.")
+        result = check_module.last("research")
+        self.assertEqual((result["passed"], result["passed_final"]), (0, 1))     # the limit's grade is the score
+        lines = job.public()["lines"]
+        self.assertTrue(any(line.startswith("  at 0.0 min: FAILED") for line in lines), lines)
+        self.assertTrue(any(line.startswith("  final: passed") for line in lines), lines)
+        self.assertTrue(lines[-1].endswith("; 1 passed by the end."), lines[-1])
+
     async def test_a_task_after_one_stopped_at_its_time_limit_still_runs(self):
         import os, tempfile
         tmp = tempfile.TemporaryDirectory()

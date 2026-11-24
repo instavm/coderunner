@@ -28,6 +28,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from ..agent.loop import HARD_STOP
 from ..core import paths
 from ..files import attached
 from ..models import sites as fixtures
@@ -381,13 +382,17 @@ class CheckJob:
                            "blocked": sum(t["state"] == "blocked" for t in self.tasks),
                            "passed": passed, "ran": len(ran), "skipped": sum(t["state"] == "skipped" for t in self.tasks),
                            "seconds": round(time.time() - started), "tasks": self.tasks,
+                           # Graded again when each task ended, past its limit if it carried on (state_final).
+                           "passed_final": sum(t.get("state_final") == "passed" for t in ran),
                            "needs_you": waits,
                            "ok": bool(ran) and passed == len(ran) - waits - sum(t["state"] == "blocked" for t in self.tasks)}
             self.state = "done" if self.result["ok"] else "failed"
             self._say(f"{passed} of {len(ran)} passed" + (f", {self.result['blocked']} blocked by a site" if self.result["blocked"] else "")
                       + (f", {waits} stopped at a step that is yours" if waits else "")
                       + (f", {self.result['skipped']} skipped" if self.result["skipped"] else "")
-                      + f", in {self.result['seconds'] // 60} min {self.result['seconds'] % 60} s.")
+                      + f", in {self.result['seconds'] // 60} min {self.result['seconds'] % 60} s"
+                      + (f"; {self.result['passed_final']} passed by the end."
+                         if self.result['passed_final'] != passed else "."))
             with contextlib.suppress(OSError):
                 result_path(self.suite).write_text(json.dumps(self.result, indent=2))
             svc.audit.write("check.finished", passed=passed, ran=len(ran), skipped=self.result["skipped"])
@@ -417,58 +422,90 @@ class CheckJob:
         real = isinstance(check, realworld.Real)
         limit = (LONG_S if check.long else realworld.LIMIT_S) if real else LONG_S if check.long else QUICK_S
         limit = self.minutes * 60 or limit
-        # The task knows its limit, so it answers from what it has before it is stopped.
+        # The task knows its limit, so it answers from what it has before then (and carries on after).
         task = tasks.start(conversation, check.prompt if real else check.prompt(run), "check",
                            attachments=ids, time_limit=limit)
-        answer = ""
-        try:
-            # A task that waits its turn (one the check stopped is still letting go of its slot) is waited for:
-            # read as ended, it failed in no time, and so did every task after it.
-            job = await self._started(tasks, task["id"])
-            start = time.monotonic()
-            if job is not None:
+        late = False
+        # A task that waits its turn (one the check stopped is still letting go of its slot) is waited for:
+        # read as ended, it failed in no time, and so did every task after it.
+        job = await self._started(tasks, task["id"])
+        start = time.monotonic()
+        if job is not None:
+            try:
                 await asyncio.wait_for(asyncio.shield(job), limit)
-            done = tasks.get(task["id"]) or {}
-            answer, status = done.get("reply") or "", done.get("status") or ""
-            run.tools = [e.get("name", "") for e in tasks.bus.since(since, conversation) if e.get("type") == "tool"]
-            if status != "done":
-                passed, why = False, answer[:200] or f"the task ended as {status}"
-            elif real:
-                events = tasks.bus.since(since, conversation)
-                visited = [e.get("url") or e.get("page") or "" for e in events if e.get("type") in ("activity", "shot")]
-                clicked = [str(e.get("label") or e.get("text") or e.get("name") or "") for e in events
-                           if e.get("type") == "activity" and str(e.get("event", "")).startswith("browser.")]
-                filled = [str(e.get("option") or e.get("text") or "") for e in events if e.get("type") == "activity"
-                          and e.get("event") in ("browser.select", "browser.type")]
-                if check.chose:
-                    # What the form holds at the end counts too: a site that remembers the last state and
-                    # district shows them chosen already, and nothing is chosen again.
-                    with contextlib.suppress(Exception):
-                        shown = await asyncio.wait_for(self.daemon.svc.browser.snapshot(), 20)
-                        filled += re.findall(r'value="([^"]*)"', str(shown.get("content") or ""))
-                state, why, figures = realworld.grade(check, answer, visited, self._approvals, run.tools, clicked, filled,
-                                                      self._routines(conversation))
-                if check.chose:
-                    figures["filled"] = [value[:60] for value in filled if value][:40]      # what the form was given
-                row.update(state=state, why=why, seconds=round(time.monotonic() - start), steps=len(run.tools),
-                           approvals=self._asked, kind=check.kind, answer=answer[:ANSWER_CHARS], **figures)
-                self._say(f"  {state.upper().replace('_', ' ') if state != 'passed' else state} in {row['seconds']} s, {row['steps']} steps, "
-                          f"{self._asked} approvals asked ({figures['refused']} refused): {why}")
-                return
-            else:
-                passed, why = check.check(answer, run)
-                if passed and check.tool and check.tool not in run.tools:
-                    passed, why = False, f"answered without using {check.tool}"
-        except asyncio.TimeoutError:
-            tasks.cancel(task["id"])
-            with contextlib.suppress(BaseException):        # it ends before the next task takes its slot
-                await asyncio.wait_for(job, STOP_S)
-            passed, why = False, f"still running after {limit // 60} minutes"
-            answer = (tasks.get(task["id"]) or {}).get("reply") or ""     # what it had found when it was stopped
-            run.tools = [e.get("name", "") for e in tasks.bus.since(since, conversation) if e.get("type") == "tool"]
-        row.update(state="passed" if passed else "failed", why=why, seconds=round(time.monotonic() - start),
-                   steps=len(run.tools), approvals=self._asked)
-        if real:
-            row.update(kind=check.kind, answer=answer[:ANSWER_CHARS])
-        asked = f", {self._asked} approval{'s' if self._asked != 1 else ''} asked" if self._asked else ""
-        self._say(f"  {'passed' if passed else 'FAILED'} in {row['seconds']} s, {row['steps']} steps{asked}: {why}")
+            except asyncio.TimeoutError:
+                late = True
+        if late:
+            # The limit is soft: what the task has answered by now (its interim answer) is graded here, so
+            # models are compared at equal time, and it carries on to its final answer. Its task runner stops
+            # it at HARD_STOP times the limit; this wait is the backstop.
+            answer, interim = tasks.so_far(task["id"])
+            state, why, figures = await self._grade(check, run, answer, "done" if interim else "running",
+                                                    since, conversation)
+            if not interim:
+                why = f"still running after {limit // 60} minutes"
+            row.update(self._fields(check, run, state, why, figures, answer, start))
+            self._tell(f"  at {limit // 60} min: ", row, figures)
+            try:
+                await asyncio.wait_for(asyncio.shield(job), (HARD_STOP - 1) * limit + STOP_S)
+            except asyncio.TimeoutError:
+                tasks.cancel(task["id"])
+                with contextlib.suppress(BaseException):        # it ends before the next task takes its slot
+                    await asyncio.wait_for(job, STOP_S)
+        done = tasks.get(task["id"]) or {}
+        answer, status = done.get("reply") or "", done.get("status") or ""
+        state, why, figures = await self._grade(check, run, answer, status, since, conversation)
+        if late and status == "cancelled":
+            why = f"still running after {HARD_STOP * limit // 60} minutes"
+        final = self._fields(check, run, state, why, figures, answer, start)
+        if not late:
+            row.update(final)               # done within the limit: its answer at the limit is its final one
+        row.update(state_final=final["state"], why_final=final["why"], seconds_final=final["seconds"],
+                   steps_final=final["steps"], **({"answer_final": final["answer"]} if real else {}))
+        self._tell("  final: " if late else "  ", final, figures)
+
+    async def _grade(self, check: Check, run: Run, answer: str, status: str, since: int,
+                     conversation: str) -> tuple[str, str, dict]:
+        """(state, why, figures) for an answer the task gave: its final one (status as it ended) or its interim
+        one at the time limit (status "done")."""
+        events = self.daemon.tasks.bus.since(since, conversation)
+        run.tools = [e.get("name", "") for e in events if e.get("type") == "tool"]
+        if status != "done":
+            return "failed", answer[:200] or f"the task ended as {status}", {}
+        if not isinstance(check, realworld.Real):
+            passed, why = check.check(answer, run)
+            if passed and check.tool and check.tool not in run.tools:
+                passed, why = False, f"answered without using {check.tool}"
+            return ("passed" if passed else "failed"), why, {}
+        visited = [e.get("url") or e.get("page") or "" for e in events if e.get("type") in ("activity", "shot")]
+        clicked = [str(e.get("label") or e.get("text") or e.get("name") or "") for e in events
+                   if e.get("type") == "activity" and str(e.get("event", "")).startswith("browser.")]
+        filled = [str(e.get("option") or e.get("text") or "") for e in events if e.get("type") == "activity"
+                  and e.get("event") in ("browser.select", "browser.type")]
+        if check.chose:
+            # What the form holds at the end counts too: a site that remembers the last state and
+            # district shows them chosen already, and nothing is chosen again.
+            with contextlib.suppress(Exception):
+                shown = await asyncio.wait_for(self.daemon.svc.browser.snapshot(), 20)
+                filled += re.findall(r'value="([^"]*)"', str(shown.get("content") or ""))
+        state, why, figures = realworld.grade(check, answer, visited, self._approvals, run.tools, clicked, filled,
+                                              self._routines(conversation))
+        if check.chose:
+            figures["filled"] = [value[:60] for value in filled if value][:40]      # what the form was given
+        return state, why, figures
+
+    def _fields(self, check: Check, run: Run, state: str, why: str, figures: dict, answer: str, start: float) -> dict:
+        fields = {"state": state, "why": why, "seconds": round(time.monotonic() - start), "steps": len(run.tools),
+                  "approvals": self._asked}
+        if isinstance(check, realworld.Real):
+            fields.update(kind=check.kind, answer=answer[:ANSWER_CHARS], **figures)
+        return fields
+
+    def _tell(self, lead: str, row: dict, figures: dict) -> None:
+        state = row["state"]
+        mark = state if state == "passed" else state.upper().replace("_", " ")
+        if "refused" in figures:            # a task on a real site, graded
+            asked = f", {self._asked} approvals asked ({figures['refused']} refused)"
+        else:
+            asked = f", {self._asked} approval{'s' if self._asked != 1 else ''} asked" if self._asked else ""
+        self._say(f"{lead}{mark} in {row['seconds']} s, {row['steps']} steps{asked}: {row['why']}")

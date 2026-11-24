@@ -145,7 +145,7 @@ class ThreadTests(unittest.IsolatedAsyncioTestCase):
                              "\n\nWhat I had found so far:\n- IndiGo is ₹4,800.")
             self.assertEqual(found_so_far(RunContext(conversation="t")), "")
 
-    async def test_a_run_with_a_deadline_is_told_once_near_the_end_to_answer(self):
+    async def test_a_run_with_a_deadline_posts_an_interim_answer_and_carries_on_to_its_final_one(self):
         import time
         from types import SimpleNamespace
         from unittest import mock
@@ -158,34 +158,101 @@ class ThreadTests(unittest.IsolatedAsyncioTestCase):
                 clock[0] = at                   # the model's turn took until then
                 return tool_call("run_python", {"code": "print(1)"})
             return reply
+        so_far = "Two hotels so far: Taj at ₹18,200 and Alila at ₹21,000. I am still looking for a third."
+        whole = "Three hotels: Taj at ₹18,200, Alila at ₹21,000 and W at ₹25,000."
         with FakeOpenAI() as fake, mock.patch.object(loop_module, "time", fake_time):
             svc = Svc()
             svc.sandbox = FakeSandbox()
             svc.llm = LLM(fake.base_url, "test")
             svc.registry = build_registry(svc)
-            # 15 minutes: told when 135 s are left (15%), here after the second step.
-            fake.script = [step(1500.0), step(1800.0), step(1820.0),
-                           {"role": "assistant", "content": "Two hotels: Taj at ₹18,200 and Alila at ₹21,000."}]
-            ctx = RunContext(conversation="t-deadline", deadline=1900.0)
+            # 15 minutes: the interim answer when 135 s are left (15%), here after the second step; then it goes on.
+            fake.script = [step(1500.0), step(1800.0), {"role": "assistant", "content": so_far}, step(1850.0),
+                           {"role": "assistant", "content": whole}]
+            said = []
+            ctx = RunContext(conversation="t-deadline", deadline=1900.0, events=said.append)
             reply = await Agent(svc, svc.llm, svc.registry).run(ctx, "Three hotels in North Goa?")
-            self.assertEqual(reply, "Two hotels: Taj at ₹18,200 and Alila at ₹21,000.")
-            told = [[m["content"] for m in r["messages"] if str(m.get("content")).startswith("[Reminder, not a new request] Time")]
-                    for r in fake.requests]
-            self.assertEqual([len(t) for t in told], [0, 0, 1, 1])               # once, and kept
-            self.assertIn("about 2 minutes left", told[2][0])
-            self.assertIn("Without calling any tools, write your reply", told[2][0])
-            # Appended after what was there: the earlier messages are as they were, so nothing is read again.
-            before, after = fake.requests[1]["messages"], fake.requests[2]["messages"]
-            self.assertEqual(after[:len(before)], before)
-            self.assertEqual(after[-1]["content"], told[2][0])
-            # A run with no deadline (the owner's own tasks) is never told.
+            self.assertEqual(reply, whole)
+            self.assertEqual([e for e in said if e["type"] == "interim"], [{"type": "interim", "text": so_far}])
+            self.assertEqual(ctx.incomplete, False)
+            asked = fake.requests[2]
+            self.assertEqual(asked["tool_choice"], "none")
+            self.assertEqual(asked["messages"][-1]["content"], loop_module.TIME_NUDGE.format(minutes="2 minutes"))
+            # It carries on in the same conversation: every request extends the one before, nothing is edited.
+            for before, after in zip(fake.requests, fake.requests[1:]):
+                self.assertEqual(after["messages"][:len(before["messages"])], before["messages"])
+            carried = fake.requests[3]["messages"]
+            self.assertEqual([m["content"] for m in carried[-2:]], [so_far, loop_module.CARRY_ON])
+            self.assertNotIn("tool_choice", fake.requests[3])
+            # The time limit was soft: the run that worked on past it was not stopped there.
+            self.assertEqual(len(fake.requests), 5)
+            # A run with no deadline (the owner's own tasks) never writes one.
             fake.script = [step(5000.0), step(9000.0), {"role": "assistant", "content": "ok"}]
-            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-no-deadline"), "go")
-            self.assertNotIn("Time is nearly up", json.dumps(fake.requests[-1]["messages"]))
+            said.clear()
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-no-deadline", events=said.append), "go")
+            self.assertNotIn("Without calling any tools", json.dumps(fake.requests[-1]["messages"]))
+            self.assertFalse([e for e in said if e["type"] == "interim"])
             await svc.llm.aclose()
         self.assertEqual(loop_module.time_lead(900), 135)
         self.assertEqual(loop_module.time_lead(300), 120)
         self.assertEqual(loop_module.time_lead(60), 30)                 # never before half the time is up
+
+    async def test_near_the_hard_stop_at_twice_the_limit_a_run_writes_its_final_answer(self):
+        import time
+        from types import SimpleNamespace
+        from unittest import mock
+        from coderunner.agent import loop as loop_module
+        clock = [1000.0]
+        fake_time = SimpleNamespace(time=time.time, monotonic=lambda: clock[0])
+
+        def step(at):
+            def reply(body):
+                clock[0] = at
+                return tool_call("run_python", {"code": "print(1)"})
+            return reply
+        with FakeOpenAI() as fake, mock.patch.object(loop_module, "time", fake_time):
+            svc = Svc()
+            svc.sandbox = FakeSandbox()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            # Limit 900 s from 1000: interim at 1765, hard stop at 2800, final answer from 2665 (135 s before it).
+            fake.script = [step(1800.0), {"role": "assistant", "content": "Taj at ₹18,200 so far."}, step(2000.0),
+                           step(2700.0), {"role": "assistant", "content": "Taj at ₹18,200 and Alila at ₹21,000."}]
+            said = []
+            ctx = RunContext(conversation="t-hard", deadline=1900.0, events=said.append)
+            reply = await Agent(svc, svc.llm, svc.registry).run(ctx, "Hotels in North Goa?")
+            self.assertEqual(reply, "Taj at ₹18,200 and Alila at ₹21,000.")
+            self.assertEqual(fake.requests[-1]["messages"][-1]["content"], loop_module.TIME_UP)
+            self.assertEqual(fake.requests[-1]["tool_choice"], "none")
+            self.assertEqual(len([e for e in said if e["type"] == "interim"]), 1)
+            # The caller's own stop_at is used when given: here 2100, so the final answer comes from 2000.
+            clock[0] = 1000.0
+            fake.script = [step(1800.0), {"role": "assistant", "content": "Taj so far."}, step(2050.0),
+                           {"role": "assistant", "content": "Taj, final."}]
+            ctx = RunContext(conversation="t-hard2", deadline=1900.0, stop_at=2100.0)
+            self.assertEqual(await Agent(svc, svc.llm, svc.registry).run(ctx, "Hotels?"), "Taj, final.")
+            self.assertEqual(fake.requests[-1]["messages"][-1]["content"], loop_module.TIME_UP)
+            # Nothing missing after the interim answer: that answer, whole, is the final one.
+            clock[0] = 1000.0
+            fake.script = [step(1800.0), {"role": "assistant", "content": "All three: Taj, Alila and W."},
+                           {"role": "assistant", "content": "DONE"}]
+            ctx = RunContext(conversation="t-same", deadline=1900.0)
+            self.assertEqual(await Agent(svc, svc.llm, svc.registry).run(ctx, "Hotels?"), "All three: Taj, Alila and W.")
+            await svc.llm.aclose()
+
+    def test_closing_requests_ask_for_one_plain_sentence_and_no_labels(self):
+        import re
+        from coderunner.agent import loop as loop_module
+        label = re.compile(r"(^|[.!?]\s+)[A-Z][\w' ]{0,30}:")      # "What's unfinished:", "Total:"
+        for name in ("TIME_NUDGE", "STEPS_NUDGE", "TIME_UP", "OUT_OF_STEPS", "OUT_OF_ROOM", "GOING_ROUND"):
+            text = getattr(loop_module, name)
+            self.assertIn("one plain sentence", text, name)
+            self.assertIn("No headings, no labels", text, name)
+            self.assertNotIn("unfinished", text, name)
+            self.assertFalse(label.search(text.split("] ", 1)[-1]), name)
+        self.assertIn("still working on", loop_module.TIME_NUDGE)
+        self.assertIn("still missing", loop_module.OUT_OF_STEPS)
+        self.assertIn("complete on its own", loop_module.CARRY_ON)
+        self.assertIn('Never put a placeholder, a "typical" range or a guess', loop_module.SYSTEM)
 
     def test_an_answer_cut_short_keeps_findings_and_the_status_lines_that_hold_one(self):
         from coderunner.agent.loop import findings, stopped_reply
@@ -878,19 +945,44 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((llm.think_kwargs, llm.steady_thinking), ({}, True))
         await llm.aclose()
 
-    async def test_step_limit(self):
+    async def test_a_run_at_its_step_budget_posts_an_interim_answer_and_carries_on_for_three_budgets_at_most(self):
+        from coderunner.agent import loop as loop_module
+        step = tool_call("run_python", {"code": "print(1)"})
         with FakeOpenAI() as fake:
             svc = Svc({"agent": {"max_steps": 3}})
             svc.sandbox = FakeSandbox()
             svc.llm = LLM(fake.base_url, "test")
             svc.registry = build_registry(svc)
-            fake.script = [tool_call("run_python", {"code": "print(1)"})] * 3 + [
-                {"role": "assistant", "content": "Found 1 so far; the rest is unfinished."}]
-            reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t4"), "loop")
-            self.assertEqual(reply, "Found 1 so far; the rest is unfinished.")   # what it found is not lost
+            said = []
+            fake.script = ([step] * 3 + [{"role": "assistant", "content": "Found 1 so far; still looking for 2."}]
+                           + [step] * 3 + [{"role": "assistant", "content": "Found 1 and 2; still looking for 3."}]
+                           + [step] * 3 + [{"role": "assistant", "content": "Found 1 and 2; 3 is still missing."}])
+            ctx = RunContext(conversation="t4", events=said.append)
+            reply = await Agent(svc, svc.llm, svc.registry).run(ctx, "loop")
+            self.assertEqual(reply, "Found 1 and 2; 3 is still missing.")      # what it found is not lost
+            self.assertEqual([e["text"] for e in said if e["type"] == "interim"],
+                             ["Found 1 so far; still looking for 2.", "Found 1 and 2; still looking for 3."])
+            self.assertEqual(sum(e["type"] == "tool" for e in said), 9)          # three budgets of three steps
+            self.assertEqual(fake.requests[3]["messages"][-1]["content"], loop_module.STEPS_NUDGE.format(steps=3))
+            self.assertEqual(fake.requests[3]["tool_choice"], "none")
+            self.assertEqual(fake.requests[4]["messages"][-1]["content"], loop_module.CARRY_ON)
+            self.assertEqual(fake.requests[-1]["messages"][-1]["content"], loop_module.OUT_OF_STEPS)
             self.assertEqual(fake.requests[-1]["tool_choice"], "none")    # tools kept, so the prompt prefix holds
             self.assertEqual(fake.requests[-1]["tools"], fake.requests[0]["tools"])
-            fake.script = [tool_call("run_python", {"code": "print(1)"})] * 3 + [{"role": "assistant", "content": ""}]
+            for before, after in zip(fake.requests, fake.requests[1:]):
+                self.assertEqual(after["messages"][:len(before["messages"])], before["messages"])
+            self.assertTrue(ctx.incomplete)
+            # Done within the second budget: one interim answer, then the whole answer.
+            said.clear()
+            fake.script = [step] * 3 + [{"role": "assistant", "content": "1 so far."}, step,
+                                        {"role": "assistant", "content": "1 and 2, both found."}]
+            ctx = RunContext(conversation="t4b", events=said.append)
+            self.assertEqual(await Agent(svc, svc.llm, svc.registry).run(ctx, "loop"), "1 and 2, both found.")
+            self.assertEqual([e["text"] for e in said if e["type"] == "interim"], ["1 so far."])
+            self.assertFalse(ctx.incomplete)
+            # Nothing written at any point: said plainly.
+            empty = {"role": "assistant", "content": ""}
+            fake.script = ([step] * 3 + [empty]) * 3
             reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t5"), "loop")
             self.assertIn("step limit", reply)
             await svc.llm.aclose()
@@ -917,8 +1009,9 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             await Agent(svc, svc.llm, svc.registry).run(ctx, "what is 6 times 7")
             self.assertEqual((ctx.incomplete, events.incomplete), (False, False))
             # Out of steps, whatever the last reply says.
-            fake.script = [tool_call("run_python", {"code": "print(1)"})] * 2 + [
-                {"role": "assistant", "content": "Here is what I have: 1."}]
+            fake.script = ([tool_call("run_python", {"code": "print(1)"})] * 2
+                           + [{"role": "assistant", "content": "So far: 1."}]) * 2 + [
+                tool_call("run_python", {"code": "print(1)"})] * 2 + [{"role": "assistant", "content": "Here is what I have: 1."}]
             ctx = RunContext(conversation="t-out", events=events)
             await Agent(svc, svc.llm, svc.registry).run(ctx, "loop")
             self.assertEqual((ctx.incomplete, events.incomplete), (True, True))

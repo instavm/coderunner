@@ -309,6 +309,9 @@ def _print_check(result: dict) -> int:
         took = f"{task['seconds']} s" if task.get("seconds") is not None else ""
         asked = f" ({task['approvals']} approval{'s' if task['approvals'] != 1 else ''} asked)" if task.get("approvals") else ""
         print(f"  {task['state'].replace('_', ' '):<10}{task['name']:<11}{took:>7}  {task['why']}{asked}")
+        if task.get("seconds_final") not in (None, task.get("seconds")):       # it carried on past its limit
+            print(f"  {'  then ' + task['state_final'].replace('_', ' '):<21}{str(task['seconds_final']) + ' s':>7}"
+                  f"  {task['why_final']}")
     print(f"{result['passed']} of {result['ran']} passed"
           + (f", {result['needs_you']} stopped at a step that is yours" if result.get("needs_you") else "")
           + (f", {result['skipped']} skipped" if result["skipped"] else ""))

@@ -145,6 +145,7 @@ class Tasks:
         self.slots: dict[str, int] = {}         # running task -> its place (its model slot and code session)
         self._asked: dict[str, object] = {}     # approval id -> the thread of the task that asked
         self._ended: dict[str, list[asyncio.Future]] = {}   # task id -> whoever waits for it to end (wait)
+        self._emits: dict[str, object] = {}     # task id -> its event sender, while it has not ended
         daemon.svc.audit.listeners.append(self._on_audit)
         # A daemon that stopped mid-task left it "running" for ever: its thread says how it ended.
         for row in self.store.query("SELECT id, conversation FROM tasks WHERE status IN ('running', 'queued')"):
@@ -163,7 +164,8 @@ class Tasks:
         """attachments: ids of files the owner attached in the app (files/attached.py). remote: the name of the
         Anthropic model this one task runs on, when the owner asked for it (a retry of a task the local model
         did not finish); empty for the assistant's own model. time_limit: seconds from when it starts running
-        after which the caller will stop it (the check's limit), so it answers before then; 0 for none.
+        (the check's limit): it posts an interim answer before then and carries on, and is stopped at
+        HARD_STOP times it; 0 for none.
         routine: {"id", "name", "spec"} for a run of a routine made in this conversation, which the thread shows
         by the routine's name; tainted: its prompt was written after reading untrusted content, so the run starts
         untrusted."""
@@ -177,6 +179,8 @@ class Tasks:
         base = {"task": task_id, "conversation": conversation}
 
         def emit(event: dict) -> None:
+            if event.get("type") == "interim":
+                emit.interim = str(event.get("text") or "")     # what a caller grades at the time limit (check)
             self.bus.publish({**base, **event})
 
         emit.task, emit.conversation = task_id, conversation
@@ -184,6 +188,8 @@ class Tasks:
         emit.remote, emit.incomplete, emit.tainted = remote, False, tainted
         emit.time_limit = max(0.0, float(time_limit or 0))
         emit.run = None                 # the run's context, set by the agent loop once it starts
+        emit.interim = ""               # its latest interim answer
+        self._emits[task_id] = emit
         files = [info for info in map(attached.describe, (attachments or [])[:attached.MAX_PER_TASK]) if info]
         emit({"type": "started", "prompt": prompt, **({"attachments": files} if files else {}),
               **({"remote": remote} if remote else {}), **({"routine": routine} if routine else {})})
@@ -218,8 +224,14 @@ class Tasks:
         from ..files import attached as kept
         from ..agent.loop import stopped_reply
         outputs = kept.outputs_now()            # to tell afterwards what this task made
+        hard = None
         if emit.time_limit:
+            from ..agent.loop import HARD_STOP
             emit.deadline = time.monotonic() + emit.time_limit      # counted from when it runs, as the caller does
+            # The limit is soft (the run answers before it and carries on); here it is stopped for good, and
+            # answers from what it had found, as a task the owner stops.
+            emit.stop_at = time.monotonic() + HARD_STOP * emit.time_limit
+            hard = asyncio.get_running_loop().call_later(HARD_STOP * emit.time_limit, asyncio.current_task().cancel)
         try:
             channel, _, chat_id = conversation.partition(":")
             text, images = prompt, None
@@ -245,6 +257,8 @@ class Tasks:
             status, reply = "failed", ("I couldn't finish this: something went wrong on my side partway through. "
                                        "Anything said above still stands. You can ask again.")
         finally:
+            if hard is not None:
+                hard.cancel()
             self.running.pop(task_id, None)
             if status == "done" and emit.shots["since"]:
                 await self._capture(emit, 0, again=True)        # how the page stood when it finished
@@ -348,7 +362,17 @@ class Tasks:
             self._ended.setdefault(task_id, []).append(future)
         return future
 
+    def so_far(self, task_id: str) -> tuple[str, bool]:
+        """What a running task has answered so far: its latest interim answer (True), or else what it would answer
+        if it were stopped now (False). The check grades this at the time limit."""
+        emit = self._emits.get(task_id)
+        if emit is not None and getattr(emit, "interim", ""):
+            return emit.interim, True
+        from ..agent.loop import stopped_reply
+        return stopped_reply(getattr(emit, "run", None)), False
+
     def _end(self, task_id: str) -> None:
+        self._emits.pop(task_id, None)
         row = self.get(task_id)
         for future in self._ended.pop(task_id, []):
             if not future.done():
