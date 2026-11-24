@@ -338,7 +338,8 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
             "modelcards": ("| Model | Context | Licence |\n|---|---|---|\n| Qwen2.5-7B-Instruct | 131,072 | Apache 2.0 |\n"
                            "| Llama-3.1-8B-Instruct | 128K | Llama 3.1 Community License |\n| Mistral-7B-Instruct-v0.3 | 32K | "
                            "Apache 2.0 |\n" + src, "32K", "16K"),
-            "passportfee": ("₹1,500 under the normal scheme and ₹3,500 under Tatkaal. " + src, "₹3,500", "₹2,000"),
+            "passportfee": ("₹2,500 under the normal scheme, and ₹2,500 more under Tatkaal: ₹5,000 in all. " + src,
+                            "₹5,000", "₹3,500"),
             "reporate": ("The repo rate is 5.50%, cut by 50 basis points on 6 June 2025. " + src, "5.50%", "low"),
             "upi": ("UPI was launched in April 2016 and is run by NPCI. In October 2026 it handled 21.3 billion "
                     "transactions. " + src, "billion", "lots of"),

@@ -299,7 +299,8 @@ RESEARCH = [
     Real("passportfee", "research", "a government fee under two schemes, from the government's site",
          "What is the fee for a fresh 36-page Indian passport for an adult under the normal scheme and under Tatkaal, "
          "according to the Passport Seva site? Give both amounts and the link.",
-         {"normal": r"1,?500", "Tatkaal": r"3,?500", "the scheme": r"tatk?aa?l"}, links=1, prices=2, suite="research"),
+         # As the fee page showed on 24 November 2026: Rs.2,500, and Rs.2,500 more for Tatkaal.
+         {"normal": r"2,?500", "Tatkaal": r"5,?000", "the scheme": r"tatk?aa?l"}, links=1, prices=2, suite="research"),
     Real("reporate", "research", "a central bank's current rate, when it last changed and by how much",
          "What is the Reserve Bank of India's policy repo rate right now, when was it last changed, and by how much? "
          "Cite the RBI's own site.",
