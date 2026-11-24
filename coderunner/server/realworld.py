@@ -20,7 +20,10 @@ RULES = ("\n\nRules for this task: do not sign in, create an account, pay, or en
          "if it kept you from a result. "
          "Open only the few pages you need on each site. Link each page you used where you mention it.")
 LIMIT_S = 600
-MONEY = re.compile(r"(?:₹|Rs\.?|INR|MUR|US\$|\$|USD|€|EUR|£)\s?\d[\d,.]*|\d[\d,.]*\s?(?:rupees|INR|MUR|USD|dollars|euros)", re.I)
+# An amount with its currency, before or after it as each country writes it: "₹1,999", "$1.2M", "499,99 €",
+# "R$ 5.999", "¥14,720", "14,720円".
+MONEY = re.compile(r"(?:₹|Rs\.?|INR|MUR|US\$|\$|USD|€|EUR|£|GBP|¥|JPY|CHF)\s?\d[\d,.]*|"
+                   r"\d[\d,.]*\s?(?:rupees|INR|MUR|USD|dollars|euros|€|EUR|£|GBP|¥|円|JPY|yen|CHF)", re.I)
 LINK = re.compile(r"https?://[^\s<>()\[\]\"']+")
 WALL = re.compile(r"captcha|verify (that )?you('re| are) (a )?human|unusual traffic|automated (access|visits|queries)|"
                   r"access denied|blocked (me|the|automated|access)|bot (wall|detection|protection)|robot check", re.I)
@@ -28,7 +31,8 @@ COMMITS = ("browser.sensitive", "browser.password", "browser.handoff", "channel.
 # An answer that opens by saying it could not do the task has not done it, whatever else it holds: the first
 # run passed a price comparison of a phone no shop listed, and a cart nothing had been put in.
 GAVE_UP = re.compile(r"\b(I )?(couldn.t|could not|was unable to|wasn.t able to|did not manage to) (complete|finish|do|find|get|add|verify)|"
-                     r"\bI did not add anything|\bnone of the (three )?sites (has|have|had)", re.I)
+                     r"\bI did not add anything|\bnone of the (three )?sites (has|have|had)|"
+                     r"\bich konnte (die|den|das|keine|nicht)|\bje n.ai pas pu|\bno (he )?pude|\bnão consegui|できませんでした", re.I)
 
 
 @dataclass
@@ -250,6 +254,86 @@ FORMS = [
          {"the instalment": r"21,?69[5-6]"}, links=1, prices=2, chose=(r"25,?00,?000", r"8\.5", r"^(20|240)$")),
 ]
 EVERY = TASKS + FORMS
+
+# The world (`coderunner check --world`): the same kinds of task away from India, several asked and answered in
+# the site's own language. The answer is checked for that language as well as for its parts.
+GERMAN = r"\b(und|mit|für|ist|nicht)\b.*\b(der|die|das|den|dem)\b"
+FRENCH = r"\b(avec|pour|dans|est|sont)\b.*\b(le|la|les|des|du)\b"
+SPANISH = r"\b(con|para|por|sale|llega)\b.*\b(el|los|las|del)\b"
+PORTUGUESE = r"\b(não|é|mais|com|para)\b.*\b(o|os|as|do|da)\b"
+TIMES = r"\b\d{1,2}[:.]\d{2}\b.*\b\d{1,2}[:.]\d{2}\b"
+WORLD = [
+    Real("sfmarket", "research", "San Francisco's home prices: the median, its change in a year, the dearest and cheapest areas",
+         "Analyse San Francisco's housing market from two sources (for example Redfin, Zillow, or the San Francisco "
+         "Association of Realtors): the current median sale price and its change from a year ago, the median price "
+         "per square foot, and the three most and three least expensive neighbourhoods by median price, in a table. "
+         "Say where the two sources disagree.",
+         {"a median": r"median", "a yearly change": r"[-+−]?\d+(\.\d+)?\s?%", "a table": r"\|.*\|",
+          "neighbourhoods": r"pacific heights|presidio|sea cliff|noe valley|marina|russian hill|bayview|excelsior|"
+                            r"visitacion|sunset|richmond|ingleside|mission|bernal|potrero|twin peaks",
+          "per square foot": r"sq\.?\s?ft|square f|/\s?ft"}, links=2, prices=3, long=True),
+    Real("sflistings", "shopping", "three San Francisco condos for sale under a price, with the figures a buyer compares",
+         "Find three 2-bedroom condos for sale in San Francisco under $1,200,000 on Redfin (or another listings site if "
+         "it turns you away). For each give the price, the area in square feet, the price per square foot, the "
+         "monthly HOA fee and the link, and say which is the best value per square foot.",
+         {"two bedrooms": r"\b2\s?(bd|beds?|br|bedrooms?)\b|two.bedroom", "HOA fees": r"\bHOA\b",
+          "per square foot": r"sq\.?\s?ft|square f|/\s?ft", "the best value": r"best value|cheapest|lowest|best"},
+         links=1, prices=3, long=True),
+    Real("bayrent", "research", "rent against income in three Bay Area cities, worked out in the sandbox",
+         "Find the median rent for a one-bedroom apartment in San Francisco, Oakland and San Jose from a rent report "
+         "(for example Zumper or Apartment List), and each city's median household income from the US Census "
+         "(QuickFacts). Work out with Python what share of monthly median income a year of rent takes in each, and "
+         "give a table with sources.",
+         {"Oakland": r"oakland", "San Jose": r"san jos[eé]", "a share": r"\d+(\.\d+)?\s?%", "a table": r"\|.*\|"},
+         links=2, prices=3, tool="run_python", needs=("browser", "sandbox")),
+    Real("ustax", "research", "a salary's federal and California income tax worked out from the official brackets",
+         "A single filer in California earns $150,000 in wages in 2026 and takes the standard deduction. Using the "
+         "2026 federal brackets from irs.gov and the California brackets from ftb.ca.gov, work out the federal and "
+         "the state income tax (not payroll taxes), show the steps, and give the total and the effective rate.",
+         {"federal": r"federal|IRS", "California": r"california|FTB", "a total": r"total",
+          "an effective rate": r"effective.{0,40}\d+(\.\d+)?\s?%|\d+(\.\d+)?\s?%.{0,40}effective"}, links=2, prices=3),
+    Real("london", "shopping", "three London flats to rent under a monthly budget",
+         "Find three one-bedroom flats to rent in Islington, London for under £2,500 a month on Rightmove, Zoopla or "
+         "OpenRent. Give the rent, the nearest station, when it is available, and the link for each.",
+         {"Islington": r"islington|\bN[17]\b|\bEC1", "one bedroom": r"\b1\s?(bed|br)|one.bed",
+          "a monthly rent": r"pcm|per month|/\s?month|a month|p/?m\b"}, links=1, prices=3),
+    Real("kaffee", "shopping", "three coffee machines under a budget from two German shops, answered in German",
+         "Finde drei Kaffeevollautomaten unter 500 € bei zwei deutschen Händlern (zum Beispiel otto.de, mediamarkt.de, "
+         "saturn.de oder amazon.de). Nenne für jeden Preis, Bewertung und Link, und empfiehl einen. Antworte auf Deutsch.",
+         {"German": GERMAN, "coffee machines": r"kaffeevollautomat|vollautomat|espresso",
+          "a recommendation": r"empfehl|Empfehlung|meine Wahl|am besten|Tipp"}, links=2, prices=3),
+    Real("idealo", "lookup", "one product's price on a German comparison site and at a shop, against a threshold",
+         "Wie viel kostet der Sony WH-1000XM6 gerade auf idealo.de, und wie viel bei amazon.de? Liegt eines der "
+         "Angebote unter 350 €? Antworte auf Deutsch, mit den Links.",
+         {"German": GERMAN, "the headphones": r"WH-?\s?1000\s?XM6",
+          "a verdict": r"unter|über|günstiger|teurer|nicht"}, links=1, prices=2),
+    Real("bahn", "travel", "three morning trains between two German cities, answered in German",
+         "Suche auf bahn.de (oder einer anderen Fahrplanseite, falls sie dich abweist) drei Verbindungen von Berlin Hbf "
+         "nach München Hbf am Donnerstag, 14. Januar 2027, vormittags: Abfahrt, Ankunft, Dauer, Umstiege und Preis, "
+         "wo er angezeigt wird. Antworte auf Deutsch.",
+         {"German": GERMAN, "times": TIMES, "a train": r"\bICE\b|\bIC\b|\bECE?\b|flixtrain"}, links=1),
+    Real("lyon", "shopping", "three flats to rent in Lyon under a budget, answered in French",
+         "Trouve trois appartements T2 à louer à Lyon pour moins de 1 000 € par mois, sur seloger.com, pap.fr ou un "
+         "autre site immobilier français. Donne le loyer, la surface, l'arrondissement et le lien de chacun. Réponds "
+         "en français.",
+         {"French": FRENCH, "the area": r"m²|m2\b|mètres? carrés",
+          "the arrondissement": r"\b6900\d\b|\b\d(er|e|ème)\b|lyon\s?\d|arrondissement"}, links=1, prices=3),
+    Real("ave", "travel", "three morning trains between Madrid and Barcelona, answered in Spanish",
+         "¿Qué trenes salen de Madrid a Barcelona el viernes 15 de enero de 2027 por la mañana? Busca tres en "
+         "renfe.com u otra web de trenes (Iryo, Ouigo, Trainline) con hora de salida, de llegada, duración y precio, "
+         "y responde en español.",
+         {"Spanish": SPANISH, "times": TIMES, "a train": r"\bAVE\b|\bAVLO\b|iryo|ouigo|alvia"}, links=1, prices=1),
+    Real("shinkansen", "travel", "three bullet trains from Tokyo to Osaka with fares, answered in Japanese",
+         "2027年1月15日の朝、東京から新大阪までの新幹線を3本調べて、出発時刻・到着時刻・所要時間・指定席の料金を"
+         "日本語で答えてください。参照したページのリンクも付けてください。",
+         {"Japanese": r"([぀-ヿ].*){4}", "times": r"\d{1,2}[:：時]\d{2}",
+          "a train": r"のぞみ|ひかり|こだま|nozomi|hikari|kodama"}, links=1, prices=1),
+    Real("brasil", "shopping", "one phone's price at two Brazilian shops, answered in Portuguese",
+         "Compare o preço do iPhone 16 de 128 GB na Amazon (amazon.com.br) e no Mercado Livre (mercadolivre.com.br). "
+         "Diga qual é mais barato, com os links, e responda em português.",
+         {"Portuguese": PORTUGUESE, "the phone": r"iphone 16",
+          "the cheaper": r"mais barat|menor preço|mais em conta"}, links=1, prices=2),
+]
 
 # Research (`coderunner check --research`): questions answered from several pages, most with an answer that does
 # not change, so the grade says whether it is right and not only whether it has the parts. A few need today's

@@ -265,14 +265,15 @@ def cmd_check(args, config: Config) -> int:
     if args.last:
         shown = _admin(config, "GET", "/api/check")
         result = (shown["real"]["result"] if args.real else shown.get("research") if args.research
-                  else shown.get("check") or shown.get("result"))
+                  else shown.get("world") if args.world else shown.get("check") or shown.get("result"))
         if not result:
             print("No check has been run yet.")
             return 1
         return _print_check(result)
     try:
         _admin(config, "POST", "/api/check", {"names": args.names, "long": args.long, "real": args.real,
-                                              "suite": "research" if args.research else "", "minutes": args.minutes})
+                                              "suite": "research" if args.research else "world" if args.world else "",
+                                              "minutes": args.minutes})
     except RuntimeError as exc:
         try:
             print(json.loads(str(exc).split(": ", 1)[1])["error"])
@@ -983,6 +984,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "or submitted")
     p.add_argument("--research", action="store_true",
                    help="twelve questions answered from several real pages, most with an answer that can be checked")
+    p.add_argument("--world", action="store_true",
+                   help="twelve tasks away from India (San Francisco homes, London rents, US tax), several in German, "
+                        "French, Spanish, Japanese or Portuguese and answered in that language")
     p.add_argument("--minutes", type=int, default=0, help="one time limit for every task, in minutes")
     p.set_defaults(func=cmd_check)
 

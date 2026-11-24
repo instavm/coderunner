@@ -252,6 +252,25 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(re.search(parts["news"]["three items"], news, re.I | re.S))
         self.assertFalse(re.search(parts["news"]["three items"], news.split("\n\n")[0], re.I | re.S))
 
+    def test_tasks_abroad_are_graded_in_their_own_language_and_currency(self):
+        from coderunner.server import realworld
+        world = {t.name: t for t in realworld.WORLD}
+        self.assertEqual(len(realworld.MONEY.findall("499,99 € · R$ 5.999 · ¥14,720 · 14,720円 · £2,350 pcm")), 5)
+        kaffee = ("Ich empfehle die De'Longhi Magnifica S für 349,99 € bei https://www.otto.de/p/1, denn sie ist leise "
+                  "und hat den besten Milchaufschäumer. Die Philips 2200 kostet 299 € (https://www.mediamarkt.de/p/2), "
+                  "die Siemens EQ.300 459 € (https://www.otto.de/p/3). Alle drei sind Kaffeevollautomaten mit 4,5 Sternen.")
+        visited = ["https://www.otto.de/suche", "https://www.mediamarkt.de/de/search"]
+        self.assertEqual(realworld.grade(world["kaffee"], kaffee, visited, [], [])[0], "passed")
+        english = ("I recommend the De'Longhi Magnifica S at €349.99 (https://www.otto.de/p/1); the Philips 2200 is €299 "
+                   "(https://www.mediamarkt.de/p/2) and the Siemens EQ.300 €459. All three are bean-to-cup espresso machines.")
+        self.assertIn("missing German", realworld.grade(world["kaffee"], english, visited, [], [])[1])
+        shinkansen = ("東京駅6:00発のぞみ1号は新大阪8:27着（2時間27分）、指定席14,720円です。"
+                      "のぞみ3号は6:12発、8:42着です。https://www.jr-central.co.jp/a")
+        state, why, _ = realworld.grade(world["shinkansen"], shinkansen, ["https://www.jr-central.co.jp/"], [], [])
+        self.assertEqual(state, "passed", why)
+        self.assertIn("the answer says it could not be done",
+                      realworld.grade(world["idealo"], "Ich konnte die Seite nicht öffnen.", [], [], [])[1])
+
     def test_an_answer_is_graded_on_its_parts_its_links_its_prices_and_what_was_committed(self):
         from coderunner.server import realworld
         task = next(t for t in realworld.TASKS if t.name == "phone")

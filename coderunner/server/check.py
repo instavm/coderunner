@@ -158,8 +158,8 @@ CHECKS = [
 ]
 
 
-SUITES = {"check": CHECKS, "real": realworld.EVERY, "research": realworld.RESEARCH}
-WEB = ("real", "research")          # the sets run on real websites
+SUITES = {"check": CHECKS, "real": realworld.EVERY, "research": realworld.RESEARCH, "world": realworld.WORLD}
+WEB = ("real", "research", "world")         # the sets run on real websites
 ANSWER_CHARS = 6000                 # of each answer kept in the result, to read one model's against another's
 REAL_STEPS = 60                     # a trip plan over several sites needs more steps than a day's ordinary task
 
@@ -197,7 +197,7 @@ class CheckJob:
                 # The tasks on real websites (`coderunner check --real`: twenty everyday ones and five forms), and how they went last time.
                 "real": {"names": [{"name": t.name, "what": t.what, "long": t.long, "kind": t.kind} for t in realworld.EVERY],
                          "result": self.result if self.suite == "real" and self.result else last("real")},
-                "check": last("check"), "research": last("research")}
+                "check": last("check"), "research": last("research"), "world": last("world")}
 
     @staticmethod
     async def _started(tasks, task_id: str):
