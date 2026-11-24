@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from typing import Awaitable, Callable
 
 import httpx
 
@@ -124,6 +125,11 @@ class DecisionModel:
         # On the assistant's own llama.cpp runtime: the slot kept for the judge, after the tasks' slots, so a
         # judgement never lands in a task's slot and throws away the conversation it holds (set by the daemon).
         self.slot: int | None = None
+        # A judge on a model this computer starts itself (the browser driver's, beside the owner's model server):
+        # prepare starts it, and the judge it stands in for answers when it cannot.
+        self.prepare: Callable[[], Awaitable[None]] | None = None
+        self.fallback: "DecisionModel | None" = None
+        self._prepared = False
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.AsyncClient(timeout=timeout, headers=headers, trust_env=False, transport=transport)
 
@@ -148,6 +154,19 @@ class DecisionModel:
                           examples: tuple = ()) -> float:
         """Probability that the answer is one of the positive criteria keys. examples: (state, key) pairs a chat
         model is shown answered first (a decision model has its own training for this and is not shown them)."""
+        if self.fallback is None:
+            return await self._probability(state, question, criteria, positive, examples)
+        try:
+            if self.prepare is not None and not self._prepared:
+                await self.prepare()
+                self._prepared = True
+            return await self._probability(state, question, criteria, positive, examples)
+        except Exception:
+            self._prepared = False          # started again before the next step, if it went away
+            return await self.fallback.probability(state, question, criteria, positive, examples)
+
+    async def _probability(self, state: str, question: str, criteria: dict[str, str], positive: set[str],
+                           examples: tuple = ()) -> float:
         if self.api == "systemone" and self.claude is None:
             response = await self._client.post(f"{self.base_url}/systemone", json={
                 "model": self.model, "state": state,

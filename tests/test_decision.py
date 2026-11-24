@@ -76,6 +76,28 @@ class ActionCheckTests(DecisionTestCase):
         self.assertTrue([e for e in self.audit.tail() if e["event"] == "decision.check"][-2].get("seen"))
         await model.aclose()
 
+    async def test_a_judge_on_this_computer_is_started_once_and_the_server_answers_when_it_cannot(self):
+        letters = iter(["A", "B"])
+        server = self.model(lambda r: httpx.Response(200, json={"choices": [{"message": {"content": "B"}}]}), api="chat")
+        local = self.model(lambda r: httpx.Response(200, json={"choices": [{"message": {"content": next(letters)}}]})
+                           if r.url.host == "local" else httpx.Response(500), api="chat")
+        local.base_url, started = "http://local/v1", []
+
+        async def start():
+            started.append(1)
+        local.prepare, local.fallback = start, server
+        check = ActionCheck(local, audit=self.audit)
+        self.assertFalse(await check.commits(describe("x.example", "/", "click", "button", "Next")))     # local: A
+        self.assertTrue(await check.commits(describe("x.example", "/", "click", "button", "Pay")))       # local: B
+        self.assertEqual(started, [1])
+        local.base_url = "http://gone/v1"                       # stopped: the server judges, and it is started again
+        self.assertTrue(await check.commits(describe("x.example", "/", "click", "button", "Order")))
+        self.assertEqual(self.requests[-1]["model"], "tev1:4b")
+        await local.probability("s", "q", {"no": "No", "yes": "Yes"}, {"yes"})
+        self.assertEqual(started, [1, 1])
+        await server.aclose()
+        await local.aclose()
+
     async def test_failures_ask_the_owner(self):
         model = self.model(lambda r: httpx.Response(500, text="model not loaded"))
         self.assertTrue(await ActionCheck(model, audit=self.audit).commits("Site: x"))

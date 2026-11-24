@@ -351,6 +351,15 @@ class Daemon:
         alias = (runtime._state().get("active") or {}).get("alias") or settings["model"]
         swap = Swap(svc, None, runtime) if served else \
             Swap(svc, choose_runtime(self.config), runtime) if settings.get("exclusive") else None
+        decider = getattr(getattr(svc, "browser", None), "decider", None)
+        if served and decider is not None:
+            # The step judge asks the driver too: a judge call on the server's other slot made the server drop
+            # the task's slot, read again at the next step (27 of the 37 long re-reads in a 30-minute trip plan).
+            from ..safety.decision import DecisionModel
+            local = DecisionModel(runtime.base_url, alias, api="chat")
+            local.prepare = lambda: asyncio.to_thread(runtime.start)
+            local.fallback = decider.model
+            decider.model = local
         from ..models import catalog
         try:
             fmt = settings.get("format") or catalog.get(settings["model"])["driver"]["format"]
