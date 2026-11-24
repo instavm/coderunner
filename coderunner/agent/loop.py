@@ -95,6 +95,11 @@ def call_key(name: str, arguments: Any) -> tuple[str, str]:
 REPEAT_SEARCH = ("\nNote: you searched for nearly this at step {step}. If it did not give you what you need then, "
                  "it will not now: try another source, or answer with what you have.")
 REPEAT_OPEN = "\nNote: you opened this page at step {step} already."
+# The same call giving back the same thing: a 27B read one Wikipedia section with browser_snapshot 78 times,
+# scrolling between, for a score that was in its first reading.
+SAME_RESULT = ("\nNote: this gave back exactly what it gave at step {step}. Reading it again will not change it: use "
+               "what it says, or try something else.")
+OWN_STEPS = {"plan_update", "tell_owner", "show_items"}
 REPEATS_BEFORE_ANSWER = 3     # repeats after WRAP_FROM steps
 GOING_ROUND = ("You are going over ground you have already covered (the same searches and pages again). Without "
                "calling any tools, write your reply to me now from what you have found: the answer first, with a link "
@@ -110,11 +115,12 @@ def query_words(query: str) -> frozenset[str]:
 
 
 class Repeats:
-    """The searches and pages of one run, and the step each was first made at."""
+    """The searches, pages and results of one run, and the step each was first made or given at."""
 
     def __init__(self):
         self.queries: list[tuple[frozenset[str], int]] = []
         self.pages: dict[str, int] = {}
+        self.results: dict[tuple[str, str], tuple[int, int]] = {}
 
     def check(self, name: str, arguments: Any, step: int) -> str:
         """A note for a call that repeats an earlier one, or ""."""
@@ -135,6 +141,17 @@ class Repeats:
             if url in self.pages:
                 return REPEAT_OPEN.format(step=self.pages[url] + 1)
             self.pages[url] = step
+        return ""
+
+    def same(self, name: str, arguments: Any, result: str, step: int) -> str:
+        """A note for a call that gave back exactly what the same call gave before, or ""."""
+        if name in OWN_STEPS:
+            return ""
+        key, digest = call_key(name, arguments), hash(result)
+        earlier = self.results.get(key)
+        if earlier is not None and earlier[0] == digest:
+            return SAME_RESULT.format(step=earlier[1] + 1)
+        self.results[key] = (digest, step)
         return ""
 
 
@@ -598,9 +615,12 @@ class Agent:
                     again = repeats.check(name, arguments, step)
                     result = await self.registry.invoke(name, arguments, ctx)
                     failed = result.startswith("Error:") or "\nError:" in result[:200]
-                    if again and not failed:
-                        result += again
-                        late_repeats += step >= WRAP_FROM
+                    if not failed:
+                        same = repeats.same(name, arguments, result, step)      # recorded either way
+                        again = again or same
+                        if again:
+                            result += again
+                            late_repeats += step >= WRAP_FROM
                     ctx.emit({"type": "tool_done", "id": call.get("id", ""), "name": name, "ok": not failed,
                               "preview": result[:300]})
                     if ctx.plan != plan_before:

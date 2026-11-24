@@ -508,6 +508,28 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sum("you opened this page at step 4" in t for t in tools), REPEATS_BEFORE_ANSWER)
             await svc.llm.aclose()
 
+    async def test_reading_the_same_thing_again_is_noted_and_counts_as_going_round(self):
+        from coderunner.agent.loop import GOING_ROUND, WRAP_FROM
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            class Reading(FakeBrowser):
+                async def snapshot(self, **kwargs):
+                    return {"url": "https://en.wikipedia.org/wiki/Final", "title": "Final", "content": self.page_text,
+                            "changed": False}
+            svc.browser = Reading("Penalty shoot-out: Argentina won 4-2")
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            read = tool_call("browser_snapshot", {"start": "Penalty shoot-out"})
+            fake.script = [read] * (WRAP_FROM + 3) + [{"role": "assistant", "content": "Argentina won 4-2 on penalties."}]
+            reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-same"), "the shoot-out score")
+            self.assertEqual(reply, "Argentina won 4-2 on penalties.")
+            last = fake.requests[-1]["messages"]
+            self.assertEqual(last[-1]["content"], GOING_ROUND)
+            tools = [m["content"] for m in last if m["role"] == "tool"]
+            self.assertNotIn("gave back exactly", tools[0])
+            self.assertIn("gave back exactly what it gave at step 1", tools[1])
+            await svc.llm.aclose()
+
     async def test_an_early_repeat_is_noted_and_the_task_goes_on(self):
         with FakeOpenAI() as fake:
             svc = Svc()
