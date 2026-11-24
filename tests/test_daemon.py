@@ -193,6 +193,64 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(delivered, [("brief", "Your day is clear.")])
             self.assertFalse(daemon.svc.scheduler.get(created["id"])["enabled"])
 
+    async def test_a_routine_made_in_an_app_conversation_runs_as_a_task_in_that_thread(self):
+        from datetime import datetime, timedelta
+        from coderunner.server.tasks import EventBus, Tasks
+        with FakeOpenAI() as fake:
+            daemon = self.make_daemon(fake)
+            daemon.bus = EventBus(daemon.svc.store)
+            daemon.tasks = Tasks(daemon, daemon.bus)
+            delivered = []
+
+            async def deliver(schedule, text):
+                delivered.append((schedule["name"], text))
+
+            daemon.svc.scheduler.deliver = deliver
+            fake.script = [{"role": "assistant", "content": "Three deals today."}]
+            made = daemon.svc.scheduler.add("Deal hunt", "in 5m", "Find the best deals", "app", "t1")
+            later = datetime.now().astimezone() + timedelta(minutes=6)
+            self.assertEqual(await daemon.svc.scheduler.tick(now=later), 1)
+            # In the thread like any task, with its answer; the request is shown as the routine's run.
+            ran = daemon.tasks.tasks("app:t1")
+            self.assertEqual([(t["prompt"], t["status"], t["reply"]) for t in ran],
+                             [("Find the best deals", "done", "Three deals today.")])
+            events = daemon.bus.since(0, conversation="app:t1")
+            self.assertEqual(events[0]["routine"], {"id": made["id"], "name": "Deal hunt", "spec": "in 5m"})
+            self.assertEqual(events[-1]["type"], "done")
+            self.assertIn("app:t1", [c["conversation"] for c in daemon.tasks.conversations()])
+            self.assertEqual(daemon.svc.scheduler.get(made["id"])["last_status"], "ok")
+            self.assertEqual(delivered, [("Deal hunt", "Three deals today.")])      # a desktop notification
+            # A routine written after reading untrusted content runs untrusted in the thread too.
+            fake.script = [{"role": "assistant", "content": "Nothing new."}]
+            steered = daemon.svc.scheduler.add("Other", "in 5m", "Check the page", "app", "t1")
+            daemon.svc.store.set_kv(f"schedule:tainted:{steered['id']}", True)
+            with mock.patch.object(daemon, "handle_message", wraps=daemon.handle_message) as handled:
+                self.assertEqual(await daemon.svc.scheduler.tick(now=later), 1)
+            self.assertEqual(handled.call_args.args[:3], ("app", "t1", "Check the page"))
+            self.assertTrue(handled.call_args.kwargs["tainted"])
+            self.assertEqual(len(daemon.tasks.tasks("app:t1")), 2)
+
+    async def test_a_routine_still_running_is_not_started_again(self):
+        from coderunner.server.tasks import EventBus, Tasks
+        with FakeOpenAI() as fake:
+            daemon = self.make_daemon(fake)
+            daemon.bus = EventBus(daemon.svc.store)
+            daemon.tasks = Tasks(daemon, daemon.bus)
+            gate = asyncio.Event()
+
+            async def handle(channel, chat_id, text, **kwargs):
+                await gate.wait()
+                return "done"
+
+            daemon.handle_message = handle
+            schedule = {"id": 7, "name": "Deals", "spec": "every 1h", "prompt": "p", "channel": "app", "chat_id": "t2"}
+            first = asyncio.create_task(daemon._run_schedule(schedule))
+            await asyncio.sleep(0.05)
+            self.assertEqual(await daemon._run_schedule(schedule), "")        # skipped: the last run is going
+            self.assertEqual(len(daemon.tasks.tasks("app:t2")), 1)
+            gate.set()
+            self.assertEqual(await first, "done")
+
     async def test_missing_sandbox_network_is_audited_once(self):
         from coderunner.server.daemon import _bind_error
         with FakeOpenAI() as fake:

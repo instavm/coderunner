@@ -94,6 +94,8 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(policy.evaluate(Action("memory.forget", "memory", "", tainted=True)), Decision.ASK)
         self.assertIs(policy.evaluate(Action("schedule.create", "daily 08:00", "")), Decision.ALLOW)
         self.assertIs(policy.evaluate(Action("schedule.create", "daily 08:00", "", tainted=True)), Decision.ASK)
+        self.assertIs(policy.evaluate(Action("schedule.update", "daily 09:00, 20:00", "")), Decision.ALLOW)
+        self.assertIs(policy.evaluate(Action("schedule.update", "daily 09:00, 20:00", "", tainted=True)), Decision.ASK)
         self.assertIs(policy.evaluate(Action("browser.interact", "shop.com", "", tainted=True)), Decision.ALLOW)
         # Deny rules still win over taint.
         blocked = make_policy({"policy": {"rules": [{"kind": "memory.forget", "target": "*", "decision": "deny"}]}})

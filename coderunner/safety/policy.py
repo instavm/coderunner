@@ -74,7 +74,10 @@ DEFAULTS: dict[str, Decision] = {
     "connector.send": Decision.ASK,       # send mail from the owner's account (connectors.send must list it)
     "system.setting": Decision.ASK,       # change one of a few reversible settings of this Mac
     "phone.call": Decision.ASK,           # dial a number for the owner, who then speaks
+    # A routine the owner asks for in their own conversation is set up without a prompt; one written after
+    # reading untrusted content, or asked for by someone else (their runs are tainted), needs approval.
     "schedule.create": Decision.ALLOW,
+    "schedule.update": Decision.ALLOW,
     "data.share": Decision.ASK,           # see the module docstring
 }
 
@@ -83,7 +86,7 @@ HIGH_RISK = {"browser.sensitive", "channel.send", "connector.send", "system.sett
 # After untrusted content these ask, so injected text cannot plant lasting changes or
 # reuse the owner's earlier grants.
 TAINT_SENSITIVE = {"browser.sensitive", "channel.send", "connector.write", "egress.connect",
-                   "schedule.create", "memory.forget", "connector.send", "system.setting", "phone.call"}
+                   "schedule.create", "schedule.update", "memory.forget", "connector.send", "system.setting", "phone.call"}
 
 AWAY_WAIT = 30.0    # seconds an approval waits once an earlier one of the same task expired unanswered
 

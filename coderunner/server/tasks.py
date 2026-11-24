@@ -144,6 +144,7 @@ class Tasks:
         self.waiting: list[tuple] = []          # tasks asked for while as many as may run are running
         self.slots: dict[str, int] = {}         # running task -> its place (its model slot and code session)
         self._asked: dict[str, object] = {}     # approval id -> the thread of the task that asked
+        self._ended: dict[str, list[asyncio.Future]] = {}   # task id -> whoever waits for it to end (wait)
         daemon.svc.audit.listeners.append(self._on_audit)
         # A daemon that stopped mid-task left it "running" for ever: its thread says how it ended.
         for row in self.store.query("SELECT id, conversation FROM tasks WHERE status IN ('running', 'queued')"):
@@ -158,11 +159,14 @@ class Tasks:
     # ---- starting and stopping -------------------------------------------
 
     def start(self, conversation: str, prompt: str, origin: str, attachments: list[str] | None = None,
-              remote: str = "", time_limit: float = 0) -> dict:
+              remote: str = "", time_limit: float = 0, tainted: bool = False, routine: dict | None = None) -> dict:
         """attachments: ids of files the owner attached in the app (files/attached.py). remote: the name of the
         Anthropic model this one task runs on, when the owner asked for it (a retry of a task the local model
         did not finish); empty for the assistant's own model. time_limit: seconds from when it starts running
-        after which the caller will stop it (the check's limit), so it answers before then; 0 for none."""
+        after which the caller will stop it (the check's limit), so it answers before then; 0 for none.
+        routine: {"id", "name", "spec"} for a run of a routine made in this conversation, which the thread shows
+        by the routine's name; tainted: its prompt was written after reading untrusted content, so the run starts
+        untrusted."""
         from ..files import attached
         task_id = secrets.token_hex(6)
         now = time.time()
@@ -177,11 +181,12 @@ class Tasks:
 
         emit.task, emit.conversation = task_id, conversation
         emit.shots = {"count": 0, "page": "", "at": 0.0, "since": 0, "busy": False}
-        emit.remote, emit.incomplete, emit.time_limit = remote, False, max(0.0, float(time_limit or 0))
+        emit.remote, emit.incomplete, emit.tainted = remote, False, tainted
+        emit.time_limit = max(0.0, float(time_limit or 0))
         emit.run = None                 # the run's context, set by the agent loop once it starts
         files = [info for info in map(attached.describe, (attachments or [])[:attached.MAX_PER_TASK]) if info]
         emit({"type": "started", "prompt": prompt, **({"attachments": files} if files else {}),
-              **({"remote": remote} if remote else {})})
+              **({"remote": remote} if remote else {}), **({"routine": routine} if routine else {})})
         job = (task_id, conversation, prompt, origin, emit, [info["id"] for info in files])
         if queued:
             # As many tasks as this computer runs well at once are running: this one starts when one ends.
@@ -229,7 +234,8 @@ class Tasks:
             await self._fresh_slot(emit.slot)
             reply = await self.daemon.handle_message(channel, chat_id, text, origin=origin, events=emit,
                                                      task=task_id, **({"images": images} if images else {}),
-                                                     **({"remote": True} if emit.remote else {}))
+                                                     **({"remote": True} if emit.remote else {}),
+                                                     **({"tainted": True} if getattr(emit, "tainted", False) else {}))
         except asyncio.CancelledError:
             # Stopped by the owner or at a caller's time limit: it answers at once with what it had found.
             status, reply = "cancelled", stopped_reply(getattr(emit, "run", None))
@@ -260,6 +266,7 @@ class Tasks:
             made = kept.produced(outputs)       # a chart, a sheet, a document its code wrote: shown under the answer
             if made:
                 emit({"type": "files", "files": made})
+            self._end(task_id)
             self._next()                        # a task that was waiting for a place starts now
 
     async def _fresh_slot(self, slot) -> None:
@@ -326,9 +333,26 @@ class Tasks:
             self.store.execute("UPDATE tasks SET status = 'cancelled', reply = ?, finished = ? WHERE id = ?",
                                (reply, time.time(), task_id))
             job[4]({"type": "cancelled", "reply": reply})
+            self._end(task_id)
             return True
         task.cancel()
         return True
+
+    def wait(self, task_id: str) -> asyncio.Future:
+        """A future for the task's row once it has ended (done, failed or cancelled); at once for one that has."""
+        future = asyncio.get_running_loop().create_future()
+        row = self.get(task_id)
+        if row is None or row["status"] in FINAL:
+            future.set_result(row)
+        else:
+            self._ended.setdefault(task_id, []).append(future)
+        return future
+
+    def _end(self, task_id: str) -> None:
+        row = self.get(task_id)
+        for future in self._ended.pop(task_id, []):
+            if not future.done():
+                future.set_result(row)
 
     # ---- reading -----------------------------------------------------------
 

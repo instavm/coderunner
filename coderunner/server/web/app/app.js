@@ -132,7 +132,10 @@ function describeTool(name, raw) {
     case "memory_save": return "Remembering this";
     case "plan_update": return "Updating the plan";
     case "tell_owner": return "Working";
-    case "schedule_create": return "Scheduling it";
+    case "schedule_create": return "Setting up the routine";
+    case "schedule_update": return "Changing the routine";
+    case "schedule_delete": return "Removing the routine";
+    case "schedule_list": return "Looking at your routines";
     case "send_message": return "Sending a message";
     default: return "Working";
   }
@@ -249,6 +252,14 @@ class TaskView {
     }
   }
 
+  // A run of a routine: its request reads as the routine's name, the task it was given in full on hover.
+  showRoutineRun(routine) {
+    this.bubble.classList.add("routine-run");
+    this.bubble.title = this.prompt;
+    this.bubble.replaceChildren(icon(CLOCK), el("span", "", routine.name || "Routine"));
+    this.bubble.hidden = false;
+  }
+
   // What the owner attached, above their words: pictures and videos as themselves, anything else by name.
   showAttached(files) {
     if (!Array.isArray(files) || !files.length || this.attached) return;
@@ -271,6 +282,7 @@ class TaskView {
     switch (e.type) {
       case "started":
         this.showAttached(e.attachments);
+        if (e.routine) this.showRoutineRun(e.routine);
         // A task sent to Claude says so under its words, once: what it read went to Anthropic.
         if (e.remote) this.root.insertBefore(el("div", "on-claude muted small", `On ${e.remote} · not private`), this.flow);
         break;
@@ -283,6 +295,7 @@ class TaskView {
         this.items = this.say(itemCards(this.shown, picture));
         break;
       case "plan": this.showPlan(e.steps); break;
+      case "routine": this.say(routineLine(e)); break;
       case "tool":
         if (e.name === "plan_update" || e.name === "tell_owner" || e.name === "show_items") break;
         this.steps += 1;
@@ -427,6 +440,15 @@ class TaskView {
   tick() {
     if (this.now) this.now.time.textContent = clock(Date.now() / 1000 - this.started);
   }
+}
+
+const CLOCK = "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18 M12 7v5l3 2";
+const ROUTINE_DONE = {created: "Created routine", updated: "Updated routine", removed: "Removed routine"};
+
+// A routine set up, changed or removed: one small line in the thread, a result like the answer.
+function routineLine(e) {
+  return el("div", "routine-line muted small",
+            [ROUTINE_DONE[e.action] || "Routine", e.name, e.spec].filter(Boolean).join(" · "));
 }
 
 function closeAsk(id, allowed) {

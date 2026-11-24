@@ -2,15 +2,17 @@
 
 Specs are small and human-readable (case-insensitive):
 
-    every 30m              fixed interval, minimum 5 minutes
-    daily 08:00            every day at a wall-clock time
-    weekdays 09:00         Monday to Friday
-    weekly mon 09:00       one day a week
-    at 2026-12-24 18:00    once, at a local date and time
-    in 2h                  once, after a delay
+    every 30m                 fixed interval, minimum 5 minutes
+    daily 08:00               every day at a wall-clock time
+    daily 09:00,14:00,20:00   several times a day
+    weekdays 09:00            Monday to Friday (also with several times)
+    weekly mon 09:00          one day a week (also with several times)
+    at 2026-12-24 18:00       once, at a local date and time
+    in 2h                     once, after a delay
 
 Wall-clock times are resolved in the owner's timezone so they stay put across
-DST changes; intervals and delays are elapsed time. Runs are at-most-once: a
+DST changes; with several times a day, the next run is the earliest one still
+to come. Intervals and delays are elapsed time. Runs are at-most-once: a
 schedule is claimed (next_run advanced or, for one-shots, disabled) before it
 runs, so a crash or a concurrent tick never repeats it, and runs missed while
 the daemon was off collapse into a single catch-up run.
@@ -31,14 +33,16 @@ Deliver = Callable[[dict, str], Awaitable[None]]
 
 MIN_INTERVAL = 5 * 60
 MAX_DURATION = 3650 * 86400
-USAGE = "use one of: every 30m | daily 08:00 | weekdays 09:00 | weekly mon 09:00 | at 2026-12-24 18:00 | in 2h"
+MAX_TIMES = 24              # times in one day's list
+USAGE = ("use one of: every 30m | daily 08:00 | daily 09:00,14:00,20:00 | weekdays 09:00 | weekly mon 09:00 | "
+         "at 2026-12-24 18:00 | in 2h")
 
 _UNITS = {"m": 60, "h": 3600, "d": 86400}
 _DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
-_CLOCK = r"(?:at )?(\d{1,2}):(\d{2})"
+_CLOCK = re.compile(r"(?:at )?(\d{1,2}):(\d{2})")
 _DURATION = re.compile(r"(every|in) (\d{1,9}) ?(m|mins?|minutes?|h|hrs?|hours?|d|days?)")
-_DAILY = re.compile(rf"(daily|weekdays) {_CLOCK}")
-_WEEKLY = re.compile(rf"weekly ([a-z]+) {_CLOCK}")
+_DAILY = re.compile(r"(daily|weekdays) (.+)")
+_WEEKLY = re.compile(r"weekly ([a-z]+) (.+)")
 _AT = re.compile(r"at (\d{4})-(\d{1,2})-(\d{1,2})[ t](\d{1,2}):(\d{2})")
 
 
@@ -47,6 +51,19 @@ def _clock(hour: str, minute: str) -> tuple[int, int]:
     if h > 23 or m > 59:
         raise ValueError(f"invalid time {hour}:{minute}; use 24-hour HH:MM")
     return h, m
+
+
+def _times(text: str, spec: str) -> tuple[tuple[int, int], ...]:
+    """'09:00', '09:00,14:00, 20:00' or '09:00, 14:00 and 20:00': the day's times, in order, each once."""
+    times = set()
+    for part in re.split(r"\s*,\s*|\s+and\s+", text.strip()):
+        m = _CLOCK.fullmatch(part)
+        if not m:
+            raise ValueError(f"unrecognised schedule {spec!r}; {USAGE}")
+        times.add(_clock(m[1], m[2]))
+    if len(times) > MAX_TIMES:
+        raise ValueError(f"{spec!r} has too many times; at most {MAX_TIMES} a day")
+    return tuple(sorted(times))
 
 
 def _weekday(word: str) -> int:
@@ -68,9 +85,9 @@ def _parse(spec: str) -> tuple:
             raise ValueError(f"{spec!r} is too far out; the longest is 3650d")
         return m[1], seconds
     if m := _DAILY.fullmatch(text):
-        return m[1], _clock(m[2], m[3])
+        return m[1], _times(m[2], spec)
     if m := _WEEKLY.fullmatch(text):
-        return "weekly", _clock(m[2], m[3]), _weekday(m[1])
+        return "weekly", _times(m[2], spec), _weekday(m[1])
     if m := _AT.fullmatch(text):
         try:
             return "at", datetime(*(int(part) for part in m.groups()))
@@ -92,18 +109,30 @@ def parse_spec(spec: str, now: datetime) -> datetime | None:
     if rule[0] == "at":
         at = rule[1].replace(tzinfo=tz).timestamp()
         return datetime.fromtimestamp(at, tz) if at > after else None
-    hour, minute = rule[1]
     days = {"daily": range(7), "weekdays": range(5), "weekly": rule[2:]}[rule[0]]
     for offset in range(8):
         day = now.date() + timedelta(days=offset)
         if day.weekday() not in days:
             continue
         # fold=0 picks the first of a repeated time and shifts a skipped one
-        # forward by the gap (02:30 on spring-forward day runs at 03:30).
-        candidate = datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz).timestamp()
-        if candidate > after:
-            return datetime.fromtimestamp(candidate, tz)
+        # forward by the gap (02:30 on spring-forward day runs at 03:30), which
+        # can put it after a later time of the same day: the earliest is taken.
+        upcoming = [stamp for hour, minute in rule[1]
+                    if (stamp := datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz).timestamp()) > after]
+        if upcoming:
+            return datetime.fromtimestamp(min(upcoming), tz)
     raise AssertionError("unreachable: every weekly rule matches within 8 days")
+
+
+def canonical(spec: str) -> str:
+    """The spec as stored and shown: 'Daily at 9:00,20:00 and 14:00' is 'daily 09:00, 14:00, 20:00'. Raises
+    ValueError for a spec that is not understood."""
+    rule = _parse(spec)
+    text = " ".join(str(spec or "").split())
+    if rule[0] not in ("daily", "weekdays", "weekly"):
+        return text
+    times = ", ".join(f"{hour:02d}:{minute:02d}" for hour, minute in rule[1])
+    return f"weekly {_DAYS[rule[2]][:3]} {times}" if rule[0] == "weekly" else f"{rule[0]} {times}"
 
 
 def is_one_shot(spec: str) -> bool:
@@ -155,7 +184,7 @@ class Scheduler:
     def add(self, name: str, spec: str, prompt: str, channel: str = "", chat_id: str = "", *,
             now: datetime | None = None) -> dict:
         name, prompt = (name or "").strip(), (prompt or "").strip()
-        spec = " ".join((spec or "").split())
+        spec = canonical(spec)
         if not name:
             raise ValueError("a schedule needs a name")
         if not prompt:
@@ -180,6 +209,38 @@ class Scheduler:
 
     def list(self) -> list[dict]:
         return [{**row, "enabled": bool(row["enabled"])} for row in self.store.query("SELECT * FROM schedules ORDER BY id")]
+
+    def update(self, id: int, *, name: str | None = None, spec: str | None = None, prompt: str | None = None,
+               now: datetime | None = None) -> dict | None:
+        """Change what is given; None leaves it. A new spec counts from now and switches the schedule back on (a
+        one-shot that already ran is set again). Returns the schedule as it now is, or None if there is none."""
+        row = self.get(id)
+        if not row:
+            return None
+        changes: dict = {}
+        if name is not None:
+            changes["name"] = name.strip()
+            if not changes["name"]:
+                raise ValueError("a schedule needs a name")
+        if prompt is not None:
+            changes["prompt"] = prompt.strip()
+            if not changes["prompt"]:
+                raise ValueError("a schedule needs a prompt")
+        if spec is not None:
+            spec = canonical(spec)
+            next_run = parse_spec(spec, self._now(now))
+            if next_run is None:
+                raise ValueError(f"{spec!r} is in the past")
+            changes.update(spec=spec, next_run=next_run.timestamp(), enabled=1)
+        if not changes:
+            return row
+        columns = ", ".join(f"{column} = ?" for column in changes)     # names from the fixed set above
+        self.store.execute(f"UPDATE schedules SET {columns} WHERE id = ?", (*changes.values(), id))
+        self.audit.write("schedule.update", id=id, fields=sorted(set(changes) - {"next_run", "enabled"}),
+                         spec=changes.get("spec", row["spec"]),
+                         **({"next_run": datetime.fromtimestamp(changes["next_run"], self.tz).isoformat()}
+                            if "next_run" in changes else {}))
+        return self.get(id)
 
     def remove(self, id: int) -> bool:
         removed = self.store.execute("DELETE FROM schedules WHERE id = ?", (id,)).rowcount > 0
