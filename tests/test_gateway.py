@@ -214,6 +214,28 @@ class AdminGatewayTests(unittest.IsolatedAsyncioTestCase):
             await client.post("/api/tools/act", headers=admin, json={"client": "c2"})
         self.assertEqual(seen, [False, True, False])
 
+    async def test_the_app_tells_when_the_owner_takes_and_hands_back_the_screen(self):
+        class FakeBrowser:
+            owner_control = False
+
+            def __init__(self):
+                self.told = []
+
+            def set_owner_control(self, on, origin="owner"):
+                self.owner_control = on
+                self.told.append((on, origin))
+
+        admin = {"Authorization": "Bearer " + ADMIN}
+        async with self.client() as client:
+            # No browser: the switch is the screen's alone, and nothing fails.
+            self.assertEqual((await client.post("/api/control", json={"on": True}, headers=admin)).json(), {"on": False})
+            self.svc.browser = FakeBrowser()
+            self.assertEqual((await client.post("/api/control", json={"on": True})).status_code, 401)
+            self.assertEqual((await client.post("/api/control", json={"on": True}, headers=admin)).json(), {"on": True})
+            self.assertEqual((await client.get("/api/control", headers=admin)).json(), {"on": True})
+            self.assertEqual((await client.post("/api/control", json={"on": False}, headers=admin)).json(), {"on": False})
+        self.assertEqual(self.svc.browser.told, [(True, "admin-token"), (False, "admin-token")])
+
     async def test_decide_approval_over_api(self):
         from coderunner.safety.policy import Action
         admin = {"Authorization": "Bearer " + ADMIN}

@@ -29,7 +29,7 @@ How you work:
 - On a page of results (search results, products, flights, hotels, movies, rows), read the items with browser_list instead of snapshots, scrolling or going back and forth; open an item's link for its details.
 - Dates, figures and names in your answer come from the pages you read in this task, not from what you remember: where the two differ, the page is right. Take them from the line that answers the question, not from a nearby line with a date or figure you expected.
 - Steps that pay, book, send, post, delete or change settings wait for {owner}'s approval. If a step is not allowed, do not retry it or look for a way around: it is {owner}'s to take. Say it as a person would ("It is in the cart; I stopped before checkout."), never as something a policy or an approval blocked.
-- A password, a one-time code, a sign-in or a CAPTCHA is {owner}'s step: never type or solve it. Fill in everything else, call browser_handoff so {owner} does that step on the screen, and carry on from the result when they are done. Do not end the task to ask for it.
+- A password, a one-time code, a sign-in or a CAPTCHA is {owner}'s step: never type or solve it. Fill in everything else, call browser_handoff so {owner} does that step on the screen, and carry on from the result when they are done. Do not end the task to ask for it. If {owner} took control of the browser, carry on from the page as they left it; do not redo what they did.
 - For a long task (more than about five steps), first write a short plan with plan_update and keep it current as steps finish or the approach changes. Short tasks need no plan.
 - The owner's shared folders are searchable with files_search (text, code, documents, images, audio, video).
 - Save lasting preferences and facts with memory_save. Never store secrets.
@@ -349,6 +349,22 @@ class RunContext:
             try:
                 self.events(event)
             except Exception:       # showing progress must never stop the task
+                pass
+
+    def pause(self, seconds: float) -> None:
+        """Time spent waiting for the owner (their turn on the screen, a hand-off) is not the task's: its time
+        limit, hard stop included (server.tasks), moves on by as much."""
+        if seconds <= 0:
+            return
+        if self.deadline:
+            self.deadline += seconds
+        if self.stop_at:
+            self.stop_at += seconds
+        extend = getattr(self.events, "extend", None)
+        if callable(extend):
+            try:
+                extend(seconds)
+            except Exception:       # a clock that could not move must not stop the task
                 pass
 
     def taint(self, content: bool = True) -> None:
@@ -675,15 +691,17 @@ class Agent:
         closing = ""                                # the request for an answer when the steps or the room ran out
         repeats = Repeats()
         late_repeats = 0                            # repeated searches and pages after WRAP_FROM steps
-        # When the run has a deadline: the moment it writes an interim answer (0: none, or written already), and the
-        # moment, shortly before its hard stop, it writes its final one.
-        hurry_at = final_at = 0.0
+        # When the run has a deadline: how long before it the run writes an interim answer (0: none, or written
+        # already), and how long before its hard stop it writes its final one. Counted from ctx each step, since
+        # waiting for the owner moves both on (RunContext.pause).
+        hurry_lead = final_lead = 0.0
         if ctx.deadline:
             now = time.monotonic()
             total = max(0.0, ctx.deadline - now)
-            stop_at = ctx.stop_at or now + HARD_STOP * total
-            hurry_at = ctx.deadline - time_lead(total)
-            final_at = stop_at - time_lead(max(0.0, stop_at - ctx.deadline))
+            ctx.stop_at = ctx.stop_at or now + HARD_STOP * total
+            hurry_lead = time_lead(total)
+            final_lead = time_lead(max(0.0, ctx.stop_at - ctx.deadline))
+        hurried = not ctx.deadline
         for step in range(max_steps * STEP_BUDGETS):
             if late_repeats >= REPEATS_BEFORE_ANSWER:
                 self.svc.audit.write("agent.going_round", step=step, repeats=late_repeats)
@@ -712,19 +730,19 @@ class Agent:
                 # The steps ran out again: what it has is posted, and it goes on with another budget.
                 self.svc.audit.write("agent.step_budget", step=step)
                 await self._interim(ctx, messages, STEPS_NUDGE.format(steps=step), limit)
-            if final_at and time.monotonic() >= final_at:
+            if ctx.deadline and time.monotonic() >= ctx.stop_at - final_lead:
                 self.svc.audit.write("agent.time_up", step=step)
                 final = ctx.interim or stopped_reply(ctx)       # if even the closing reply does not come
                 closing = TIME_UP
                 break
-            if hurry_at and time.monotonic() >= hurry_at:
+            if not hurried and time.monotonic() >= ctx.deadline - hurry_lead:
                 # Appended, not written into an earlier message: an edit makes the runtime read it all again.
                 left = max(0, ctx.deadline - time.monotonic())
                 minutes = max(1, round(left / 60))
                 self.svc.audit.write("agent.time_nearly_up", step=step, left=round(left))
                 await self._interim(ctx, messages, TIME_NUDGE.format(
                     minutes=f"{minutes} minute{'s' if minutes != 1 else ''}"), limit)
-                hurry_at = 0.0
+                hurried = True
             # Each request only extends the one before: hybrid models such as Qwen3.5 can resume only from a
             # cache checkpoint near the end of the previous prompt, so a message that came and went (or an
             # edit to the instructions) means re-reading the whole conversation, ~80 s for 20K tokens on a

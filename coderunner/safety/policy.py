@@ -303,21 +303,28 @@ class Policy:
                 self.audit.write("approval.listener_error", error=str(exc))
         return approval
 
-    async def wait(self, approval_id: str, timeout: float) -> bool:
+    async def wait(self, approval_id: str, timeout: float, expire: bool = True) -> bool | None:
+        """The owner's answer. With expire=False a request still unanswered after timeout stays open and None is
+        returned, so the caller can look around (a hand-off rechecks its page) and wait again."""
         future = self._waiters.get(approval_id)
         if future is None:
             row = self.get(approval_id)
             return bool(row and row.status == "approved")
+        still_open = False
         try:
             return await asyncio.wait_for(asyncio.shield(future), timeout)
         except asyncio.TimeoutError:
+            if not expire:
+                still_open = True
+                return None
             self._finish(approval_id, "expired", "once", "timeout")
             run = current_run.get()
             if run is not None and hasattr(run, "unanswered"):
                 run.unanswered += 1
             return False
         finally:
-            self._waiters.pop(approval_id, None)
+            if not still_open:
+                self._waiters.pop(approval_id, None)
 
     def decide(self, approval_id: str, allow: bool, scope: str = "once", decided_by: str = "owner") -> Approval:
         approval = self.get(approval_id)

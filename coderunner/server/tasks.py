@@ -224,14 +224,26 @@ class Tasks:
         from ..files import attached as kept
         from ..agent.loop import stopped_reply
         outputs = kept.outputs_now()            # to tell afterwards what this task made
-        hard = None
+        emit.hard = None
         if emit.time_limit:
             from ..agent.loop import HARD_STOP
             emit.deadline = time.monotonic() + emit.time_limit      # counted from when it runs, as the caller does
             # The limit is soft (the run answers before it and carries on); here it is stopped for good, and
             # answers from what it had found, as a task the owner stops.
             emit.stop_at = time.monotonic() + HARD_STOP * emit.time_limit
-            hard = asyncio.get_running_loop().call_later(HARD_STOP * emit.time_limit, asyncio.current_task().cancel)
+            loop, me = asyncio.get_running_loop(), asyncio.current_task()
+            emit.hard = loop.call_later(HARD_STOP * emit.time_limit, me.cancel)
+
+            def extend(seconds: float) -> None:
+                """Time the task spent waiting for the owner (RunContext.pause): its limit moves on by as much."""
+                if seconds <= 0 or emit.hard is None:
+                    return
+                emit.deadline += seconds
+                emit.stop_at += seconds
+                when = emit.hard.when() + seconds
+                emit.hard.cancel()
+                emit.hard = loop.call_at(when, me.cancel)
+            emit.extend = extend
         try:
             channel, _, chat_id = conversation.partition(":")
             text, images = prompt, None
@@ -257,8 +269,9 @@ class Tasks:
             status, reply = "failed", ("I couldn't finish this: something went wrong on my side partway through. "
                                        "Anything said above still stands. You can ask again.")
         finally:
-            if hard is not None:
-                hard.cancel()
+            if emit.hard is not None:
+                emit.hard.cancel()
+                emit.hard = None
             self.running.pop(task_id, None)
             if status == "done" and emit.shots["since"]:
                 await self._capture(emit, 0, again=True)        # how the page stood when it finished

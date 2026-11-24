@@ -310,6 +310,7 @@ class TaskView {
       case "interim": this.showInterim(e.text); break;
       case "done": case "failed": case "cancelled": this.finish(e); break;
       case "queued": this.setNow("Waiting its turn"); break;
+      case "paused": this.setNow(e.text || "Paused while you have control"); break;
       case "resumed": this.setNow("Thinking"); break;
       case "files": this.showProduced(e.files); break;
     }
@@ -387,7 +388,7 @@ class TaskView {
     card.appendChild(row);
     this.say(card);
     this.setNow("Waiting for you");
-    state.approvals.set(e.id, {conversation: state.conversation, card, row});
+    state.approvals.set(e.id, {conversation: state.conversation, card, row, handoff});
     if (!state.pending.has(e.id) && e.ts && Date.now() / 1000 - e.ts > 5) closeAsk(e.id, null);
     card.scrollIntoView({block: "nearest", behavior: gently()});
   }
@@ -471,8 +472,10 @@ function closeAsk(id, allowed) {
   if ($("turn").dataset.ask === id) $("turn").hidden = true;
   if (!entry || entry.card.classList.contains("closed")) return;
   entry.card.classList.add("closed");
+  // A turn on the computer that ended (the page moved on, or Skip): the screen goes back to the task.
+  if (entry.handoff && control) setControl(false);
   entry.row.replaceChildren(el("span", "muted small", allowed === "late" ? "Not answered in time" : allowed === null ? "Answered" :
-                                                      allowed ? "Allowed" : "Declined"));
+                                                      entry.handoff ? (allowed ? "Done" : "Skipped") : allowed ? "Allowed" : "Declined"));
 }
 
 // ---- conversations ----------------------------------------------------------
@@ -663,8 +666,9 @@ function listen() {
     state.lastSeq = Math.max(state.lastSeq, e.seq || 0);
     if (e.type === "started") state.running.set(e.task, {conversation: e.conversation, label: "", title: e.prompt || ""});
     // Another thread's status line is kept, so the panel can say what that task is doing rather than only that it is.
-    if (e.type === "note" && state.running.has(e.task))
+    if ((e.type === "note" || e.type === "paused") && state.running.has(e.task))
       state.running.get(e.task).label = trunc(String(e.text || "").split(/(?<=[.!?])\s/)[0], 90);
+    if (e.type === "resumed" && state.running.has(e.task)) state.running.get(e.task).label = "";
     if (["done", "failed", "cancelled"].includes(e.type)) state.running.delete(e.task);
     if (e.conversation === state.conversation) {
       if (state.loading?.id === e.conversation) state.loading.events.push(e);
@@ -1094,6 +1098,12 @@ function setControl(on) {
   $("screenWrap").classList.toggle("control", on);
   if (rfb) { rfb.viewOnly = !on; rfb.focusOnClick = on; if (on) rfb.focus(); }
   refreshNow();
+  tellControl(on);
+}
+// The daemon is told too: while the owner has the screen, the tasks' browser steps wait for them. If it does not
+// answer, the switch still works for the screen.
+function tellControl(on) {
+  api("/api/control", {method: "POST", body: JSON.stringify({on})}).catch(() => {});
 }
 function setExpanded(on) {
   $("shell").classList.toggle("expanded", on);
@@ -1918,3 +1928,4 @@ loadModels();
 checkSetup().then((firstRun) => { if (!firstRun) openConversation(null); });
 listen();
 connectScreen();
+tellControl(false);           // a window closed while it had the screen would otherwise keep the tasks waiting

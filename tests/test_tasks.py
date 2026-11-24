@@ -205,3 +205,35 @@ class TimeLimitTests(unittest.IsolatedAsyncioTestCase):
             daemon.handle_message = quick
             row = await runner.wait(runner.start("app:u", "Hi", "owner")["id"])
             self.assertEqual((row["status"], row["reply"], seen["limit"]), ("done", "ok", 0))
+
+    async def test_time_spent_waiting_for_the_owner_moves_the_limit_and_the_hard_stop_on(self):
+        import asyncio
+        import time
+        from coderunner.agent.loop import RunContext
+        from coderunner.server import tasks as server_tasks
+        from fakes import Svc
+        from test_gateway import FakeDaemon
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"CODERUNNER_HOME": home}):
+            (pathlib.Path(home) / "assistant").mkdir()
+            svc = Svc({"models": {"chat": "coderunner-test"}})
+            daemon = FakeDaemon(svc)
+            runner = server_tasks.Tasks(daemon, server_tasks.EventBus(svc.store))
+            seen = {}
+
+            async def handle(channel, chat_id, text, origin="", events=None, task="", images=None):
+                # As the daemon builds the run, and as the browser counts a wait for the owner.
+                ctx = RunContext(conversation="app:t", events=events, deadline=events.deadline, stop_at=events.stop_at)
+                before = (events.deadline, events.stop_at, ctx.deadline, ctx.stop_at)
+                ctx.pause(0.5)
+                seen["moved"] = [after - was for after, was in
+                                 zip((events.deadline, events.stop_at, ctx.deadline, ctx.stop_at), before)]
+                await asyncio.sleep(60)
+            daemon.handle_message = handle
+            began = time.monotonic()
+            row = await runner.wait(runner.start("app:t", "Hotels?", "check", time_limit=0.2)["id"])
+            took = time.monotonic() - began
+            for moved in seen["moved"]:
+                self.assertAlmostEqual(moved, 0.5, places=6)
+            # Stopped at twice the limit plus the wait (0.9 s), not at twice the limit (0.4 s).
+            self.assertTrue(0.85 <= took < 1.6, took)
+            self.assertEqual(row["status"], "cancelled")

@@ -725,6 +725,18 @@ def admin_app(svc, daemon) -> Starlette:
             shown = await svc.browser.focus(conversation)
         return JSONResponse({"conversation": conversation, "shown": bool(shown)})
 
+    async def control(request: Request):
+        """The owner took the screen in the app ("Take control") or handed it back ("Watching", "I'm done"). While
+        they have it, the tasks' browser steps wait for them, so nothing clicks under their hands."""
+        browser = getattr(svc, "browser", None)
+        if request.method == "POST":
+            body = {}
+            with contextlib.suppress(Exception):
+                body = await request.json()
+            if browser is not None and hasattr(browser, "set_owner_control"):
+                browser.set_owner_control(bool(body.get("on")), origin=principal(request))
+        return JSONResponse({"on": bool(getattr(browser, "owner_control", False))})
+
     async def computer(request: Request):
         """The sandbox's screen; POST brings it up. The password opens the screen through /api/computer/screen."""
         body = {}
@@ -856,6 +868,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/conversations/{conversation}", conversation, methods=["GET"]),
         Route("/api/events", events, methods=["GET"]),
         Route("/api/computer", computer, methods=["GET", "POST"]),
+        Route("/api/control", control, methods=["GET", "POST"]),
         Route("/api/focus", focus, methods=["POST"]),
         Route("/api/computer/setup", computer_setup, methods=["GET", "POST"]),
         WebSocketRoute("/api/computer/screen", computer_screen),

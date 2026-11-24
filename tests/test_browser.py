@@ -15,7 +15,9 @@ from unittest import mock
 
 from coderunner.core.audit import AuditLog
 from coderunner.browser import BrowserBroker, BrowserError
+from coderunner.browser import broker as broker_module
 from coderunner.browser import launcher
+from coderunner.browser.broker import CHALLENGE_JS
 from coderunner.browser.page import page_changes, render_ax
 from coderunner.browser.scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, OPTIONS_JS, SCROLL_JS, SELECT_OPTION_JS,
                                         SETTLE_JS)
@@ -47,6 +49,7 @@ class FakeBrowser:
         self.image = b"\xff\xd8 first"
         self.on_move = None   # called when the pointer moves, to let tests change the page
         self.scroll = (0, 0)  # how far the page is scrolled (page coordinates of the window's corner)
+        self.challenge = False  # a password box or CAPTCHA in view (CHALLENGE_JS)
         self.closed = False
         self._box = None
         self._loader = 0
@@ -127,6 +130,8 @@ class FakeBrowser:
             return {"executionContextId": 7}
         if method == "DOM.resolveNode":
             return {"object": {"objectId": f"node:{params['backendNodeId']}"}}
+        if method == "Runtime.evaluate" and params.get("expression") == CHALLENGE_JS:
+            return {"result": {"value": self.challenge}}
         if method == "Runtime.evaluate":
             return {"result": {"objectId": f"node:{self.focused}"} if self.focused else {"type": "object"}}
         if method == "Runtime.callFunctionOn" and params["functionDeclaration"] == SETTLE_JS:
@@ -380,6 +385,7 @@ class BrokerTestCase(unittest.IsolatedAsyncioTestCase):
         self.audit = AuditLog(self.tmp / "audit.jsonl")
         self.policy = Policy(self.config, Store(":memory:"), self.audit)
         self.asked, self.answers, self.approvals = [], {}, []
+        self.leave_open = set()    # kinds of approval nobody answers (an owner away from the app)
         self.while_asking = None   # runs while an approval is pending, to let tests change the page
         self.policy.add_listener(self._answer)
         self.launcher = FakeLauncher()
@@ -397,6 +403,8 @@ class BrokerTestCase(unittest.IsolatedAsyncioTestCase):
         self.approvals.append(approval)
         if self.while_asking:
             self.while_asking()
+        if approval.kind in self.leave_open:
+            return
         self.policy.decide(approval.id, allow=self.answers.get(approval.kind, False))
 
     async def asyncTearDown(self):
@@ -1011,6 +1019,146 @@ class InteractionPolicyTests(BrokerTestCase):
         self.assertFalse((await self.broker.handoff("2FA code"))["completed"])
         self.config.set("browser.headless", True)
         self.assertIn("headless", (await self.broker.handoff("log in"))["error"])
+
+
+class OwnerTurnTests(BrokerTestCase):
+    """The owner taking the screen pauses a task's browser steps; hand-offs are rechecked and reported."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        from coderunner.agent.loop import RunContext
+        self.said = []
+        self.ctx = RunContext(conversation="", events=self.said.append, deadline=time.monotonic() + 100,
+                              stop_at=time.monotonic() + 200)
+        self.run_token = current_run.set(self.ctx)
+        for name, value in (("PAUSE_TICK", 0.05), ("HANDOFF_RECHECK", 0.05)):
+            patcher = mock.patch.object(broker_module, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    async def asyncTearDown(self):
+        current_run.reset(self.run_token)
+        await super().asyncTearDown()
+
+    def kinds_said(self):
+        return [e["type"] for e in self.said]
+
+    def audited(self, event):
+        return [json.loads(line) for line in (self.tmp / "audit.jsonl").read_text().splitlines()
+                if json.loads(line).get("event") == event]
+
+    async def test_a_step_waits_while_the_owner_has_control_and_gets_the_page_as_they_left_it(self):
+        browser, _ = await self.load_shop()
+        buy = self.ref("Buy now")
+        deadline, stop_at = self.ctx.deadline, self.ctx.stop_at
+        self.broker.set_owner_control(True)
+        step = asyncio.create_task(self.broker.click(buy))
+        await asyncio.sleep(0.2)
+        self.assertFalse(step.done())
+        self.assertEqual(self.kinds_said(), ["paused"])
+        self.assertEqual(self.said[0]["text"], broker_module.PAUSED)
+        # The owner signs in meanwhile: another page, drawn anew.
+        browser.pages["P1"] = {"url": "https://shop.example/account", "title": "Your account"}
+        browser.ax = [ax(1, "RootWebArea", "Account", children=[2], backend=1),
+                      ax(2, "button", "Buy now", parent=1, backend=211)]
+        self.broker.set_owner_control(False)
+        result = await asyncio.wait_for(step, 2)
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["handed_back"])
+        self.assertEqual(result["note"], broker_module.HANDED_BACK)
+        self.assertEqual(result["url"], "https://shop.example/account")
+        self.assertIn('button "Buy now"', result["content"])
+        # The step itself was not taken, and nothing was asked about it.
+        self.assertFalse([p for p in browser.sent("Input.dispatchMouseEvent") if p["type"] == "mousePressed"])
+        self.assertEqual(self.asked, [])
+        # Element numbers read before the owner's turn do not reach the new page.
+        self.assertNotIn(buy, self.broker._refs[self.broker._active])
+        self.assertEqual(self.kinds_said(), ["paused", "resumed"])
+        # The wait is not the task's time: its limit moved on by it.
+        self.assertGreaterEqual(self.ctx.deadline - deadline, 0.15)
+        self.assertAlmostEqual(self.ctx.deadline - deadline, self.ctx.stop_at - stop_at, places=6)
+        self.assertEqual([r["on"] for r in self.audited("browser.owner_control")], [True, False])
+        self.assertEqual(self.audited("browser.handed_back")[0]["action"], "click")
+
+    async def test_a_read_is_done_after_the_turn_and_says_so(self):
+        await self.load_shop()
+        self.broker.set_owner_control(True)
+        read = asyncio.create_task(self.broker.snapshot())
+        await asyncio.sleep(0.1)
+        self.assertFalse(read.done())
+        self.broker.set_owner_control(False)
+        result = await asyncio.wait_for(read, 2)
+        self.assertEqual(result["note"], broker_module.HANDED_BACK_READ)
+        self.assertTrue(result["changed"])          # read afresh, not "unchanged since you last saw it"
+        self.assertIn("Welcome", result["content"])
+
+    async def test_without_a_task_or_control_nothing_waits(self):
+        await self.load_shop()
+        self.assertNotIn("note", await self.broker.snapshot())
+        self.assertEqual(self.said, [])
+        current_run.reset(self.run_token)
+        self.run_token = current_run.set(None)
+        self.broker.set_owner_control(True)         # the owner's own steps from the app are theirs
+        self.assertNotIn("note", await asyncio.wait_for(self.broker.snapshot(), 2))
+
+    async def test_a_turn_nobody_hands_back_lapses(self):
+        await self.load_shop()
+        self.broker.set_owner_control(True)
+        with mock.patch.object(broker_module, "OWNER_TURN_MOST", 0.1):
+            result = await asyncio.wait_for(self.broker.snapshot(), 2)
+        self.assertFalse(self.broker.owner_control)
+        self.assertEqual(result["note"], broker_module.HANDED_BACK_READ)
+        self.assertEqual(self.audited("browser.owner_control")[-1]["origin"], "lapsed")
+
+    async def test_a_handoff_is_not_held_by_the_owners_own_turn(self):
+        await self.load_shop()
+        self.broker.set_owner_control(True)
+        self.answers["browser.handoff"] = True
+        result = await asyncio.wait_for(self.broker.handoff("Type the CAPTCHA, then click Go."), 2)
+        self.assertTrue(result["completed"])
+        self.assertNotIn("paused", self.kinds_said())
+
+    async def test_a_handoff_counts_as_done_when_the_captcha_is_gone(self):
+        browser, _ = await self.load_shop()
+        self.leave_open.add("browser.handoff")
+        browser.challenge = True
+        deadline = self.ctx.deadline
+        waiting = asyncio.create_task(self.broker.handoff("Type the CAPTCHA, then click Go."))
+        await asyncio.sleep(0.2)
+        self.assertFalse(waiting.done())             # still there: still the owner's
+        browser.challenge = False
+        result = await asyncio.wait_for(waiting, 2)
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["note"], broker_module.LOOKS_DONE)
+        approval = self.policy.get(self.approvals[0].id)
+        self.assertEqual((approval.status, approval.decided_by), ("approved", "page"))
+        self.assertGreaterEqual(self.ctx.deadline - deadline, 0.15)
+        # A sign-in that leaves for another address is done too, CAPTCHA or not.
+        waiting = asyncio.create_task(self.broker.handoff("Sign in, please."))
+        await asyncio.sleep(0.15)
+        self.assertFalse(waiting.done())
+        browser.pages["P1"] = {"url": "https://shop.example/account", "title": "Your account"}
+        result = await asyncio.wait_for(waiting, 2)
+        self.assertEqual((result["completed"], result["note"]), (True, broker_module.LOOKS_DONE))
+        # Skip still ends it at once.
+        self.leave_open.clear()
+        self.assertFalse((await asyncio.wait_for(self.broker.handoff("2FA code"), 2))["completed"])
+
+    async def test_a_handoff_nobody_answers_is_said_in_the_thread_and_waited_on_longer(self):
+        browser, _ = await self.load_shop()
+        self.leave_open.add("browser.handoff")
+        browser.challenge = True
+        self.ctx.found.append("Taj is ₹18,200 a night.")
+        with mock.patch.object(broker_module, "HANDOFF_WAIT", 0.1), mock.patch.object(broker_module, "HANDOFF_MOST", 0.4):
+            began = time.monotonic()
+            result = await asyncio.wait_for(self.broker.handoff("Type the code sent to your phone."), 3)
+        self.assertGreaterEqual(time.monotonic() - began, 0.4)
+        self.assertFalse(result["completed"])
+        interim = [e["text"] for e in self.said if e["type"] == "interim"]
+        self.assertEqual(len(interim), 1)
+        self.assertTrue(interim[0].startswith("I'm still waiting for you on the computer: Type the code sent to your phone."))
+        self.assertIn("Taj is ₹18,200 a night.", interim[0])
+        self.assertEqual(self.policy.get(self.approvals[0].id).status, "expired")
 
 
 class ApprovalContentTests(BrokerTestCase):

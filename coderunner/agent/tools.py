@@ -457,10 +457,14 @@ def browser_tools(svc) -> list[Tool]:
 
     async def handoff(args, ctx):
         result = _result(await b.handoff(args["reason"], tainted=ctx.tainted))
-        if isinstance(result, dict):
-            return "The owner finished the step." if result.get("completed") else \
-                "The owner did not complete the step. Do not retry; explain what is needed."
-        return result
+        if not isinstance(result, dict):
+            return result
+        if not result.get("completed"):
+            return "The owner did not complete the step. Do not retry; explain what is needed."
+        # They may have moved the page on, and what was read of it before is let go. Its text is not given here:
+        # this tool's result is not wrapped as untrusted, so the page is read with the browser tools that are.
+        return " ".join(filter(None, ["The owner finished the step.", result.get("note"),
+                                      "Read the page again before going on."]))
 
     tools = [
         Tool("browser_open", "Open a URL in a new tab of the CodeRunner browser window or tab group, which the "

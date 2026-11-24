@@ -239,6 +239,34 @@ class ThreadTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await Agent(svc, svc.llm, svc.registry).run(ctx, "Hotels?"), "All three: Taj, Alila and W.")
             await svc.llm.aclose()
 
+    async def test_time_spent_waiting_for_the_owner_does_not_hurry_the_run(self):
+        import time
+        from types import SimpleNamespace
+        from unittest import mock
+        from coderunner.agent import loop as loop_module
+        clock = [1000.0]
+        fake_time = SimpleNamespace(time=time.time, monotonic=lambda: clock[0])
+        ctx = RunContext(conversation="t-paused", deadline=1900.0, events=[].append)
+
+        def step(at, paused=0.0):
+            def reply(body):
+                clock[0] = at
+                ctx.pause(paused)               # as the browser does after waiting for the owner
+                return tool_call("run_python", {"code": "print(1)"})
+            return reply
+        with FakeOpenAI() as fake, mock.patch.object(loop_module, "time", fake_time):
+            svc = Svc()
+            svc.sandbox = FakeSandbox()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            # Limit 900 s from 1000; at 1800 the run had waited 600 s for the owner, so the limit is now 2500 and
+            # no interim answer is due yet (it would have been at 1765).
+            fake.script = [step(1800.0, paused=600.0), step(1850.0), {"role": "assistant", "content": "Taj, final."}]
+            self.assertEqual(await Agent(svc, svc.llm, svc.registry).run(ctx, "Hotels?"), "Taj, final.")
+            self.assertEqual((ctx.deadline, ctx.stop_at), (2500.0, 3400.0))
+            self.assertNotIn("Without calling any tools", json.dumps(fake.requests[-1]["messages"]))
+            await svc.llm.aclose()
+
     def test_closing_requests_ask_for_one_plain_sentence_and_no_labels(self):
         import re
         from coderunner.agent import loop as loop_module

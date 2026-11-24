@@ -77,7 +77,27 @@ def plainly(exc: Exception) -> str:
         return "The page stopped responding and was closed. Open it again."
     return "The browser could not do that on this page."
 NAV_START_WINDOW = 0.5      # how long a click or key press gets to start a navigation
+# A hand-off (a sign-in, a CAPTCHA, a code): the page is looked at again every HANDOFF_RECHECK seconds (its
+# address and whether a password box or a CAPTCHA is still there; no model), and the step counts as done when it
+# shows so. After HANDOFF_WAIT the thread says what the task waits for and what it has so far, and it waits on
+# up to HANDOFF_MOST in all before carrying on without the step. It used to give up silently at ten minutes.
 HANDOFF_WAIT = 600
+HANDOFF_RECHECK = 20.0
+HANDOFF_MOST = 1800
+LOOKS_DONE = "The page changed; it looks done."
+STILL_WAITING = "I'm still waiting for you on the computer: {reason}"
+# The owner's turn on the screen ("Take control" in the app). Until they hand it back, a task's browser step
+# waits: it used to go on clicking under their hands. Then the step reads the page as they left it instead of
+# acting on element numbers read before they changed it.
+PAUSED = "Paused while you have control"
+HANDED_BACK = ("The owner had control of the browser and handed it back. Your step was not taken. This is the page "
+               "as they left it: carry on from here, and do not redo what they did.")
+HANDED_BACK_READ = ("The owner had control of the browser and handed it back. This is the page as they left it: "
+                    "carry on from here, and do not redo what they did.")
+OWNER_TURN_MOST = 1800      # a turn nobody hands back (the app was closed) lapses after this long
+PAUSE_TICK = 15.0           # a wait for the owner moves the task's time limit on as it goes, not only at its end
+NOT_PAUSED = frozenset({"start", "handoff"})        # a hand-off is the owner's turn already
+LOOKS = frozenset({"snapshot", "screenshot", "find", "items", "tabs"})   # only read: done as asked after a turn
 SPAWN_WINDOW = 10.0         # popups opened by an action follow its navigation rules for this long
 RETIRED_KEPT = 2000         # element numbers a page no longer has, remembered per tab (see _rebound)
 
@@ -85,6 +105,16 @@ RETIRED_KEPT = 2000         # element numbers a page no longer has, remembered p
 def same_page(url: str) -> str:
     """A page's address without its fragment: where a retired element number may still be meant."""
     return str(url or "").split("#", 1)[0]
+
+
+def _not_counted(ctx, since: float) -> float:
+    """Time since `since` went on waiting for the owner, so the task's time limit moves on by it
+    (RunContext.pause). Returns now, to count from next."""
+    now = time.monotonic()
+    pause = getattr(ctx, "pause", None)
+    if callable(pause):
+        pause(now - since)
+    return now
 
 # Web chat clients: anything typed or clicked there could message people or answer
 # an approval request on a paired channel, so every interaction is sensitive.
@@ -173,6 +203,16 @@ CAPTCHA_HINT = ("This field is for a CAPTCHA. Proving there is a person is the o
                 "assistant's: fill in the rest of the form, then call handoff(reason) so they can type it in the "
                 "CodeRunner browser window, and carry on when they are done.")
 CAPTCHA_FIELD = re.compile(r"captcha|recaptcha|security[ _-]?code[ _-]?image|verification[ _-]?code", re.I)
+# Whether the owner's step is still on the page: a password or one-time-code box, or a CAPTCHA, in view. Cheap
+# enough to ask every few seconds while a hand-off waits (no page text, no model). reCAPTCHA's corner badge is on
+# every page of some sites and is not a step.
+CHALLENGE_JS = """(() => {
+  const shown = (n) => { const r = n.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const found = document.querySelectorAll('input[type=password], input[autocomplete~="one-time-code"], ' +
+    'iframe[src*="captcha" i], iframe[src*="challenges.cloudflare.com"], iframe[title*="captcha" i], ' +
+    '[id*="captcha" i], [name*="captcha" i], [class*="captcha" i]');
+  return [...found].some((n) => shown(n) && !n.closest('.grecaptcha-badge'));
+})()"""
 
 
 def field_kind(node: dict) -> str | None:
@@ -246,6 +286,8 @@ class BrowserBroker:
         self._tab_ids: dict[str, str] = {}        # targetId -> short tab id shown to the model
         self._tab_targets: dict[str, str] = {}    # short tab id -> targetId
         self._viewport: tuple[int, int] | None = None   # a fixed page size while a screenshot model works
+        self._owner_back = asyncio.Event()      # set while the owner does not have control of the screen
+        self._owner_back.set()
         self._reset()
 
     def _reset(self) -> None:
@@ -370,7 +412,7 @@ class BrowserBroker:
                                           "submit": submit, "tab": tab,
                                           "tainted": tainted},
                                  lambda: self._type(ref, text, submit, tab, tainted, clear))
-        if target is None or result.get("ok") is False:
+        if target is None or result.get("ok") is False or result.get("handed_back"):
             return result
         option = await self._suggestion(target, str(text), tainted)
         if option is None:
@@ -576,9 +618,87 @@ class BrowserBroker:
         return await self._run("handoff", {"reason": reason, "tab": tab, "tainted": tainted},
                                lambda: self._handoff_to_owner(reason, tab, tainted))
 
+    # ---- the owner's turn on the screen -------------------------------------
+
+    @property
+    def owner_control(self) -> bool:
+        return not self._owner_back.is_set()
+
+    def set_owner_control(self, on: bool, origin: str = "owner") -> None:
+        """The owner took the screen in the app, or handed it back. While they have it, the tasks' browser steps
+        wait (_owner_turn)."""
+        if bool(on) == self.owner_control:
+            return
+        if on:
+            self._owner_back.clear()
+        else:
+            self._owner_back.set()
+        self.audit.write("browser.owner_control", on=bool(on), origin=origin)
+
+    async def _owner_turn(self) -> float:
+        """Wait while the owner has control, for a step of a running task. Returns the seconds waited (0: none).
+        The task's time limit moves on by the wait as it goes, and its thread says it is paused."""
+        ctx = current_run.get()
+        if ctx is None or not self.owner_control:
+            return 0.0
+        say = getattr(ctx, "emit", None) or (lambda event: None)
+        say({"type": "paused", "text": PAUSED})
+        started = last = time.monotonic()
+        while self.owner_control:
+            if time.monotonic() - started >= OWNER_TURN_MOST:
+                self.set_owner_control(False, origin="lapsed")
+                break
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._owner_back.wait(), PAUSE_TICK)
+            last = _not_counted(ctx, last)
+        say({"type": "resumed"})
+        return time.monotonic() - started
+
+    def _let_go(self, target: str) -> None:
+        """Forget what the model knew of a page someone else changed (the owner): its element numbers and the
+        text it last read. Numbers continue, so an old one cannot hit a new element."""
+        for table in (self._refs, self._retired, self._ref_urls, self._lines, self._read_urls, self._snapshots,
+                      self._shots):
+            table.pop(target, None)
+        if target in self._numbers:
+            self._numbers[target]["ids"] = {}
+
+    async def _handed_back(self, tab: str | None, tainted: bool) -> dict:
+        """The answer to a step that waited for the owner: not the step (the page it was meant for is gone), but
+        the page as they left it, read afresh."""
+        target = None
+        try:
+            target = await self._target(tab)
+            self._let_go(target)
+            if not self._screens_only:
+                return {**await self._snapshot(tab, self.page_chars, tainted), "handed_back": True,
+                        "note": HANDED_BACK}
+        except (BrowserError, CDPError):
+            pass
+        result: dict = {"ok": True}
+        if target is not None:
+            with contextlib.suppress(BrowserError, CDPError):
+                result = await self._result(target)
+        return {**result, "handed_back": True, "note": HANDED_BACK}
+
     # ---- lifecycle --------------------------------------------------------
 
     async def _run(self, name: str, fields: dict, body: Callable[[], Awaitable[dict]]) -> dict:
+        waited = 0.0 if name in NOT_PAUSED else await self._owner_turn()
+        if waited and name not in LOOKS:
+            result = await self._handed_back(fields.get("tab"), bool(fields.get("tainted")))
+            self.audit.write("browser.handed_back", action=name, waited=round(waited), ok=bool(result.get("ok")),
+                             page=result.get("url"))
+            return result
+        if waited:
+            with contextlib.suppress(BrowserError, CDPError):
+                self._let_go(await self._target(fields.get("tab")))
+        result = await self._attempt(name, fields, body)
+        if waited and result.get("ok") is not False:
+            result["note"] = f"{HANDED_BACK_READ} {result.get('note') or ''}".strip()
+        return result
+
+    async def _attempt(self, name: str, fields: dict, body: Callable[[], Awaitable[dict]]) -> dict:
         try:
             result = await body()
         except BrowserError as exc:
@@ -2098,14 +2218,65 @@ class BrowserBroker:
                 await self._send(sid, "Page.bringToFront")
             # Always a fresh request: a standing grant must not mark the hand-off as done.
             approval = await self.policy.request(action, self.origin)
-            completed = await self.policy.wait(approval.id, HANDOFF_WAIT)
+            completed, note = await self._await_owner(approval.id, target, reason)
         finally:
             self._handoff.discard(target)
             if self._sessions.get(target) == sid:
                 with contextlib.suppress(CDPError, BrowserError):
                     await self._send(sid, "Page.setInterceptFileChooserDialog", {"enabled": True})
-        self._snapshots.pop(target, None)
-        self._refs.pop(target, None)
+        self._let_go(target)
+        extra = {"note": note} if note else {}
         if target in self._sessions:
-            return await self._result(target, completed=completed)
-        return {"ok": True, "completed": completed, "tab": self._tab_id(target)}
+            with contextlib.suppress(CDPError):
+                return await self._result(target, completed=completed, **extra)
+        return {"ok": True, "completed": completed, "tab": self._tab_id(target), **extra}
+
+    async def _await_owner(self, approval_id: str, target: str, reason: str) -> tuple[bool, str]:
+        """Wait for the owner's step: their answer (I'm done, Skip), or the page showing the step done, looked at
+        every HANDOFF_RECHECK seconds. Returns (completed, a note for the model). Time spent here is not the
+        task's own: its time limit moves on by it."""
+        ctx = current_run.get()
+        first = await self._step_state(target)
+        address, challenged = first if first else ("", False)
+        started = last = time.monotonic()
+        told = False
+        while True:
+            waited = time.monotonic() - started
+            if waited >= HANDOFF_MOST:
+                return await self.policy.wait(approval_id, 0), ""        # carried on without the step
+            answer = await self.policy.wait(approval_id, min(HANDOFF_RECHECK, HANDOFF_MOST - waited), expire=False)
+            last = _not_counted(ctx, last)
+            if answer is not None:
+                return answer, ""
+            now = await self._step_state(target)
+            if now and not now[1] and (challenged or (address and now[0] != address)):
+                # The page moved on from the sign-in or the CAPTCHA: done, though nobody said so in the app.
+                with contextlib.suppress(KeyError):
+                    self.policy.decide(approval_id, True, decided_by="page")
+                return True, LOOKS_DONE
+            if not told and last - started >= HANDOFF_WAIT:
+                told = True
+                self._still_waiting(ctx, reason)
+
+    async def _step_state(self, target: str) -> tuple[str, bool] | None:
+        """(the page's address without its fragment, whether a password box or a CAPTCHA is in view), or None
+        when the page cannot be looked at (closed, or still loading)."""
+        try:
+            url = same_page((await self._info(target)).get("url", ""))
+            sid = await self._session(target)
+            found = await self._send(sid, "Runtime.evaluate", {
+                "expression": CHALLENGE_JS, "contextId": await self._world(sid, target), "returnByValue": True},
+                timeout=5)
+        except (BrowserError, CDPError):
+            return None
+        return url, bool((found.get("result") or {}).get("value"))
+
+    def _still_waiting(self, ctx, reason: str) -> None:
+        """A hand-off nobody has answered: the thread says what the task waits for, and what it has so far."""
+        say = getattr(ctx, "emit", None)
+        if say is None:
+            return
+        from ..agent.loop import found_so_far
+        so_far = f"\n\n{ctx.interim}" if getattr(ctx, "interim", "") else found_so_far(ctx)
+        say({"type": "interim", "text": STILL_WAITING.format(reason=reason) + so_far})
+        self.audit.write("browser.handoff_waiting", reason=reason)
