@@ -968,13 +968,20 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="s1"), "read it")
             seen = [[DROPPED in m["content"] for m in r["messages"] if m["role"] == "tool"] for r in fake.requests]
             # Pages accumulate untouched (every request extends the last, so the runtime reads only what is
-            # new) until the conversation fills 60% of the context; then all but the last go at once.
-            # (Text the runtime has not counted yet is taken at 3 characters a token, so here at the fourth page.)
+            # new) until the conversation fills 60% of the context; then the old ones go at once, the latest two
+            # steps kept. (Text the runtime has not counted yet is taken at 3 characters a token, so here at the
+            # fourth page.) At the fifth page a trim would free one page, under 15% of the context: none is made,
+            # so that request reads only what is new. At the sixth, two pages go in one trim.
             self.assertEqual(seen[3], [False] * 3)
-            self.assertEqual(seen[4], [True] * 3 + [False])
-            self.assertEqual(seen[6], [True] * 3 + [False] * 3)
+            self.assertEqual(seen[4], [True] * 2 + [False] * 2)
+            self.assertEqual(seen[5], [True] * 2 + [False] * 3)
+            self.assertEqual(seen[6], [True] * 4 + [False] * 2)
+            self.assertEqual(fake.requests[5]["messages"][:-2], fake.requests[4]["messages"])
             pages = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
             self.assertIn("A long page", pages[-1])
+            trims = [e for e in svc.audit.tail() if e["event"] == "agent.trimmed"]
+            self.assertEqual([e["results"] for e in trims], [2, 2])
+            self.assertTrue(all(e["freed"] > 0.15 * 8192 and e["after"] < e["before"] for e in trims))
             await svc.llm.aclose()
 
     async def test_empty_answer_after_tool_is_asked_for_once(self):

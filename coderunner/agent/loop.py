@@ -167,6 +167,12 @@ PAGE_PREFIX = '<untrusted source="browser_'
 BIG_RESULT = 1500     # browser results longer than this hold a page, or a large part of one
 DROPPED = "[earlier page text removed to save space; take a new snapshot if you need it]\n</untrusted>"
 PLAN_REMINDER = "[Reminder of your plan, not a new request]\n"
+
+
+def dropped(text: str) -> str:
+    """A result let go: its first line (the untrusted tag of a page) and a note. A result with no line break
+    keeps only its start, or the note would make it longer."""
+    return text.split("\n", 1)[0][:200] + "\n" + DROPPED
 OUT_OF_STEPS = ("You have used all the steps for this task. Without calling any tools, write your reply to me now "
                 "from what you have found: the answer first, with a link to the page each figure came from, then "
                 "one sentence on what is unfinished. No bold labels, no steps for me to follow, no offer at the end.")
@@ -204,6 +210,15 @@ ADD_LINKS = ("Your reply has no links, and I asked for them. Without calling any
              "of pages you opened in this task.")
 REMIND_EVERY = 6      # steps between plan reminders while the plan stays the same
 TRIM_AT = 0.6         # old pages are dropped once the conversation fills this share of the model's context
+# A trim makes the runtime read the conversation again from the first result it shortened, however little it
+# took away (hybrid models cannot resume from the middle). On the owner's 27B server, 9 research tasks trimmed
+# 14-23 times each, a page or two at a time, and each of the 100 turns after a trim re-read ~8,300 tokens (17 s)
+# where a normal turn re-reads ~1,200. So a trim goes down to LOW_WATER in one go, keeping the latest
+# KEEP_STEPS steps whole, and is not made at all when it would free less than MIN_FREED: the next one is then
+# far away. Both are shares of the context, or of the room the other slots leave when that is smaller.
+LOW_WATER = 0.35
+MIN_FREED = 0.15
+KEEP_STEPS = 2
 CHARS_PER_TOKEN = 3.5
 # The local runtime's context is shared by every slot (the tasks' and the judge's), so a task keeps its
 # conversation within the room the others leave. Overflowing it stopped 4 of 22 real tasks in one run.
@@ -402,21 +417,61 @@ class Agent:
 
     @staticmethod
     def _drop_old(messages: list[dict], before: int, pages_only: bool) -> list[tuple[int, int]]:
-        """Old results are dropped only when the conversation nears its room, and then all of them at once
-        (pages first, everything long if that is not enough). Any edit to earlier messages makes the runtime
-        read the conversation again from the start (hybrid models cannot resume from the middle): with a trim
-        every few pages, booking.com runs spent most of their time re-reading 12,000-20,000 tokens at 60-75
-        tok/s, four to five minutes each time. Returns (index, characters removed) for each."""
+        """Every long result before `before` dropped at once (pages only, or everything long): what _trim does
+        when even its deep trim leaves the conversation past FIT of its room. Any edit to earlier messages makes
+        the runtime read the conversation again from the start (hybrid models cannot resume from the middle):
+        with a trim every few pages, booking.com runs spent most of their time re-reading 12,000-20,000 tokens
+        at 60-75 tok/s, four to five minutes each time. Returns (index, characters removed) for each."""
         removed = []
         for index, m in enumerate(messages[:before]):
             text = m.get("content")
             if (m.get("role") != "tool" or not isinstance(text, str) or len(text) <= BIG_RESULT
                     or text.endswith(DROPPED) or (pages_only and not text.startswith(PAGE_PREFIX))):
                 continue
-            short = text.split("\n", 1)[0] + "\n" + DROPPED
+            short = dropped(text)
             messages[index] = {**m, "content": short}
             removed.append((index, len(text) - len(short)))
         return removed
+
+    @staticmethod
+    def _freed(removed: list[tuple[int, int]], known: list[int]) -> int:
+        """Tokens a trim took away: the runtime's count for what it has read, the estimate for what is new."""
+        return int(sum(n / (CHARS_PER_TOKEN if i < known[0] else NEW_CHARS) for i, n in removed))
+
+    def _trim(self, messages: list[dict], known: list[int], context: int, room: int) -> dict | None:
+        """Old results let go when the conversation nears its room: pages first, then other long results (shell
+        output, file text), oldest first, down to LOW_WATER, never from the latest KEEP_STEPS steps. Nothing is
+        changed when that would free less than MIN_FREED, unless the conversation is past FIT of its room: then
+        it must shrink, from the latest step's results back if need be. Returns what it did, for the audit."""
+        size = self._size(messages, known)
+        if size <= min(TRIM_AT * context, FIT * room):
+            return None
+        base = min(context, room)
+        must = size > FIT * room
+        steps = [i for i, m in enumerate(messages) if m.get("tool_calls")]
+        keep_from = steps[-KEEP_STEPS] if len(steps) >= KEEP_STEPS else 0
+        trial, removed = list(messages), []
+        for pages_only in (True, False):
+            for index, m in enumerate(trial[:keep_from]):
+                if size - self._freed(removed, known) <= LOW_WATER * base:
+                    break
+                text = m.get("content")
+                if (m.get("role") != "tool" or not isinstance(text, str) or len(text) <= BIG_RESULT
+                        or text.endswith(DROPPED) or (pages_only and not text.startswith(PAGE_PREFIX))):
+                    continue
+                short = dropped(text)
+                trial[index] = {**m, "content": short}
+                removed.append((index, len(text) - len(short)))
+        if not must and self._freed(removed, known) < MIN_FREED * base:
+            return None
+        if must and size - self._freed(removed, known) > FIT * room:
+            removed += self._drop_old(trial, steps[-1] if steps else 0, pages_only=False)
+        if not removed:
+            return None
+        freed = self._freed(removed, known)
+        messages[:] = trial
+        known[1] = max(0, known[1] - int(sum(n for i, n in removed if i < known[0]) / CHARS_PER_TOKEN))
+        return {"results": len(removed), "freed": freed, "before": size, "after": size - freed, "must": must}
 
     @staticmethod
     def _cut_step(messages: list[dict], start: int, over: int) -> None:
@@ -583,16 +638,9 @@ class Agent:
                 break
             self._drop_old_images(messages)
             room = self._room(context, ctx.conversation)
-            if self._size(messages, known) > min(TRIM_AT * context, FIT * room):
-                pages = [i for i, m in enumerate(messages) if m.get("role") == "tool"
-                         and str(m.get("content", "")).startswith(PAGE_PREFIX)]
-                removed = self._drop_old(messages, pages[-1] if pages else 0, pages_only=True)
-                if self._size(messages, known) > FIT * room:
-                    last = max((i for i, m in enumerate(messages) if m.get("tool_calls")), default=0)
-                    removed += self._drop_old(messages, last, pages_only=False)
-                known[1] = max(0, known[1] - int(sum(n for i, n in removed if i < known[0]) / CHARS_PER_TOKEN))
-                if removed:
-                    self.svc.audit.write("agent.trimmed", results=len(removed), room=room)
+            trimmed = self._trim(messages, known, context, room)
+            if trimmed:
+                self.svc.audit.write("agent.trimmed", room=room, step=step, **trimmed)
             if self._size(messages, known) > 0.95 * room:
                 # Full: what it read before the latest step makes way, and it answers from what it has found (a
                 # task that ran 160 steps ended with only "I had to stop here", its findings unsaid).

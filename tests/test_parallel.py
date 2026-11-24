@@ -257,6 +257,48 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
             self.assertLess(len(m["content"]), 3200)
             self.assertTrue(m["content"].endswith(loop_module.CUT + "\n</untrusted>"))
 
+    @staticmethod
+    def steps(results: list[str]) -> list[dict]:
+        messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "go"}]
+        for n, result in enumerate(results):
+            messages += [{"role": "assistant", "content": "", "tool_calls": [{"id": f"c{n}"}]},
+                         {"role": "tool", "tool_call_id": f"c{n}", "content": result}]
+        return messages
+
+    def test_one_trim_goes_down_to_the_low_watermark_and_keeps_the_latest_two_steps(self):
+        agent = self.agent(Svc())
+        shell = "x" * 7000                                      # a long result that is not a page
+        messages = self.steps([page(n, 7000) if n % 2 == 0 else shell for n in range(10)])
+        known = [0, 0]
+        before = agent._size(messages, known)
+        done = agent._trim(messages, known, 32768, 32768)
+        dropped = [n for n in range(10) if messages[3 + 2 * n]["content"].endswith(loop_module.DROPPED)]
+        # Every old page first (oldest first), then other long results only as far as the low watermark.
+        self.assertEqual(dropped, [0, 1, 2, 3, 4, 6])
+        self.assertEqual(done["results"], 6)
+        self.assertFalse(done["must"])
+        self.assertEqual(done["before"], before)
+        self.assertLessEqual(done["after"], loop_module.LOW_WATER * 32768)
+        self.assertEqual(done["after"], agent._size(messages, known))
+        self.assertEqual(done["freed"], before - done["after"])
+        # Right after, nothing is due: the next trim is far away.
+        self.assertIsNone(agent._trim(messages, known, 32768, 32768))
+
+    def test_a_trim_that_would_free_little_waits_unless_the_room_is_nearly_full(self):
+        agent = self.agent(Svc())
+        # Over 60% of the context, but nearly all of it in the latest two steps: one old page would go.
+        messages = self.steps([page(0, 4000), page(1, 30000), page(2, 30000)])
+        snapshot = [dict(m) for m in messages]
+        self.assertIsNone(agent._trim(messages, [0, 0], 32768, 32768))
+        self.assertEqual(messages, snapshot)                    # untouched: the runtime reads only what is new
+        # Past FIT of a smaller room it must: the old page, then the long results before the latest step.
+        done = agent._trim(messages, [0, 0], 32768, 22000)
+        self.assertTrue(done["must"])
+        self.assertEqual(done["results"], 2)
+        self.assertTrue(messages[3]["content"].endswith(loop_module.DROPPED))
+        self.assertTrue(messages[5]["content"].endswith(loop_module.DROPPED))
+        self.assertIn("w" * 30000, messages[7]["content"])     # the latest step's page stays whole
+
     async def test_six_pages_at_once_are_cut_and_a_task_that_cannot_fit_stops_in_a_sentence(self):
         with FakeOpenAI() as fake:
             svc = Svc()
