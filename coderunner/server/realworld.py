@@ -292,6 +292,15 @@ WORLD = [
          "the state income tax (not payroll taxes), show the steps, and give the total and the effective rate.",
          {"federal": r"federal|IRS", "California": r"california|FTB", "a total": r"total",
           "an effective rate": r"effective.{0,40}\d+(\.\d+)?\s?%|\d+(\.\d+)?\s?%.{0,40}effective"}, links=2, prices=3),
+    Real("streaming", "research", "the best-reviewed films and series out on streaming in the last three months",
+         "Find the best films and series released on streaming services in the last three months with a Rotten "
+         "Tomatoes critics score of 90% or more. Give at least five, films and series both, in a table with the "
+         "title, the score, the service, the release date and a link to its Rotten Tomatoes page.",
+         {"a table": r"\|.*\|", "scores of 90% or more": r"\b(9\d|100)\s?%",
+          "a service": r"netflix|prime video|amazon|disney|hulu|\bmax\b|hbo|apple tv|peacock|paramount|mubi",
+          "films and series": r"(film|movie).*(series|show|season)|(series|show|season).*(film|movie)",
+          "release dates": r"\b(aug|sep|oct|nov)\w*\.?\s+\d{1,2}\b|\b\d{1,2}\s+(aug|sep|oct|nov)|\b2026-(0[89]|1[01])-"},
+         links=2),
     Real("london", "shopping", "three London flats to rent under a monthly budget",
          "Find three one-bedroom flats to rent in Islington, London for under £2,500 a month on Rightmove, Zoopla or "
          "OpenRent. Give the rent, the nearest station, when it is available, and the link for each.",

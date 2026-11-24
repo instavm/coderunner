@@ -985,7 +985,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--research", action="store_true",
                    help="twelve questions answered from several real pages, most with an answer that can be checked")
     p.add_argument("--world", action="store_true",
-                   help="twelve tasks away from India (San Francisco homes, London rents, US tax), several in German, "
+                   help="thirteen tasks away from India (San Francisco homes, London rents, US tax, new films and "
+                        "series by their reviews), several in German, "
                         "French, Spanish, Japanese or Portuguese and answered in that language")
     p.add_argument("--minutes", type=int, default=0, help="one time limit for every task, in minutes")
     p.set_defaults(func=cmd_check)

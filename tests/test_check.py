@@ -270,6 +270,13 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state, "passed", why)
         self.assertIn("the answer says it could not be done",
                       realworld.grade(world["idealo"], "Ich konnte die Seite nicht öffnen.", [], [], [])[1])
+        films = ("| Title | Score | Service | Released |\n|---|---|---|---|\n"
+                 "| [A film](https://www.rottentomatoes.com/m/a) | 96% | Netflix | Oct 3, 2026 |\n"
+                 "| [A series, season 2](https://www.rottentomatoes.com/tv/b/s02) | 100% | Apple TV | Sep 12, 2026 |")
+        state, why, _ = realworld.grade(world["streaming"], films, ["https://www.rottentomatoes.com/browse"], [], [])
+        self.assertEqual(state, "passed", why)
+        self.assertIn("scores of 90% or more", realworld.grade(world["streaming"], films.replace("96%", "86%")
+                                                               .replace("100%", "88%"), [], [], [])[1])
 
     def test_an_answer_is_graded_on_its_parts_its_links_its_prices_and_what_was_committed(self):
         from coderunner.server import realworld
