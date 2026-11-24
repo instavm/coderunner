@@ -551,3 +551,6 @@ button.setup-other:hover { color: var(--accent); }
 .retry-key input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
   background: var(--surface); color: inherit; font: inherit; }
 .on-claude { margin: 4px 2px 0; text-align: right; }
+
+#nowLine.link { cursor: pointer; }
+#nowLine.link:hover { color: var(--text); text-decoration: underline; }

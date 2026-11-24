@@ -483,7 +483,8 @@ async function loadConversations() {
   // What is running comes from the list too: a task started before this window opened (or while it was
   // reconnecting) sends no "started" here, and the computer panel said "Idle" while it worked.
   const now = new Map(list.filter((c) => c.task && ["running", "queued"].includes(c.status))
-                         .map((c) => [c.task, state.running.get(c.task) || {conversation: c.conversation, label: "Working"}]));
+                         .map((c) => [c.task, {...(state.running.get(c.task) || {label: ""}), conversation: c.conversation,
+                                               title: c.title || ""}]));
   state.running.clear();
   for (const [id, info] of now) state.running.set(id, info);
   state.othersWaiting = list.some((c) => c.waiting && c.conversation !== state.conversation);
@@ -660,7 +661,10 @@ function listen() {
   source.onmessage = (message) => {
     const e = JSON.parse(message.data);
     state.lastSeq = Math.max(state.lastSeq, e.seq || 0);
-    if (e.type === "started") state.running.set(e.task, {conversation: e.conversation, label: "Starting"});
+    if (e.type === "started") state.running.set(e.task, {conversation: e.conversation, label: "", title: e.prompt || ""});
+    // Another thread's status line is kept, so the panel can say what that task is doing rather than only that it is.
+    if (e.type === "note" && state.running.has(e.task))
+      state.running.get(e.task).label = trunc(String(e.text || "").split(/(?<=[.!?])\s/)[0], 90);
     if (["done", "failed", "cancelled"].includes(e.type)) state.running.delete(e.task);
     if (e.conversation === state.conversation) {
       if (state.loading?.id === e.conversation) state.loading.events.push(e);
@@ -675,7 +679,16 @@ function listen() {
     }
     refreshNow();
   };
-  source.onerror = () => { source.close(); setTimeout(listen, 2000); };
+  // Back after the assistant restarted (a model switch restarts it in a few seconds, too quickly for the offline
+  // probe): the old window kept the previous model's name and a finished thread while a new task worked.
+  source.onopen = () => {
+    if (!listen.lost) return;
+    listen.lost = false;
+    loadModels();
+    if (state.conversation && state.conversation !== "check") openConversation(state.conversation, $("title").textContent, true);
+    else loadConversations();
+  };
+  source.onerror = () => { listen.lost = true; source.close(); setTimeout(listen, 2000); };
 }
 
 function notify(title, body) {
@@ -1102,8 +1115,13 @@ function refreshNow() {
   $("computerState").textContent = control ? "You're in control" : rfb ? (busy ? "Working" : "Idle") : screenWord || (busy ? "Working" : "Connecting");
   // The line speaks for the open task while it runs; otherwise for the others (its last words went stale).
   const open = [...state.running.values()].some((r) => r.conversation === state.conversation);
-  $("nowLine").textContent = !busy ? "Idle" : open ? (state.nowText || "Working…") :
-    state.othersWaiting ? "Another task needs you" : "Working on another task";
+  // Another task at work: what it is doing, and a click opens its thread.
+  const other = !open && busy ? [...state.running.values()][0] : null;
+  const line = $("nowLine");
+  line.textContent = !busy ? "Idle" : open ? (state.nowText || "Working…") :
+    state.othersWaiting ? "Another task needs you" : other.label || `Working on “${trunc(other.title || "another task", 50)}”`;
+  line.classList.toggle("link", !!other);
+  line.onclick = other ? () => openConversation(other.conversation, other.title) : null;
 }
 
 // A model's id as an owner reads it: coderunner-bonsai-2-27b -> Bonsai 2 27B.
