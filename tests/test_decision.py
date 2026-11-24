@@ -30,7 +30,7 @@ class ActionCheckTests(DecisionTestCase):
         check = ActionCheck(model, audit=self.audit)
         state = describe("shop.example", "/checkout", "click", "button", "Continue", nearby="Total $899")
         self.assertTrue(await check.commits(state))
-        self.assertFalse(await check.commits(state))            # 0.6 is under the default 0.7
+        self.assertFalse(await check.commits(state + " "))      # 0.6 is under the default 0.7
         self.assertEqual(self.requests[0]["model"], "tev1:4b")
         self.assertIn("Total $899", self.requests[0]["state"])
         self.assertEqual(set(self.requests[0]["questions"]["q"]["criteria"]), {"safe", "commit", "unclear"})
@@ -63,6 +63,19 @@ class ActionCheckTests(DecisionTestCase):
         self.assertEqual(_shown_url("https://pay.example/c?x=1", "shop.example"), "pay.example/c?x=1")
         self.assertNotIn("Link opens", describe("shop.example", "/", "click", "button", "Go"))
 
+    async def test_a_step_judged_already_is_not_asked_again_but_a_failed_one_is(self):
+        answers = iter([httpx.Response(500, text="busy"), *[httpx.Response(200, json={"choices": [{"message": {"content": "A"}}]})] * 3])
+        model = self.model(lambda r: next(answers), api="chat")
+        check = ActionCheck(model, audit=self.audit)
+        state = describe("shop.example", "/", "click", "button", "Next page")
+        self.assertTrue(await check.commits(state))             # the judge failed: the owner is asked
+        self.assertFalse(await check.commits(state))            # asked again, and answered
+        self.assertFalse(await check.commits(state))            # remembered
+        self.assertFalse(await check.commits(describe("shop.example", "/", "click", "button", "Previous page")))
+        self.assertEqual(len(self.requests), 3)
+        self.assertTrue([e for e in self.audit.tail() if e["event"] == "decision.check"][-2].get("seen"))
+        await model.aclose()
+
     async def test_failures_ask_the_owner(self):
         model = self.model(lambda r: httpx.Response(500, text="model not loaded"))
         self.assertTrue(await ActionCheck(model, audit=self.audit).commits("Site: x"))
@@ -75,8 +88,8 @@ class ActionCheckTests(DecisionTestCase):
                            api="chat")
         check = ActionCheck(model)
         self.assertTrue(await check.commits("Site: x"))
-        self.assertFalse(await check.commits("Site: x"))
-        self.assertTrue(await check.commits("Site: x"))          # an answer that is no option fails closed
+        self.assertFalse(await check.commits("Site: y"))
+        self.assertTrue(await check.commits("Site: z"))          # an answer that is no option fails closed
         self.assertEqual(self.requests[0]["temperature"], 0)
         # Only the last message changes between steps, so the runtime keeps the instructions read.
         first, second = (r["messages"] for r in self.requests[:2])
