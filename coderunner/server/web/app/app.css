@@ -173,12 +173,6 @@ a.item:hover { transform: translateY(-1px); } a.item:focus-visible { outline: 2p
 .plan-step.doing { color: var(--text); }
 .plan-step.done .plan-mark { color: var(--ok); }
 .plan-step.doing .plan-mark { color: var(--accent); }
-/* A picture of the page: small in the thread (its room is kept before it loads, so the thread does not jump),
-   full width on a click. */
-.shot { margin: 12px 0; max-width: 300px; cursor: zoom-in; border-radius: 10px; }
-.shot img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; background: var(--surface-2);
-  border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
-.shot figcaption { margin-top: 4px; }
 .took { margin-top: 6px; }
 
 .ask { margin: 12px 0; border: 1px solid var(--warn); background: var(--warn-soft); border-radius: var(--radius); padding: 12px 14px; }
@@ -210,8 +204,6 @@ a.item:hover { transform: translateY(-1px); } a.item:focus-visible { outline: 2p
 .wait-remove:hover { filter: brightness(1.35); }
 .seg:not(.on):hover { color: #fff; }
 a.att-file:hover { border-color: var(--accent); }
-.shot:hover img { filter: brightness(.96); }
-.shot:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .btn:disabled:hover { border-color: var(--line); filter: none; }
 .btn.danger { color: var(--danger); }
 .ask.closed { border-color: var(--line); background: var(--surface-2); }

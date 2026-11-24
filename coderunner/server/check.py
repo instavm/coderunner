@@ -392,9 +392,11 @@ class CheckJob:
         self._say(f"{check.name}: {check.what}…")
         start, since, self._asked, self._approvals = time.monotonic(), tasks.bus.latest(), 0, []
         real = isinstance(check, realworld.Real)
-        task = tasks.start(conversation, check.prompt + realworld.RULES if real else check.prompt(run), "check", attachments=ids)
         limit = (LONG_S if check.long else realworld.LIMIT_S) if real else LONG_S if check.long else QUICK_S
         limit = self.minutes * 60 or limit
+        # The task knows its limit, so it answers from what it has before it is stopped.
+        task = tasks.start(conversation, check.prompt + realworld.RULES if real else check.prompt(run), "check",
+                           attachments=ids, time_limit=limit)
         answer = ""
         try:
             # A task that waits its turn (one the check stopped is still letting go of its slot) is waited for:
@@ -438,6 +440,7 @@ class CheckJob:
             with contextlib.suppress(BaseException):        # it ends before the next task takes its slot
                 await asyncio.wait_for(job, STOP_S)
             passed, why = False, f"still running after {limit // 60} minutes"
+            answer = (tasks.get(task["id"]) or {}).get("reply") or ""     # what it had found when it was stopped
             run.tools = [e.get("name", "") for e in tasks.bus.since(since, conversation) if e.get("type") == "tool"]
         row.update(state="passed" if passed else "failed", why=why, seconds=round(time.monotonic() - start),
                    steps=len(run.tools), approvals=self._asked)

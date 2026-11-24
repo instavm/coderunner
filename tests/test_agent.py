@@ -145,6 +145,63 @@ class ThreadTests(unittest.IsolatedAsyncioTestCase):
                              "\n\nWhat I had found so far:\n- IndiGo is ₹4,800.")
             self.assertEqual(found_so_far(RunContext(conversation="t")), "")
 
+    async def test_a_run_with_a_deadline_is_told_once_near_the_end_to_answer(self):
+        import time
+        from types import SimpleNamespace
+        from unittest import mock
+        from coderunner.agent import loop as loop_module
+        clock = [1000.0]
+        fake_time = SimpleNamespace(time=time.time, monotonic=lambda: clock[0])
+
+        def step(at):
+            def reply(body):
+                clock[0] = at                   # the model's turn took until then
+                return tool_call("run_python", {"code": "print(1)"})
+            return reply
+        with FakeOpenAI() as fake, mock.patch.object(loop_module, "time", fake_time):
+            svc = Svc()
+            svc.sandbox = FakeSandbox()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            # 15 minutes: told when 135 s are left (15%), here after the second step.
+            fake.script = [step(1500.0), step(1800.0), step(1820.0),
+                           {"role": "assistant", "content": "Two hotels: Taj at ₹18,200 and Alila at ₹21,000."}]
+            ctx = RunContext(conversation="t-deadline", deadline=1900.0)
+            reply = await Agent(svc, svc.llm, svc.registry).run(ctx, "Three hotels in North Goa?")
+            self.assertEqual(reply, "Two hotels: Taj at ₹18,200 and Alila at ₹21,000.")
+            told = [[m["content"] for m in r["messages"] if str(m.get("content")).startswith("[Reminder, not a new request] Time")]
+                    for r in fake.requests]
+            self.assertEqual([len(t) for t in told], [0, 0, 1, 1])               # once, and kept
+            self.assertIn("about 2 minutes left", told[2][0])
+            self.assertIn("Without calling any tools, write your reply", told[2][0])
+            # Appended after what was there: the earlier messages are as they were, so nothing is read again.
+            before, after = fake.requests[1]["messages"], fake.requests[2]["messages"]
+            self.assertEqual(after[:len(before)], before)
+            self.assertEqual(after[-1]["content"], told[2][0])
+            # A run with no deadline (the owner's own tasks) is never told.
+            fake.script = [step(5000.0), step(9000.0), {"role": "assistant", "content": "ok"}]
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-no-deadline"), "go")
+            self.assertNotIn("Time is nearly up", json.dumps(fake.requests[-1]["messages"]))
+            await svc.llm.aclose()
+        self.assertEqual(loop_module.time_lead(900), 135)
+        self.assertEqual(loop_module.time_lead(300), 120)
+        self.assertEqual(loop_module.time_lead(60), 30)                 # never before half the time is up
+
+    def test_an_answer_cut_short_keeps_findings_and_the_status_lines_that_hold_one(self):
+        from coderunner.agent.loop import findings, stopped_reply
+        ctx = RunContext(conversation="t", found=["IndiGo is ₹4,800."],
+                         said=["Opening booking.com", "IndiGo is ₹4,800.", "Checking Skyscanner for the 12th",
+                               "Air India at Rs 5,100", "Vistara rated 4.5/5", "Opening booking.com"])
+        self.assertEqual(findings(ctx), ["IndiGo is ₹4,800.", "Air India at Rs 5,100", "Vistara rated 4.5/5"])
+        self.assertEqual(stopped_reply(ctx), "I stopped here. What I had found so far:\n- IndiGo is ₹4,800.\n"
+                                             "- Air India at Rs 5,100\n- Vistara rated 4.5/5")
+        ctx.said += [f"Hotel {n} at ₹{n},000/night" for n in range(10, 30)]
+        self.assertEqual(len(findings(ctx)), 12)
+        self.assertEqual(findings(ctx)[-1], "Hotel 29 at ₹29,000/night")       # the latest ones
+        self.assertEqual(stopped_reply(RunContext(conversation="t", said=["Opening booking.com"])),
+                         "Stopped before I found anything.")
+        self.assertEqual(stopped_reply(None), "Stopped before I found anything.")
+
     async def test_a_tool_that_fails_and_a_model_that_stops_answering_are_said_without_plumbing(self):
         with FakeOpenAI() as fake:
             class Broken:

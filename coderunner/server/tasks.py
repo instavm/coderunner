@@ -22,8 +22,9 @@ SHOWN_FIELDS = ("url", "page", "target", "summary", "kind", "status", "ok", "err
                 "ref", "key", "tab", "id", "risk", "action", "step", "thought", "completed", "label", "option",
                 "direction", "submit", "goal", "report", "model", "x", "y")
 FINAL = ("done", "failed", "cancelled")
-# A picture of the page goes into the task's thread where it tells the owner something words do not: a page the
-# assistant has just opened, the page a step it asks approval for is on, and how the page stood at the end.
+# A picture of the page is kept with the task's events: a page the assistant has just opened, the page a step it
+# asks approval for is on, and how the page stood at the end. The app does not put them in the thread (the live
+# screen is beside it); the check reads the pages a task went to from them.
 SHOT_AFTER = ("browser.open", "browser.navigate")
 SHOT_SETTLE_S = 1.5         # a page just opened is still drawing
 SHOT_APART_S = 20           # the same page is not shown again sooner than this
@@ -157,10 +158,11 @@ class Tasks:
     # ---- starting and stopping -------------------------------------------
 
     def start(self, conversation: str, prompt: str, origin: str, attachments: list[str] | None = None,
-              remote: str = "") -> dict:
+              remote: str = "", time_limit: float = 0) -> dict:
         """attachments: ids of files the owner attached in the app (files/attached.py). remote: the name of the
         Anthropic model this one task runs on, when the owner asked for it (a retry of a task the local model
-        did not finish); empty for the assistant's own model."""
+        did not finish); empty for the assistant's own model. time_limit: seconds from when it starts running
+        after which the caller will stop it (the check's limit), so it answers before then; 0 for none."""
         from ..files import attached
         task_id = secrets.token_hex(6)
         now = time.time()
@@ -175,7 +177,8 @@ class Tasks:
 
         emit.task, emit.conversation = task_id, conversation
         emit.shots = {"count": 0, "page": "", "at": 0.0, "since": 0, "busy": False}
-        emit.remote, emit.incomplete = remote, False
+        emit.remote, emit.incomplete, emit.time_limit = remote, False, max(0.0, float(time_limit or 0))
+        emit.run = None                 # the run's context, set by the agent loop once it starts
         files = [info for info in map(attached.describe, (attachments or [])[:attached.MAX_PER_TASK]) if info]
         emit({"type": "started", "prompt": prompt, **({"attachments": files} if files else {}),
               **({"remote": remote} if remote else {})})
@@ -208,7 +211,10 @@ class Tasks:
                    attachments: list[str] | None = None) -> None:
         status, reply = "done", ""
         from ..files import attached as kept
+        from ..agent.loop import stopped_reply
         outputs = kept.outputs_now()            # to tell afterwards what this task made
+        if emit.time_limit:
+            emit.deadline = time.monotonic() + emit.time_limit      # counted from when it runs, as the caller does
         try:
             channel, _, chat_id = conversation.partition(":")
             text, images = prompt, None
@@ -225,7 +231,8 @@ class Tasks:
                                                      task=task_id, **({"images": images} if images else {}),
                                                      **({"remote": True} if emit.remote else {}))
         except asyncio.CancelledError:
-            status, reply = "cancelled", "Stopped."
+            # Stopped by the owner or at a caller's time limit: it answers at once with what it had found.
+            status, reply = "cancelled", stopped_reply(getattr(emit, "run", None))
         except Exception as exc:        # the app shows the failure instead of waiting for ever
             # Said as a person would say it. What went wrong is in the audit trail for whoever looks.
             self.daemon.svc.audit.write("task.failed", task=task_id, error=f"{type(exc).__name__}: {exc}"[:400])
@@ -314,9 +321,11 @@ class Tasks:
             if job is None:
                 return False
             self.waiting.remove(job)            # stopped before it started
-            self.store.execute("UPDATE tasks SET status = 'cancelled', reply = 'Stopped.', finished = ? WHERE id = ?",
-                               (time.time(), task_id))
-            job[4]({"type": "cancelled", "reply": "Stopped."})
+            from ..agent.loop import stopped_reply
+            reply = stopped_reply(None)
+            self.store.execute("UPDATE tasks SET status = 'cancelled', reply = ?, finished = ? WHERE id = ?",
+                               (reply, time.time(), task_id))
+            job[4]({"type": "cancelled", "reply": reply})
             return True
         task.cancel()
         return True

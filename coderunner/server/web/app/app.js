@@ -175,9 +175,10 @@ const state = {
 
 // ---- a task in the thread ----------------------------------------------------
 
-// A task reads as a conversation: what the assistant says along the way, one line for what it is doing now, its
-// plan ticking off, a picture of the page where that says more than words, and the answer. The calls it makes
-// (which tool, with what arguments) are not shown; they are in the audit trail for whoever wants them.
+// A task reads as a conversation: the request, one line for what it is doing now, its plan ticking off, and the
+// answer. The calls it makes (which tool, with what arguments) are not shown; they are in the audit trail for
+// whoever wants them. Nor are pictures of the pages it works ("shot" events): the live screen is beside the
+// thread, and a stack of booking.com pages buried the request and the answer.
 // Scrolling eases only for those who have not asked their computer for less motion.
 const gently = () => matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
 
@@ -264,21 +265,6 @@ class TaskView {
     this.flow.insertBefore(this.produced, this.flow.querySelector(".took"));
   }
 
-  showPicture(e) {
-    const figure = el("figure", "shot"), image = el("img");
-    image.src = `/api/shots/${encodeURIComponent(e.file)}`;
-    image.alt = `The page at ${host(e.page)}`;
-    image.loading = "lazy";
-    figure.append(image, el("figcaption", "muted small", host(e.page)));
-    // A page's picture opens over the app at full size, as an attached picture does, and Escape puts it away.
-    figure.tabIndex = 0; figure.setAttribute("role", "button"); figure.setAttribute("aria-label", `Picture of ${host(e.page)}, open larger`);
-    figure.onclick = () => lightbox(image.src, `Picture of ${host(e.page)}`);
-    figure.onkeydown = (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); figure.click(); } };
-    image.onload = () => { image.style.aspectRatio = `${image.naturalWidth} / ${image.naturalHeight}`; };
-    image.onerror = () => figure.remove();          // a picture cleared away since: the words still stand
-    this.say(figure);
-  }
-
   apply(e) {
     if (e.seq && e.seq <= this.seq) return;
     if (e.seq) this.seq = e.seq;
@@ -303,7 +289,6 @@ class TaskView {
         this.setNow(describeTool(e.name, e.arguments));
         break;
       case "tool_done": break;
-      case "shot": this.showPicture(e); break;
       case "activity":
         if (e.event === "approval.requested") this.ask(e);
         else if (e.event === "approval.decided") closeAsk(e.id, e.status === "approved" ? true : e.status === "denied" ? false : "late");
