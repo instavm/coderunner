@@ -1148,6 +1148,29 @@ class DefaultPermissionTests(BrokerTestCase):
         self.assertTrue((await self.broker.press("Tab"))["ok"])
         self.assertEqual(len(self.judge.states), judged)
 
+    async def test_a_plain_link_to_another_page_is_not_judged(self):
+        browser, _ = await self.load_shop()
+        browser.labels[108] = {"tag": "a", "text": "Read more", "submit": "", "opens": "https://shop.example/about"}
+        self.assertTrue((await self.broker.click(1))["ok"])
+        self.assertEqual(self.judge.states, [])
+        skipped = [e for e in self.audit.tail() if e["event"] == "decision.skipped"]
+        self.assertEqual([(e["reason"], e["label"]) for e in skipped], [("plain link", 'link "Read more"')])
+        # A commit word in its address, a link covered by something else, or a judge that cannot answer: as before.
+        browser.labels[108]["opens"] = "https://shop.example/checkout?step=2"
+        self.assertTrue((await self.broker.click(1))["ok"])
+        self.assertIn("Link opens: /checkout?step=2", self.judge.states[-1])
+        browser.labels[108]["opens"] = "https://shop.example/about"
+        browser.labels[777] = {"tag": "div", "text": "Newsletter", "submit": ""}
+        browser.hit = 777
+        self.assertTrue((await self.broker.click(1))["ok"])
+        self.assertIn("covered by div", self.judge.states[-1])
+        browser.hit = None
+        self.judge.fail = True
+        self.assertTrue((await self.broker.click(1))["ok"])        # plain: no judge, no approval
+        self.assertEqual(self.asked, [])
+        self.assertFalse((await self.broker.click(4))["ok"])       # "Buy now", a button: judged, and asked
+        self.assertEqual(self.kinds(), ["browser.sensitive"])
+
     async def test_without_an_answer_from_the_judge_the_owner_is_asked(self):
         await self.load_shop()
         self.judge.fail = True

@@ -9,7 +9,8 @@ raw CDP, script evaluation, cookies or storage. Every action passes Policy:
   browser.read       snapshot, screenshot, tab list, scrolling
   browser.interact   clicks, typing and key presses
   browser.sensitive  the same when the step commits something: the decision
-                     model (or the assistant model) judges each click, typed
+                     model (or the assistant model) judges each click (but a
+                     plain link to another page, see links.py), typed
                      entry and Enter in its page context; payment fields, web
                      chat clients and labels too long to show are always
                      sensitive (one-time approval only)
@@ -44,6 +45,7 @@ from ..safety.policy import Action, Decision, _matches, current_run
 from . import launcher as default_launcher
 from .cdp import CDPError, CDPPipe
 from .errors import BrowserError
+from .links import plain_link
 from .page import PAGE_CHARS, ax_value, cut, page_changes, render_ax, short_url, squash
 from .scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, LIST_JS, OPTIONS_JS, SCROLL_JS, SELECT_ALL_JS,
                       SELECT_OPTION_JS, SETTLE_JS, SLIDER_JS)
@@ -1524,7 +1526,14 @@ class BrowserBroker:
             role, name, near = plan["role"], plan["name"] or plan["text"], plan["label"]
             if not name and plan.get("around"):
                 role, name, near = f"{role} without words, in", plan["around"][:80], plan["around"]
-            if kind == "browser.interact" and not wordless and await self._commits(
+            # A plain link to another page does what opening its address does: not judged (links.py), which on
+            # the owner's server spares the task re-reading its conversation after each such click.
+            plain = plan["hit"] == "element" and plain_link(
+                plan.get("tag", ""), plan["role"], plan.get("opens", ""), url, plan["name"], plan["text"],
+                plan["label"], plan.get("around", ""))
+            if plain and kind == "browser.interact":
+                self.audit.write("decision.skipped", reason="plain link", label=plan["label"][:100])
+            if kind == "browser.interact" and not wordless and not plain and await self._commits(
                     host, url, "click", role, name, nearby=near, opens=_shown_url(plan.get("opens", ""), host)):
                 kind = "browser.sensitive"
             summary = f"{('Click', 'Double-click', 'Triple-click')[clicks - 1]} {plan['label']} on {host}"
@@ -1687,7 +1696,8 @@ class BrowserBroker:
         # pointer does not matter (menus restyle them on hover); a different covering element does.
         return {"hit": "element" if cover is None else hit.get("backendNodeId"), "frame": hit.get("frameId"),
                 "label": label, "kind": "browser.sensitive" if risky else "browser.interact",
-                "text": text, "name": name, "role": element["role"], "opens": own.get("opens", ""), "around": around}
+                "text": text, "name": name, "role": element["role"], "opens": own.get("opens", ""), "around": around,
+                "tag": own.get("tag", "")}
 
     async def _node_at(self, sid: str, target: str, x: float, y: float) -> dict:
         """The node under window point (x, y), where a mouse event there lands. Chrome's hit test takes page

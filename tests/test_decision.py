@@ -7,6 +7,7 @@ import httpx
 
 from coderunner.core.audit import AuditLog
 from coderunner.core.config import Config
+from coderunner.browser.links import address_words, commit_word, plain_link
 from coderunner.safety.decision import ActionCheck, DecisionModel, describe
 from coderunner.safety.guard import WARNING, Guard
 
@@ -182,6 +183,56 @@ class GuardTests(DecisionTestCase):
         self.assertEqual(await Guard(broken, audit=self.audit).score("text"), 0.0)
         self.assertTrue([e for e in self.audit.tail() if e["event"] == "guard.unavailable"])
         await broken.aclose()
+
+
+class PlainLinkTests(unittest.TestCase):
+    """Link clicks that only open another page are not put to the judge; anything that may commit still is."""
+
+    def test_commit_words_in_each_language(self):
+        for text in ("Buy now", "Proceed to checkout", "Add to Cart", "Place your order", "Book now", "Sign up",
+                     "Unsubscribe", "Log out", "Delete account", "Cancel booking", "Donate", "Submit",
+                     "Jetzt kaufen", "Zur Kasse", "In den Warenkorb", "Zahlungspflichtig bestellen", "Abmelden",
+                     "Ajouter au panier", "Réserver", "S’inscrire", "Se déconnecter", "Supprimer",
+                     "Añadir al carrito", "Comprar ahora", "Cerrar sesión", "Darse de baja",
+                     "Adicionar ao carrinho", "Finalizar compra", "Cadastre-se", "Excluir",
+                     "カートに入れる", "注文を確定する", "予約する", "ログアウト",
+                     "अभी खरीदें", "भुगतान करें", "रद्द करें", "加入购物车"):
+            self.assertTrue(commit_word(text), text)
+        for text in ("Read more", "Sony WH-1000XM5 Wireless Noise Cancelling Headphones", "Free cancellation",
+                     "Next page", "Reviews", "Taj Exotica Resort & Spa", "Weiterlesen", "En savoir plus",
+                     "Ver más", "Saiba mais", "詳細を見る", "और पढ़ें", "प्रदान किया गया", ""):
+            self.assertFalse(commit_word(text), text)
+
+    def test_address_words(self):
+        self.assertTrue(commit_word(address_words("https://shop.example/cart/add-to-cart?id=5")))
+        self.assertTrue(commit_word(address_words("https://shop.example/p/5?addToCart=1")))
+        self.assertTrue(commit_word(address_words("https://news.example/u?unsubscribe=1")))
+        self.assertTrue(commit_word(address_words("https://shop.example/x?action=delete&id=4")))
+        self.assertTrue(commit_word(address_words("https://shop.example/go?confirm=yes")))
+        # A name with a date, a number or a sort order says nothing: booking.com's hotel links.
+        hotel = ("https://www.booking.com/hotel/in/taj.en-gb.html?checkin=2026-12-01&checkout=2026-12-03"
+                 "&order=popularity&group_adults=2")
+        self.assertFalse(commit_word(address_words(hotel)))
+
+    def test_only_a_plain_link_to_another_page(self):
+        page = "https://www.example.com/search?q=headphones"
+        self.assertTrue(plain_link("a", "link", "https://www.example.com/p/sony-wh-ch720n", page, "Sony WH-CH720N"))
+        self.assertTrue(plain_link("a", "link", "https://reviews.example/best", page, "Best headphones", ""))
+        for tag, role, href, words in (
+                ("button", "button", "https://www.example.com/p/1", "Details"),     # not a link
+                ("a", "button", "https://www.example.com/p/1", "Details"),          # presented as a button
+                ("a", "link", "javascript:void(0)", "Details"),                      # a script
+                ("a", "link", "", "Details"),
+                ("a", "link", page + "#reviews", "Reviews"),                         # this page
+                ("a", "link", "https://www.example.com/p/1", "Buy now"),            # its name
+                ("a", "link", "https://www.example.com/checkout/1", "Continue"),    # its address
+                ("a", "link", "https://www.example.com/p/1?" + "x" * 300, "More"),  # cut: may hide words
+        ):
+            self.assertFalse(plain_link(tag, role, href, page, words), (tag, role, href, words))
+        # The words around it, and the page it is on.
+        self.assertFalse(plain_link("a", "link", "https://www.example.com/p/1", page, "", "Subscribe to updates"))
+        self.assertFalse(plain_link("a", "link", "https://www.example.com/s/2", "https://www.example.com/checkout",
+                                    "Continue"))
 
 
 if __name__ == "__main__":
