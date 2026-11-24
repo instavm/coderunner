@@ -382,7 +382,8 @@ class Daemon:
         lock = self._locks.setdefault(conversation, asyncio.Lock())
         async with lock:
             ctx = RunContext(conversation=conversation, origin=origin or conversation, channel=channel,
-                             chat_id=chat_id, origin_is_owner=sender_is_owner, events=events)
+                             chat_id=chat_id, origin_is_owner=sender_is_owner, events=events,
+                             deadline=getattr(events, "deadline", 0.0) or 0.0)    # a task with a time limit
             if tainted:
                 ctx.taint()
             if remote:

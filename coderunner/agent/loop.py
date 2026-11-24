@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import re
@@ -180,6 +181,19 @@ OUT_OF_ROOM = ("You have gathered more than fits; the earlier pages were let go.
 WRAP_FROM, WRAP_EVERY = 30, 25
 WRAP_NUDGE = ("[Reminder, not a new request] {steps} steps so far. If what you have found already answers my request, "
               "write the answer now; carry on only for what is still missing.")
+# A run with a deadline (a check's time limit) is told once, near the end, to answer: a booking.com search worked
+# 30 minutes and 88 steps, had found hotels and prices, and was stopped with no answer written.
+TIME_NUDGE = ("[Reminder, not a new request] Time is nearly up: about {minutes} left before this task is stopped. Stop "
+              "searching. Without calling any tools, write your reply to me now from what you have found: the answer "
+              "first, with a link to the page each figure came from, then one sentence on what is unfinished.")
+TIME_SHARE, TIME_LEAD_S = 0.15, 120     # told when this share of the time is left, and at least this long before
+
+
+def time_lead(total: float) -> float:
+    """Seconds before the deadline at which a run given `total` seconds is told to answer (never past half way)."""
+    return min(max(TIME_SHARE * total, TIME_LEAD_S), total / 2)
+
+
 # Asked for links and given none: the reply is written again once, linked to the pages it came from. (Two real
 # tasks out of four answered with prices and reviews and no link at all.)
 WANTS_LINKS = re.compile(r"\blinks?\b|\burls?\b|\bsources?\b|\bcite\b", re.I)
@@ -209,9 +223,46 @@ META_OPENING = re.compile(r"^\s*(?:(?:the|my) answer is (?:complete|above|alread
                           r"[^:\n]{0,60}:\s*)+", re.I)
 
 
+# A status line that holds a finding rather than what the task is doing: a price, a figure with its unit, a
+# rating ("Labourdonnais Waterfront at ~₹26,344/night", "Taj Holiday Village, 8.9"), not "Opening booking.com".
+FINDING = re.compile(r"[₹$€£¥]|\b(?:rs|inr|usd|eur|gbp|aed)\b\.?\s?\d|\d\s?(?:%|/\s?(?:5|10|night|nt|month|mo|year|yr|day|"
+                     r"person|kg)\b)|\b\d+[.,]\d+\b|\b(?:rated|rating|stars?)\b", re.I)
+FOUND_LINES = 12
+STOPPED = "I stopped here. What I had found so far:"
+STOPPED_EMPTY = "Stopped before I found anything."
+
+
+def findings(ctx) -> list[str]:
+    """What a task had found, for an answer cut short: what it kept with tell_owner, then the latest status lines
+    that carry a finding, without repeats. Its status lines are not in the thread, so this is where they last."""
+    lines, seen = [], set()
+    for line in list(getattr(ctx, "found", []))[-FOUND_LINES:]:
+        key = " ".join(line.split()).lower()
+        if key not in seen:
+            seen.add(key)
+            lines.append(line)
+    said = []
+    for line in reversed(getattr(ctx, "said", [])):
+        key = " ".join(line.split()).lower()
+        if len(lines) + len(said) >= FOUND_LINES:
+            break
+        if key not in seen and FINDING.search(line):
+            seen.add(key)
+            said.insert(0, line)
+    return lines + said
+
+
 def found_so_far(ctx) -> str:
-    """For a task stopped early: what it had kept with tell_owner. Its status lines are not in the thread."""
-    return ("\n\nWhat I had found so far:\n" + "\n".join(f"- {line}" for line in ctx.found[-12:])) if ctx.found else ""
+    """For a task stopped early, put after the words that say why."""
+    lines = findings(ctx)
+    return ("\n\nWhat I had found so far:\n" + "\n".join(f"- {line}" for line in lines)) if lines else ""
+
+
+def stopped_reply(ctx) -> str:
+    """The answer of a task stopped by the owner or at its time limit, made at once from what it had found (no
+    model call: the model may be the very thing it was stopped waiting for)."""
+    lines = findings(ctx) if ctx is not None else []
+    return STOPPED + "\n" + "\n".join(f"- {line}" for line in lines) if lines else STOPPED_EMPTY
 
 
 def without_meta(final: str) -> str:
@@ -246,6 +297,8 @@ class RunContext:
     # returned (tools.handles), and the paths its own file searches found.
     known: set[str] = field(default_factory=set)
     found_files: list[str] = field(default_factory=list)
+    # When a caller will stop this run (time.monotonic()), 0 for never: before then it is told, once, to answer.
+    deadline: float = 0.0
     # Called with each step as it happens (tool calls, notes, the plan), for an app showing the task live.
     events: Callable[[dict], None] | None = None
 
@@ -433,8 +486,18 @@ class Agent:
 
     async def run(self, ctx: RunContext, text: str, images: list[tuple[str, str]] | None = None) -> str:
         token = current_run.set(ctx)
+        if ctx.events is not None:
+            try:
+                ctx.events.run = ctx        # a task stopped midway answers from what it found (server.tasks)
+            except AttributeError:
+                pass
         try:
             return await self._run(ctx, text, images)
+        except asyncio.CancelledError:
+            # Stopped midway: the conversation keeps the request and what it had found, so "go on" can.
+            self._remember(ctx.conversation, "user", text)
+            self._remember(ctx.conversation, "assistant", stopped_reply(ctx))
+            raise
         finally:
             current_run.reset(token)
 
@@ -509,6 +572,8 @@ class Agent:
         closing = ""                                # the request for an answer when the steps or the room ran out
         repeats = Repeats()
         late_repeats = 0                            # repeated searches and pages after WRAP_FROM steps
+        # The moment to be told the time is nearly up, when the run has a deadline (0: none, or told already).
+        hurry_at = ctx.deadline - time_lead(ctx.deadline - time.monotonic()) if ctx.deadline else 0.0
         for step in range(max_steps):
             if late_repeats >= REPEATS_BEFORE_ANSWER:
                 self.svc.audit.write("agent.going_round", step=step, repeats=late_repeats)
@@ -540,6 +605,14 @@ class Agent:
                 # Not a limit: a long task is asked, now and then, whether what it has already answers the request
                 # (a 27B searched on for 160 steps after it had three review sites' picks).
                 messages.append({"role": "user", "content": WRAP_NUDGE.format(steps=step)})
+            if hurry_at and time.monotonic() >= hurry_at:
+                # Appended, not written into an earlier message: an edit makes the runtime read it all again.
+                left = max(0, ctx.deadline - time.monotonic())
+                minutes = max(1, round(left / 60))
+                messages.append({"role": "user", "content": TIME_NUDGE.format(
+                    minutes=f"{minutes} minute{'s' if minutes != 1 else ''}")})
+                self.svc.audit.write("agent.time_nearly_up", step=step, left=round(left))
+                hurry_at = 0.0
             # Each request only extends the one before: hybrid models such as Qwen3.5 can resume only from a
             # cache checkpoint near the end of the previous prompt, so a message that came and went (or an
             # edit to the instructions) means re-reading the whole conversation, ~80 s for 20K tokens on a

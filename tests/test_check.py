@@ -1,6 +1,7 @@
 """`coderunner check`: the core tasks, run through the daemon's own task runner and checked."""
 
 import asyncio
+import json
 import os
 import pathlib
 import tempfile
@@ -451,6 +452,67 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(handled, ["pi5chip", "moonlanding"])
         self.assertNotIn("queued", rows["moonlanding"]["why"])
         self.assertEqual(daemon.tasks.running, {})
+
+    async def test_a_task_stopped_at_its_time_limit_knows_the_limit_and_answers_with_what_it_had_found(self):
+        import os, tempfile, time
+        from coderunner.agent.loop import Agent, RunContext
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = mock.patch.dict(os.environ, {"CODERUNNER_HOME": tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        (pathlib.Path(tmp.name) / "assistant").mkdir()
+        svc = Svc({"models": {"chat": "coderunner-test"}})
+        svc.vision, svc.browser, svc.files = True, object(), Files()
+        svc.sandbox = mock.Mock(health=mock.AsyncMock(return_value=True))
+        daemon = FakeDaemon(svc)
+        daemon.tasks = tasks_module.Tasks(daemon, tasks_module.EventBus(svc.store))
+        left = []
+
+        async def working(ctx, text, images):
+            # What a booking.com search says as it works, before it is stopped at its time limit.
+            ctx.said += ["Opening booking.com", "Searching hotels in North Goa for 12-14 March",
+                         "Labourdonnais Waterfront at ~₹26,344/night", "Opening booking.com",
+                         "Taj Holiday Village, rated 8.9, ₹18,200/night"]
+            ctx.found.append("Labourdonnais Waterfront at ~₹26,344/night")
+            await asyncio.sleep(60)
+        agent = Agent(svc, None, None)
+        agent._run = working
+
+        async def handle(channel, chat_id, text, origin="", events=None, task="", images=None):
+            # As the daemon builds the run: the task's deadline comes with its events.
+            left.append(getattr(events, "deadline", 0.0) and events.deadline - time.monotonic())
+            return await agent.run(RunContext(conversation=f"{channel}:{chat_id}", events=events,
+                                              deadline=getattr(events, "deadline", 0.0)), text)
+        daemon.handle_message = handle
+        job = check_module.CheckJob(daemon)
+        with mock.patch.object(check_module.realworld, "LIMIT_S", 0.5):
+            self.assertEqual(job.start(["pi5chip"], suite="research"), "")
+            await job._job
+        self.assertTrue(0 < left[0] <= 0.5)
+        row = job.public()["tasks"][0]
+        self.assertIn("still running", row["why"])
+        task = daemon.tasks.tasks(row["conversation"])[0]
+        expected = ("I stopped here. What I had found so far:\n- Labourdonnais Waterfront at ~₹26,344/night\n"
+                    "- Taj Holiday Village, rated 8.9, ₹18,200/night")
+        self.assertEqual((task["status"], task["reply"]), ("cancelled", expected))
+        ended = [e for e in daemon.tasks.bus.since(0, row["conversation"]) if e["type"] == "cancelled"]
+        self.assertEqual([e["reply"] for e in ended], [expected])          # what the app shows
+        self.assertEqual(row["answer"], expected)                           # and what the check keeps
+        kept = svc.store.query("SELECT role, content FROM messages WHERE conversation = ?", (row["conversation"],))
+        self.assertEqual([r["role"] for r in kept], ["user", "assistant"])  # and the conversation, for "go on"
+        self.assertEqual(json.loads(kept[1]["content"]), expected)
+        # Stopped before it had found anything, or before it started at all: said so, plainly.
+        agent._run = lambda ctx, text, images: asyncio.sleep(60)
+        stopped = daemon.tasks.start("app:quiet", "Find hotels", "owner")
+        await asyncio.sleep(0.05)
+        self.assertTrue(daemon.tasks.cancel(stopped["id"]))
+        await asyncio.sleep(0.05)
+        self.assertEqual(daemon.tasks.get(stopped["id"])["reply"], "Stopped before I found anything.")
+        with mock.patch.object(daemon.tasks, "limit", lambda: 0):
+            queued = daemon.tasks.start("app:waiting", "Find hotels", "owner")
+        self.assertTrue(daemon.tasks.cancel(queued["id"]))
+        self.assertEqual(daemon.tasks.get(queued["id"])["reply"], "Stopped before I found anything.")
 
     async def test_a_real_task_runs_as_a_task_of_the_app_and_refuses_every_committing_step(self):
         import os, tempfile
