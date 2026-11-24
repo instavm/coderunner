@@ -690,6 +690,42 @@ same request ran in the same thread on Claude Haiku 5.5 in 45 s and stopped shor
 Skyscanner fares and no hotels, noting that the local answer's hotel prices had not been checked against any
 site (none of its three hotel links was a page it had opened).
 
+### Research and real checks, Bonsai against Claude Haiku 5.5 (November 24)
+
+Both suites (`research`, 12 questions; `real`, 25 tasks) ran on the owner's server with Bonsai 2 27B, then on
+Claude Haiku 5.5, with a 30-minute limit per task. Graders found wrong in this run were fixed and the saved
+answers graded again (a choice said as "I'd go with"; three headlines written as linked paragraphs; one research
+key).
+
+| suite | Bonsai 2 27B, own server | Claude Haiku 5.5 |
+|---|---|---|
+| research | 11 of 12, 85 min, 281 steps; missed the moon landing's date | 11 of 12, 3 min 16 s, 44 steps; one answer without the links asked for |
+| real, tasks Bonsai reached | 13 of 16; hotel and restaurant at the 30-minute limit (57 and 45 steps); the cart task cut off when the server went offline | 15 of 16; train gave no train names, restaurant said Sunday hours could not be checked |
+| real, all 25 | 9 not run: the server's machine left the tailnet at about 10:20 and every later task ended "your model server stopped answering" at once | 21 of 25 and a correct stop at the court site's CAPTCHA; emi left the calculator unfilled |
+
+Where Bonsai ran, it answers nearly as well as Haiku, and passed the train task Haiku missed; the gap is time: 61 s to 1,786 s a task against 6 to 120 s, and 3 to 71 steps
+against 2 to 15. Its time goes mostly to reading, not writing: restaurant spent 622 s reading prompts and 129 s
+writing. Each step's `agent.turn` audit event (new) gives tokens read, found cached and written, and showed
+three causes of whole-conversation re-reads:
+
+* The chat template writes "Reasoning effort is set to xhigh" at the top of the system prompt with reasoning on
+  and nothing with it off, so every switch between the two read everything again. The client now renders the
+  template both ways once (`/apply-template`) and sends reasoning steps with a setting that renders like
+  reasoning off (`reasoning_effort: medium` on this server), or keeps a task to one setting.
+* Any request on one slot discarded the other slot's cache: a 132-token judge call on slot 1 made the task on
+  slot 0 read 15,372 tokens again. Every judged click did this, 117 in the restaurant run, 29 of them a step
+  already judged. Verdicts are now remembered per step (up to 512; a failed judgement is asked again).
+* Trimming old pages at 60% of the room edits earlier messages and reads from there.
+
+Two faults in the check itself were fixed: a task stopped at its limit still held the slot, so the next was
+queued and read as ended (18 tasks "ended as queued" in the first Bonsai run); the check now waits for a task to
+start and for a stopped one to let go. A rerun of Bonsai with these fixes waits on the server.
+
+For the server's owner: the cross-slot eviction is the server's (this build, or its flags); two slots that keep
+their own cache, `--slot-save-path` (so the instructions are restored rather than read), or the judge on a small
+separate server would each remove most of the remaining re-reads. Until then the room per task stays at half
+the context, since a larger conversation makes every re-read slower.
+
 ## Not yet validated
 
 * CodeRunner's own Ollama on Linux: the archives' checksums are the release's own, their layout (`bin/ollama`)
