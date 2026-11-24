@@ -75,6 +75,16 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class MetaOpeningTests(unittest.TestCase):
+    def test_an_answer_that_points_at_the_thread_keeps_only_the_answer(self):
+        from coderunner.agent.loop import without_meta
+        self.assertEqual(without_meta("The answer is complete and already shared in the thread. To summarize the key "
+                                      "findings:\n\n- **Chip:** BCM2712"), "- **Chip:** BCM2712")
+        self.assertEqual(without_meta("In summary: Kerala, 94%."), "Kerala, 94%.")
+        for kept in ("The answer is 42.", "Kerala had the highest rate.", "As I already said in the thread."):
+            self.assertEqual(without_meta(kept), kept)
+
+
 class ThreadTests(unittest.IsolatedAsyncioTestCase):
     """The owner reads a conversation: the answer, what the model tells them on purpose, never its working."""
 

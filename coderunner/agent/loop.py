@@ -31,7 +31,7 @@ How you work:
 - The owner's shared folders are searchable with files_search (text, code, documents, images, audio, video).
 - Save lasting preferences and facts with memory_save. Never store secrets.
 - When a website task ends on a page whose address holds the whole search (places, dates, filters, sorting), save that address with memory_save as a shortcut, without session or tracking parameters, e.g. "booking.com one-way flight results: https://...". Next time open it directly with the new values instead of filling the forms again.
-- {owner} reads this as a chat with a person who is working on it. With your tool calls, put one short line to {owner} in a call's say field when there is something to say: what you are looking at or what you found ("Looking at Skyscanner for the 12th." / "Two non-stop flights that day; IndiGo is cheapest at ₹4,800. Now the hotels."). It is shown in the thread as you go; don't repeat a line you already wrote. Never mention tools, clicks, element numbers, errors, timeouts or retries (not "The page did not respond, I'll retry").
+- {owner} reads this as a chat with a person who is working on it. With your tool calls, put one short line to {owner} in a call's say field when there is something to say: what you are looking at or what you found ("Looking at Skyscanner for the 12th." / "Two non-stop flights that day; IndiGo is cheapest at ₹4,800. Now the hotels."). It is shown in the thread as you go; don't repeat a line you already wrote, but your final message is still the whole answer, as if it were the only thing {owner} reads. Never mention tools, clicks, element numbers, errors, timeouts or retries (not "The page did not respond, I'll retry").
 - tell_owner says a finding in the thread when you have no tool call to write beside.
 - If something cannot be finished, end with what you did, what could not be done and what {owner} can do next, in plain words: no error texts, no technical names, no account of what loaded or failed along the way, and never ask {owner} to restart or fix the browser or the computer.
 - Your final message is a chat reply to {owner}, not a report, said to them as "you" (never "the owner"). Lead with the answer in a sentence or two. Plain sentences: no headings, no bold labels ("Total:"), bold at most once, for the one figure or name that is the answer. A list or a table only when {owner} has to compare several things side by side. Link a source by its name where you mention it, as [Sony WH-CH520](https://...), not as a list of addresses at the end. Say only what was asked plus anything that changes the decision; a caveat is one sentence. No recap of what you did, no "Based on...", no offer at the end. For products or places {owner} will want to look at, call show_items rather than describing each.
@@ -198,6 +198,18 @@ IMAGE_TOKENS = 1200
 CUT = "\n[the rest was cut to save space]"
 TOO_LONG = ("I had to stop here: this task gathered more than I can keep in mind at once. Asking for one part "
             "at a time will work better.")
+
+
+# An answer that opens by pointing at the thread instead of answering: "The answer is complete and already shared
+# in the thread. To summarize the key findings:" (a 27B, after saying its finding as it worked).
+META_OPENING = re.compile(r"^\s*(?:(?:the|my) answer is (?:complete|above|already)[^.\n]*[.:!]\s*|[^.\n]{0,80}\balready "
+                          r"(?:shared|given|said|posted|written) (?:in|above)[^.\n]*[.:!]\s*|(?:to summari[sz]e|in summary)"
+                          r"[^:\n]{0,60}:\s*)+", re.I)
+
+
+def without_meta(final: str) -> str:
+    rest = META_OPENING.sub("", final, count=1)
+    return rest if rest.strip() else final
 
 
 def without_repeats(final: str, said: list[str]) -> str:
@@ -680,7 +692,7 @@ class Agent:
                     self.svc.audit.write("agent.links_added", conversation=ctx.conversation)
             except LLMError:
                 pass
-        final = without_repeats(final, ctx.said)
+        final = without_meta(without_repeats(final, ctx.said))
         ctx.incomplete = ran_out or bool(UNDONE.search(final))
         if ctx.events is not None:
             try:
