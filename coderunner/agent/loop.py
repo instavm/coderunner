@@ -33,8 +33,8 @@ How you work:
 - The owner's shared folders are searchable with files_search (text, code, documents, images, audio, video).
 - Save lasting preferences and facts with memory_save. Never store secrets.
 - When a website task ends on a page whose address holds the whole search (places, dates, filters, sorting), save that address with memory_save as a shortcut, without session or tracking parameters, e.g. "booking.com one-way flight results: https://...". Next time open it directly with the new values instead of filling the forms again.
-- {owner} reads this as a chat with a person who is working on it. With your tool calls, put one short line to {owner} in a call's say field when there is something to say: what you are looking at or what you found ("Looking at Skyscanner for the 12th." / "Two non-stop flights that day; IndiGo is cheapest at ₹4,800. Now the hotels."). It is shown in the thread as you go; don't repeat a line you already wrote, but your final message is still the whole answer, as if it were the only thing {owner} reads. Never mention tools, clicks, element numbers, errors, timeouts or retries (not "The page did not respond, I'll retry").
-- tell_owner says a finding in the thread when you have no tool call to write beside.
+- Only your final message reaches {owner}, as a chat reply. A call's say field may carry a few words on what you are doing ("Checking Skyscanner for the 12th"), shown briefly as a status line; leave it out when there is nothing new. Never mention tools, clicks, element numbers, errors, timeouts or retries.
+- tell_owner keeps a finding you will want in the answer (a price, a choice you made), when you have no tool call to write beside. Your final message still holds everything.
 - If something cannot be finished, end with what you did, what could not be done and what {owner} can do next, in plain words: no error texts, no technical names, no account of what loaded or failed along the way, and never ask {owner} to restart or fix the browser or the computer.
 - Your final message is a chat reply to {owner}, not a report, said to them as "you" (never "the owner"). Lead with the answer in a sentence or two. Plain sentences: no headings, no bold labels ("Total:"), bold at most once, for the one figure or name that is the answer. A list or a table only when {owner} has to compare several things side by side. Link a source by its name where you mention it, as [Sony WH-CH520](https://...), not as a list of addresses at the end. Say only what was asked plus anything that changes the decision; a caveat is one sentence. No recap of what you did, no "Based on...", no offer at the end. For products or places {owner} will want to look at, call show_items rather than describing each.
 - Two good answers. Asked what a dinner cost: "You paid **₹1,240** at Sagar on 14 March, by card. That includes ₹59 of tax." Asked to compare a phone at two shops: "Amazon is cheaper: **₹50,999** for the [Pixel 10a 256 GB](https://www.amazon.in/dp/B0EXAMPLE), against ₹53,199 on [Flipkart](https://www.flipkart.com/pixel-10a). Amazon's price assumed a Bengaluru pincode, so yours may differ slightly.\""""
@@ -209,32 +209,14 @@ META_OPENING = re.compile(r"^\s*(?:(?:the|my) answer is (?:complete|above|alread
                           r"[^:\n]{0,60}:\s*)+", re.I)
 
 
+def found_so_far(ctx) -> str:
+    """For a task stopped early: what it had kept with tell_owner. Its status lines are not in the thread."""
+    return ("\n\nWhat I had found so far:\n" + "\n".join(f"- {line}" for line in ctx.found[-12:])) if ctx.found else ""
+
+
 def without_meta(final: str) -> str:
     rest = META_OPENING.sub("", final, count=1)
     return rest if rest.strip() else final
-
-
-def without_repeats(final: str, said: list[str]) -> str:
-    """An answer that opens with an update already in the thread, word for word, keeps only what is new: the
-    owner read "I opened your Amazon.in cart. It has 4 items..." twice, as an update and again as the answer."""
-    def words(text: str) -> str:
-        return re.sub(r"\s+", " ", text).strip()
-
-    answer = words(final)
-    for note in sorted((words(n) for n in said), key=len, reverse=True):
-        if not note or not answer.startswith(note) or not words(answer[len(note):]):
-            continue
-        # The same point in the answer as written, so the rest keeps its own lines.
-        counted, index, gap = 0, len(final) - len(final.lstrip()), False
-        while index < len(final) and counted < len(note):
-            if final[index].isspace():
-                gap = True
-            else:
-                counted += 1 + (gap and counted > 0)
-                gap = False
-            index += 1
-        return final[index:].strip()
-    return final
 
 
 @dataclass
@@ -255,8 +237,9 @@ class RunContext:
     images: list[tuple[str, str]] = field(default_factory=list)
     plan: list[dict] = field(default_factory=list)      # written by the model with plan_update
     shown: int = 0                                      # items shown to the owner as cards (show_items)
-    told: int = 0                                       # things said to the owner on purpose (tell_owner)
-    said: list[str] = field(default_factory=list)      # and what they were, so the answer does not repeat them
+    told: int = 0                                       # findings kept on purpose (tell_owner)
+    found: list[str] = field(default_factory=list)      # and what they were, for an answer cut short
+    said: list[str] = field(default_factory=list)      # the status lines and findings, for a full conversation
     unanswered: int = 0                                 # approvals the owner let expire in this run (safety.policy)
     incomplete: bool = False                            # the answer says the task was not done (UNDONE)
     # What this run may name without inventing it: addresses and numbers the owner wrote or their contacts
@@ -548,7 +531,7 @@ class Agent:
                 # Full: what it read before the latest step makes way, and it answers from what it has found (a
                 # task that ran 160 steps ended with only "I had to stop here", its findings unsaid).
                 self.svc.audit.write("agent.too_long", size=self._size(messages, known), room=room)
-                final = TOO_LONG + (" What I had found so far is above." if ctx.told else "")
+                final = TOO_LONG + found_so_far(ctx)
                 compact = self._compact(messages, head, ctx, room)
                 if compact is not None:
                     messages[:], known, closing = compact, [0, 0], OUT_OF_ROOM
@@ -581,8 +564,7 @@ class Agent:
                          "I had to stop here: "
                          + ("your model server" if server else "the model on this computer")
                          + " stopped answering. Nothing was changed by this; ask again in a moment.")
-                if ctx.told:
-                    final += " What I had found so far is above."
+                final += found_so_far(ctx)
                 break
             usage = reply.get("usage") or {}
             timings = reply.get("timings") or {}
@@ -602,7 +584,7 @@ class Agent:
                 cuts += 1
                 self.svc.audit.write("agent.reply_cut", step=step, limit=capped["max_tokens"], times=cuts)
                 if cuts > CUTS_ALLOWED:
-                    final = STUCK_WRITING + (" What I had found so far is above." if ctx.told else "")
+                    final = STUCK_WRITING + found_so_far(ctx)
                     break
                 messages.append({"role": "user", "content": CUT_OFF})
                 failed = False              # the next reply is written without thinking first
@@ -617,9 +599,8 @@ class Agent:
                 if reply["content"]:
                     messages.append({"role": "assistant", "content": final})
                 break
-            # What the model writes beside its tool calls is a line to the owner, shown in the thread as it works,
-            # as a person chatting would ("Looking at Skyscanner for the 12th."): the thread read as a list of
-            # tool steps. A line about the machinery stays out ("The browser didn't respond, so I'll retry").
+            # What the model writes beside its tool calls is the task's status line while it works ("Looking at
+            # Skyscanner for the 12th"). A line about the machinery stays out ("The browser didn't respond").
             messages.append({"role": "assistant", "content": reply["content"], "tool_calls": reply["tool_calls"]})
             line = progress_line(reply["content"], ctx.said)
             if line:
@@ -708,7 +689,7 @@ class Agent:
                     self.svc.audit.write("agent.links_added", conversation=ctx.conversation)
             except LLMError:
                 pass
-        final = without_meta(without_repeats(final, ctx.said))
+        final = without_meta(final)
         ctx.incomplete = ran_out or bool(UNDONE.search(final))
         if ctx.events is not None:
             try:

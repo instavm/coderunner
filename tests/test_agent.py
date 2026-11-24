@@ -106,7 +106,7 @@ class ThreadTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("say", tools["tell_owner"])
             await svc.llm.aclose()
 
-    async def test_the_line_beside_a_step_is_said_in_the_thread_but_not_one_about_the_machinery(self):
+    async def test_the_line_beside_a_step_is_the_status_line_and_a_kept_finding_reaches_an_answer_cut_short(self):
         with FakeOpenAI() as fake:
             svc = Svc()
             svc.sandbox = FakeSandbox()
@@ -125,20 +125,25 @@ class ThreadTests(unittest.IsolatedAsyncioTestCase):
             reply = await Agent(svc, svc.llm, svc.registry).run(ctx, "Cheapest flight?")
             self.assertEqual(reply, "IndiGo 6E 204 at ₹4,800 is the cheapest.")
             notes = [e["text"] for e in said if e["type"] == "note"]
-            # Said once, as a person chatting would; the line about retrying is not shown.
+            # Each once, as the status line; the line about retrying is not shown.
             self.assertEqual(notes, ["Looking at Skyscanner for the 12th.",
                                      "Three non-stop flights that day; the cheapest is IndiGo at ₹4,800."])
             self.assertFalse([e for e in said if "retry" in json.dumps(e) and e["type"] != "tool"])
             # The model itself still reads what it wrote, and is told how the owner sees things.
             sent = fake.requests[-1]["messages"]
             self.assertIn("so I'll retry", json.dumps(sent))
-            self.assertIn("It is shown in the thread as you go", sent[0]["content"])
+            self.assertIn("Only your final message reaches the owner", sent[0]["content"])
             self.assertIn("never ask the owner to restart or fix the browser", sent[0]["content"])
-            # An answer that opens with the update word for word keeps only what is new.
+            # The status lines are not kept in the thread, so an answer that says the same again is left whole.
             fake.script = [tool_call("tell_owner", {"text": "I opened your cart. It has 4 items."}),
-                           {"role": "assistant", "content": "I opened your cart.  It has 4 items.\nCheckout is yours."}]
+                           {"role": "assistant", "content": "I opened your cart. It has 4 items.\nCheckout is yours."}]
             reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-thread2"), "Cart?")
-            self.assertEqual(reply, "Checkout is yours.")
+            self.assertEqual(reply, "I opened your cart. It has 4 items.\nCheckout is yours.")
+            # A task cut short says what it had kept, since nothing above it in the thread does.
+            from coderunner.agent.loop import found_so_far
+            self.assertEqual(found_so_far(RunContext(conversation="t", found=["IndiGo is ₹4,800."])),
+                             "\n\nWhat I had found so far:\n- IndiGo is ₹4,800.")
+            self.assertEqual(found_so_far(RunContext(conversation="t")), "")
 
     async def test_a_tool_that_fails_and_a_model_that_stops_answering_are_said_without_plumbing(self):
         with FakeOpenAI() as fake:

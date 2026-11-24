@@ -139,14 +139,6 @@ function describeTool(name, raw) {
 }
 
 // What was clicked or typed into, as it reads on the page: without the kind of control or the page's own text.
-// Share of the shorter text's words that the other has too (0 to 1), case and punctuation aside.
-function sameWords(a, b) {
-  const words = (t) => new Set(String(t).toLowerCase().match(/[\p{L}\p{N}]+/gu) || []);
-  const x = words(a), y = words(b);
-  if (!x.size || !y.size) return 0;
-  const [small, big] = x.size <= y.size ? [x, y] : [y, x];
-  return [...small].filter((w) => big.has(w)).length / small.size;
-}
 const plainLabel = (label) => trunc(String(label || "").replace(/^(button|link|option|textbox|searchbox|combobox|checkbox|radio|tab|menuitem|switch|listitem|heading)\s+/i, "")
   .replace(/\s*\(page text .*$/i, "").replace(/^"(.*)"$/, "$1").replace(/"\s*->.*$/, "").replace(/^"|"$/g, ""), 60);
 
@@ -296,7 +288,9 @@ class TaskView {
         // A task sent to Claude says so under its words, once: what it read went to Anthropic.
         if (e.remote) this.root.insertBefore(el("div", "on-claude muted small", `On ${e.remote} · not private`), this.flow);
         break;
-      case "note": this.lastNote = {text: e.text, node: this.say(markdown(el("div", "note say"), e.text))}; break;
+      // What it says as it works is the line saying what it is doing now, not a message: the owner reads the
+      // question, the plan and the answer, not every page it opened on the way.
+      case "note": this.setNow(trunc(String(e.text || "").split(/(?<=[.!?])\s/)[0], 90)); break;
       case "items":             // shown as they come; the answer places them with its words
         this.shown = [...(this.shown || []), ...(e.items || [])];
         this.items?.remove();
@@ -432,9 +426,6 @@ class TaskView {
     const answer = el("div", "answer" + (e.type === "failed" ? " failed" : ""));
     this.items?.remove();
     for (const part of answered(e.reply || "", this.shown, picture)) answer.appendChild(part);
-    // An answer that says again what the last update said (a small model does, in other words) replaces it:
-    // the thread read the same three sentences twice.
-    if (this.lastNote && sameWords(this.lastNote.text, e.reply || "") >= 0.7) this.lastNote.node.remove();
     this.flow.appendChild(answer);
     this.answer = answer;
     const took = clock((this.finished || Date.now() / 1000) - this.started);

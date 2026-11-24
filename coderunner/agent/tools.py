@@ -57,11 +57,11 @@ INT = {"type": "integer"}
 BOOL = {"type": "boolean"}
 
 
-# A line to the owner that any tool call may carry, shown in the thread as the task goes, as a person chatting
-# would: the thread otherwise read as a list of tool steps. Models that write nothing beside their tool calls
-# (Bonsai 2 27B, in 34 of 34 steps) fill an argument they are given.
-SAY = {"type": "string", "description": "Optional: one short line to the owner, shown in their chat as you work: "
-       "what you are looking at or what you found. Never about tools, clicks, errors or retries."}
+# A few words any tool call may carry, shown as the task's status line while it works (the thread holds only the
+# request and the answer). Models that write nothing beside their tool calls (Bonsai 2 27B, in 34 of 34 steps)
+# fill an argument they are given.
+SAY = {"type": "string", "description": "Optional: a few words on what you are doing, shown briefly as the status "
+       "line (\"Checking Skyscanner for the 12th\"). Never about tools, clicks, errors or retries."}
 PLUMBING = re.compile(r"\b(browser_\w+|run_python|tool|snapshot|element|ref\b|\[\d+\]|error|retry|retrying|"
                       r"timed? ?out|did(n.t| not) (respond|load)|try again|json|function call)", re.I)
 
@@ -806,9 +806,10 @@ def plan_tools(svc) -> list[Tool]:
         if not text:
             return "Nothing was said."
         ctx.told += 1
+        ctx.found.append(text[:1200])
         ctx.said.append(text[:1200])
         ctx.emit({"type": "note", "text": text[:1200]})
-        return "Said in the thread. Your answer at the end does not repeat it."
+        return "Kept. Put it in your final answer too: that is all the owner reads."
 
     async def show(args, ctx):
         """Cards under the answer for things better seen than read. Each field is the model's own structure
@@ -844,9 +845,9 @@ def plan_tools(svc) -> list[Tool]:
 
     step = {"type": "object", "properties": {"step": STR, "status": {"type": "string", "enum": ["todo", "doing", "done"]}},
             "required": ["step"]}
-    return [Tool("tell_owner", "Tell the owner something in the task's thread while you work: a finding, a partial "
-                 "result, a choice you made. One or two sentences in plain words. Not for what you are about to do, "
-                 "and never about tools, errors or retries.",
+    return [Tool("tell_owner", "Keep a finding for the answer while you work: a price, a partial result, a choice "
+                 "you made. One or two sentences in plain words. The owner sees it briefly as the status line; your "
+                 "final message must still hold it. Never about tools, errors or retries.",
                  _params({"text": STR}, ["text"]), tell),
             Tool("show_items", "Show the owner up to eight products or places as cards with a picture, under your "
                  "answer: for a shopping or hotel result they will want to look at. Each item: name, price, seller "
