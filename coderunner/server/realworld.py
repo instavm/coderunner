@@ -254,10 +254,16 @@ EVERY = TASKS + FORMS
 
 # The world (`coderunner check --world`): the same kinds of task away from India, several asked and answered in
 # the site's own language. The answer is checked for that language as well as for its parts.
-GERMAN = r"\b(und|mit|für|ist|nicht)\b.*\b(der|die|das|den|dem)\b"
-FRENCH = r"\b(avec|pour|dans|est|sont)\b.*\b(le|la|les|des|du)\b"
-SPANISH = r"\b(con|para|por|sale|llega)\b.*\b(el|los|las|del)\b"
-PORTUGUESE = r"\b(não|é|mais|com|para)\b.*\b(o|os|as|do|da)\b"
+def _language(words: str, times: int = 5) -> str:
+    """An answer in a language: its common short words, in any order, at least `times` times. The first form
+    wanted one word before another, and failed a German answer whose only "und" came after its "Der"."""
+    return rf"\b({words})\b(.*?\b({words})\b){{{times - 1}}}"
+
+
+GERMAN = _language("und|mit|für|ist|nicht|der|die|das|den|dem|bei|auf|ein|eine|liegt|kostet|unter")
+FRENCH = _language("avec|pour|dans|est|sont|le|la|les|des|du|une|et|au|aux")
+SPANISH = _language("con|para|por|sale|llega|el|los|las|del|una|que|es|y")
+PORTUGUESE = _language("não|é|mais|com|para|os|da|uma|que|em|são|preço")
 TIMES = r"\b\d{1,2}[:.]\d{2}\b.*\b\d{1,2}[:.]\d{2}\b"
 WORLD = [
     Real("sfmarket", "research", "San Francisco's home prices: the median, its change in a year, the dearest and cheapest areas",
