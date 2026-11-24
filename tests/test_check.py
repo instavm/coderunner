@@ -383,6 +383,44 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((row["state"], row["answer"]), ("passed", answer))
         self.assertEqual((check_module.last("research")["minutes"], job.public()["research"]["suite"]), (45, "research"))
 
+    async def test_a_task_after_one_stopped_at_its_time_limit_still_runs(self):
+        import os, tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = mock.patch.dict(os.environ, {"CODERUNNER_HOME": tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        (pathlib.Path(tmp.name) / "assistant").mkdir()
+        svc = Svc({"models": {"chat": "coderunner-test"}})
+        svc.vision, svc.browser, svc.files = True, object(), Files()
+        svc.sandbox = mock.Mock(health=mock.AsyncMock(return_value=True))
+        daemon = FakeDaemon(svc)
+        daemon.tasks = tasks_module.Tasks(daemon, tasks_module.EventBus(svc.store))
+        answer = "The Raspberry Pi 5 uses the Broadcom BCM2712, four Cortex-A76 cores at 2.4 GHz: https://www.raspberrypi.com/products/raspberry-pi-5/"
+
+        handled = []
+
+        async def handle(channel, chat_id, text, origin="", events=None, task="", images=None):
+            handled.append(chat_id.split("-")[1])
+            if "check-pi5chip" in chat_id:
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    await asyncio.sleep(2)          # lets go of its slot only a little after being stopped
+                    raise
+            events({"type": "activity", "event": "browser.open", "url": "https://www.raspberrypi.com/products/raspberry-pi-5/"})
+            return answer
+        daemon.handle_message = handle
+        job = check_module.CheckJob(daemon)
+        with mock.patch.object(check_module.realworld, "LIMIT_S", 0.5), mock.patch.object(daemon.tasks, "limit", lambda: 1):
+            self.assertEqual(job.start(["pi5chip", "moonlanding"], suite="research"), "")
+            await job._job
+        rows = {row["name"]: row for row in job.public()["tasks"]}
+        self.assertIn("still running", rows["pi5chip"]["why"])
+        self.assertEqual(handled, ["pi5chip", "moonlanding"])
+        self.assertNotIn("queued", rows["moonlanding"]["why"])
+        self.assertEqual(daemon.tasks.running, {})
+
     async def test_a_real_task_runs_as_a_task_of_the_app_and_refuses_every_committing_step(self):
         import os, tempfile
         from coderunner.safety.policy import current_run

@@ -38,6 +38,7 @@ from . import realworld
 FIXTURES = pathlib.Path(sample.__file__).parent / "fixtures"
 SAMPLE = {task.name: task for task in sample.TASKS}
 QUICK_S, LONG_S = 300, 900          # a task still running after this has failed
+STOP_S, QUEUED_S = 60, 300          # waits for a stopped task to end, and for a queued one to start
 INDEX_S = 240                       # how long the test documents may take to be searchable
 PAYS = re.compile(r"\b(pay|payment|purchase|place (the |an )?order|card number)\b", re.I)
 KEEP = 400
@@ -197,6 +198,19 @@ class CheckJob:
                 "real": {"names": [{"name": t.name, "what": t.what, "long": t.long, "kind": t.kind} for t in realworld.EVERY],
                          "result": self.result if self.suite == "real" and self.result else last("real")},
                 "check": last("check"), "research": last("research")}
+
+    @staticmethod
+    async def _started(tasks, task_id: str):
+        """The task's job once it runs, or None if it ended without running (or never got a turn)."""
+        end = time.monotonic() + QUEUED_S
+        while time.monotonic() < end:
+            if task_id in tasks.running:
+                return tasks.running[task_id]
+            if (tasks.get(task_id) or {}).get("status") != "queued":
+                return None
+            await asyncio.sleep(0.5)
+        tasks.cancel(task_id)                   # so it does not start later, in the middle of another task
+        return None
 
     def _say(self, line: str) -> None:
         self.lines.append(line)
@@ -379,11 +393,14 @@ class CheckJob:
         start, since, self._asked, self._approvals = time.monotonic(), tasks.bus.latest(), 0, []
         real = isinstance(check, realworld.Real)
         task = tasks.start(conversation, check.prompt + realworld.RULES if real else check.prompt(run), "check", attachments=ids)
-        job = tasks.running.get(task["id"])
         limit = (LONG_S if check.long else realworld.LIMIT_S) if real else LONG_S if check.long else QUICK_S
         limit = self.minutes * 60 or limit
         answer = ""
         try:
+            # A task that waits its turn (one the check stopped is still letting go of its slot) is waited for:
+            # read as ended, it failed in no time, and so did every task after it.
+            job = await self._started(tasks, task["id"])
+            start = time.monotonic()
             if job is not None:
                 await asyncio.wait_for(asyncio.shield(job), limit)
             done = tasks.get(task["id"]) or {}
@@ -418,6 +435,8 @@ class CheckJob:
                     passed, why = False, f"answered without using {check.tool}"
         except asyncio.TimeoutError:
             tasks.cancel(task["id"])
+            with contextlib.suppress(BaseException):        # it ends before the next task takes its slot
+                await asyncio.wait_for(job, STOP_S)
             passed, why = False, f"still running after {limit // 60} minutes"
             run.tools = [e.get("name", "") for e in tasks.bus.since(since, conversation) if e.get("type") == "tool"]
         row.update(state="passed" if passed else "failed", why=why, seconds=round(time.monotonic() - start),
