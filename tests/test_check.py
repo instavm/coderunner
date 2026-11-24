@@ -399,6 +399,141 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
                 changed = changed.replace("Apache-2.0", "BSD")
             self.assertEqual(realworld.grade(task, changed, visited, [], [])[0], "failed", task.name)
 
+    def test_the_everyday_tasks_are_registered_and_worded_as_the_owner_would(self):
+        import re
+        from coderunner.server import realworld
+        everyday = realworld.EVERYDAY
+        self.assertIs(check_module.SUITES["everyday"], everyday)
+        self.assertIn("everyday", check_module.WEB)
+        self.assertEqual(len(everyday), 14)
+        self.assertEqual(len({t.name for t in everyday}), 14)
+        self.assertGreaterEqual(len({t.kind for t in everyday}), 10)
+        for task in everyday:
+            self.assertEqual(task.suite, "everyday", task.name)
+            self.assertTrue(task.parts and task.prompt and task.what, task.name)
+            # Plain requests: no rules appended (the run refuses committing steps itself), and no date already past.
+            self.assertNotIn("Rules for this task", task.prompt, task.name)
+            self.assertFalse(re.search(r"\b(do not|don't|never) (pay|sign|log|enter|submit)|without (paying|signing)",
+                                       task.prompt, re.I), task.name)
+            self.assertFalse(re.search(r"\b20(1\d|2[0-6])\b", task.prompt), task.name)
+            for name in task.files:
+                self.assertTrue((check_module.FIXTURES / name).is_file(), name)
+        prompts = " ".join(t.prompt for t in everyday)
+        for place in ("Austin", "Manchester", "Berlin", "東京", "São Paulo", "Jio", "amazon.de", "GOV.UK"):
+            self.assertIn(place, prompts)
+        self.assertEqual({t.name for t in everyday if t.routine}, {"brief", "preiswecker", "passportfees"})
+        self.assertEqual({t.name for t in everyday if t.stops}, {"dentist", "table", "jobs"})
+
+    def test_everyday_tasks_pass_what_was_asked_and_fail_without_its_core(self):
+        from coderunner.server import realworld
+        tasks = {t.name: t for t in realworld.EVERYDAY}
+        # A booking stopped at the approval for the very step that books it passes; one that never chose a time,
+        # or does not say where it stopped, does not.
+        table, page = tasks["table"], ["https://www.opentable.co.uk/r/san-carlo-manchester"]
+        said = ("San Carlo has a table for four people next Saturday at 7:30 pm: "
+                "https://www.opentable.co.uk/r/san-carlo-manchester. Putting in your contact details is yours.")
+        refused = [{"kind": "browser.sensitive", "summary": 'Click button "7:30 PM" on opentable.co.uk', "allowed": False}]
+        state, why, _ = realworld.grade(table, said, page, refused, [], ['button "7:30 PM"'])
+        self.assertEqual((state, why[-41:]), ("passed", "stopped at the approval for the next step"))
+        self.assertIn("it never clicked what the task turns on", realworld.grade(table, said, page, [], [], [])[1])
+        quiet = said.split(" Putting")[0]
+        self.assertIn("does not say where it stopped", realworld.grade(table, quiet, page, [], [], ['button "7:30 PM"'])[1])
+        # A chain: five dinners, a list with quantities, its prices and a total added up in the sandbox.
+        dinners, shop = tasks["dinners"], ["https://www.tesco.com/groceries/en-GB/search?query=chickpeas"]
+        listed = ("Mon: chickpea curry. Tue: veggie chilli. Wed: mushroom risotto. Thu: halloumi traybake. Fri: pesto pasta.\n"
+                  "| Item | Qty | Price |\n|---|---|---|\n| Chickpeas | 2 tins | £1.30 |\n| Basmati rice | 1 kg | £2.25 |\n"
+                  "| Mushrooms | 500 g | £1.69 |\n| Halloumi | 2 x 225 g | £5.00 |\n| Pasta | 500 g | £0.85 |\n"
+                  "| Pesto | 1 jar | £1.75 |\nThe total is **£12.84** at [Tesco](https://www.tesco.com/groceries/en-GB/products/1), "
+                  "pesto from [Tesco](https://www.tesco.com/groceries/en-GB/products/2).")
+        state, why, _ = realworld.grade(dinners, listed, shop, [], ["browser_open", "run_python"])
+        self.assertEqual(state, "passed", why)
+        self.assertIn("did not use run_python", realworld.grade(dinners, listed, shop, [], ["browser_open"])[1])
+        three = listed.replace("Thu: halloumi traybake. Fri: pesto pasta.", "")
+        self.assertIn("missing five dinners", realworld.grade(dinners, three, shop, [], ["run_python"])[1])
+        # The owner's own file: the right total only when the one-off and yearly payments are left out.
+        subs = tasks["subscriptions"]
+        right = ("You pay four every month: Netflix £10.99, Spotify £11.99, PureGym £24.99 and iCloud £2.99, which is "
+                 "**£50.96** a month or £611.52 a year. Audible came out once, and Prime is yearly.")
+        self.assertEqual(realworld.grade(subs, right, [], [], ["run_python"])[0], "passed")
+        wrong = right.replace("£50.96", "£58.95").replace("£611.52", "£707.40")
+        self.assertIn("missing the monthly total, the yearly total", realworld.grade(subs, wrong, [], [], ["run_python"])[1])
+        # A plan with no website, asked and answered in German.
+        plan = tasks["laufplan"]
+        german = ("Hier ist dein Plan ab Montag, 4. Januar 2027: drei Läufe pro Woche, dazwischen ein Ruhetag, und am Ende "
+                  "stehen die 10 km.\n| Woche | Di | Do | So |\n|---|---|---|---|\n| 1 | 2 km | 2 km | 3 km |\n"
+                  "| 8 | 5 km | 4 km | 10 km Lauf |\nIn der Woche 8 ist der Sonntag dein Wettkampftag.")
+        self.assertEqual(realworld.grade(plan, german, [], [], [])[0], "passed")
+        english = ("Your plan from Monday 4 January 2027, three runs a week with a rest day between, ending with the "
+                   "10 km.\n| Week | Tue | Thu | Sun |\n|---|---|---|---|\n| 8 | 5 km | 4 km | 10 km race |")
+        self.assertIn("missing German", realworld.grade(plan, english, [], [], [])[1])
+        gym, site = tasks["gymcancel"], ["https://www.planetfitness.com/customer-service"]
+        steps = ("1. Go to your home club in person, or 2. send a certified letter to it. The $49 annual fee is still "
+                 "charged if it falls before you cancel. [Planet Fitness](https://www.planetfitness.com/customer-service)")
+        self.assertEqual(realworld.grade(gym, steps, site, [], [])[0], "passed")
+        self.assertIn("missing the steps", realworld.grade(gym, "Just call them. https://www.planetfitness.com/customer-service",
+                                                          site, [], [])[1])
+
+    def test_a_routine_task_is_graded_on_the_routine_the_scheduler_holds(self):
+        from coderunner.server import realworld
+        watch = next(t for t in realworld.EVERYDAY if t.name == "preiswecker")
+        page = ["https://www.amazon.de/dp/B0X"]
+        said = ("Der Sony WH-1000XM6 kostet gerade 329 € bei [Amazon](https://www.amazon.de/dp/B0X). Ich schaue ab morgen "
+                "jeden Tag um 9 Uhr nach und sage dir Bescheid, sobald er unter 300 € fällt.")
+        made = [{"name": "Preiswecker WH-1000XM6", "spec": "daily 09:00",
+                 "prompt": "Prüfe den Preis vom Sony WH-1000XM6 auf amazon.de und melde dich, wenn er unter 300 € liegt."}]
+        state, why, figures = realworld.grade(watch, said, page, [], [], routines=made)
+        self.assertEqual((state, figures["routines"]), ("passed", ["daily 09:00"]), why)
+        self.assertIn("a routine daily 09:00", why)
+        # Said but not set up, set up for another time, or set up without what it is to watch for: each fails.
+        self.assertIn("no routine was set up", realworld.grade(watch, said, page, [], [])[1])
+        self.assertIn("the routine runs daily 08:00, not when asked",
+                      realworld.grade(watch, said, page, [], [], routines=[{**made[0], "spec": "daily 08:00"}])[1])
+        vague = [{**made[0], "prompt": "Prüfe den Preis vom Sony WH-1000XM6 auf amazon.de."}]
+        self.assertIn("the routine does not say what to do: 300", realworld.grade(watch, said, page, [], [], routines=vague)[1])
+
+    async def test_an_everyday_run_reads_the_routine_a_task_set_up_and_removes_it_afterwards(self):
+        import os, tempfile
+        from coderunner.agent.scheduler import Scheduler
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = mock.patch.dict(os.environ, {"CODERUNNER_HOME": tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        (pathlib.Path(tmp.name) / "assistant").mkdir()
+        svc = Svc({"models": {"chat": "coderunner-test"}})
+        svc.vision, svc.browser, svc.files = True, object(), Files()
+        svc.sandbox = mock.Mock(health=mock.AsyncMock(return_value=True))
+
+        async def never(*args):
+            return ""
+        svc.scheduler = Scheduler(svc.store, svc.audit, never, never)
+        owners = svc.scheduler.add("Water the plants", "daily 18:00", "Remind me to water the plants.", "app", "home")
+        daemon = FakeDaemon(svc)
+        daemon.tasks = tasks_module.Tasks(daemon, tasks_module.EventBus(svc.store))
+        seen = {}
+
+        async def handle(channel, chat_id, text, origin="", events=None, task="", images=None):
+            # As schedule_create does: the routine belongs to the conversation that asked for it.
+            svc.scheduler.add("Morning brief", "weekdays 07:30",
+                              "Give me today's weather in Mumbai and the top three headlines from The Hindu.", channel, chat_id)
+            seen["routines"] = [row["spec"] for row in svc.scheduler.list()]
+            return "Done: every weekday at 7:30 you get Mumbai's weather and The Hindu's top three headlines."
+        daemon.handle_message = handle
+        job = check_module.CheckJob(daemon)
+        self.assertEqual(job.start(["brief"], suite="everyday"), "")
+        await job._job
+        row = job.public()["tasks"][0]
+        self.assertEqual((row["state"], row["routines"]), ("passed", ["weekdays 07:30"]), row["why"])
+        self.assertEqual(seen["routines"], ["daily 18:00", "weekdays 07:30"])
+        self.assertEqual([r["id"] for r in svc.scheduler.list()], [owners["id"]])       # the owner's own stays
+        self.assertEqual((job.public()["everyday"]["suite"], check_module.last("everyday")["passed"]), ("everyday", 1))
+        # Where routines are not set up, a task that needs one is skipped with the reason.
+        svc.scheduler = None
+        self.assertEqual(job.start(["brief"], suite="everyday"), "")
+        await job._job
+        self.assertEqual((job.public()["tasks"][0]["state"], job.public()["tasks"][0]["why"]),
+                         ("skipped", "routines are not set up"))
+
     async def test_a_research_run_keeps_each_answer_and_has_one_time_limit(self):
         import os, tempfile
         tmp = tempfile.TemporaryDirectory()
@@ -580,7 +715,7 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
 
 class FixtureTests(unittest.TestCase):
     def test_the_test_files_ship_with_the_package(self):
-        for name in {name for check in check_module.CHECKS for name in check.files}:
+        for name in {name for suite in check_module.SUITES.values() for check in suite for name in check.files}:
             self.assertTrue((check_module.FIXTURES / name).is_file(), name)
         self.assertEqual(attached.safe_name("plumber.mp4"), "plumber.mp4")
 

@@ -158,8 +158,9 @@ CHECKS = [
 ]
 
 
-SUITES = {"check": CHECKS, "real": realworld.EVERY, "research": realworld.RESEARCH, "world": realworld.WORLD}
-WEB = ("real", "research", "world")         # the sets run on real websites
+SUITES = {"check": CHECKS, "real": realworld.EVERY, "research": realworld.RESEARCH, "world": realworld.WORLD,
+          "everyday": realworld.EVERYDAY}
+WEB = ("real", "research", "world", "everyday")         # the sets run on real websites
 ANSWER_CHARS = 6000                 # of each answer kept in the result, to read one model's against another's
 REAL_STEPS = 60                     # a trip plan over several sites needs more steps than a day's ordinary task
 
@@ -197,7 +198,8 @@ class CheckJob:
                 # The tasks on real websites (`coderunner check --real`: twenty everyday ones and five forms), and how they went last time.
                 "real": {"names": [{"name": t.name, "what": t.what, "long": t.long, "kind": t.kind} for t in realworld.EVERY],
                          "result": self.result if self.suite == "real" and self.result else last("real")},
-                "check": last("check"), "research": last("research"), "world": last("world")}
+                "check": last("check"), "research": last("research"), "world": last("world"),
+                "everyday": last("everyday")}
 
     @staticmethod
     async def _started(tasks, task_id: str):
@@ -218,7 +220,8 @@ class CheckJob:
 
     def start(self, names: list[str] | None = None, long: bool = False, suite: str = "check", minutes: int = 0) -> str:
         """Start a run; returns "" or why it was not started. suite "real": the tasks on real websites; "research":
-        questions answered from several pages. minutes: one time limit for every task (to compare models of
+        questions answered from several pages; "world": tasks abroad; "everyday": bookings stopped before they
+        commit, routines, and the owner's own file. minutes: one time limit for every task (to compare models of
         different speeds on what they can do, not on how fast)."""
         if suite not in SUITES:
             return "There is no such set of checks."
@@ -263,7 +266,25 @@ class CheckJob:
             "search": "" if getattr(files, "embedder", None) is not None else "file search is not set up",
             "driver": "" if getattr(svc, "driver", None) is not None else
                       "the browser driver is not used with Claude" if getattr(svc, "remote", None) else "no browser driver is set up",
+            "routines": "" if getattr(svc, "scheduler", None) is not None else "routines are not set up",
         }
+
+    def _routines(self, conversation: str) -> list[dict]:
+        """The routines a task of the check set up, as the scheduler keeps them."""
+        scheduler = getattr(self.daemon.svc, "scheduler", None)
+        channel, _, chat_id = conversation.partition(":")
+        with contextlib.suppress(Exception):
+            return [row for row in scheduler.list() if row["channel"] == channel and row["chat_id"] == chat_id]
+        return []
+
+    def _drop_routines(self) -> None:
+        """A routine a task of the check set up is removed once the task is graded: it would otherwise run every
+        morning in a conversation the owner never started."""
+        scheduler = getattr(self.daemon.svc, "scheduler", None)
+        with contextlib.suppress(Exception):
+            for row in scheduler.list():
+                if row["channel"] == "app" and str(row["chat_id"]).startswith("check-"):
+                    scheduler.remove(row["id"])
 
     # ---- the run -----------------------------------------------------------------
 
@@ -320,6 +341,7 @@ class CheckJob:
                     self._say(f"{check.name}: skipped, {missing}")
                     continue
                 await self._one(check, row, run)
+                self._drop_routines()
         except asyncio.CancelledError:
             self._say("Stopped.")
             for task_id in list(getattr(self.daemon.tasks, "running", {})):        # its task stops with it
@@ -334,6 +356,7 @@ class CheckJob:
                 svc.policy._listeners.remove(approve)
             config.set("browser.allow", allow_before)
             config.set("agent.max_steps", steps_before)
+            self._drop_routines()
             with contextlib.suppress(Exception):
                 for row in svc.store.query("SELECT id FROM memories WHERE id > ?", (remembered,)):
                     if getattr(svc, "memory", None) is not None:
@@ -423,7 +446,8 @@ class CheckJob:
                     with contextlib.suppress(Exception):
                         shown = await asyncio.wait_for(self.daemon.svc.browser.snapshot(), 20)
                         filled += re.findall(r'value="([^"]*)"', str(shown.get("content") or ""))
-                state, why, figures = realworld.grade(check, answer, visited, self._approvals, run.tools, clicked, filled)
+                state, why, figures = realworld.grade(check, answer, visited, self._approvals, run.tools, clicked, filled,
+                                                      self._routines(conversation))
                 if check.chose:
                     figures["filled"] = [value[:60] for value in filled if value][:40]      # what the form was given
                 row.update(state=state, why=why, seconds=round(time.monotonic() - start), steps=len(run.tools),

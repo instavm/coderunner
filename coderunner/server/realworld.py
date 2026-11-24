@@ -50,6 +50,8 @@ class Real:
     suite: str = field(default="real")
     chose: tuple[str, ...] = ()         # what a form task must have chosen or typed in the page, a pattern each
     hands: str = ""                     # a step that is the owner's (a CAPTCHA): the task hands it over and stops
+    routine: str = ""                   # a routine the task must have set up: a pattern for its schedule as stored
+    routine_does: tuple[str, ...] = ()  # and what each of its runs is to do (its name and prompt), a pattern each
 
 
 def host_of(url: str) -> str:
@@ -61,9 +63,11 @@ def host_of(url: str) -> str:
 
 
 def grade(task: Real, answer: str, visited: list[str], approvals: list[dict], tools: list[str],
-          clicked: list[str] | None = None, filled: list[str] | None = None) -> tuple[str, str, dict]:
+          clicked: list[str] | None = None, filled: list[str] | None = None,
+          routines: list[dict] | None = None) -> tuple[str, str, dict]:
     """(passed | failed | blocked | needs_you, why in a few words, the figures behind it). clicked: what the
-    browser clicked; filled: the options it chose and the text it typed in pages."""
+    browser clicked; filled: the options it chose and the text it typed in pages; routines: the routines the
+    task set up, as the scheduler keeps them (name, spec, prompt)."""
     opened = {host_of(url) for url in visited if url}
     linked = [url for url in LINK.findall(answer) if host_of(url) in opened]
     missing = [label for label, pattern in task.parts.items() if not re.search(pattern, answer, re.I | re.S)]
@@ -105,13 +109,32 @@ def grade(task: Real, answer: str, visited: list[str], approvals: list[dict], to
         problems.append(f"{prices} of {task.prices} prices with a currency")
     if task.tool and task.tool not in tools:
         problems.append(f"did not use {task.tool}")
-    if task.stops and not gated and not re.search(r"stop(ped)?|did not (sign|pay|enter)|without (signing|paying)|before (sign|pay)", answer, re.I):
+    if task.routine:
+        # Saying "I'll check every morning" sets nothing up: the routine is read from the scheduler, with the
+        # schedule it was given and what each run is to do.
+        made = routines or []
+        figures["routines"] = [r.get("spec", "") for r in made]
+        timed = [r for r in made if re.fullmatch(task.routine, r.get("spec", ""), re.I)]
+        if not made:
+            problems.append("no routine was set up")
+        elif not timed:
+            problems.append("the routine runs " + ", ".join(r.get("spec", "") for r in made) + ", not when asked")
+        else:
+            figures["routine"] = timed[0].get("spec", "")
+            does = [want for want in task.routine_does
+                    if not any(re.search(want, f"{r.get('name', '')} {r.get('prompt', '')}", re.I) for r in timed)]
+            if does:
+                problems.append("the routine does not say what to do: " + ", ".join(does))
+    if task.stops and not gated and not re.search(r"stop(ped)?|did not (sign|pay|enter)|without (signing|paying)|"
+                                                  r"before (sign|pay)|(is|are) yours|for you to (fill|enter|confirm|finish)",
+                                                  answer, re.I):
         problems.append("does not say where it stopped")
     if not problems:
         return "passed", ", ".join(filter(None, [f"{len(task.parts)} parts", f"{len(set(linked))} links" if task.links else "",
                                                   f"{prices} prices" if task.prices else "",
                                                   "stopped at the approval for the next step" if gated else
-                                                  "stopped before committing" if task.stops else ""])), figures
+                                                  "stopped before committing" if task.stops else "",
+                                                  f"a routine {figures['routine']}" if task.routine else ""])), figures
     if WALL.search(answer):
         return "blocked", "a site turned automated visits away; " + "; ".join(problems), figures
     return "failed", "; ".join(problems), figures
@@ -412,4 +435,99 @@ RESEARCH = [
          "release version of each, in a table with links.",
          {"a table": r"\|.*\|", "licences": r"MIT|apache", "star counts": r"\d[\d,.]*\s?[kK]\b|\d{2,3},\d{3}"},
          links=3, suite="research", long=True),
+]
+
+# Everyday (`coderunner check --everyday`): what people most often hand a personal assistant, where the suites
+# above have gaps. A booking or an application taken only as far as the step that commits it; a site that is
+# sold out or turns the run away, and another found; the owner's own file worked on in the sandbox; a routine
+# set up with the schedule asked for (read from the scheduler, not from the answer); and chains where each step
+# needs the one before (dinners, then a shopping list with quantities, then its total).
+STEPS = r"(1[.)]|[-*•]\s|step 1|first)[\s\S]{0,600}?(2[.)]|[-*•]\s|step 2|then|next|after that)"
+CHOICE = r"recommend|pick|best (choice|value|option|buy|bet)|go with|choose|my choice|get the|I.d (get|buy|take)"
+CLOCK = r"\b\d{1,2}(:\d{2})?\s?(am|pm|a\.m\.|p\.m\.)"
+EVERYDAY = [
+    Real("dentist", "booking", "a new-patient dental cleaning: the earliest slot, taken to the page for the patient's details",
+         "Find a dentist in Austin, TX who can see a new patient for a cleaning next week and book me the earliest "
+         "slot you can find online. I'll put in my own details, so just get it as far as that.",
+         {"a dentist": r"dent|\bDDS\b|\bDMD\b", "a time": CLOCK + r"|\b\d{1,2}:\d{2}\b", "Austin": r"austin|\bTX\b|\b787\d\d\b"},
+         links=1, stops=True, long=True, suite="everyday",
+         acted=r"book|schedule|request|select|continue|appointment|\b\d{1,2}:\d{2}"),
+    Real("table", "booking", "a table for four on a Saturday evening, taken to the page that asks for contact details",
+         "Can you get me a table for four at a good Italian restaurant in central Manchester next Saturday around "
+         "7:30pm? Use OpenTable or whatever works, and take it up to the point where it wants my contact details.",
+         {"a time": r"\b[678][:.]\d{2}\s?(pm|p\.m\.)|\b(18|19|20)[:.]\d{2}\b", "Manchester": r"manchester|\bM[1-4]\b",
+          "four people": r"\b(4|four)\s?(people|guests|diners|covers|persons|adults)|(party|table) (of|for) (4|four)"},
+         links=1, stops=True, long=True, suite="everyday",
+         acted=r"\b[678][:.]\d{2}|\b(18|19|20)[:.]\d{2}|reserve|book|select|find a table|continue"),
+    Real("gymcancel", "subscription", "how to cancel a gym membership and what is still charged, from the gym's own site",
+         "I want to cancel my Planet Fitness membership. What exactly do I have to do, and will I still get charged "
+         "anything after? Check their official site.",
+         {"the steps": STEPS, "how to cancel": r"in person|in-person|letter|certified mail|home club|online|the app",
+          "what is still charged": r"annual fee|\bfee\b|charge|billing|\$\d"}, links=1, suite="everyday"),
+    Real("dinners", "meals", "five dinners planned, turned into one shopping list with quantities, and priced at a supermarket",
+         "Plan five vegetarian dinners for two for next week, turn them into one shopping list with quantities, and "
+         "price it all at Tesco (or another UK supermarket site if Tesco won't load). What's the total?",
+         {"five dinners": r"(mon|day 1)[\s\S]*(tue|day 2)[\s\S]*(wed|day 3)[\s\S]*(thu|day 4)[\s\S]*(fri|day 5)|"
+                          r"1[.)][\s\S]*2[.)][\s\S]*3[.)][\s\S]*4[.)][\s\S]*5[.)]",
+          "quantities": r"(\b\d+(\.\d+)?\s?(g|kg|ml|l|x|packs?|tins?|cans?|bunch(es)?|bags?|jars?|bottles?)\b[\s\S]*?){4}",
+          "a total": r"total"},
+         links=2, prices=6, tool="run_python", needs=("browser", "sandbox"), long=True, suite="everyday"),
+    Real("laufplan", "plan", "a beginner's eight-week 10 km plan as a table, answered in German",
+         "Ich bin noch nie mehr als 3 km am Stück gelaufen. Mach mir einen 8-Wochen-Plan für meinen ersten "
+         "10-km-Lauf, Start am Montag, 4. Januar 2027, als Tabelle mit den Läufen jeder Woche.",
+         {"German": GERMAN, "a table": r"\|.*\|", "eight weeks": r"woche\s*8\b|\|\s*8\s*\|", "rest days": r"ruhetag|\bruhe\b|pause|\bfrei\b|erholung",
+          "the 10 km": r"10[\s-]?km|10\s?k\b", "the dates": r"4\.\s?(1\.|jan)|04\.01\.|januar|2027"},
+         links=0, needs=(), suite="everyday"),
+    Real("jobs", "jobs", "three junior data-analyst jobs in Berlin, and one application taken to the page that wants a CV",
+         "Find me three junior data analyst jobs in Berlin posted in the last two weeks, with the company, the salary "
+         "if they show it, and the link. Then start applying to the one that fits best and stop when it asks for my "
+         "CV or personal details.",
+         {"data analyst": r"data analyst|datenanalyst|data analytics", "Berlin": r"berlin"},
+         links=3, stops=True, long=True, suite="everyday", acted=r"apply|bewerb|application|continue|weiter"),
+    Real("konzert", "events", "two Tokyo concerts in early 2027 with tickets under a budget, answered in Japanese",
+         "2027年2月か3月に東京であるコンサートで、チケットが1枚1万円以下のものを2つ探してください。売り切れのものは除いて、"
+         "公演名・日時・会場・料金・リンクを教えてください。",
+         {"Japanese": r"([぀-ヿ].*){4}", "dates": r"(?<!\d)[23]月|\b2027[/.-]0?[23]\b|\b0?[23]/\d{1,2}\b",
+          "a venue": r"ホール|アリーナ|ドーム|武道館|劇場|会館|スタジアム|センター|ガーデン|ライブハウス|クラブ|zepp|hall|arena"},
+         links=1, prices=2, suite="everyday"),
+    Real("monitor", "shopping", "three 4K monitors for photo editing under a budget, compared in a table with a pick",
+         "I need a 27-inch 4K monitor for photo editing, around $400 max. Compare three from Best Buy or Amazon on "
+         "color accuracy, ports and price in a table, and tell me which one to get.",
+         {"a table": r"\|.*\|", "4K": r"4K|3840", "colour accuracy": r"sRGB|DCI|adobe rgb|delta\s?e|ΔE|colou?r (accura|gamut|cover)",
+          "ports": r"HDMI|DisplayPort|USB-?C|\bDP\b", "a recommendation": CHOICE}, links=2, prices=3, suite="everyday"),
+    Real("onibus", "travel", "three morning buses from São Paulo to Rio on a date, answered in Portuguese",
+         "Quero ir de ônibus de São Paulo para o Rio de Janeiro na sexta-feira, 5 de fevereiro de 2027, de manhã. Me "
+         "passa três opções com horário de saída e chegada, empresa, preço e link.",
+         {"Portuguese": PORTUGUESE, "times": TIMES,
+          "a bus company": r"cometa|1001|expresso|[úu]til\b|kaissara|[áa]guia branca|catarinense|sampaio|penha|itapemirim|via[çc][ãa]o"},
+         links=1, prices=3, suite="everyday"),
+    Real("recharge", "bills", "the cheapest prepaid plan of two Indian carriers for a data need, compared",
+         "Which Jio and Airtel prepaid plans give at least 2 GB a day for 84 days? Put the cheapest one from each in a "
+         "table with price, data, calls and the link, and tell me which is better value.",
+         {"a table": r"\|.*\|", "Jio": r"\bjio\b", "Airtel": r"airtel", "84 days": r"84\s?(-\s?)?(days?|d\b)",
+          "2 GB a day": r"(2|2\.5|3)\s?GB\s?(/|per|a|each)\s?day|(2|2\.5|3)\s?GB/d",
+          "a verdict": r"better value|best value|cheaper|go with|recommend|pick"}, links=2, prices=2, suite="everyday"),
+    Real("subscriptions", "finance", "the monthly subscriptions in an attached bank statement, totalled in the sandbox",
+         "Here's my bank statement for the last three months. Which subscriptions am I paying every month, and what "
+         "do they come to per month and per year?",
+         # Netflix 10.99, Spotify 11.99, PureGym 24.99 and iCloud 2.99 each month; Audible (once) and Prime (yearly) are not.
+         {"Netflix": r"netflix", "Spotify": r"spotify", "PureGym": r"pure\s?gym", "iCloud": r"icloud|apple",
+          "the monthly total": r"50\.96", "the yearly total": r"611\.52"},
+         links=0, files=("statement.csv",), tool="run_python", needs=("sandbox",), suite="everyday"),
+    Real("brief", "routine", "a weekday morning brief set up as a routine at the time asked",
+         "Every weekday at 7:30 in the morning, give me the weather in Mumbai for the day and the top three headlines "
+         "from The Hindu.",
+         {"the routine": r"7[:.]30|weekday|routine|every (morning|weekday)"}, links=0, needs=("routines",), suite="everyday",
+         routine=r"weekdays 07:30", routine_does=(r"weather|forecast|temperature", r"hindu")),
+    Real("preiswecker", "routine", "a daily price watch set up as a routine, with today's price, answered in German",
+         "Behalte den Preis vom Sony WH-1000XM6 auf amazon.de im Auge: schau jeden Morgen um 9 Uhr nach und sag mir "
+         "Bescheid, sobald er unter 300 € fällt. Was kostet er gerade?",
+         {"German": GERMAN, "the headphones": r"WH-?\s?1000\s?XM6"}, links=1, prices=1,
+         needs=("browser", "routines"), suite="everyday", routine=r"daily 09:00", routine_does=(r"1000\s?-?XM6", r"300")),
+    Real("passportfees", "routine", "a weekly watch on a government fees page set up as a routine, with today's fee",
+         "Keep an eye on the GOV.UK passport fees page for me: check it every Monday at 9am and let me know if the fee "
+         "for an adult passport changes. What is it right now?",
+         {"the fee": r"£\s?\d{2,3}(\.\d{2})?", "adult": r"adult|16 or over|over 16|aged 16"}, links=1, prices=1,
+         needs=("browser", "routines"), suite="everyday", routine=r"weekly mon 09:00",
+         routine_does=(r"passport", r"fee|price|cost|£")),
 ]

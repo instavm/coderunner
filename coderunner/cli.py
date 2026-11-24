@@ -265,14 +265,16 @@ def cmd_check(args, config: Config) -> int:
     if args.last:
         shown = _admin(config, "GET", "/api/check")
         result = (shown["real"]["result"] if args.real else shown.get("research") if args.research
-                  else shown.get("world") if args.world else shown.get("check") or shown.get("result"))
+                  else shown.get("world") if args.world else shown.get("everyday") if args.everyday
+                  else shown.get("check") or shown.get("result"))
         if not result:
             print("No check has been run yet.")
             return 1
         return _print_check(result)
     try:
         _admin(config, "POST", "/api/check", {"names": args.names, "long": args.long, "real": args.real,
-                                              "suite": "research" if args.research else "world" if args.world else "",
+                                              "suite": "research" if args.research else "world" if args.world
+                                              else "everyday" if args.everyday else "",
                                               "minutes": args.minutes})
     except RuntimeError as exc:
         try:
@@ -988,6 +990,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="thirteen tasks away from India (San Francisco homes, London rents, US tax, new films and "
                         "series by their reviews), several in German, "
                         "French, Spanish, Japanese or Portuguese and answered in that language")
+    p.add_argument("--everyday", action="store_true",
+                   help="fourteen things people ask a personal assistant for (a dentist or a table booked up to the "
+                        "owner's details, a job application up to the CV, dinners turned into a priced shopping list, "
+                        "subscriptions found in a bank statement, a morning brief and price watches set up as routines)")
     p.add_argument("--minutes", type=int, default=0, help="one time limit for every task, in minutes")
     p.set_defaults(func=cmd_check)
 
