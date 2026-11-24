@@ -726,6 +726,47 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((len(sent), restarts), (2, []))
         await llm.aclose()
 
+    async def test_reasoning_steps_keep_the_prompt_start_the_template_gives_steps_without_it(self):
+        # A template that writes the reasoning effort at the top of the system prompt: every step with reasoning
+        # after one without read the whole conversation again. An effort that renders like "off" is used instead.
+        def template(body):
+            kwargs = body.get("chat_template_kwargs") or {}
+            off = kwargs.get("enable_thinking") is False
+            effort = kwargs.get("reasoning_effort", "xhigh")
+            top = "" if off or effort == "medium" else f"Reasoning effort is {effort}.\n"
+            user = body["messages"][-1]["content"]
+            return f"<|system|>{top}tools<|user|>{user}<|assistant|>" + ("<think></think>" if off else "<think>")
+
+        def server(effortless):
+            sent = []
+
+            def handler(request):
+                body = json.loads(request.content)
+                if request.url.path == "/apply-template":
+                    if not effortless:
+                        body.setdefault("chat_template_kwargs", {}).setdefault("reasoning_effort", "medium")
+                        if body["chat_template_kwargs"]["reasoning_effort"] == "medium":
+                            body["chat_template_kwargs"]["reasoning_effort"] = "xhigh"
+                    return httpx.Response(200, json={"prompt": template(body)})
+                sent.append(body)
+                return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+            llm = LLM("http://127.0.0.1:9/v1", "test")
+            llm._client = httpx.AsyncClient(base_url=llm.base_url, transport=httpx.MockTransport(handler))
+            return llm, sent
+
+        llm, sent = server(effortless=True)
+        await llm.settle_thinking()
+        self.assertEqual((llm.think_kwargs, llm.steady_thinking), ({"reasoning_effort": "medium"}, False))
+        await llm.chat([{"role": "user", "content": "hi"}], think=None)
+        await llm.chat([{"role": "user", "content": "hi"}], think=False)
+        self.assertEqual([body.get("chat_template_kwargs") for body in sent],
+                         [{"reasoning_effort": "medium"}, {"enable_thinking": False}])
+        await llm.aclose()
+        llm, _ = server(effortless=False)           # no effort renders like "off": the task keeps reasoning off
+        await llm.settle_thinking()
+        self.assertEqual((llm.think_kwargs, llm.steady_thinking), ({}, True))
+        await llm.aclose()
+
     async def test_step_limit(self):
         with FakeOpenAI() as fake:
             svc = Svc({"agent": {"max_steps": 3}})

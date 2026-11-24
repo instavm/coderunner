@@ -16,6 +16,8 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 THINK = re.compile(r"<think>.*?</think>\s*", re.S)
+MARK = "QZX7"                               # where the probe's request sits in a rendered prompt
+EFFORTS = ("medium", "high", "low")         # reasoning efforts tried for one that renders like reasoning off
 TOOL_CALL_TAG = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
 
 
@@ -81,6 +83,42 @@ class LLM:
         # Restarts a local runtime that crashed or got stuck (a GPU out of memory leaves llama.cpp unable to
         # compute until it is restarted); returns whether it is serving again. Set by the daemon.
         self.recover: Callable[[], Awaitable[bool]] | None = None
+        self.think_kwargs: dict = {}        # template settings for a step with reasoning (see settle_thinking)
+        self.steady_thinking = False        # no setting keeps the prompt the same: a task keeps to one
+        self._settled = False
+
+    async def settle_thinking(self) -> None:
+        """Some chat templates write the reasoning setting at the top of the system prompt (Bonsai's: "Reasoning
+        effort is set to xhigh…" with reasoning on, nothing with it off), so a step with reasoning after one
+        without read the whole conversation again: about 40 s at 20,000 tokens on the owner's server, twice for
+        every failed step. The template is rendered both ways (llama.cpp's /apply-template); where the prompts
+        differ, a reasoning effort that renders like reasoning off is used, or else steady_thinking is set.
+        Runtimes without /apply-template are left as they are. Once per client."""
+        if self._settled:
+            return
+        self._settled = True
+        root = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
+        probe = [{"role": "system", "content": "S"}, {"role": "user", "content": MARK}]
+        tool = [{"type": "function", "function": {"name": "f", "description": "d",
+                                                  "parameters": {"type": "object", "properties": {}}}}]
+
+        async def head(kwargs: dict) -> str | None:
+            body = {"messages": probe, "tools": tool, **({"chat_template_kwargs": kwargs} if kwargs else {})}
+            response = await self._client.post(f"{root}/apply-template", json=body, timeout=10)
+            prompt = str(response.json().get("prompt") or "") if response.status_code == 200 else ""
+            return prompt[:prompt.find(MARK)] if MARK in prompt else None
+
+        try:
+            off = await head({"enable_thinking": False})
+            if off is None:
+                return
+            for kwargs in ({}, *({"reasoning_effort": effort} for effort in EFFORTS)):
+                if await head(kwargs) == off:
+                    self.think_kwargs = kwargs
+                    return
+            self.steady_thinking = True
+        except (httpx.HTTPError, ValueError):
+            return
 
     async def chat(self, messages: list[dict], tools: list[dict] | None = None,
                    tool_choice: str | dict | None = None, think: bool | None = None, **options: Any) -> dict:
@@ -90,6 +128,8 @@ class LLM:
         if quiet:
             # Ollama reads reasoning_effort, llama.cpp reads chat_template_kwargs.
             payload.update(reasoning_effort="none", chat_template_kwargs={"enable_thinking": False})
+        elif self.think_kwargs:
+            payload["chat_template_kwargs"] = dict(self.think_kwargs)
         if tools:
             payload["tools"] = tools
             payload["parallel_tool_calls"] = True        # several steps in one reply: llama.cpp parses only one without

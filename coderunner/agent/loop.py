@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import time
@@ -467,6 +468,12 @@ class Agent:
         # auto: reason before the first step and after a failed one; routine steps (the next click after
         # reading what changed) answer directly, which on a laptop saves ~15 s of generation per step.
         thinking = str(self.svc.config.get("agent.thinking", "auto")).lower()
+        # Where turning reasoning on and off changes the start of the prompt and no setting avoids it, the task
+        # keeps reasoning off: each change read the whole conversation again (core/llm.py, settle_thinking).
+        settle = getattr(self.llm, "settle_thinking", None)
+        if inspect.iscoroutinefunction(settle):
+            await settle()
+        steady = getattr(self.llm, "steady_thinking", False) is True
         final = ""
         nudged = False
         failed = False
@@ -530,7 +537,7 @@ class Agent:
                 messages.append({"role": "user", "content": PLAN_REMINDER + render_plan(ctx.plan)})
                 reminded, since = [dict(item) for item in ctx.plan], 1
             think = None if thinking != "auto" or step == 0 or failed else False
-            if thinking == "off":
+            if thinking == "off" or (thinking == "auto" and steady):
                 think = False
             # Twice the limit where the model may think first: its thinking counts against it.
             capped = {"max_tokens": limit * (1 if think is False else 2)} if limit else {}
