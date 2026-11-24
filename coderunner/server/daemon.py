@@ -106,6 +106,7 @@ class Daemon:
         self._locks: dict[str, asyncio.Lock] = {}
         self._servers: list[uvicorn.Server] = []
         self._tasks: list[asyncio.Task] = []
+        self._routine_runs: dict[int, str] = {}     # routine id -> the task of its latest run in an app thread
         self._stop: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self.restart_requested = False
@@ -435,8 +436,29 @@ class Daemon:
         channel = schedule.get("channel") or "schedule"
         chat_id = schedule.get("chat_id") or str(schedule["id"])
         tainted = bool(self.svc.store.get_kv(f"schedule:tainted:{schedule['id']}"))
+        if channel == "app" and schedule.get("chat_id") and getattr(self, "tasks", None) is not None:
+            return await self._run_routine_in_app(schedule, tainted)
         return await self.handle_message(channel, chat_id, schedule["prompt"], origin=f"schedule:{schedule['id']}",
                                          tainted=tainted)
+
+    async def _run_routine_in_app(self, schedule: dict, tainted: bool) -> str:
+        """A routine made in an app conversation runs as a task in that conversation: the thread shows the run
+        and its answer like any task's, and the sidebar lists the conversation as working. The scheduler waits
+        for it to end; its time limit stops the waiting, not the task, which the owner can stop in the thread."""
+        runs = self._routine_runs
+        earlier = self.tasks.get(runs.get(schedule["id"], "")) or {}
+        if earlier.get("status") in ("running", "queued"):
+            self.svc.audit.write("schedule.skipped", id=schedule["id"], reason="the last run is still going")
+            return ""
+        task = self.tasks.start(f"app:{schedule['chat_id']}", schedule["prompt"], f"schedule:{schedule['id']}",
+                                tainted=tainted, routine={"id": schedule["id"], "name": schedule.get("name", ""),
+                                                          "spec": schedule.get("spec", "")})
+        runs[schedule["id"]] = task["id"]
+        ended = await asyncio.shield(self.tasks.wait(task["id"])) or {}
+        if ended.get("status") == "failed":
+            raise RuntimeError("the run failed; its thread says how")
+        # The answer is in the thread already; it is passed on only for the desktop notification.
+        return (ended.get("reply") or "") if ended.get("status") == "done" else ""
 
     async def _deliver_schedule(self, schedule: dict, text: str) -> None:
         channel = self.svc.channels.get(schedule.get("channel") or "")
