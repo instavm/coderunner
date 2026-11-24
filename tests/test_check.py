@@ -240,6 +240,18 @@ class CheckTests(unittest.IsolatedAsyncioTestCase):
 class RealWorldTests(unittest.IsolatedAsyncioTestCase):
     """The twenty tasks on real websites: graded on what can be told without reading the answer through."""
 
+    def test_a_choice_said_plainly_and_headlines_written_as_paragraphs_count(self):
+        from coderunner.server import realworld
+        parts = {t.name: t.parts for t in realworld.TASKS}
+        import re
+        said = "I'd go with the Lenovo V15 G4 at ₹58,880: 16 GB of DDR5 and a 512 GB SSD."
+        self.assertTrue(re.search(parts["laptop"]["a recommendation"], said, re.I | re.S))
+        news = ("From The Verge, [Nvidia's CEO is back](https://www.theverge.com/a), after a board reversal.\n\n"
+                "Also there, [Google's AI search reads more](https://www.theverge.com/b). It links Wallet now.\n\n"
+                "From Reuters, [Singapore opens an inquiry](https://www.reuters.com/c) into a chip deal.")
+        self.assertTrue(re.search(parts["news"]["three items"], news, re.I | re.S))
+        self.assertFalse(re.search(parts["news"]["three items"], news.split("\n\n")[0], re.I | re.S))
+
     def test_an_answer_is_graded_on_its_parts_its_links_its_prices_and_what_was_committed(self):
         from coderunner.server import realworld
         task = next(t for t in realworld.TASKS if t.name == "phone")

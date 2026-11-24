@@ -130,7 +130,7 @@ TASKS = [
     Real("laptop", "shopping", "three laptops under a budget from two shops",
          "Find three laptops under ₹60,000 with 16 GB of RAM on two different Indian retail sites. Give price, the "
          "main specifications and a link for each, and recommend one.",
-         {"16 GB": r"16\s?GB", "a recommendation": r"recommend|pick|best (choice|value|option)"}, links=2, prices=3),
+         {"16 GB": r"16\s?GB", "a recommendation": r"recommend|pick|best (choice|value|option|buy)|go with|choose|my choice"}, links=2, prices=3),
     Real("headphones", "research", "the best-reviewed headphones according to two review sites",
          "Which are the three best-reviewed noise-cancelling headphones under ₹25,000 right now, according to at "
          "least two review sites? Give a table with the model, what each site says about it, and a current price in "
@@ -186,7 +186,7 @@ TASKS = [
     Real("news", "lookup", "today's technology headlines from two news sites",
          "Give me today's three top technology headlines from two different news sites, each with a one-line summary "
          "and its link.",
-         {"three items": r"(1[.)]|\*|-)\s.*\n.*(2[.)]|\*|-)\s.*\n.*(3[.)]|\*|-)\s"}, links=3),
+         {"three items": r"(1[.)]|\*|-)\s.*\n.*(2[.)]|\*|-)\s.*\n.*(3[.)]|\*|-)\s|(\]\(https?://[^)]+\)[\s\S]*){3}"}, links=3),
     Real("cart", "cart", "a product put in a cart and taken to the step before sign-in or payment",
          "On amazon.in (or flipkart.com if it turns you away), find a 1 TB portable SSD under ₹20,000 rated at least 4 "
          "stars, add it to the cart, and go as far as the page that asks you to sign in or pay. Stop there. Tell me "
