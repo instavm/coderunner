@@ -395,7 +395,7 @@ class CheckJob:
         limit = (LONG_S if check.long else realworld.LIMIT_S) if real else LONG_S if check.long else QUICK_S
         limit = self.minutes * 60 or limit
         # The task knows its limit, so it answers from what it has before it is stopped.
-        task = tasks.start(conversation, check.prompt + realworld.RULES if real else check.prompt(run), "check",
+        task = tasks.start(conversation, check.prompt if real else check.prompt(run), "check",
                            attachments=ids, time_limit=limit)
         answer = ""
         try:

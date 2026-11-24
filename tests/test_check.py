@@ -300,6 +300,7 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
                          ("failed", 'a committing step went through: Click button "Buy now"'))
         refused = [{"kind": "browser.sensitive", "summary": "Click button \"Buy now\"", "allowed": False}]
         self.assertEqual(realworld.grade(task, good, visited, refused, [])[2]["refused"], 1)
+        from coderunner.server import realworld
         cart = next(t for t in realworld.TASKS if t.name == "cart")
         told = "The SSD (₹6,499, https://www.amazon.in/dp/B0S) is in the cart; I stopped at the sign-in page."
         added = ['button "Add to Cart"']
@@ -345,13 +346,15 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(realworld.grade(emi, answer, page, [], [], [], ["25,00,000", "8.5", "20"])[0], "passed")
         self.assertIn("the form was not filled", realworld.grade(emi, answer, page, [], ["run_python"], [], [])[1])
 
-    def test_there_are_twenty_tasks_each_with_its_rules_and_the_first_is_the_trip(self):
+    def test_there_are_twenty_tasks_worded_as_the_owner_would_and_the_first_is_the_trip(self):
         from coderunner.server import realworld
         self.assertEqual((len(realworld.TASKS), realworld.TASKS[0].name), (20, "mauritius"))
         self.assertEqual(len({t.name for t in realworld.TASKS}), 20)
         self.assertGreaterEqual(len({t.kind for t in realworld.TASKS}), 6)
-        for forbidden in ("do not sign in", "create an account", "pay", "personal details", "CAPTCHA"):
-            self.assertIn(forbidden, realworld.RULES)
+        # What an owner would write, not test scaffolding: no rules appended (the run refuses committing steps).
+        self.assertFalse(hasattr(realworld, "RULES"))
+        for task in realworld.EVERY + realworld.WORLD + realworld.RESEARCH:
+            self.assertNotIn("Rules for this task", task.prompt, task.name)
         for task in realworld.TASKS:
             self.assertTrue(task.parts and task.prompt and task.what, task.name)
 
@@ -565,7 +568,9 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         # At least the real tasks' steps (the default is above them now), and the limit is put back.
         self.assertEqual((seen["buy"], seen["share"], seen["steps"]), (False, True, 200))
         self.assertEqual(svc.config.get("agent.max_steps"), 200)
-        self.assertTrue(seen["text"].startswith("On amazon.in") and "do not sign in" in seen["text"])
+        from coderunner.server import realworld
+        cart = next(t for t in realworld.TASKS if t.name == "cart")
+        self.assertEqual(seen["text"], cart.prompt)          # as the owner would write it, nothing appended
         self.assertEqual((shown["suite"], shown["real"]["result"]["passed"], check_module.last("real")["suite"]), ("real", 1, "real"))
         self.assertEqual(len(shown["real"]["names"]), 25)                       # the twenty and the five forms
         self.assertEqual(svc.files.roots, [])                                   # no test sites or documents for these

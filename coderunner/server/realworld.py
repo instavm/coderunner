@@ -5,8 +5,9 @@ through: the parts asked for are there, it links to pages the browser really ope
 currency, and nothing was committed. A site that shows a CAPTCHA or turns automated visits away is recorded as
 blocked, not as a failure of the assistant, and is never worked around.
 
-On real sites the run never signs in, makes an account, pays, sends personal details or accepts anything for
-the owner: every committing step and every hand-over of the screen is refused for it, and each task says so.
+Each task is worded as the owner would ask it. On real sites the run never signs in, makes an account, pays,
+sends personal details or accepts anything for the owner: every committing step and every hand-over of the
+screen is refused for it, as an owner away from the screen would.
 """
 
 from __future__ import annotations
@@ -15,10 +16,6 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
-RULES = ("\n\nRules for this task: do not sign in, create an account, pay, or enter personal details anywhere. "
-         "If a site shows a CAPTCHA or blocks automated visits, leave that site and use another; mention it only "
-         "if it kept you from a result. "
-         "Open only the few pages you need on each site. Link each page you used where you mention it.")
 LIMIT_S = 600
 # An amount with its currency, before or after it as each country writes it: "₹1,999", "$1.2M", "499,99 €",
 # "R$ 5.999", "¥14,720", "14,720円".
