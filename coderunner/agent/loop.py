@@ -548,6 +548,14 @@ class Agent:
                     final += " What I had found so far is above."
                 break
             usage = reply.get("usage") or {}
+            timings = reply.get("timings") or {}
+            if timings:
+                # Where a step's time goes on a llama.cpp server: reading (all of it again after an edit to an
+                # earlier message) or writing.
+                self.svc.audit.write("agent.turn", step=step, think=think, read=timings.get("prompt_n"),
+                                     cached=timings.get("cache_n"), wrote=timings.get("predicted_n"),
+                                     read_ms=round(timings.get("prompt_ms") or 0),
+                                     wrote_ms=round(timings.get("predicted_ms") or 0))
             if usage.get("prompt_tokens"):
                 known = [len(messages), int(usage["prompt_tokens"])]
                 turns = getattr(self.svc, "turns", None)
