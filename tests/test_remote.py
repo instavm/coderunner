@@ -312,6 +312,9 @@ class ServerDaemonTests(Home):
             self.assertEqual((judge.base_url, judge.model, judge.api), (server.base_url, "bonsai2-27b", "chat"))
             self.assertNotIn("browser_task", svc.registry.tools)          # it sees pages itself: no driver loaded here
             self.assertEqual((limit(svc), judge.slot), (1, 1))             # two slots: one task, and the judge's
+            # The judge tells the planner's client before each judgement, which keeps the task's slot through it.
+            self.assertIs(judge.planner, svc.llm)
+            self.assertIsNotNone(svc.llm.keeper)
             self.assertTrue(svc.agent._system().startswith("You are the owner's assistant. You run on the owner's own "
                                                            "model server;"))
             # A task's steps go to its own slot, under the cap a served model has.
@@ -330,6 +333,136 @@ class ServerDaemonTests(Home):
             self.assertEqual((judge.model, svc.remote["model"], config.get("models.remote")["model"]),
                              ("bonsai2.5-27b",) * 3)
             await svc.llm.aclose()
+            # Asked for, the judge runs on the driver's model on this Mac, without the driver working the pages,
+            # and falls back to the server's judge when that model cannot answer.
+            config.set("models.remote", {**config.get("models.remote"), "local_judge": True})
+            daemon = Daemon(config)
+            local = daemon.svc.browser.decider.model
+            self.assertNotEqual(local.base_url, server.base_url)
+            self.assertIsNotNone(local.prepare)
+            self.assertEqual((local.fallback.base_url, local.fallback.slot), (server.base_url, 1))
+            self.assertNotIn("browser_task", daemon.svc.registry.tools)
+            await daemon.svc.llm.aclose()
+
+
+class SlotServer:
+    """A llama.cpp server as seen through its API: a request in one slot empties the other slots (what the owner's
+    server did after each step judgement), and a slot restored from a saved file resumes."""
+
+    def __init__(self, save_path: bool = True, resumes: bool = True):
+        self.save_path, self.resumes = save_path, resumes
+        self.held: dict[int, int] = {}          # slot -> tokens it holds
+        self.files: dict[str, int] = {}
+        self.log: list[str] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if "/slots/" in request.url.path:
+            slot, action = int(request.url.path.rsplit("/", 1)[1]), request.url.params["action"]
+            name = json.loads(request.content)["filename"]
+            self.log.append(f"{action} {slot}")
+            if not self.save_path:
+                return httpx.Response(400, json={"error": {"message": "This server does not support slots action."}})
+            if action == "save":
+                self.files[name] = self.held.get(slot, 0)
+                return httpx.Response(200, json={"id_slot": slot, "n_saved": self.files[name]})
+            self.held[slot] = self.files[name] if self.resumes else 0
+            return httpx.Response(200, json={"id_slot": slot, "n_restored": self.files[name]})
+        body = json.loads(request.content)
+        slot = body.get("id_slot")
+        tokens = sum(len(str(m.get("content", ""))) for m in body["messages"])
+        cached = min(self.held.get(slot, 0), tokens)
+        self.held = {slot: tokens}              # the others are emptied
+        self.log.append(f"chat {slot} cached={cached}")
+        if str(body["messages"][0].get("content", "")).startswith("Evaluate the supplied decision task"):
+            return httpx.Response(200, json={"choices": [{"message": {"content": "A"}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": tokens},
+                                         "timings": {"prompt_n": tokens - cached, "cache_n": cached}})
+
+
+class SlotKeepingTests(unittest.IsolatedAsyncioTestCase):
+    def client(self, server: SlotServer):
+        with mock.patch.object(httpx, "get", side_effect=httpx.ConnectError("no props")):
+            llm = remote.server_client({"base_url": "http://server/v1", "model": "bonsai2.5-27b"})
+        llm.slots = 2
+        llm.keep_slots()
+        llm._client = httpx.AsyncClient(base_url="http://server/v1", transport=httpx.MockTransport(server))
+        judge = DecisionModel("http://server/v1", "bonsai2.5-27b", api="chat", transport=httpx.MockTransport(server))
+        judge.slot, judge.planner = 1, llm
+        return llm, ActionCheck(judge)
+
+    async def test_a_tasks_slot_is_kept_through_a_judgement_and_put_back_before_its_next_step(self):
+        server = SlotServer()
+        llm, check = self.client(server)
+        messages = [{"role": "system", "content": "s" * 100}, {"role": "user", "content": "go" * 50}]
+        await llm.chat(messages, id_slot=0)
+        messages += [{"role": "assistant", "content": "a"}, {"role": "tool", "content": "page" * 20}]
+        self.assertFalse(await check.commits("Site: a.example\nAction: click button \"Search\""))
+        self.assertFalse(await check.commits("Site: a.example\nAction: click button \"Next\""))
+        reply = await llm.chat(messages, id_slot=0)
+        # Kept once before the first judgement (the second finds it kept already), put back once before the step.
+        self.assertEqual([line for line in server.log if not line.startswith("chat 1")],
+                         ["chat 0 cached=0", "save 0", "restore 0", "chat 0 cached=200"])
+        self.assertEqual(reply["restored"], 200)
+        # A step without a judgement since is sent as it is.
+        messages += [{"role": "assistant", "content": "b"}, {"role": "tool", "content": "more"}]
+        server.log.clear()
+        await llm.chat(messages, id_slot=0)
+        self.assertEqual(server.log, [f"chat 0 cached={sum(len(m['content']) for m in messages[:-2])}"])
+
+    async def test_an_edited_conversation_is_not_restored_and_a_server_that_cannot_save_is_left_alone(self):
+        server = SlotServer()
+        llm, check = self.client(server)
+        messages = [{"role": "system", "content": "s"}, {"role": "tool", "content": "page" * 500}]
+        await llm.chat(messages, id_slot=0)
+        await check.commits("Site: a.example\nAction: click button \"Search\"")
+        trimmed = [messages[0], {"role": "tool", "content": "[dropped]"}, {"role": "assistant", "content": "a"}]
+        await llm.chat(trimmed, id_slot=0)
+        self.assertNotIn("restore 0", server.log)       # read from the change anyway: no file read for nothing
+
+        plain = SlotServer(save_path=False)             # no --slot-save-path
+        llm, check = self.client(plain)
+        await llm.chat(messages, id_slot=0)
+        for n in range(3):
+            self.assertFalse(await check.commits(f"Site: a.example\nAction: click button \"{n}\""))
+            await llm.chat(messages + [{"role": "assistant", "content": str(n)}], id_slot=0)
+        self.assertEqual(plain.log.count("save 0"), 1)  # asked once, then never again
+        self.assertFalse(llm.keeper.on)
+
+    async def test_keeping_stops_when_restored_slots_are_not_resumed_from(self):
+        server = SlotServer(resumes=False)
+        llm, check = self.client(server)
+        messages = [{"role": "system", "content": "s" * 100}]
+        await llm.chat(messages, id_slot=0)
+        for n in range(5):
+            await check.commits(f"Site: a.example\nAction: click button \"{n}\"")
+            messages = messages + [{"role": "assistant", "content": str(n)}]
+            await llm.chat(messages, id_slot=0)
+        from coderunner.core.llm import KEEP_MISSES
+        self.assertEqual(server.log.count("restore 0"), KEEP_MISSES)
+        self.assertFalse(llm.keeper.on)
+
+    async def test_a_judge_elsewhere_or_a_failing_keeper_never_changes_a_judgement(self):
+        server = SlotServer()
+        llm, check = self.client(server)
+        await llm.chat([{"role": "user", "content": "go"}], id_slot=0)
+        check.model.base_url = "http://driver.local/v1"     # the driver's own server judges: nothing to keep
+        check.model._client = httpx.AsyncClient(transport=httpx.MockTransport(server))
+        await check.commits("Site: a.example\nAction: click button \"Search\"")
+        self.assertNotIn("save 0", server.log)
+        check.model.base_url = "http://server/v1"
+
+        async def broken(slot):
+            raise RuntimeError("disk full")
+        llm.side_request = broken
+        self.assertFalse(await check.commits("Site: a.example\nAction: click button \"Next\""))
+        # Not on the owner's server (no slots of its own), or turned off: no keeper at all.
+        with mock.patch.object(httpx, "get", side_effect=httpx.ConnectError("no props")):
+            self.assertIsNone(remote.server_client({"base_url": "http://server/v1", "model": "m"}).keeper)
+        props = mock.Mock(json=lambda: {"default_generation_settings": {"n_ctx": 65536}, "total_slots": 2})
+        with mock.patch.object(httpx, "get", return_value=props):
+            self.assertIsNotNone(remote.server_client({"base_url": "http://server/v1", "model": "m"}).keeper)
+            self.assertIsNone(remote.server_client({"base_url": "http://server/v1", "model": "m",
+                                                    "keep_slots": False}).keeper)
 
 
 class RenameTests(unittest.IsolatedAsyncioTestCase):

@@ -223,6 +223,7 @@ class Daemon:
                 judge = DecisionModel(claude.base_url, claude.model, api="chat", api_key=remote.server_key())
                 if claude.slots > 1:
                     judge.slot = claude.slots - 1       # its own slot, after the tasks' (tasks.limit)
+                    judge.planner = claude              # which keeps the tasks' slots through each judgement
 
                 def renamed(name: str) -> None:
                     """The server renamed its model (an upgrade): the step judge and the settings follow."""
@@ -334,9 +335,15 @@ class Daemon:
         settings = self.config.get("models.driver") or {}
         from ..models import remote
         served = getattr(svc, "remote", None)
+        on_server = bool(served) and served["provider"] == remote.SERVER and bool(settings.get("model"))
+        # The step judge on the driver's model here, without the driver working the pages (off by default:
+        # models.remote.local_judge), so no judgement goes to the server between a task's steps.
+        local_judge = on_server and not settings.get("with_server") and \
+            bool((self.config.get("models.remote") or {}).get("local_judge"))
         # Claude drives the browser itself. With the owner's model server, the local driver can work the pages
         # (models.driver.with_server) while the server plans: nothing on this Mac has to make room for it.
-        if not settings.get("model") or served and (served["provider"] != remote.SERVER or not settings.get("with_server")):
+        if not local_judge and (not settings.get("model") or served and (served["provider"] != remote.SERVER
+                                                                          or not settings.get("with_server"))):
             return None
         from ..agent.driver import Driver, Swap
         from ..models.runtimes import DriverRuntime, choose_runtime
@@ -353,6 +360,8 @@ class Daemon:
             local.prepare = lambda: asyncio.to_thread(runtime.start)
             local.fallback = decider.model
             decider.model = local
+        if local_judge:
+            return None
         from ..models import catalog
         try:
             fmt = settings.get("format") or catalog.get(settings["model"])["driver"]["format"]

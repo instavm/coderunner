@@ -121,7 +121,8 @@ def active(config) -> dict | None:
     if chosen.get("provider") == SERVER and chosen.get("base_url") and chosen.get("model"):
         from urllib.parse import urlsplit
         return {"provider": SERVER, "model": chosen["model"], "name": chosen["model"], "base_url": chosen["base_url"],
-                "host": urlsplit(chosen["base_url"]).netloc, "effort": "medium"}
+                "host": urlsplit(chosen["base_url"]).netloc, "effort": "medium",
+                "keep_slots": chosen.get("keep_slots") is not False}
     if chosen.get("provider") != PROVIDER or not key():
         return None
     model = chosen.get("model") or DEFAULT
@@ -255,6 +256,11 @@ def server_client(chosen: dict):
     except Exception:
         llm.slots = 1
     llm.context = context
+    if llm.slots > 1 and chosen.get("keep_slots", True):
+        # The step judge's request in the last slot made the server drop the task's slot (core/llm.py,
+        # SlotKeeper); kept in a file around it where the server allows (--slot-save-path). Off with
+        # models.remote.keep_slots: false.
+        llm.keep_slots()
     # A larger model than the Mac's reads more of a page at once and keeps links whole enough to cite.
     llm.page_chars, llm.link_chars = 16_000, 200
     return llm

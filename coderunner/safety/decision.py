@@ -125,6 +125,9 @@ class DecisionModel:
         # On the assistant's own llama.cpp runtime: the slot kept for the judge, after the tasks' slots, so a
         # judgement never lands in a task's slot and throws away the conversation it holds (set by the daemon).
         self.slot: int | None = None
+        # The planner's client when the judge shares its server: told before each judgement so it can keep the
+        # tasks' slots through it (LLM.side_request; set by the daemon for the owner's model server).
+        self.planner = None
         # A judge on a model this computer starts itself (the browser driver's, beside the owner's model server):
         # prepare starts it, and the judge it stands in for answers when it cannot.
         self.prepare: Callable[[], Awaitable[None]] | None = None
@@ -192,10 +195,17 @@ class DecisionModel:
             if text[:1] not in labels or (len(text) > 1 and text[1].isalnum()):
                 raise ValueError(f"model answered {text[:20]!r}")
             return 1.0 if labels[text[:1]] in positive else 0.0
+        planner = self.planner
+        if self.slot is not None and planner is not None and \
+                str(getattr(planner, "base_url", "")).rstrip("/") == self.base_url:
+            try:
+                await planner.side_request(self.slot)
+            except Exception:       # keeping the task's slot is a saving, never a reason for a judgement to fail
+                pass
         # A plain letter, not JSON: forcing a quote as the first token skewed a model's choice in testing.
         response = await self._client.post(f"{self.base_url}/chat/completions", json={
             "model": self.model, "temperature": 0, "max_tokens": 8,
-            **({"id_slot": self.slot} if self.slot is not None else {}),
+            **({"id_slot": self.slot, "cache_prompt": True} if self.slot is not None else {}),
             # No reasoning: Ollama reads reasoning_effort, llama.cpp reads chat_template_kwargs.
             "reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False},
             "messages": [{"role": "system", "content": f"{SYSTEM}\n{json.dumps(task)}"},
