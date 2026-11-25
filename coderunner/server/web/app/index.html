@@ -11,7 +11,7 @@
   <aside id="sidebar">
     <div class="side-head">
       <div class="brand"><span class="logo" aria-hidden="true"></span>CodeRunner</div>
-      <button id="newTask" class="icon-btn" title="New task (⌘N)" aria-label="New task">＋</button>
+      <button id="newTask" class="icon-btn" title="New task (⌘N)" aria-label="New task"></button>
     </div>
     <nav id="conversations" aria-label="Tasks"></nav>
     <div class="side-foot">
@@ -24,7 +24,7 @@
     <header id="mainHead">
       <div id="title" class="title">New task</div>
       <div class="head-actions">
-        <button id="toggleComputer" class="pill" title="Show the assistant's computer" aria-label="Show or hide the assistant's computer">Assistant's computer</button>
+        <button id="toggleComputer" class="icon-btn" title="Assistant's computer" aria-label="Show or hide the assistant's computer"></button>
       </div>
     </header>
     <div id="offline" class="offline" role="status" hidden><span class="offline-dot"></span><span id="offlineText">Reconnecting…</span></div>
@@ -48,7 +48,7 @@
                 aria-label="Dictate"></button>
         <textarea id="input" rows="1" placeholder="Describe a task…" aria-label="Task"></textarea>
         <span id="micState" class="mic-state" role="status" hidden><span class="mic-level"><i id="micLevel"></i></span><span id="micTime">0:00</span></span>
-        <button id="send" class="send" type="submit" aria-label="Start task">↑</button>
+        <button id="send" class="send" type="submit" aria-label="Start task"></button>
       </div>
       <input id="filePick" type="file" multiple hidden>
     </form>
@@ -65,8 +65,8 @@
         <button id="turnDone" class="btn primary" type="button">I'm done</button>
       </div>
       <div class="panel-actions">
-        <button id="expand" class="icon-btn" title="Expand" aria-label="Expand the screen">⤢</button>
-        <button id="closeComputer" class="icon-btn" title="Hide" aria-label="Hide the assistant's computer">✕</button>
+        <button id="expand" class="icon-btn" title="Expand" aria-label="Expand the screen"></button>
+        <button id="closeComputer" class="icon-btn" title="Hide" aria-label="Hide the assistant's computer"></button>
       </div>
     </div>
     <div id="screenWrap">
@@ -77,15 +77,14 @@
         <button id="takeControl" class="seg" type="button">Take control</button>
       </div>
     </div>
-    <div class="panel-section">
-      <div class="section-title">Now</div>
+    <div class="panel-section now-section">
       <div id="nowLine" class="muted small">Idle</div>
     </div>
-    <div class="panel-section">
-      <div class="section-title">Models</div>
+    <details class="panel-section models-fold">
+      <summary>Models and privacy</summary>
       <dl id="models" class="models"></dl>
       <div id="remoteBox" class="remote-box"></div>
-    </div>
+    </details>
   </aside>
 </div>
 <script type="module" src="app.js"></script>

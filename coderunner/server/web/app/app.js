@@ -494,6 +494,7 @@ async function loadConversations() {
   refreshNow();
   const nav = $("conversations");
   nav.replaceChildren();
+  let group = "";
   for (const c of list) {
     // The check's own tasks are on the Check screen; here only the one running now, or the one being read.
     if (c.conversation.startsWith("app:check-") && c.status !== "running" && c.conversation !== state.conversation) continue;
@@ -502,14 +503,29 @@ async function loadConversations() {
     const waiting = [...state.approvals.values()].some((a) => a.conversation === c.conversation &&
                                                        !a.card.classList.contains("closed"));
     const status = waiting || c.waiting ? "waiting" : c.status;
-    t.append(el("span", "dot " + status), el("span", "label", trunc(c.title || "Attached files", 60)));
-    const sub = status === "running" ? "Working…" : status === "waiting" ? "Needs you" : status === "queued" ? "Queued" :
-                status === "failed" ? "Failed" : status === "cancelled" ? "Stopped" :
-                new Date(c.updated * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
-    button.append(t, el("div", "s", sub));
+    const day = dayGroup(c.updated);
+    if (day !== group) { nav.appendChild(el("div", "conv-group", day)); group = day; }
+    const label = el("span", "label", trunc(c.title || "Attached files", 60));
+    t.append(label);
+    if (["running", "waiting", "queued", "failed"].includes(status)) t.append(el("span", "dot " + status));
+    button.title = (status === "running" ? "Working… " : status === "waiting" ? "Needs you. " : status === "queued" ? "Queued. " :
+                    status === "failed" ? "Failed. " : "") + (c.prompt || c.title || "");
+    button.append(t);
+    if (status === "waiting") button.append(el("div", "s", "Needs you"));
     button.onclick = () => openConversation(c.conversation, c.title || "Attached files");
     nav.appendChild(button);
   }
+}
+
+// Threads are grouped the way a person thinks of them: today, yesterday, this week, then by month.
+function dayGroup(seconds) {
+  const then = new Date(seconds * 1000), now = new Date();
+  const start = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((start(now) - start(then)) / 86400000);
+  if (days <= 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days < 7) return "Previous 7 days";
+  return then.toLocaleDateString([], {month: "long", year: then.getFullYear() === now.getFullYear() ? undefined : "numeric"});
 }
 
 async function openConversation(id, title, again) {
@@ -1059,7 +1075,7 @@ function tellControl(on) {
 function setExpanded(on) {
   if (!on && control) setControl(false);     // leaving the big screen hands it back
   $("shell").classList.toggle("expanded", on);
-  $("expand").textContent = on ? "⤡" : "⤢";
+  $("expand").replaceChildren(icon(on ? SHRINK_ICON : EXPAND_ICON));
   $("expand").title = on ? "Shrink" : "Expand";
 }
 function showComputer(on) { $("shell").classList.toggle("no-computer", !on); }
@@ -1082,6 +1098,7 @@ function refreshNow() {
   const line = $("nowLine");
   line.textContent = !busy ? "Idle" : open ? (state.nowText || "Working…") :
     state.othersWaiting ? "Another task needs you" : other.label || `Working on “${trunc(other.title || "another task", 50)}”`;
+  line.hidden = !busy;               // idle is said once, under the panel's title
   line.classList.toggle("link", !!other);
   line.onclick = other ? () => openConversation(other.conversation, other.title) : null;
 }
@@ -1123,7 +1140,7 @@ async function loadModels() {
     for (const [k, v] of rows) if (v) dl.append(el("dt", "", k), el("dd", "", v));
     const line = $("modelsLine");
     line.replaceChildren();
-    if (server) line.append(el("span", "", `${modelName(remote.model)} · ${remote.host}`));
+    if (server) line.append(el("span", "", `${modelName(remote.model)} · your server`));
     else if (remote) {
       const where = el("span", "where", "Anthropic");
       where.appendChild(el("span", "not-private", "Not private"));
@@ -1313,6 +1330,16 @@ function setupButton(label, action) {
   button.onclick = () => { button.disabled = true; action(); };
   return button;
 }
+
+const PLUS_ICON = "M12 5v14 M5 12h14";
+const EXPAND_ICON = "M14 4h6v6 M20 4l-7 7 M10 20H4v-6 M4 20l7-7";
+const SHRINK_ICON = "M4 14h6v6 M10 14l-7 7 M20 10h-6V4 M14 10l7-7";
+const CLOSE_ICON = "M6 6l12 12 M18 6L6 18";
+const SEND_ICON = "M12 19V5 M6 11l6-6l6 6";
+const SCREEN_ICON = "M4 5h16v11H4z M9 20h6 M12 16v4";
+// The glyph buttons in the page drawn as line icons, one set throughout.
+for (const [id, d] of [["newTask", PLUS_ICON], ["expand", EXPAND_ICON], ["closeComputer", CLOSE_ICON], ["send", SEND_ICON],
+                       ["toggleComputer", SCREEN_ICON]]) document.getElementById(id)?.replaceChildren(icon(d));
 
 // A small line icon, drawn with strokes on a 24 by 24 grid.
 function icon(d) {
