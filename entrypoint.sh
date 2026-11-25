@@ -50,6 +50,32 @@ if [ -d "$DATA" ] && { [ -n "${CODERUNNER_DATA:-}" ] || awk -v d="$DATA" '$2 == 
     fi
 fi
 
+# Caches go at every start. Kept, they only grow the VM's disk, a file on the owner's Mac whose blocks are never
+# given back; whatever needs them builds them again. /tmp, the pip, npm and apt caches, Chrome's disk caches and
+# the desktop's logs; never the Chrome profile itself (its sign-ins), Downloads or /workspace. Run only inside the
+# sandbox, or on a test's CODERUNNER_TIDY_ROOT.
+tidy_caches() {
+    local root="$1" home="${CODERUNNER_DESKTOP_HOME:-}" dir
+    if [ -z "$home" ]; then
+        home="$(getent passwd "${CODERUNNER_DESKTOP_USER:-box}" 2>/dev/null | cut -d: -f6)"
+        [ -n "$home" ] && home="$root$home"
+    fi
+    find "$root/tmp" -xdev -mindepth 1 -delete 2>/dev/null
+    rm -rf "$root/root/.cache/pip" "$root/root/.npm/_cacache" "$root/var/lib/apt/lists/"* \
+        "$root/var/cache/apt/archives/"*.deb "$root/var/cache/apt/"*.bin
+    if [ -n "$home" ] && [ -d "$home" ]; then
+        rm -rf "$home/.cache/pip" "$home/.cache/coderunner-chrome" "$home/.cache/google-chrome" "$home/.cache/"*.log
+        for dir in "$home/.config/coderunner-chrome/"*/; do
+            [ -d "$dir" ] && rm -rf "${dir}Cache" "${dir}Code Cache" "${dir}GPUCache"
+        done
+    fi
+    return 0
+}
+TIDY_ROOT="${CODERUNNER_TIDY_ROOT:-}"
+if [ -n "$TIDY_ROOT" ] || [ -f /app/server.py ]; then
+    tidy_caches "$TIDY_ROOT"
+fi
+
 # Lite profile: no Jupyter server and no browser. server.py runs code as plain processes, so the
 # sandbox fits in about 1 GB. The assistant browses with the owner's browser on the host.
 if [ "${CODERUNNER_PROFILE:-full}" = "lite" ]; then

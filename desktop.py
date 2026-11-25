@@ -37,6 +37,8 @@ PASSWORD_FILE = pathlib.Path("/app/desktop/vnc-password")       # root only; rea
 TRAMPOLINE = ("import os,sys; os.dup2(int(sys.argv[1]),3); os.dup2(int(sys.argv[2]),4); "
               "os.execv(sys.argv[3], sys.argv[3:])")
 INTERNAL_IDS = 1 << 40          # ids the relay uses for its own commands; their replies are not forwarded
+# Chrome's disk cache, capped: uncapped it reached 1.7 GB of the VM's disk, which is a file on the owner's Mac.
+DISK_CACHE_BYTES = 256 << 20
 
 
 def _account() -> pwd.struct_passwd | None:
@@ -208,6 +210,15 @@ class _PipeReader(asyncio.Protocol):
         self.relay.chrome_closed()
 
 
+def chrome_argv(profile: pathlib.Path) -> list[str]:
+    """Chrome as the assistant runs it on the desktop, driven over its DevTools pipe (fds 3 and 4)."""
+    return [CHROME, f"--user-data-dir={profile}", "--remote-debugging-pipe", "--no-first-run",
+            "--no-default-browser-check", "--hide-crash-restore-bubble", "--password-store=basic",
+            "--disable-dev-shm-usage", "--start-maximized", f"--disk-cache-size={DISK_CACHE_BYTES}",
+            # DevTools control otherwise sets navigator.webdriver, which sites read as a bot.
+            "--disable-blink-features=AutomationControlled", "about:blank"]
+
+
 class ChromeRelay:
     def __init__(self, desktop: Desktop):
         self.desktop = desktop
@@ -246,12 +257,7 @@ class ChromeRelay:
             child_r, child_w = moved
             try:
                 self.process = _as_user(
-                    [sys.executable, "-I", "-c", TRAMPOLINE, str(child_r), str(child_w), CHROME,
-                     f"--user-data-dir={profile}", "--remote-debugging-pipe", "--no-first-run",
-                     "--no-default-browser-check", "--hide-crash-restore-bubble", "--password-store=basic",
-                     "--disable-dev-shm-usage", "--start-maximized",
-                     # DevTools control otherwise sets navigator.webdriver, which sites read as a bot.
-                     "--disable-blink-features=AutomationControlled", "about:blank"],
+                    [sys.executable, "-I", "-c", TRAMPOLINE, str(child_r), str(child_w), *chrome_argv(profile)],
                     account, pass_fds=(child_r, child_w))
             finally:
                 os.close(child_r)
