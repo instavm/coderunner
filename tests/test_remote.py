@@ -465,6 +465,34 @@ class SlotKeepingTests(unittest.IsolatedAsyncioTestCase):
                                                     "keep_slots": False}).keeper)
 
 
+class SharedServerTests(unittest.IsolatedAsyncioTestCase):
+    """Two installs on one model server over a tailnet each keep to their own slots (models.remote.slots)."""
+
+    def test_a_slot_range_is_read_within_the_servers_slots(self):
+        self.assertEqual(remote.slot_share("2-3", 4), (2, 2))
+        self.assertEqual(remote.slot_share([0, 1], 4), (0, 2))
+        self.assertEqual(remote.slot_share("3", 4), (3, 1))
+        self.assertIsNone(remote.slot_share("", 4))
+        self.assertIsNone(remote.slot_share("2-5", 4))             # past the server's slots: all of them, as unset
+        self.assertIsNone(remote.slot_share("two", 4))
+
+    async def test_requests_go_to_this_installs_slots(self):
+        from coderunner.core.llm import LLM
+        seen = []
+
+        def answer(request):
+            seen.append(json.loads(request.content).get("id_slot"))
+            return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                                             "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+        llm = LLM("http://server/v1", "bonsai")
+        llm._client = httpx.AsyncClient(base_url="http://server/v1", transport=httpx.MockTransport(answer))
+        llm.slot_base = 2
+        await llm.chat([{"role": "user", "content": "hi"}], id_slot=0)
+        await llm.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(seen, [2, None])                          # a task's slot 0 is the server's slot 2
+        await llm.aclose()
+
+
 class RenameTests(unittest.IsolatedAsyncioTestCase):
     def test_the_newest_bonsai_of_the_same_size_replaces_a_name_the_server_dropped(self):
         self.assertIsNone(remote.successor(["bonsai2-27b", "bonsai2.5-27b"], "bonsai2-27b"))

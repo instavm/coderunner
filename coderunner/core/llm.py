@@ -180,6 +180,7 @@ class LLM:
         # Another name for the model when the server stops serving this one (an upgrade on the owner's server
         # renames it); None when there is none. renamed is told the new name. Set for a model server of the owner's.
         self.rename: Callable[[], Awaitable[str | None]] | None = None
+        self.slot_base = 0            # this install's first slot on a shared server (models.remote.slots)
         self.renamed: Callable[[str], None] | None = None
         self.think_kwargs: dict = {}        # template settings for a step with reasoning (see settle_thinking)
         self.steady_thinking = False        # no setting keeps the prompt the same: a task keeps to one
@@ -236,6 +237,8 @@ class LLM:
                    tool_choice: str | dict | None = None, think: bool | None = None, **options: Any) -> dict:
         """think=False asks a reasoning model to answer directly (None: the model's default)."""
         slot = options.get("id_slot")
+        if isinstance(slot, int) and self.slot_base:
+            slot = options["id_slot"] = slot + self.slot_base      # this install's slots on a shared server
         if self.keeper is None or not isinstance(slot, int):
             return await self._chat(messages, tools, tool_choice, think, **options)
         restored = await self.keeper.before_turn(slot, messages)

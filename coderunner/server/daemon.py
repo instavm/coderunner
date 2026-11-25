@@ -222,7 +222,8 @@ class Daemon:
             if svc.remote["provider"] == remote.SERVER:
                 judge = DecisionModel(claude.base_url, claude.model, api="chat", api_key=remote.server_key())
                 if claude.slots > 1:
-                    judge.slot = claude.slots - 1       # its own slot, after the tasks' (tasks.limit)
+                    judge.slot = getattr(claude, "slot_base", 0) + claude.slots - 1   # its own, after the tasks'
+                    # (tasks.limit), within this install's share of a shared server
                     judge.planner = claude              # which keeps the tasks' slots through each judgement
 
                 def renamed(name: str) -> None:

@@ -122,7 +122,7 @@ def active(config) -> dict | None:
         from urllib.parse import urlsplit
         return {"provider": SERVER, "model": chosen["model"], "name": chosen["model"], "base_url": chosen["base_url"],
                 "host": urlsplit(chosen["base_url"]).netloc, "effort": "medium",
-                "keep_slots": chosen.get("keep_slots") is not False}
+                "keep_slots": chosen.get("keep_slots") is not False, "slots": chosen.get("slots")}
     if chosen.get("provider") != PROVIDER or not key():
         return None
     model = chosen.get("model") or DEFAULT
@@ -193,6 +193,25 @@ def claude_model(config) -> str:
     return chosen.get("model") if chosen.get("provider") == PROVIDER and chosen.get("model") in MODELS else DEFAULT
 
 
+def slot_share(setting, total: int) -> tuple[int, int] | None:
+    """(first slot, how many) from models.remote.slots ("2-3", "2", or [2, 3]) within the server's total; None when
+    unset or not within it."""
+    if setting in (None, "", []):
+        return None
+    try:
+        if isinstance(setting, (list, tuple)):
+            low, high = int(setting[0]), int(setting[-1])
+        else:
+            text = str(setting).strip()
+            low, _, high = text.partition("-")
+            low, high = int(low), int(high or low)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not 0 <= low <= high < total:
+        return None
+    return low, high - low + 1
+
+
 def successor(served: list[str], current: str) -> str | None:
     """The name to use when the server no longer serves current: the newest Bonsai it serves (Bonsai2.5 after
     Bonsai2), one of the same size first; else its only model. None while current is still served."""
@@ -253,6 +272,12 @@ def server_client(chosen: dict):
             # keeps to its share.
             context = n_ctx // slots
         llm.slots = slots
+        # A server shared with another computer (two installs over a tailnet): each keeps to its own slots, set as
+        # models.remote.slots "2-3"; unset, this install uses them all. Two installs on the same slots threw away
+        # each other's conversations at every step (and the step judge timed out waiting on the other's work).
+        share = slot_share(chosen.get("slots"), slots)
+        if share:
+            llm.slot_base, llm.slots = share
     except Exception:
         llm.slots = 1
     llm.context = context
@@ -262,5 +287,7 @@ def server_client(chosen: dict):
         # models.remote.keep_slots: false.
         llm.keep_slots()
     # A larger model than the Mac's reads more of a page at once and keeps links whole enough to cite.
-    llm.page_chars, llm.link_chars = 16_000, 200
+    # Page text is new to the model at every step that returns a page (~2 s per 1,000 tokens on the owner's
+    # server), so a page is cut a little above the Mac's default, most useful part first (browser/page.py fit).
+    llm.page_chars, llm.link_chars = 9_000, 200
     return llm
