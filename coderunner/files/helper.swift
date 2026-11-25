@@ -1,9 +1,8 @@
 // CodeRunner's native helper for the file index (macOS): text in images with Vision, PDF pages with PDFKit
 // (scanned pages read with Vision), and file events with FSEvents. Output is one JSON object per line.
 //
-//   files-helper ocr                     image paths on stdin, one per line -> {"path", "text"[, "fallback"]}
-//   files-helper pdf <path> <max> <0|1>  -> {"pages": [...], "total": n[, "fallback"]}; 1 reads scans with OCR
-//   ("fallback": true when Vision's accurate model failed and the fast one read the text instead)
+//   files-helper ocr                     image paths on stdin, one per line -> {"path", "text"}
+//   files-helper pdf <path> <max> <0|1>  -> {"pages": [...], "total": n}; 1 reads scanned pages with OCR
 //   files-helper watch <folder>...       -> {"paths": [...]} as files change; exits when stdin closes
 
 import AppKit
@@ -21,8 +20,8 @@ func emit(_ object: [String: Any]) {
 
 // After the Mac's disk filled, the accurate model failed on every image ("nilError"; the system's model compiler
 // had stopped working) until a restart, and every picture read as empty. The fast model still worked, so it
-// reads the picture when the accurate one fails.
-var accurateFailed = false
+// reads the picture when the accurate one fails. Picture by picture: the accurate model also turns down the odd
+// image on a healthy Mac, and one such picture must not send every later one to the fast model.
 
 func recognize(_ image: CGImage) -> String {
     func read(_ level: VNRequestTextRecognitionLevel) throws -> String {
@@ -33,8 +32,7 @@ func recognize(_ image: CGImage) -> String {
         try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
         return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
     }
-    if !accurateFailed, let text = try? read(.accurate) { return text }
-    accurateFailed = true               // tried again when the helper next starts
+    if let text = try? read(.accurate) { return text }
     return (try? read(.fast)) ?? ""
 }
 
@@ -61,11 +59,7 @@ func ocr() {
     while let line = readLine() {
         let path = line.trimmingCharacters(in: .whitespacesAndNewlines)
         if path.isEmpty { continue }
-        autoreleasepool {
-            var line: [String: Any] = ["path": path, "text": image(at: path).map(recognize) ?? ""]
-            if accurateFailed { line["fallback"] = true }      // read with the fast model: the daemon offers a fix
-            emit(line)
-        }
+        autoreleasepool { emit(["path": path, "text": image(at: path).map(recognize) ?? ""]) }
     }
 }
 
@@ -95,9 +89,7 @@ func pdf(_ path: String, maxPages: Int, readScans: Bool) {
             pages.append(text)
         }
     }
-    var result: [String: Any] = ["pages": pages, "total": document.pageCount]
-    if accurateFailed { result["fallback"] = true }
-    emit(result)
+    emit(["pages": pages, "total": document.pageCount])
 }
 
 func watch(_ folders: [String]) {
