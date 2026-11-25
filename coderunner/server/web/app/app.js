@@ -1089,7 +1089,22 @@ function setExpanded(on) {
   $("expand").replaceChildren(icon(on ? SHRINK_ICON : EXPAND_ICON));
   $("expand").title = on ? "Shrink" : "Expand";
 }
-function showComputer(on) { $("shell").classList.toggle("no-computer", !on); }
+// Each side pane can be put away and brought back from the icon at its end of the header; the choice is kept.
+const PANES_KEY = "coderunner.panes";
+function savedPanes() { try { return JSON.parse(localStorage.getItem(PANES_KEY) || "{}"); } catch { return {}; } }
+function keepPane(name, on) {
+  const panes = savedPanes(); panes[name] = on;
+  try { localStorage.setItem(PANES_KEY, JSON.stringify(panes)); } catch { /* not remembered */ }
+}
+function showComputer(on, remember = false) {
+  $("shell").classList.toggle("no-computer", !on);
+  if (remember) keepPane("computer", on);
+  if (on) fitTerminal();
+}
+function showSidebar(on, remember = true) {
+  $("shell").classList.toggle("no-sidebar", !on);
+  if (remember) keepPane("sidebar", on);
+}
 
 // ---- the computer's terminal: a tab beside the screen ------------------------------
 // A shell on the assistant's computer (the VM's own PTY, kept running between visits), with the assistant's commands
@@ -1112,8 +1127,57 @@ function setView(next, remember = true) {
   $("computer").classList.toggle("terminal-on", terminal);
   $("term").hidden = !terminal;
   if (remember) { try { localStorage.setItem(VIEW_KEY, view); } catch { /* private window: not remembered */ } }
+  setPanelWidth();
   if (terminal) openTerminal();
 }
+
+// The panel's width: its default from the stylesheet, 15% wider with the terminal open (a terminal wants columns),
+// or what the owner dragged its edge to, kept for each tab.
+const WIDTH_KEY = "coderunner.panelWidth";
+function savedWidths() { try { return JSON.parse(localStorage.getItem(WIDTH_KEY) || "{}"); } catch { return {}; } }
+function panelBounds() { return [300, Math.max(320, Math.min(window.innerWidth * 0.6, window.innerWidth - 640))]; }
+function setPanelWidth(px) {
+  const shell = $("shell");
+  if (px === undefined) {
+    const saved = savedWidths()[view];
+    if (!saved) {
+      shell.style.removeProperty("--panel");
+      if (view !== "terminal") return;
+      px = parseFloat(getComputedStyle($("computer")).width) * 1.15;
+    } else px = saved;
+  }
+  const [low, high] = panelBounds();
+  shell.style.setProperty("--panel", `${Math.round(Math.min(high, Math.max(low, px)))}px`);
+}
+(function resizablePanel() {
+  const grip = el("div", "panel-grip");
+  grip.setAttribute("role", "separator"); grip.setAttribute("aria-orientation", "vertical");
+  grip.title = "Drag to resize";
+  $("computer").prepend(grip);
+  grip.addEventListener("pointerdown", (event) => {
+    if ($("shell").classList.contains("expanded")) return;
+    event.preventDefault();
+    grip.setPointerCapture(event.pointerId);
+    document.body.classList.add("resizing");
+    const right = $("computer").getBoundingClientRect().right;
+    const move = (e) => { setPanelWidth(right - e.clientX); fitTerminal(); };
+    const up = () => {
+      grip.removeEventListener("pointermove", move);
+      document.body.classList.remove("resizing");
+      const widths = savedWidths();
+      widths[view] = Math.round(parseFloat(getComputedStyle($("computer")).width));
+      try { localStorage.setItem(WIDTH_KEY, JSON.stringify(widths)); } catch { /* not remembered */ }
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up, {once: true});
+  });
+  grip.addEventListener("dblclick", () => {             // back to the default for this tab
+    const widths = savedWidths(); delete widths[view];
+    try { localStorage.setItem(WIDTH_KEY, JSON.stringify(widths)); } catch { /* not remembered */ }
+    $("shell").style.removeProperty("--panel");
+    setPanelWidth(); fitTerminal();
+  });
+})();
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -1212,12 +1276,18 @@ function connectTerminal() {
 $("viewScreen").onclick = () => setView("screen");
 $("viewTerminal").onclick = () => setView("terminal");
 try { if (localStorage.getItem(VIEW_KEY) === "terminal") setView("terminal", false); } catch { /* not remembered */ }
+setPanelWidth();                  // the width the owner left it at
+window.addEventListener("resize", () => { if (savedWidths()[view]) setPanelWidth(); });
 
 $("watching").onclick = () => setControl(false);
 $("takeControl").onclick = () => setControl(true);
 $("expand").onclick = () => setExpanded(!$("shell").classList.contains("expanded"));
-$("closeComputer").onclick = () => { setControl(false); setExpanded(false); showComputer(false); };
-$("toggleComputer").onclick = () => showComputer($("shell").classList.contains("no-computer"));
+$("closeComputer").onclick = () => { setControl(false); setExpanded(false); showComputer(false, true); };
+$("toggleComputer").onclick = () => showComputer($("shell").classList.contains("no-computer"), true);
+$("toggleSidebar").onclick = () => showSidebar($("shell").classList.contains("no-sidebar"));
+$("newTaskHead").onclick = () => $("newTask").click();
+if (savedPanes().sidebar === false) showSidebar(false, false);
+if (savedPanes().computer === false) showComputer(false);
 
 function setNow(text) { state.nowText = text; refreshNow(); }
 function refreshNow() {
@@ -1469,10 +1539,12 @@ const EXPAND_ICON = "M14 4h6v6 M20 4l-7 7 M10 20H4v-6 M4 20l7-7";
 const SHRINK_ICON = "M4 14h6v6 M10 14l-7 7 M20 10h-6V4 M14 10l7-7";
 const CLOSE_ICON = "M6 6l12 12 M18 6L6 18";
 const SEND_ICON = "M12 19V5 M6 11l6-6l6 6";
-const SCREEN_ICON = "M4 5h16v11H4z M9 20h6 M12 16v4";
+const SCREEN_ICON = "M4 5h16v14H4z M15 5v14";
+const SIDEBAR_ICON = "M4 5h16v14H4z M9 5v14";
 // The glyph buttons in the page drawn as line icons, one set throughout.
 for (const [id, d] of [["newTask", PLUS_ICON], ["expand", EXPAND_ICON], ["closeComputer", CLOSE_ICON], ["send", SEND_ICON],
-                       ["toggleComputer", SCREEN_ICON]]) document.getElementById(id)?.replaceChildren(icon(d));
+                       ["toggleComputer", SCREEN_ICON], ["toggleSidebar", SIDEBAR_ICON], ["newTaskHead", PLUS_ICON]])
+  document.getElementById(id)?.replaceChildren(icon(d));
 
 // A small line icon, drawn with strokes on a 24 by 24 grid.
 function icon(d) {

@@ -24,9 +24,16 @@ button { font: inherit; color: inherit; cursor: pointer; transition: background 
 .small { font-size: 12.5px; }
 
 /* One row no taller than the window: a long thread scrolls inside itself, and the sidebar and the title stay put. */
-#shell { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr) var(--panel); grid-template-rows: minmax(0, 1fr); height: 100vh; }
-#shell.no-computer { grid-template-columns: var(--sidebar) minmax(0, 1fr) 0; }
+#shell { display: grid; grid-template-columns: var(--side-col, var(--sidebar)) minmax(0, 1fr) var(--panel-col, var(--panel));
+  grid-template-rows: minmax(0, 1fr); height: 100vh; }
+#shell.no-computer { --panel-col: 0px; }
 #shell.no-computer #computer { display: none; }
+#shell.no-sidebar { --side-col: 0px; }
+#shell.no-sidebar #sidebar { visibility: hidden; overflow: hidden; border: 0; }     /* kept in the grid, so the others keep their columns */
+.head-lead { display: flex; align-items: center; gap: 6px; min-width: 0; }
+#newTaskHead { display: none; }
+#shell.no-sidebar #newTaskHead { display: grid; }
+.mac-shell #shell.no-sidebar #mainHead { padding-left: 84px; }      /* clear of the window's close, minimise and zoom */
 
 /* ---- sidebar ---- */
 #sidebar { display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--surface-2); min-width: 0; }
@@ -251,7 +258,11 @@ a.att-file:hover { border-color: var(--accent); }
 .send:disabled { opacity: .4; cursor: default; }
 
 /* ---- computer ---- */
-#computer { border-left: 1px solid var(--line); background: var(--surface-2); display: flex; flex-direction: column; min-width: 0; overflow-y: auto; }
+.panel-grip { position: absolute; left: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 5; }
+.panel-grip:hover, .resizing .panel-grip { background: var(--accent); opacity: .35; }
+.resizing, .resizing * { cursor: col-resize !important; user-select: none; }
+#shell.expanded .panel-grip { display: none; }
+#computer { position: relative; border-left: 1px solid var(--line); background: var(--surface-2); display: flex; flex-direction: column; min-width: 0; overflow-y: auto; }
 .panel-head { display: flex; align-items: flex-start; justify-content: space-between; padding: 40px 16px 10px; }
 .panel-title { font-weight: 500; }
 .panel-actions { display: flex; gap: 6px; }
