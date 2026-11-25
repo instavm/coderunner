@@ -65,8 +65,6 @@ button { font: inherit; color: inherit; cursor: pointer; transition: background 
 .dot.failed { background: var(--danger); }
 .dot.done { background: var(--ok); opacity: .55; }
 @keyframes pulse { 50% { opacity: .35; } }
-.side-foot #openCheck { color: var(--muted); }
-.side-foot #openCheck:hover { color: var(--text); }
 .side-foot { padding: 12px 14px; border-top: 1px solid var(--line); display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .side-foot #modelsLine { min-width: 0; display: grid; gap: 4px; justify-items: start; }
 .side-foot #modelsLine > span:first-child { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

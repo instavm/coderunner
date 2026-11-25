@@ -158,6 +158,9 @@ function buildMenu() {
     {label: "View", submenu: [{role: "reload"}, {role: "toggleDevTools"}, {type: "separator"},
                                {role: "resetZoom"}, {role: "zoomIn"}, {role: "zoomOut"}, {role: "togglefullscreen"}]},
     {role: "windowMenu"},
+    {role: "help", submenu: [
+      {label: "Test this Mac", click: (_, win) => (win || BrowserWindow.getAllWindows()[0])?.webContents.send("test-this-mac")},
+    ]},
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }

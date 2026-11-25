@@ -45,7 +45,9 @@ class AppShellTests(unittest.TestCase):
         self.assertIn('preload: path.join(__dirname, "preload.js")', main)
         self.assertIn("contextIsolation: true, nodeIntegration: false, sandbox: true", main)
         self.assertEqual(re.findall(r'ipcMain\.(?:handle|on)\("([\w-]+)"', main), ["pick-folder", "start-assistant"])
-        self.assertEqual(re.findall(r'ipcRenderer\.\w+\("([\w-]+)"', preload), ["pick-folder", "start-assistant"])
+        # The page asks for two things; it only hears one: the Help menu's "Test this Mac".
+        self.assertEqual(re.findall(r'ipcRenderer\.invoke\("([\w-]+)"', preload), ["pick-folder", "start-assistant"])
+        self.assertEqual(re.findall(r'ipcRenderer\.on\("([\w-]+)"', preload), ["test-this-mac"])
         self.assertEqual(re.findall(r'exposeInMainWorld\("(\w+)"', preload), ["coderunnerShell"])
         self.assertIn("if (asker !== ORIGIN) return null;", main)        # only the daemon's own page is answered
         self.assertIn("return asker === ORIGIN ? startDaemon() : false;", main)

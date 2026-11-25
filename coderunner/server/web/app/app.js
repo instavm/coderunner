@@ -560,24 +560,22 @@ async function openConversation(id, title, again) {
   scrollDown();
 }
 
-// ---- check: each kind of task done once on this computer --------------------------
+// ---- test this Mac: one of each kind of task, done here and checked ----------------------------------------
+// The benches on real websites and the long tasks are the developers' (`coderunner check`); here, one question:
+// does everything work on this Mac?
 
 let checkTimer = null;
-let checkSet = "check";             // "check": this install's own tasks; "real": the twenty on real websites
 const CHECK_MARKS = {passed: "✓", failed: "✕", blocked: "!", needs_you: "→", skipped: "–", waiting: "", running: ""};
-const CHECK_LEADS = {check: "Each kind of task, done once on this computer and checked.",
-                     real: "Twenty everyday tasks and five forms on real websites. Nothing is signed in to, paid for or submitted."};
 
 async function showCheck() {
   if (state.setup) return;
   state.conversation = "check";             // not a conversation: no task's events belong to it
   state.loading = null;
   state.views.clear();
-  $("title").textContent = "Check";
-  $("composer").hidden = true;              // this screen runs checks; a task is written from a thread
+  $("title").textContent = "Test this Mac";
+  $("composer").hidden = true;
   loadConversations();
   const box = el("section", "checkup");
-  box.append(el("h1", "", "Check"), el("p", "muted", CHECK_LEADS[checkSet]));
   $("thread").replaceChildren(box);
   const run = async (body) => {
     try { draw(await api("/api/check", {method: "POST", body: JSON.stringify(body)})); }
@@ -585,59 +583,43 @@ async function showCheck() {
     poll();
   };
   const draw = (data) => {
-    const real = checkSet === "real", running = data.state === "running" && (data.suite || "check") === checkSet;
-    const other = data.state === "running" && !running;       // the other set is running: this one waits
-    const result = real ? data.real?.result : data.suite === "real" ? data.check : data.result || data.check;
-    const names = real ? data.real?.names || [] : data.names.filter((n) => !n.long);
-    const rows = running ? data.tasks : result ? result.tasks : names.map((n) => ({...n, state: "waiting"}));
-    const tabs = el("div", "tabs");
-    for (const [key, label] of [["check", "This install"], ["real", "Real websites"]]) {
-      const tab = el("button", "tab" + (key === checkSet ? " on" : ""), label);
-      tab.type = "button";
-      tab.onclick = () => { if (checkSet !== key) { checkSet = key; draw(data); } };
-      tabs.appendChild(tab);
+    const running = data.state === "running" && (data.suite || "check") === "check";
+    const other = data.state === "running" && !running;
+    let result = data.suite === "real" ? data.check : data.result || data.check;
+    // A result about another model, or one that took in the long tasks, says nothing about this Mac today.
+    if (result && (result.model !== state.model || result.tasks?.some((t) => (data.names.find((n) => n.name === t.name) || {}).long)))
+      result = null;
+    const quick = data.names.filter((n) => !n.long);
+    const rows = running ? data.tasks : result ? result.tasks : [];
+    const failing = result ? result.tasks.filter((t) => t.state !== "passed" && t.state !== "skipped") : [];
+    const head = running ? "Testing…" : !result ? "Test this Mac" : failing.length ? `${failing.length} ${failing.length === 1 ? "thing needs" : "things need"} attention` : "Everything works";
+    box.replaceChildren(el("h1", "", head));
+    if (!running && !result)
+      box.appendChild(el("p", "muted", `Does one of each kind of task here (${quick.length} in all) and checks the answers. About two minutes.`));
+    if (rows.length) {
+      const list = el("div", "check-list");
+      for (const task of rows) {
+        const row = el(task.conversation ? "button" : "div", "check-row " + task.state);
+        const what = el("span", "check-what", task.what.charAt(0).toUpperCase() + task.what.slice(1));
+        if (task.why && task.state !== "passed") what.appendChild(el("span", "check-why", task.why));
+        row.append(el("span", "check-mark", CHECK_MARKS[task.state]), what,
+                   el("span", "check-time", task.seconds != null ? clock(task.seconds) : ""));
+        if (task.conversation) { row.type = "button"; row.onclick = () => openConversation(task.conversation, what.firstChild.textContent); }
+        list.appendChild(row);
+      }
+      box.appendChild(list);
     }
-    box.replaceChildren(el("h1", "", "Check"), el("p", "muted", CHECK_LEADS[checkSet]), tabs);
-    const list = el("div", "check-list");
-    let forms = false;
-    for (const task of rows) {
-      if (task.kind === "forms" && !forms) { forms = true; list.appendChild(el("div", "check-group", "Forms")); }
-      const row = el(task.conversation ? "button" : "div", "check-row " + task.state);
-      const named = task.what.replace(/: CAPTCHA$/, "");
-      const what = el("span", "check-what", named.charAt(0).toUpperCase() + named.slice(1));
-      if (task.why && task.state !== "passed") what.appendChild(el("span", "check-why", task.why));
-      const took = task.seconds != null ? clock(task.seconds) : "";
-      row.append(el("span", "check-mark", CHECK_MARKS[task.state]), what,
-                 el("span", "check-time", took + (task.approvals ? ` · ${task.approvals} asked` : "")));
-      row.title = [task.why, task.sites?.length ? task.sites.join(", ") : ""].filter(Boolean).join(" · ");
-      if (task.conversation) { row.type = "button"; row.onclick = () => openConversation(task.conversation, what.firstChild.textContent); }
-      list.appendChild(row);
-    }
-    box.appendChild(list);
     const foot = el("div", "check-foot");
     if (running) {
       const stop = el("button", "btn", "Stop");
       stop.onclick = () => { stop.disabled = true; run({action: "stop"}); };
-      foot.append(el("span", "muted", "Running. You can leave this screen."), stop);
+      foot.append(el("span", "muted", "You can leave this screen."), stop);
     } else {
-      if (result) {
-        const when = new Date(result.date).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
-        foot.appendChild(el("span", "muted", `${result.passed} of ${result.ran} passed` +
-                                              (result.blocked ? `, ${result.blocked} blocked by a site` : "") +
-                                              (result.needs_you ? `, ${result.needs_you} waiting for you` : "") +
-                                              (result.skipped ? `, ${result.skipped} skipped` : "") + ` · ${modelName(result.model)} · ${when}`));
-      }
-      const go = el("button", "btn primary", result ? "Run again" : real ? "Run all" : "Run check");
+      if (result) foot.appendChild(el("span", "muted", new Date(result.date).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"})));
+      const go = el("button", "btn primary", result ? "Test again" : "Test");
       go.disabled = other;
-      go.onclick = () => { go.disabled = true; run(real ? {real: true} : {}); };
+      go.onclick = () => { go.disabled = true; run({}); };
       foot.appendChild(go);
-      if (!real) {
-        const more = el("button", "linkish", "Include the long tasks");
-        more.type = "button"; more.disabled = other;
-        more.title = "A flight search, a booking up to payment, and three more: a few more minutes";
-        more.onclick = () => { more.disabled = true; run({long: true}); };
-        foot.appendChild(more);
-      }
     }
     box.appendChild(foot);
   };
@@ -652,7 +634,9 @@ async function showCheck() {
   };
   await poll();
 }
-$("openCheck").onclick = showCheck;
+// Opened from the app's Help menu (Test this Mac); the page has no button for it.
+window.coderunnerShell?.onTestThisMac?.(() => showCheck());
+
 
 function scrollDown() { const t = $("thread"); t.scrollTop = t.scrollHeight; }
 
@@ -1333,6 +1317,7 @@ async function loadModels() {
     const here = remote ? " · on this computer" : "";
     const voice = (status.voice || []).slice(0, 1).map((name) => VOICES[name] || name).join("");   // the one in use; the rest stand by
     const search = modelName(models.embedding || status.model?.embedding);
+    state.model = remote?.model || models.chat || status.model?.model || "";
     const rows = [["Planning", modelName(models.chat || status.model?.model)], ["Web pages", modelName(models.driver)],
                   ["Safety check", modelName(models.decision)], ["File search", search && search + here],
                   ["Voice", voice && voice + here],
