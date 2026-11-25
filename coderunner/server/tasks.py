@@ -15,6 +15,7 @@ import time
 
 from ..core import paths
 from ..safety.policy import current_run
+from . import titles
 
 # Audit events worth showing as a task's activity, and the fields of each that the app may show.
 ACTIVITY = ("browser.", "driver.", "approval.", "sandbox.", "files.", "connector.")
@@ -146,6 +147,8 @@ class Tasks:
         self._asked: dict[str, object] = {}     # approval id -> the thread of the task that asked
         self._ended: dict[str, list[asyncio.Future]] = {}   # task id -> whoever waits for it to end (wait)
         self._emits: dict[str, object] = {}     # task id -> its event sender, while it has not ended
+        self._untitled: list[str] = []          # threads whose first task has ended, still to be named by the model
+        self._naming: asyncio.Task | None = None
         daemon.svc.audit.listeners.append(self._on_audit)
         # A daemon that stopped mid-task left it "running" for ever: its thread says how it ended.
         for row in self.store.query("SELECT id, conversation FROM tasks WHERE status IN ('running', 'queued')"):
@@ -295,6 +298,8 @@ class Tasks:
                 emit({"type": "files", "files": made})
             self._end(task_id)
             self._next()                        # a task that was waiting for a place starts now
+            with contextlib.suppress(Exception):            # a name is an extra: never in the way of a task
+                self._name_later(conversation)
 
     async def _fresh_slot(self, slot) -> None:
         """A task's place in the local runtime holds only the instructions when it starts and when it ends
@@ -304,6 +309,69 @@ class Tasks:
             return
         with contextlib.suppress(Exception):
             await asyncio.wait_for(llm.reset_slot(slot), 10)
+
+    # ---- names in the list ----------------------------------------------------
+
+    def _name_later(self, conversation: str) -> None:
+        """Once a thread's first task has ended, the model names it (titles.py), when no task needs the model.
+        A thread that already has a name, and the check's own, are left as they are."""
+        if getattr(self.daemon.svc, "llm", None) is None:
+            return
+        if not conversation.startswith(self.CHECKS) and conversation not in self._untitled and \
+                not self.store.one("SELECT 1 AS x FROM conversation_titles WHERE conversation = ?", (conversation,)):
+            self._untitled = [*self._untitled, conversation][-20:]
+        if self._untitled and self._model_free() and (self._naming is None or self._naming.done()):
+            self._naming = asyncio.get_running_loop().create_task(self._name_untitled())
+
+    def _model_free(self) -> bool:
+        """Whether a side question can go to the model now. Anthropic's API takes it any time; a model server
+        or a local runtime only when no task is running or waiting for it: on the owner's server a request in
+        any slot made a running task read its whole conversation again."""
+        llm = getattr(self.daemon.svc, "llm", None)
+        if llm is None or getattr(llm, "concurrent", False):
+            return llm is not None
+        turns = getattr(self.daemon.svc, "turns", None)
+        return not self.running and not self.waiting and not getattr(turns, "_busy", False)
+
+    def _name_slot(self, llm) -> int | None:
+        """The step judge's slot (after the tasks'), so a name never lands in a task's slot."""
+        if getattr(llm, "concurrent", False):
+            return None
+        if int(getattr(llm, "slots", 0) or 0) > 1:          # the owner's model server: its last slot
+            return int(llm.slots) - 1
+        decider = getattr(getattr(self.daemon.svc, "browser", None), "decider", None)
+        judge = getattr(decider, "model", None)
+        if getattr(judge, "slot", None) is not None and \
+                str(getattr(judge, "base_url", "")).rstrip("/") == str(getattr(llm, "base_url", "")).rstrip("/"):
+            return judge.slot
+        return None
+
+    async def _name_untitled(self) -> None:
+        while self._untitled and self._model_free():
+            conversation = self._untitled.pop()             # the newest first
+            await self._name(conversation)
+
+    async def _name(self, conversation: str) -> None:
+        if self.store.one("SELECT 1 AS x FROM conversation_titles WHERE conversation = ?", (conversation,)):
+            return                              # named meanwhile (another of its tasks ended while it was named)
+        first =self.store.one("SELECT prompt FROM tasks WHERE conversation = ? ORDER BY created LIMIT 1",
+                               (conversation,))
+        prompt = str((first or {}).get("prompt") or "")
+        title, source = "", "model"
+        llm = getattr(self.daemon.svc, "llm", None)
+        if prompt.strip() and llm is not None and hasattr(llm, "ask"):
+            try:
+                title = await asyncio.wait_for(titles.from_model(llm, prompt, self._name_slot(llm)), titles.TIMEOUT_S)
+            except Exception as exc:        # away, too slow, an error: the name made from the request stays
+                self.daemon.svc.audit.write("title.failed", conversation=conversation,
+                                            error=f"{type(exc).__name__}: {exc}"[:200])
+        if not title:
+            title, source = titles.heuristic(prompt), "heuristic"
+        self.store.execute("INSERT OR IGNORE INTO conversation_titles(conversation, title, source, created) "
+                           "VALUES (?, ?, ?, ?)", (conversation, title, source, time.time()))
+        if source == "model":
+            # The app reads the list again on its next load and shows the new name.
+            self.bus.publish({"conversation": conversation, "type": "title", "title": title})
 
     # ---- pictures of the page ----------------------------------------------
 
@@ -400,7 +468,14 @@ class Tasks:
         """Newest first, with each one's latest task and whether that task waits for the owner (an approval or
         a turn on the computer): a task asking from another thread showed "Working…" in the list."""
         rows = self._conversations(prefix, limit)
+        own = [row["conversation"] for row in rows if not row["conversation"].startswith(self.CHECKS)]
+        named = {r["conversation"]: r["title"] for r in self.store.query(
+            f"SELECT conversation, title FROM conversation_titles WHERE conversation IN ({','.join('?' * len(own))})",
+            own)} if own else {}
         for row in rows:
+            # A short name (titles.py), the whole first request kept as prompt. The check's threads, and those
+            # not named yet, are named from the request itself.
+            row["title"] = named.get(row["conversation"]) or titles.heuristic(row["prompt"] or "")
             row["waiting"] = False
             if row["status"] == "running":
                 asked: set = set()
@@ -421,7 +496,7 @@ class Tasks:
         # The check's own threads have their own share of the list: after a few long checks they filled all of it
         # and the owner's threads were gone from the app.
         select = ("SELECT conversation, MIN(created) AS created, MAX(created) AS updated, "
-                  "(SELECT prompt FROM tasks t2 WHERE t2.conversation = t.conversation ORDER BY created LIMIT 1) AS title, "
+                  "(SELECT prompt FROM tasks t2 WHERE t2.conversation = t.conversation ORDER BY created LIMIT 1) AS prompt, "
                   "(SELECT status FROM tasks t3 WHERE t3.conversation = t.conversation ORDER BY created DESC LIMIT 1) "
                   "AS status, (SELECT id FROM tasks t4 WHERE t4.conversation = t.conversation ORDER BY created DESC "
                   "LIMIT 1) AS task FROM tasks t WHERE conversation LIKE ? ESCAPE '\\' {} "

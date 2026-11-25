@@ -169,6 +169,27 @@ class LLM:
         return {"content": content.strip(), "tool_calls": tool_calls, "usage": data.get("usage", {}),
                 "timings": data.get("timings", {}), "finish_reason": choice.get("finish_reason")}
 
+    async def ask(self, system: str, turns: list[dict], max_tokens: int = 16, slot: int | None = None,
+                  timeout: float = 20) -> str:
+        """A short answer to a small side question (a thread's name), reasoning off, as Claude.ask. Sent once:
+        a runtime that is down is not restarted for it, nor a renamed model looked for. slot: llama.cpp's slot
+        to answer in (one no task is using)."""
+        payload: dict[str, Any] = {"model": self.model, "stream": False, "max_tokens": max_tokens, "temperature": 0,
+                                   "messages": [{"role": "system", "content": system}, *turns],
+                                   "reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False},
+                                   **({"id_slot": slot} if slot is not None else {})}
+        try:
+            response = await self._client.post("/chat/completions", json=payload, timeout=timeout)
+        except httpx.HTTPError as exc:
+            raise LLMError(f"Model runtime at {self.base_url} is unreachable: {type(exc).__name__}") from exc
+        if response.status_code >= 400:
+            raise LLMError(f"Model runtime returned {response.status_code}: {response.text[:200]}")
+        message = ((response.json().get("choices") or [{}])[0].get("message") or {})
+        content = message.get("content") or ""
+        if isinstance(content, list):
+            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        return THINK.sub("", content).strip()
+
     async def _post(self, payload: dict) -> httpx.Response:
         """One request; when the runtime is down or failing, it is restarted once and the request retried, so
         a long task keeps its progress."""

@@ -39,6 +39,9 @@ SCHEMA = [
     """CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY, conversation TEXT, prompt TEXT, status TEXT, reply TEXT, created REAL, finished REAL)""",
     "CREATE INDEX IF NOT EXISTS tasks_conversation ON tasks(conversation, created)",
+    # A thread's short name in the app's list (server/titles.py): source is "model" or "heuristic".
+    """CREATE TABLE IF NOT EXISTS conversation_titles (
+        conversation TEXT PRIMARY KEY, title TEXT, source TEXT, created REAL)""",
     """CREATE TABLE IF NOT EXISTS task_events (
         seq INTEGER PRIMARY KEY, task TEXT, conversation TEXT, ts REAL, data TEXT)""",
     "CREATE INDEX IF NOT EXISTS task_events_conversation ON task_events(conversation, seq)",
