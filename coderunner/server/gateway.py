@@ -704,6 +704,10 @@ def admin_app(svc, daemon) -> Starlette:
     async def conversations(request: Request):
         return JSONResponse(daemon.tasks.conversations())
 
+    async def tray(request: Request):
+        """What the desktop app's menu bar icon and its popover show (Tasks.tray)."""
+        return JSONResponse(daemon.tasks.tray())
+
     async def conversation(request: Request):
         name = request.path_params["conversation"]
         return JSONResponse({"conversation": name, "tasks": daemon.tasks.tasks(name),
@@ -943,6 +947,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/uploads/{id}", uploaded, methods=["GET"]),
         Route("/api/outputs/{name}", output_file, methods=["GET"]),
         Route("/api/conversations", conversations, methods=["GET"]),
+        Route("/api/tray", tray, methods=["GET"]),
         Route("/api/conversations/{conversation}", conversation, methods=["GET"]),
         Route("/api/events", events, methods=["GET"]),
         Route("/api/computer", computer, methods=["GET", "POST"]),

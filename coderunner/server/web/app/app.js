@@ -538,6 +538,7 @@ async function openConversation(id, title, again) {
   const kept = again ? $("thread").scrollTop : null;
   $("composer").hidden = false;
   state.conversation = id;
+  window.coderunnerShell?.threadOpen?.(id || "");       // the desktop app does not tell the owner about this one
   // The task being read comes to the front on the assistant's computer and goes first at the model.
   api("/api/focus", {method: "POST", body: JSON.stringify({conversation: id || ""})}).catch(() => {});
   state.views.clear();
@@ -705,8 +706,9 @@ function listen() {
   source.onerror = () => { listen.lost = true; source.close(); setTimeout(listen, 2000); };
 }
 
+// In the desktop app the shell tells the owner (a click there opens the thread), even with this window closed.
 function notify(title, body) {
-  if (document.hasFocus() || !("Notification" in window)) return;
+  if (window.coderunnerShell?.notifies || document.hasFocus() || !("Notification" in window)) return;
   if (Notification.permission === "granted") new Notification(title, {body});
 }
 
@@ -2100,12 +2102,47 @@ async function checkSetup() {
 
 // ---- start -------------------------------------------------------------------------
 
+// A thread opened by id: #c=<id> in the address (the desktop app's menu bar or a notification, as the window
+// opens), or the shell's word once the page is here. #computer=expanded, or the shell's word, opens the
+// assistant's computer on its screen, as large as the window (the popover's live screen, expanded).
+function threadInAddress() {
+  if (location.hash === "#computer=expanded") {
+    history.replaceState(null, "", location.pathname + location.search);
+    expandComputer();
+    return "";
+  }
+  const found = location.hash.match(/^#c=([^&]+)$/);
+  if (!found) return "";
+  history.replaceState(null, "", location.pathname + location.search);
+  try { return decodeURIComponent(found[1]); } catch { return ""; }
+}
+async function openById(id) {
+  if (!id || state.setup) return;
+  if ($("shell").classList.contains("expanded")) setExpanded(false);    // the thread is what was asked for
+  const list = await api("/api/conversations").catch(() => []);
+  await openConversation(id, list.find((c) => c.conversation === id)?.title || "Task");
+}
+function expandComputer() {
+  if (state.setup) return;
+  showComputer(true);
+  setView("screen", false);
+  setExpanded(true);
+}
+window.addEventListener("hashchange", () => openById(threadInAddress()));
+window.coderunnerShell?.onShowThread?.((id) => openById(id));
+window.coderunnerShell?.onShowComputer?.(() => expandComputer());
+
 setInterval(() => state.views.forEach((v) => v.tick()), 1000);
 setInterval(pollApprovals, 2500);
-if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
+if (!window.coderunnerShell?.notifies && "Notification" in window && Notification.permission === "default")
+  Notification.requestPermission().catch(() => {});
 pollApprovals();
 loadModels();
-checkSetup().then((firstRun) => { if (!firstRun) openConversation(null); });
+checkSetup().then((firstRun) => {
+  if (firstRun) return;
+  const id = threadInAddress();
+  if (id) openById(id); else openConversation(null);
+});
 listen();
 connectScreen();
 tellControl(false);           // a window closed while it had the screen would otherwise keep the tasks waiting

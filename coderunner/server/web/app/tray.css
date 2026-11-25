@@ -1,0 +1,95 @@
+/* The menu bar's popover (tray.html) and the quick ask (ask.html), over the app's own tokens (app.css). The
+   popover sits on the system's material (a Mac's vibrancy) under a faint tint of the app's background; the quick
+   ask draws its own bar on a see-through window, near-white or the app's dark surface, a hairline and a soft
+   shadow. A theme set on the page (data-theme) comes first, then the system's. */
+:root {
+  --tint: rgb(250 249 247 / 55%); --hover: rgb(0 0 0 / 5%); --hairline: rgb(0 0 0 / 9%);
+  --bar: rgb(255 255 255 / 96%); --field-bg: rgb(255 255 255 / 92%);
+  --bar-shadow: 0 18px 48px rgb(0 0 0 / 16%), 0 3px 10px rgb(0 0 0 / 7%);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --tint: rgb(26 25 24 / 45%); --hover: rgb(255 255 255 / 7%); --hairline: rgb(255 255 255 / 10%);
+    --bar: rgb(34 33 32 / 97%); --field-bg: rgb(255 255 255 / 7%);
+    --bar-shadow: 0 18px 48px rgb(0 0 0 / 45%), 0 3px 10px rgb(0 0 0 / 25%);
+  }
+}
+:root[data-theme="light"] {
+  --bg: #faf9f7; --surface: #ffffff; --surface-2: #f1f0ed; --line: #e5e3de; --text: #1f1e1b; --muted: #75736d;
+  --accent: #2563eb; --fill: #2563eb; --warn: #9a5216; --danger: #c0392f; --ok: #1f8a4c; color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #1a1918; --surface: #222120; --surface-2: #262523; --line: #34322f; --text: #ecebe8; --muted: #9c9a94;
+  --accent: #7aa2ff; --fill: #3566d9; --warn: #e0a06a; --danger: #ef7d74; --ok: #5fcf8d; color-scheme: dark;
+  --tint: rgb(26 25 24 / 45%); --hover: rgb(255 255 255 / 7%); --hairline: rgb(255 255 255 / 10%);
+  --bar: rgb(34 33 32 / 97%); --field-bg: rgb(255 255 255 / 7%);
+  --bar-shadow: 0 18px 48px rgb(0 0 0 / 45%), 0 3px 10px rgb(0 0 0 / 25%);
+}
+html, body { background: transparent; }
+body.panel { height: 100vh; overflow: hidden; cursor: default; user-select: none; -webkit-user-select: none; }
+body.tray { background: var(--tint); }
+.opaque body.tray { background: var(--surface); }
+.panel input { user-select: text; -webkit-user-select: text; }
+.panel input::selection { background: color-mix(in srgb, var(--accent) 32%, transparent); }
+.panel [hidden] { display: none !important; }
+
+/* The one button: round, flat brand blue, an arrow up. */
+.send-round { flex: none; display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%;
+  background: var(--fill); }
+.send-round svg { width: 18px; height: 18px; fill: none; stroke: #fff; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.send-round:hover:not(:disabled) { filter: brightness(1.08); }
+.send-round:disabled { opacity: .3; cursor: default; }
+
+/* ---- the popover: the computer's screen while it is busy, a quick ask, the latest threads ---- */
+.tray { display: flex; flex-direction: column; }
+.tray-live { position: relative; margin: 12px 12px 0; }
+.tray-screen { aspect-ratio: 16 / 10; border-radius: 10px; overflow: hidden; background: #0d0d0c; box-shadow: 0 0 0 1px var(--hairline); }
+.tray-screen > div { background: transparent !important; }
+.tray-expand { position: absolute; top: 8px; right: 8px; display: grid; place-items: center; width: 28px; height: 28px; padding: 0;
+  border: 0; border-radius: 8px; background: rgb(20 20 20 / 55%); opacity: .85; }
+.tray-expand:hover { opacity: 1; background: rgb(20 20 20 / 75%); }
+.tray-expand svg { width: 15px; height: 15px; fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tray-ask { padding: 12px 12px 6px; }
+.tray-field { display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 6px 0 12px; border-radius: 14px;
+  background: var(--field-bg); box-shadow: 0 0 0 1px var(--hairline), 0 1px 2px rgb(0 0 0 / 4%); }
+.tray-field:focus-within { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent), 0 1px 2px rgb(0 0 0 / 4%); }
+.tray-logo { width: 22px; height: 22px; border-radius: 7px; }
+.tray-field input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: none; color: var(--text);
+  font: inherit; font-size: 15px; }
+.tray-field input::placeholder { color: var(--muted); }
+.tray-field .send-round { width: 32px; height: 32px; }
+.tray-field .send-round svg { width: 16px; height: 16px; }
+.tray-note { padding: 6px 4px 0; color: var(--danger); font-size: 12px; }
+#threads { flex: 1; overflow-y: auto; padding: 2px 6px 6px; }
+.tray-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px;
+  background: none; color: var(--text); text-align: left; }
+.tray-row:hover, .tray-row:focus-visible { background: var(--hover); outline: none; }
+.tray-words { flex: 1; min-width: 0; display: grid; }
+.tray-name, .tray-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tray-name { font-size: 13.5px; font-weight: 550; }
+.tray-line { font-size: 12.5px; color: var(--muted); }
+.tray-line.waiting { color: var(--warn); font-weight: 550; }
+.tray-line.failed { color: var(--danger); }
+.tray-time { flex: none; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tray-empty { padding: 48px 0; text-align: center; font-size: 13px; }
+.tray-foot { padding: 9px 16px 10px; border-top: 1px solid var(--hairline); }
+.tray-foot .linkish { font-size: 13px; }
+
+/* ---- the quick ask: one roomy bar ---- */
+body.quick { display: grid; place-items: center; padding: 32px; box-sizing: border-box; }
+.quick-bar { display: flex; align-items: center; gap: 12px; width: 100%; height: 64px; padding: 0 15px 0 18px; border-radius: 16px;
+  background: var(--bar); box-shadow: 0 0 0 1px var(--hairline), var(--bar-shadow); }
+.quick-logo { width: 30px; height: 30px; border-radius: 9px; }
+#askInput { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: none; color: var(--text);
+  font: inherit; font-size: 21px; letter-spacing: -0.012em; }
+#askInput::placeholder { color: var(--muted); opacity: .85; }
+.quick-attach { flex: none; display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%; background: none; }
+.quick-attach:hover { background: var(--hover); }
+.quick-attach svg { width: 19px; height: 19px; fill: none; stroke: var(--muted); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.quick-files { flex: none; display: inline-flex; align-items: center; gap: 4px; max-width: 200px; padding: 4px 4px 4px 11px;
+  border-radius: 999px; background: var(--hover); font-size: 13px; white-space: nowrap; }
+.quick-files span { overflow: hidden; text-overflow: ellipsis; }
+.quick-files.busy span { opacity: .55; }
+.quick-files.failed { color: var(--danger); }
+.quick-files button { border: 0; background: none; color: var(--muted); padding: 0 4px; font-size: 15px; line-height: 1; }
+.quick-note { flex: none; max-width: 240px; overflow: hidden; color: var(--danger); font-size: 13px; white-space: nowrap; text-overflow: ellipsis; }

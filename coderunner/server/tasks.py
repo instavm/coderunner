@@ -507,6 +507,47 @@ class Tasks:
                 row["waiting"] = bool(asked)
         return rows
 
+    def tray(self, limit: int = 12) -> dict:
+        """The menu bar's view of the owner's threads (the check's left out): those that need the owner first,
+        then those running or queued, then the most recent. Each has its status line (what its running task
+        said last), when its latest task started and finished, the start of its answer, and whether it has used
+        the assistant's computer (its browser or screen); with how many run, how many wait for the owner, and
+        whether a running one uses the computer (the popover then shows its screen live)."""
+        rows = [row for row in self.conversations(limit=max(limit, 30))
+                if not row["conversation"].startswith(self.CHECKS)]
+        rank = lambda row: 0 if row["waiting"] else 1 if row["status"] in ("running", "queued") else 2  # noqa: E731
+        rows = sorted(rows, key=lambda row: (rank(row), -(row["updated"] or 0)))
+        shown = rows[:limit]
+        ids = [row["task"] for row in shown if row["task"]]
+        found = {r["id"]: r for r in self.store.query(
+            f"SELECT id, created, finished, reply FROM tasks WHERE id IN ({','.join('?' * len(ids))})", ids)} if ids else {}
+        threads = []
+        for row in shown:
+            task = found.get(row["task"]) or {}
+            line, computer = "", False
+            if row["status"] == "running":
+                computer = self.store.one("SELECT 1 AS used FROM task_events WHERE task = ? AND (data LIKE "
+                                          "'%\"event\": \"browser.%' OR data LIKE '%\"event\": \"driver.%') LIMIT 1",
+                                          (row["task"],)) is not None
+            if row["status"] == "running" and not row["waiting"]:
+                latest = self.store.one("SELECT data FROM task_events WHERE task = ? AND (data LIKE '%\"type\": \"note\"%' "
+                                        "OR data LIKE '%\"type\": \"paused\"%' OR data LIKE '%\"type\": \"resumed\"%') "
+                                        "ORDER BY seq DESC LIMIT 1", (row["task"],))
+                said = json.loads(latest["data"]) if latest else {}
+                if said.get("type") in ("note", "paused"):
+                    line = " ".join(str(said.get("text") or "").split())
+                    line = line.split(". ")[0].rstrip(".")
+                    line = line if len(line) <= 90 else line[:89] + "…"
+            reply = " ".join(str(task.get("reply") or "").split())
+            threads.append({"conversation": row["conversation"], "title": row["title"], "status": row["status"],
+                            "waiting": row["waiting"], "line": line, "task": row["task"], "computer": computer,
+                            "started": task.get("created"), "finished": task.get("finished"),
+                            "reply": reply if len(reply) <= 160 else reply[:159] + "…"})
+        return {"threads": threads,
+                "running": sum(1 for row in rows if row["status"] in ("running", "queued")),
+                "waiting": sum(1 for row in rows if row["waiting"]),
+                "computer": any(thread["computer"] for thread in threads)}
+
     CHECKS = "app:check-"
 
     def _conversations(self, prefix: str, limit: int) -> list[dict]:

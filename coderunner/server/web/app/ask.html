@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeRunner</title>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="tray.css">
+</head>
+<body class="panel quick">
+<form id="ask" class="quick-bar" autocomplete="off">
+  <span class="logo quick-logo" aria-hidden="true"></span>
+  <input id="askInput" type="text" placeholder="What should I get done?" aria-label="Task" autofocus>
+  <span id="files" class="quick-files" hidden></span>
+  <span id="askNote" class="quick-note" role="status" hidden></span>
+  <button id="attach" class="quick-attach" type="button" title="Attach files" aria-label="Attach files"></button>
+  <button id="send" class="send-round" type="submit" aria-label="Start task" disabled></button>
+  <input id="filePick" type="file" multiple hidden>
+</form>
+<script type="module" src="ask.js"></script>
+</body>
+</html>
