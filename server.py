@@ -1224,7 +1224,12 @@ class HostOriginValidator:
 
 async def api_health(request: Request):
     """Liveness for the installer and the container healthcheck: 200 only when the Jupyter server that runs
-    the kernels answers too, so a sandbox whose kernels cannot start is not reported healthy."""
+    the kernels answers too, so a sandbox whose kernels cannot start is not reported healthy. The lite profile has
+    no Jupyter (code runs as plain processes): there it is healthy when this server answers. (It said 503 for
+    ever, and the daemon's keeper took a healthy lite sandbox for a dead one and restarted it again and again.)"""
+    if os.environ.get("CODERUNNER_PROFILE", "full") == "lite":
+        return JSONResponse({"status": "ok", "jupyter": None, "profile": "lite",
+                             "sessions": len(python_sessions.sessions)})
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             response = await client.get(f"{JUPYTER_HTTP_URL}/api/status")

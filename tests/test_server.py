@@ -138,5 +138,12 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await client.get("/health", headers={"Host": "evil.example"})).status_code, 403)
 
 
+    async def test_a_lite_sandbox_without_jupyter_is_healthy(self):
+        from unittest import mock
+        with mock.patch.dict("os.environ", {"CODERUNNER_PROFILE": "lite"}):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://localhost:8222") as client:
+                response = await client.get("/health")
+        self.assertEqual((response.status_code, response.json()["profile"]), (200, "lite"))
+
 if __name__ == "__main__":
     unittest.main()
