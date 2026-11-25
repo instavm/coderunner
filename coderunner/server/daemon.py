@@ -378,6 +378,9 @@ class Daemon:
                              chat_id=chat_id, origin_is_owner=sender_is_owner, events=events,
                              deadline=getattr(events, "deadline", 0.0) or 0.0,    # a task with a time limit
                              stop_at=getattr(events, "stop_at", 0.0) or 0.0)
+            inbox = getattr(events, "inbox", None)
+            if isinstance(inbox, list):
+                ctx.inbox = inbox           # the owner's messages sent while it works (server.tasks)
             if tainted:
                 ctx.taint()
             if remote:

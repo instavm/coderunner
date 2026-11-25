@@ -38,6 +38,11 @@ def shots_dir():
     return paths.assistant_dir() / "shots"
 
 
+def by_owner(origin: str) -> bool:
+    """A message the owner sent from the app (gateway.principal), not a routine's, a channel's or the check's."""
+    return origin in ("owner", "admin-token") or origin.startswith("device:")
+
+
 class EventBus:
     def __init__(self, store):
         self.store = store
@@ -172,8 +177,14 @@ class Tasks:
         HARD_STOP times it; 0 for none.
         routine: {"id", "name", "spec"} for a run of a routine made in this conversation, which the thread shows
         by the routine's name; tainted: its prompt was written after reading untrusted content, so the run starts
-        untrusted."""
+        untrusted.
+        The owner's message to a thread whose task of theirs is still running (or queued) is not a task of its
+        own: it goes to that task, which reads it at its next step (steer)."""
         from ..files import attached
+        if by_owner(origin) and not remote and not routine and not time_limit:
+            busy = self._steerable(conversation)
+            if busy is not None:
+                return self.steer(busy, prompt, attachments)
         task_id = secrets.token_hex(6)
         now = time.time()
         queued = len(self.running) >= self.limit()
@@ -185,6 +196,8 @@ class Tasks:
         def emit(event: dict) -> None:
             if event.get("type") == "interim":
                 emit.interim = str(event.get("text") or "")     # what a caller grades at the time limit (check)
+            elif event.get("type") == "steer_taken":
+                emit.taken.update(event.get("ids") or [])
             self.bus.publish({**base, **event})
 
         emit.task, emit.conversation = task_id, conversation
@@ -193,6 +206,10 @@ class Tasks:
         emit.time_limit = max(0.0, float(time_limit or 0))
         emit.run = None                 # the run's context, set by the agent loop once it starts
         emit.interim = ""               # its latest interim answer
+        emit.origin = origin
+        # The owner's messages sent while it works: all of them, the ones ready for the run (RunContext.inbox, None
+        # once it has ended), and the ones it has read.
+        emit.steers, emit.inbox, emit.taken = [], [], set()
         self._emits[task_id] = emit
         files = [info for info in map(attached.describe, (attachments or [])[:attached.MAX_PER_TASK]) if info]
         emit({"type": "started", "prompt": prompt, **({"attachments": files} if files else {}),
@@ -208,6 +225,54 @@ class Tasks:
 
     def limit(self) -> int:
         return limit(self.daemon.svc)
+
+    # ---- the owner's messages while a task works ------------------------------
+
+    def _steerable(self, conversation: str):
+        """The event sender of the owner's latest task in this thread that is running or queued and still reads
+        messages, or None."""
+        for emit in reversed(list(self._emits.values())):
+            if emit.conversation == conversation and emit.inbox is not None and by_owner(emit.origin):
+                return emit
+        return None
+
+    def steer(self, emit, prompt: str, attachments: list[str] | None = None) -> dict:
+        """The owner's message to a running task: kept with its events (a reopened app shows it under the task),
+        and read by the run before its next model request. One it never reads (it ended first) starts a task of
+        its own when it ends (_follow_up)."""
+        from ..files import attached
+        files = [info for info in map(attached.describe, (attachments or [])[:attached.MAX_PER_TASK]) if info]
+        item = {"id": secrets.token_hex(4), "prompt": prompt, "files": [info["id"] for info in files]}
+        emit.steers.append(item)
+        emit({"type": "steer", "id": item["id"], "text": prompt, **({"attachments": files} if files else {})})
+        if files:
+            asyncio.get_running_loop().create_task(self._post(emit, item))
+        else:
+            emit.inbox.append({"id": item["id"], "text": prompt})
+        return {**(self.get(emit.task) or {}), "steer": item["id"]}
+
+    async def _post(self, emit, item: dict) -> None:
+        """A message with files: the model is told where each is, and shown the pictures, as with a request."""
+        from ..files import attached
+        svc = self.daemon.svc
+        note, images = "", []
+        with contextlib.suppress(Exception):
+            note, images, _ = await attached.for_the_model(
+                item["files"], getattr(getattr(svc, "files", None), "media", None), bool(getattr(svc, "vision", False)),
+                sandbox=svc.config.get("sandbox.driver") != "none")
+        if emit.inbox is not None:          # still running: else it has become a task of its own
+            emit.inbox.append({"id": item["id"], "text": f"{item['prompt']}\n\n{note}".strip(),
+                               **({"images": images} if images else {})})
+
+    def _follow_up(self, emit, status: str) -> None:
+        """What the owner sent that the task ended without reading: a task of its own in the thread, so nothing
+        is lost. Not after a stop: Stop stops."""
+        left = [item for item in emit.steers if item["id"] not in emit.taken]
+        if not left or status == "cancelled":
+            return
+        for item in left:
+            started = self.start(emit.conversation, item["prompt"], emit.origin, attachments=item["files"])
+            emit({"type": "steer_moved", "id": item["id"], "to": started.get("id", "")})
 
     def _launch(self, job: tuple) -> None:
         task_id, emit = job[0], job[4]
@@ -273,6 +338,7 @@ class Tasks:
             status, reply = "failed", ("I couldn't finish this: something went wrong on my side partway through. "
                                        "Anything said above still stands. You can ask again.")
         finally:
+            emit.inbox = None                   # it reads no more: what the owner sends now is a new task
             if emit.hard is not None:
                 emit.hard.cancel()
                 emit.hard = None
@@ -299,6 +365,7 @@ class Tasks:
                 emit({"type": "files", "files": made})
             self._end(task_id)
             self._next()                        # a task that was waiting for a place starts now
+            self._follow_up(emit, status)
             with contextlib.suppress(Exception):            # a name is an extra: never in the way of a task
                 self._name_later(conversation)
 
@@ -437,6 +504,7 @@ class Tasks:
             if job is None:
                 return False
             self.waiting.remove(job)            # stopped before it started
+            job[4].inbox = None
             from ..agent.loop import stopped_reply
             reply = stopped_reply(None)
             self.store.execute("UPDATE tasks SET status = 'cancelled', reply = ?, finished = ? WHERE id = ?",

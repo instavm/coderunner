@@ -198,6 +198,10 @@ a.item:hover { transform: translateY(-1px); } a.item:focus-visible { outline: 2p
 /* A routine set up or changed, and the request of each of its runs: by its name, with a small clock. */
 .routine-line { margin: 10px 0; }
 .bubble-user.routine-run { display: flex; align-items: center; gap: 7px; }
+/* Sent while the task works: smaller, under its live line. */
+.steer { margin: 6px 0 0; }
+.steer .bubble-user { font-size: .92em; padding: 6px 12px; border-radius: 12px 12px 4px 12px; }
+.steer .attached .att-image { max-height: 120px; }
 .routine-run .ico { width: 15px; height: 15px; flex: none; }
 
 .ask { margin: 12px 0; border: 1px solid var(--warn); background: var(--warn-soft); border-radius: var(--radius); padding: 12px 14px; }
