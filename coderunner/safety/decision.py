@@ -246,9 +246,16 @@ class ActionCheck:
             self._audit(commits=self._seen[state], seen=True)
             return self._seen[state]
         start = time.monotonic()
+        ask = lambda: self.model.probability(state, COMMIT_QUESTION, COMMIT_CRITERIA, {"commit", "unclear"},  # noqa: E731
+                                             examples=examples_for(state, self.examples))
         try:
-            probability = await self.model.probability(state, COMMIT_QUESTION, COMMIT_CRITERIA, {"commit", "unclear"},
-                                                       examples=examples_for(state, self.examples))
+            try:
+                probability = await ask()
+            except httpx.TimeoutException:
+                # A model server shared with another computer can be busy for a while: asked once more before the
+                # owner is (a search typed on a busy server was put to the owner as if it committed something).
+                self._audit(error="timed out, asking again", seconds=round(time.monotonic() - start, 2))
+                probability = await ask()
         except Exception as exc:  # fail closed: the owner is asked
             self._audit(error=str(exc)[:200], commits=True, seconds=round(time.monotonic() - start, 2))
             return True

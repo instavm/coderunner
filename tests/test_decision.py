@@ -39,6 +39,29 @@ class ActionCheckTests(DecisionTestCase):
         self.assertEqual([e["commits"] for e in events], [True, False])
         await model.aclose()
 
+    async def test_a_judge_that_times_out_is_asked_once_more_before_the_owner(self):
+        calls = []
+
+        def answer(request):
+            calls.append(1)
+            if len(calls) == 1:
+                raise httpx.ReadTimeout("busy server", request=request)
+            return httpx.Response(200, json={"answers": {"q": {"probabilities": {"safe": 0.9, "commit": 0.05, "unclear": 0.05}}}})
+        model = self.model(answer)
+        check = ActionCheck(model, audit=self.audit)
+        state = describe("shop.example", "/search", "type into", "textbox", "Search", typed="coffee")
+        self.assertFalse(await check.commits(state))             # a search, judged on the second try
+        self.assertEqual(len(calls), 2)
+        calls.clear()
+
+        def always_slow(request):
+            calls.append(1)
+            raise httpx.ReadTimeout("busy server", request=request)
+        slow = ActionCheck(self.model(always_slow), audit=self.audit)
+        self.assertTrue(await slow.commits(state + " "))          # still failing: the owner is asked
+        self.assertEqual(len(calls), 2)
+        await model.aclose()
+
     def test_a_click_on_page_text_is_shown_examples_of_such_clicks(self):
         from coderunner.safety.decision import COMMIT_EXAMPLES, TEXT_EXAMPLES, examples_for
         text = describe("passport.govmu.org", "/passport/", "click", "li", "Non-citizens", nearby='li "Non-citizens"')
