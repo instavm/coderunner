@@ -1059,6 +1059,11 @@ class BrowserBroker:
                 self._requests[sid] = Requests(target)
             if self._viewport:
                 await self._fix_viewport(sid)
+            else:
+                # The page at the window's own size: a run stopped while the screenshot driver had it at a fixed
+                # size (fixed_viewport) left the tab drawn in a corner of the window for the next task.
+                with contextlib.suppress(CDPError):
+                    await self._send(sid, "Emulation.clearDeviceMetricsOverride")
             self._committed.setdefault(target, (await self._info(target)).get("url", ""))
         except CDPError:
             self._forget_session(sid)
