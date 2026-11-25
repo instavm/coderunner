@@ -1378,6 +1378,14 @@ function modelName(id) {
 const VOICES = {apple: "Apple's on-device speech", parakeet: "Parakeet", "parakeet-coreml": "Parakeet Ultra", "qwen3-asr": "Qwen3 ASR", whisper: "Whisper"};
 const BROWSERS = {computer: "The assistant's own computer", chrome: "Your Chrome, in its own tab group", dedicated: "A Chrome window of its own"};
 
+// The host of a model endpoint that is not on this computer, else "".
+function offHost(url) {
+  try {
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, "");
+    return ["localhost", "127.0.0.1", "::1", "host.docker.internal"].includes(host) || host.endsWith(".localhost") ? "" : host;
+  } catch { return ""; }
+}
+
 async function loadModels() {
   try {
     const status = await api("/api/status");
@@ -1385,6 +1393,8 @@ async function loadModels() {
     const models = status.models || {}, remote = status.remote;
     // On Claude every task is there already, so none is offered there again; on the owner's own server it is.
     const server = remote?.provider === "openai";
+    // An external runtime (models.base_url) on another machine is not local either: name where it runs.
+    const elsewhere = !remote && offHost(status.model?.base_url);
     state.remoteOn = !!remote && !server;
     // In remote mode Claude (or the owner's server) plans, works the web pages and judges the steps; file search
     // and voice stay here.
@@ -1408,11 +1418,13 @@ async function loadModels() {
       where.appendChild(el("span", "not-private", "Not private"));
       line.append(el("span", "", modelName(remote.model)), where);
     }
+    else if (elsewhere && models.chat) line.append(el("span", "", `${modelName(models.chat)} · ${elsewhere}`));
     else if (models.chat) line.append(el("span", "", `Local · ${modelName(models.chat)}`));
     line.title = server ? `Your requests, the pages it reads and the files it opens are sent to your model server at ${remote.host}.` :
+      elsewhere ? `Your requests, the pages it reads and the files it opens are sent to your model server at ${elsewhere}.` :
       remote ? "Your requests, the pages it reads and the files it opens are sent to Anthropic." : "";
     const lead = document.querySelector("#empty p");
-    if (lead) lead.textContent = server ?
+    if (lead) lead.textContent = server || elsewhere ?
       "Planned by your own model server, and carried out on a private Linux machine with its own browser that you can watch and take over." :
       remote ?
       "Planned by Claude on Anthropic's API, and carried out on a private Linux machine with its own browser that you can watch and take over." :

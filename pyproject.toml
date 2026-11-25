@@ -19,7 +19,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mcp = ["fastmcp>=2.10"]
+# The gateway builds on the mcp 1.x low-level Server (list_tools/call_tool decorators), which mcp 2 removed;
+# fastmcp 4 pulls mcp 2. Same versions as install.sh and requirements.txt.
+mcp = ["fastmcp==3.4.7", "mcp>=1.26,<2"]
 # Remote mode (coderunner claude on): installed by itself the first time it is turned on.
 claude = ["anthropic>=1,<2"]
 
