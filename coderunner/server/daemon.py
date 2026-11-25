@@ -588,9 +588,18 @@ class Daemon:
         svc.audit.write("daemon.started", channels=sorted(svc.channels), network=cfg.get("sandbox.network"))
         log.info("CodeRunner daemon running; owner UI at http://%s:%s/", cfg.get("gateway.admin_bind"),
                  cfg.get("gateway.admin_port"))
+        # Tasks a restart (an update, a crash, the Mac sleeping) left unfinished go on from their journals.
+        try:
+            self.tasks.resume()
+        except Exception as exc:
+            svc.audit.write("task.resume_failed", error=f"{type(exc).__name__}: {exc}"[:300])
 
         await stop.wait()
         svc.audit.write("daemon.stopping")
+        # Running tasks stop where they are and keep their journals, before the browser and servers go under them.
+        self.tasks.shutdown()
+        if self.tasks.running:
+            await asyncio.wait(list(self.tasks.running.values()), timeout=10)
         for server in self._servers:
             server.should_exit = True
         # Let the HTTP servers finish their own shutdown before cancelling the rest.

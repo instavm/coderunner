@@ -98,11 +98,46 @@ class SteerTests(unittest.IsolatedAsyncioTestCase):
         kept = self.svc.store.query("SELECT content FROM messages WHERE conversation = 'app:s' AND role = 'user'")
         self.assertIn("Asha adds while you work: Make it Tuesday", json.loads(kept[-1]["content"]))
 
-    async def test_one_the_task_ended_without_reading_starts_a_task_of_its_own(self):
-        async def last_words(messages):         # the owner writes while the model writes its answer
+    async def test_messages_sent_while_it_answers_are_follow_up_turns_of_the_same_task_in_order(self):
+        async def last_words(messages):         # the owner writes twice while the model writes its answer
             self.tasks.start("app:f", "And for Tuesday?", "admin-token")
+            self.tasks.start("app:f", "Outside if possible", "device:ab12cd34")
             return answer("Monday has a table at 8.")
-        self.llm.script = [last_words, answer("Tuesday has one at 9.")]
+        self.llm.script = [last_words, answer("Tuesday has one at 9, outside.")]
+        task = self.tasks.start("app:f", "A table for Monday?", "admin-token")
+        row = await asyncio.wait_for(self.tasks.wait(task["id"]), 5)
+        await asyncio.sleep(0.05)
+        rows = self.tasks.tasks("app:f")
+        self.assertEqual([(r["id"], r["prompt"], r["reply"]) for r in rows],
+                         [(task["id"], "A table for Monday?", "Tuesday has one at 9, outside.")])     # one task
+        self.assertEqual(row["status"], "done")
+        # The first answer is posted whole (not a "so far"), the messages show under the task, and the run takes
+        # them as the owner's next turn, in the order sent, after its answer.
+        self.assertEqual([(e["text"], e.get("answer")) for e in self.events("interim", "app:f")],
+                         [("Monday has a table at 8.", True)])
+        steers = self.events("steer", "app:f")
+        self.assertEqual([e["text"] for e in steers], ["And for Tuesday?", "Outside if possible"])
+        self.assertEqual(self.events("steer_taken", "app:f")[0]["ids"], [e["id"] for e in steers])
+        self.assertEqual(self.events("steer_moved", "app:f"), [])
+        follow = self.llm.requests[-1]
+        self.assertEqual(follow[-2:], [{"role": "assistant", "content": "Monday has a table at 8."},
+                                       {"role": "user", "content": "And for Tuesday?\n\nOutside if possible"}])
+        kept = [(r["role"], json.loads(r["content"])) for r in self.svc.store.query(
+            "SELECT role, content FROM messages WHERE conversation = 'app:f' ORDER BY id")]
+        self.assertEqual(kept, [("user", "A table for Monday?"), ("assistant", "Monday has a table at 8."),
+                                ("user", "And for Tuesday?\n\nOutside if possible"),
+                                ("assistant", "Tuesday has one at 9, outside.")])
+
+    async def test_one_sent_after_the_run_ended_starts_a_task_of_its_own(self):
+        run = self.svc.agent.run
+
+        async def answered_then_written_to(ctx, text, images=None):
+            reply = await run(ctx, text, images)
+            if text == "A table for Monday?":    # the run has returned; the task has not ended yet
+                self.tasks.start("app:f", "And for Tuesday?", "admin-token")
+            return reply
+        self.svc.agent.run = answered_then_written_to
+        self.llm.script = [answer("Monday has a table at 8."), answer("Tuesday has one at 9.")]
         task = self.tasks.start("app:f", "A table for Monday?", "admin-token")
         await asyncio.wait_for(self.tasks.wait(task["id"]), 5)
         for _ in range(100):
@@ -117,7 +152,6 @@ class SteerTests(unittest.IsolatedAsyncioTestCase):
         follow = self.llm.requests[-1]
         self.assertIn({"role": "assistant", "content": "Monday has a table at 8."}, follow)    # it knows the thread
         self.assertEqual(follow[-1]["content"], "And for Tuesday?")
-        self.assertEqual(self.events("steer_taken", "app:f"), [])
 
     async def test_messages_from_routines_and_the_check_are_tasks_as_before_and_a_routines_run_is_not_steered(self):
         self.llm.script = [call("wait_for")]

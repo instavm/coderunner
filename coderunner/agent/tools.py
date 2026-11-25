@@ -37,6 +37,9 @@ class Tool:
     handler: Handler
     untrusted: bool = False        # output carries third-party content
     sandbox_output: bool = False   # output comes from code running in the sandbox
+    # Safe to run again when a restart came while it ran (agent/journal.py): it only reads. A call that may have
+    # changed something (a click, typing, a command, a message) is never run twice: the model is told instead.
+    replay_safe: bool = False
 
     def schema(self) -> dict:
         return {"type": "function", "function": {
@@ -76,10 +79,19 @@ def progress_line(content: str | None, said: list[str]) -> str:
     return text
 
 
+# The tools that only read: run again after a restart that came while they ran. browser_open loads a page in a
+# new tab (the browser has moved on anyway); the run's own steps change nothing outside it.
+REPLAY_SAFE = frozenset({"browser_open", "browser_search", "browser_snapshot", "browser_list", "browser_find",
+                         "browser_tabs", "browser_screenshot", "files_search", "file_read", "file_view",
+                         "file_listen", "memory_search", "schedule_list", "plan_update", "tell_owner"})
+
+
 class ToolRegistry:
     def __init__(self, svc, tools: list[Tool]):
         self.svc = svc
         self.tools = {tool.name: tool for tool in tools}
+        for tool in tools:
+            tool.replay_safe = tool.replay_safe or tool.name in REPLAY_SAFE
 
     def schemas(self) -> list[dict]:
         shown = []
@@ -929,7 +941,8 @@ def connector_tools(svc) -> list[Tool]:
             if spec.connector == "contacts":
                 ctx.known |= handles(result)
             return result
-        tools.append(Tool(spec.name, spec.description, spec.parameters, handler, untrusted=spec.untrusted))
+        tools.append(Tool(spec.name, spec.description, spec.parameters, handler, untrusted=spec.untrusted,
+                          replay_safe=not spec.write and not getattr(spec, "action", "")))
     return tools
 
 
