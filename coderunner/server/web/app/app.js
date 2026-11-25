@@ -1103,7 +1103,7 @@ function setControl(on) {
   control = on;
   $("watching").classList.toggle("on", !on);
   $("takeControl").classList.toggle("on", on);
-  $("screenWrap").classList.toggle("control", on);
+  $("screenWrap").classList.toggle("in-control", on);
   if (rfb) { rfb.viewOnly = !on; rfb.focusOnClick = on; if (on) rfb.focus(); }
   refreshNow();
   tellControl(on);
@@ -1114,6 +1114,7 @@ function tellControl(on) {
   api("/api/control", {method: "POST", body: JSON.stringify({on})}).catch(() => {});
 }
 function setExpanded(on) {
+  if (!on && control) setControl(false);     // leaving the big screen hands it back
   $("shell").classList.toggle("expanded", on);
   $("expand").textContent = on ? "⤡" : "⤢";
   $("expand").title = on ? "Shrink" : "Expand";
@@ -1123,7 +1124,7 @@ function showComputer(on) { $("shell").classList.toggle("no-computer", !on); }
 $("watching").onclick = () => setControl(false);
 $("takeControl").onclick = () => setControl(true);
 $("expand").onclick = () => setExpanded(!$("shell").classList.contains("expanded"));
-$("closeComputer").onclick = () => { setExpanded(false); showComputer(false); };
+$("closeComputer").onclick = () => { setControl(false); setExpanded(false); showComputer(false); };
 $("toggleComputer").onclick = () => showComputer($("shell").classList.contains("no-computer"));
 
 function setNow(text) { state.nowText = text; refreshNow(); }

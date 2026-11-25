@@ -239,7 +239,7 @@ a.att-file:hover { border-color: var(--accent); }
 .panel-title { font-weight: 600; }
 .panel-actions { display: flex; gap: 6px; }
 #screenWrap { position: relative; margin: 0 16px; border-radius: 12px; overflow: hidden; background: #0d0d0c; aspect-ratio: 16 / 10; border: 2px solid transparent; }
-#screenWrap.control { border-color: var(--warn); }
+#screenWrap.in-control { border-color: var(--warn); }
 #screen { position: absolute; inset: 0; }
 #screen canvas { cursor: default; }
 .screen-note { position: absolute; inset: 0; display: grid; place-items: center; color: #bdbab1; font-size: 13px; padding: 20px; text-align: center; pointer-events: none; }
