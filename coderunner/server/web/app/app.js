@@ -87,6 +87,16 @@ function notice(text) {
   noticeTimer = setTimeout(() => { box.hidden = true; }, 7000);
 }
 
+// A note the daemon keeps for a day ("Tidied the assistant's computer"): said once, not on every look.
+const NOTE_KEY = "coderunner.note";
+function noteOnce(note) {
+  let seen = "";
+  try { seen = localStorage.getItem(NOTE_KEY) || ""; } catch { /* said, and maybe again */ }
+  if (seen === String(note.at)) return;
+  try { localStorage.setItem(NOTE_KEY, String(note.at)); } catch { /* not remembered */ }
+  notice(note.text);
+}
+
 // Tool results wrap page content in <untrusted> tags for the model; the owner sees the words only.
 const plain = (s) => String(s ?? "").replace(/<\/?untrusted[^>]*>/g, "").trim();
 const trunc = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
@@ -1082,6 +1092,7 @@ async function connectScreen() {
     retry = setTimeout(connectScreen, 4000);
     return;
   }
+  if (info.note) noteOnce(info.note);
   if (!info.available || !info.running) {
     setNote(info.message || "Getting the computer ready…");
     setScreenWord(SCREEN_WORDS[info.state] || "Getting ready");
@@ -1379,6 +1390,13 @@ function modelName(id) {
 const VOICES = {apple: "Apple's on-device speech", parakeet: "Parakeet", "parakeet-coreml": "Parakeet Ultra", "qwen3-asr": "Qwen3 ASR", whisper: "Whisper"};
 const BROWSERS = {computer: "The assistant's own computer", chrome: "Your Chrome, in its own tab group", dedicated: "A Chrome window of its own"};
 
+// What the assistant's computer takes on this Mac's disk, and the size it is kept under: "6.4 GB of 8 GB".
+function diskLine(sandbox) {
+  const used = sandbox?.disk_gb, budget = sandbox?.disk_budget_gb;
+  if (typeof used !== "number") return "";
+  return budget ? `${used} GB of ${budget} GB` : `${used} GB`;
+}
+
 // The host of a model endpoint that is not on this computer, else "".
 function offHost(url) {
   try {
@@ -1407,7 +1425,8 @@ async function loadModels() {
                   ["Safety check", modelName(models.decision)], ["File search", search && search + here],
                   ["Voice", voice && voice + here],
                   ["Speed", remote?.step_s ? `${remote.step_s} s a step, measured` : ""],
-                  ["Browser", BROWSERS[status.browser?.mode] || status.browser?.mode]];
+                  ["Browser", BROWSERS[status.browser?.mode] || status.browser?.mode],
+                  ["Computer disk", diskLine(status.sandbox)]];
     const dl = $("models");
     dl.replaceChildren();
     for (const [k, v] of rows) if (v) dl.append(el("dt", "", k), el("dd", "", v));
