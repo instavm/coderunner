@@ -18,13 +18,23 @@ func emit(_ object: [String: Any]) {
     FileHandle.standardOutput.write((line + "\n").data(using: .utf8)!)
 }
 
+// After the Mac's disk filled, the accurate model failed on every image ("nilError"; the system's model compiler
+// had stopped working) until a restart, and every picture read as empty. The fast model still worked, so it
+// reads the picture when the accurate one fails.
+var accurateFailed = false
+
 func recognize(_ image: CGImage) -> String {
-    let request = VNRecognizeTextRequest()
-    request.recognitionLevel = .accurate
-    request.usesLanguageCorrection = true
-    if #available(macOS 13.0, *) { request.automaticallyDetectsLanguage = true }
-    do { try VNImageRequestHandler(cgImage: image, options: [:]).perform([request]) } catch { return "" }
-    return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+    func read(_ level: VNRequestTextRecognitionLevel) throws -> String {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = level
+        request.usesLanguageCorrection = true
+        if #available(macOS 13.0, *) { request.automaticallyDetectsLanguage = true }
+        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+    }
+    if !accurateFailed, let text = try? read(.accurate) { return text }
+    accurateFailed = true               // tried again when the helper next starts
+    return (try? read(.fast)) ?? ""
 }
 
 func image(at path: String) -> CGImage? {
