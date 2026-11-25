@@ -163,6 +163,10 @@ function buildMenu() {
 }
 
 app.whenReady().then(() => {
+  // macOS's About window (CodeRunner, About CodeRunner): the product, its maker, the version.
+  if (typeof app.setAboutPanelOptions === "function")
+    app.setAboutPanelOptions({applicationName: "CodeRunner", applicationVersion: app.getVersion(), version: "",
+                              credits: "by InstaVM", copyright: "© 2026 InstaVM"});
   const token = adminToken();
   // The admin token rides only on requests to the daemon, websockets included (the computer's screen).
   session.defaultSession.webRequest.onBeforeSendHeaders(

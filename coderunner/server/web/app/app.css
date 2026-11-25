@@ -33,6 +33,9 @@ button { font: inherit; color: inherit; cursor: pointer; transition: background 
 .side-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 14px 10px; -webkit-app-region: drag; padding-top: 40px; }
 .side-head button { -webkit-app-region: no-drag; }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 600; letter-spacing: -0.01em; }
+.brand-by { font-weight: 400; font-size: 12px; color: var(--muted); margin-left: -3px; }
+.setup-brand { font-size: 12.5px; color: var(--muted); margin-top: 12px; }
+.setup-brand + h1 { margin-top: 4px; }
 .logo { flex: none; width: 22px; height: 22px; border-radius: 7px; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 8l4 4-4 4M13 16h4'/%3E%3C/svg%3E") center / 74% no-repeat, var(--fill); }
 .icon-btn { border: 0; background: none; width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; line-height: 1; flex: none; }
 .icon-btn:hover { background: var(--surface-2); }

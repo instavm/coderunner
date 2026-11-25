@@ -1324,7 +1324,7 @@ function setupCard(title, lead) {
   state.setup = true;
   const card = el("section", "setup"), logo = el("span", "logo setup-logo");
   logo.setAttribute("aria-hidden", "true");
-  card.append(logo, el("h1", "", title));
+  card.append(logo, el("div", "setup-brand", "CodeRunner by InstaVM"), el("h1", "", title));
   if (lead) card.appendChild(el("p", "setup-lead", lead));
   $("thread").replaceChildren(card);
   $("composer").hidden = true;
