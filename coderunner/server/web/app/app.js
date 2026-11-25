@@ -69,6 +69,7 @@ function recover() {
   link.since = 0;
   if (state.setup) { checkSetup(); return; }
   loadModels();
+  loadFixes();
   pollApprovals();
   if (state.conversation && state.conversation !== "check") openConversation(state.conversation, $("title").textContent, true);
   else loadConversations();
@@ -1286,6 +1287,42 @@ async function loadModels() {
   } catch { /* shown once the daemon answers */ }
 }
 
+// Something on this Mac that one administrator command fixes: one calm line and one button. macOS asks for the
+// password itself; the app only says how it went.
+const fixShown = new Map();       // id -> {fix, result, said}: how the last try went, while it is on screen
+const FIX_SAID = {fixed: "Fixed.", not_fixed: "Not fixed.", cancelled: "Not done."};
+async function loadFixes() {
+  let found = [];
+  try { found = (await api("/api/fixes")).fixes || []; } catch { return; }
+  const box = $("fixes");
+  for (const fix of found) if (!fixShown.has(fix.id)) fixShown.set(fix.id, {fix, result: "", said: ""});
+  for (const [id, shown] of fixShown) if (!shown.said && !found.some((f) => f.id === id)) fixShown.delete(id);
+  box.replaceChildren(...[...fixShown.values()].map(fixRow));
+  box.hidden = !fixShown.size;
+}
+function fixRow(shown) {
+  const row = el("div", "fix"), words = el("span", "fix-words", shown.said || shown.fix.title);
+  row.append(words);
+  if (shown.result === "fixed") return row;
+  const go = el("button", "btn primary fix-go", "Fix");
+  go.type = "button";
+  go.onclick = async () => {
+    go.disabled = true; go.textContent = "Fixing…";
+    let result;
+    try { result = await api(`/api/fixes/${encodeURIComponent(shown.fix.id)}`, {method: "POST", body: "{}"}); }
+    catch { go.disabled = false; go.textContent = "Fix"; return; }
+    const said = result.result === "busy" ? "" : result.message || FIX_SAID[result.result] || "";
+    Object.assign(shown, {result: result.result, said});
+    // Fixed: said, then the line goes. Cancelled in macOS's dialog: said plainly, then the offer again.
+    if (result.result === "fixed") setTimeout(() => { fixShown.delete(shown.fix.id); loadFixes(); }, 6000);
+    if (result.result === "cancelled") setTimeout(() => { if (shown.said === said) { shown.said = ""; loadFixes(); } }, 5000);
+    loadFixes();
+  };
+  row.append(go);
+  return row;
+}
+setInterval(loadFixes, 5 * 60 * 1000);
+
 // Remote mode, under the models: on with its warning and the way back, or the offer to turn it on with a key.
 async function loadRemote() {
   const box = $("remoteBox");
@@ -2031,6 +2068,7 @@ setInterval(pollApprovals, 2500);
 if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
 pollApprovals();
 loadModels();
+loadFixes();
 checkSetup().then((firstRun) => { if (!firstRun) openConversation(null); });
 listen();
 connectScreen();

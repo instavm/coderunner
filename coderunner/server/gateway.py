@@ -816,6 +816,20 @@ def admin_app(svc, daemon) -> Starlette:
         with contextlib.suppress(Exception):
             await websocket.close()
 
+    async def fixes(request: Request):
+        """Problems on this Mac that one administrator command fixes (core/macfix.py), as they are now."""
+        from ..core import macfix
+        return JSONResponse({"fixes": [{"id": fix.id, "title": fix.title} for fix in macfix.detected()]})
+
+    async def run_fix(request: Request):
+        """The owner pressed Fix in the app: macOS asks for their password itself, then the fix is checked. Only
+        the fixed list's ids; the assistant has no way to call this."""
+        from ..core import macfix
+        fix = macfix.find(request.path_params["id"])
+        if fix is None:
+            return JSONResponse({"error": "No such fix."}, status_code=404)
+        return JSONResponse(await macfix.run(fix, audit=svc.audit))
+
     async def computer_terminal(websocket: WebSocket):
         """The owner's terminal on the VM (its /v1/terminal PTY), relayed for the app's Terminal tab: bytes both
         ways, and the app's resize messages as text. Each key the owner sends is marked (svc.terminal), so the
@@ -920,6 +934,8 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/computer", computer, methods=["GET", "POST"]),
         Route("/api/control", control, methods=["GET", "POST"]),
         Route("/api/focus", focus, methods=["POST"]),
+        Route("/api/fixes", fixes, methods=["GET"]),
+        Route("/api/fixes/{id}", run_fix, methods=["POST"]),
         WebSocketRoute("/api/computer/screen", computer_screen),
         WebSocketRoute("/api/computer/terminal", computer_terminal),
     ])

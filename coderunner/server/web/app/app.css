@@ -274,6 +274,12 @@ a.att-file:hover { border-color: var(--accent); }
 #screenWrap.terminal #screen { visibility: hidden; }
 #screenWrap.terminal .screen-note, #screenWrap.terminal .control { display: none; }
 .panel-section { padding: 14px 16px 0; }
+/* A problem on this Mac with its fix: one quiet line and one button. */
+.fixes[hidden] { display: none; }
+.fix { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
+.fix + .fix { margin-top: 8px; }
+.fix-words { flex: 1; min-width: 0; }
+.fix-go { flex: none; padding: 3px 12px; font-size: 12.5px; }
 .now-section { padding-top: 10px; }
 .now-section:has(#nowLine[hidden]) { display: none; }
 .models-fold { padding-bottom: 16px; }
