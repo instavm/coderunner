@@ -26,6 +26,14 @@ install_container_tool() {
         echo "❌ Failed to download $download_url"
         exit 1
     fi
+    # Without a terminal (an agent, an IDE task, a `!` command) sudo cannot ask for the password and fails
+    # at once. Open the signed package in the macOS Installer instead, which asks for it in its own window.
+    if [ ! -t 0 ] && ! sudo -n true 2>/dev/null; then
+        open "$CONTAINER_INSTALLER"
+        echo "The Apple 'container' $CONTAINER_VERSION installer is open in a window: finish it (it asks for your"
+        echo "password there), then run ./install.sh again. The package is $(pwd)/$CONTAINER_INSTALLER."
+        exit 1
+    fi
     if ! sudo installer -pkg "$CONTAINER_INSTALLER" -target /; then
         rm -f "$CONTAINER_INSTALLER"
         echo "❌ Failed to install Apple 'container'."
@@ -323,8 +331,9 @@ desired_config() {
 }
 
 # The builder VM kept ~13 GB of disk and 2 GB of memory after building the image; on an 18 GB Mac with a
-# full disk the build itself failed while loading the result.
-BUILD_SPACE_GB=20
+# full disk the build itself failed while loading the result. With 20 GB free the lite build also ran out of
+# space while saving the exported image ("No space left on device" after "sending tarball"); 26 GB has room.
+BUILD_SPACE_GB=26
 
 check_build_space() {
     local free_gb
