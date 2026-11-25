@@ -726,6 +726,44 @@ their own cache, `--slot-save-path` (so the instructions are restored rather tha
 separate server would each remove most of the remaining re-reads. Until then the room per task stays at half
 the context, since a larger conversation makes every re-read slower.
 
+### World and everyday tasks: Bonsai 2, Bonsai 2.5 and Claude Haiku 5.5 (November 24-25)
+
+Two suites of real-site tasks outside India: `world` (13: homes and rents in San Francisco, US tax, streaming
+prices, London, German, French, Spanish, Japanese and Brazilian sites in their own languages) and `everyday` (14:
+bookings taken to the details page, cancellations, plans, prices, routines). One run each, 30 minutes a task, on
+the owner's server for Bonsai and through the API for Haiku. Times and steps below are at the 30-minute mark.
+
+| run | world | everyday | together |
+|---|---|---|---|
+| Claude Haiku 5.5 | 6 of 13, 107 steps, 13 min | 6 of 14, 90 steps, 8 min | 12 of 27 |
+| Bonsai 2 27B, before the fixes | 4 of 13, 665 steps, 182 min | not run | |
+| Bonsai 2 27B, with the fixes | 7 of 13, 591 steps, 172 min | 7 of 14, 352 steps, 122 min | 14 of 27 |
+| Bonsai 2.5 27B, same code | 9 of 13, 527 steps, 149 min | 9 of 14, 344 steps, 140 min | 18 of 27 |
+
+A site turning the browser away counts as a fail here: one task in each Bonsai 2.5 suite (sflistings, jobs),
+one in Bonsai 2's world (sfmarket). Leaving those out, together with passportfees (Bonsai 2's run started it
+during a server switch and took no step), Bonsai 2.5 passed 16 of 23 and Bonsai 2 12 of 23. Bonsai 2.5 gained
+ustax, ave, brasil, dentist, table and konzert, and lost kaffee (no German in the answer) and gymcancel (its one
+link was not a page it had opened). With one run each, a task or two either way is within the noise.
+
+Haiku takes 4.5 to 5.5 s a step and Bonsai 16 to 18; Haiku also needs about five times fewer steps. On
+Bonsai 2 a step was about 11 s of model, 5 s of browser and under a second of judging, so fewer steps is the
+larger saving. Bonsai 2.5 writes at the same 32 tokens a second as Bonsai 2; its gain is fewer steps per task
+in `world` (41 against 45). Haiku's misses were links to pages it had not opened (6 tasks) and answers not in
+the site's language (5). It ran just before those two became standing rules in the system prompt, which every
+Bonsai run with the fixes had, so this table understates it.
+
+What changed between the two Bonsai 2 `world` runs (4 to 7 of 13): the step judge is not asked about plain
+links, a batch of browser steps stops at the first that changes the page, old results are trimmed in one go
+down to a low mark, a task tries another site and gives the part it found before saying it cannot be done, and
+answers follow the request's language and link each source. The language check was also loosened (common
+words in any order), so part of the gain is the check's.
+
+Still failing on both Bonsai versions: bayrent (the shares were not worked out with `run_python`), bahn and
+onibus (the answer not in the site's language), dinners (prices without a currency) and preiswecker (no routine
+set up). A run of `world` with Fara 1.5 4B driving the browser beside Bonsai 2.5 stopped after its first task
+when the disk filled; it is not counted.
+
 ## Not yet validated
 
 * CodeRunner's own Ollama on Linux: the archives' checksums are the release's own, their layout (`bin/ollama`)
