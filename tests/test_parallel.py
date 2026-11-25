@@ -129,6 +129,18 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         self.svc.config.set("agent.parallel_tasks", 1)
         self.assertEqual(self.tasks.limit(), 1)
 
+    async def test_the_checks_threads_do_not_push_the_owners_out_of_the_list(self):
+        add = lambda i, conversation, created: self.svc.store.execute(  # noqa: E731
+            "INSERT INTO tasks(id, conversation, prompt, status, reply, created, finished) "
+            "VALUES (?, ?, 'x', 'done', '', ?, 1)", (f"t{i}", conversation, created))
+        add(0, "app:mine", 1)
+        add(1, "app:check_like", 2)                             # an underscore is not a wildcard
+        for i in range(5):
+            add(10 + i, f"app:check-world-{i}", 10 + i)
+        listed = [c["conversation"] for c in self.tasks.conversations(limit=3)]
+        self.assertEqual(listed, ["app:check-world-4", "app:check-world-3", "app:check-world-2",
+                                  "app:check_like", "app:mine"])
+
     async def test_a_task_left_waiting_by_a_restart_is_closed_like_a_running_one(self):
         self.svc.store.execute("INSERT INTO tasks(id, conversation, prompt, status, reply, created, finished) "
                                "VALUES ('q1', 'app:old', 'x', 'queued', '', 1, NULL)")

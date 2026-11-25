@@ -415,14 +415,23 @@ class Tasks:
                 row["waiting"] = bool(asked)
         return rows
 
+    CHECKS = "app:check-"
+
     def _conversations(self, prefix: str, limit: int) -> list[dict]:
-        return self.store.query(
-            "SELECT conversation, MIN(created) AS created, MAX(created) AS updated, "
-            "(SELECT prompt FROM tasks t2 WHERE t2.conversation = t.conversation ORDER BY created LIMIT 1) AS title, "
-            "(SELECT status FROM tasks t3 WHERE t3.conversation = t.conversation ORDER BY created DESC LIMIT 1) "
-            "AS status, (SELECT id FROM tasks t4 WHERE t4.conversation = t.conversation ORDER BY created DESC LIMIT 1) "
-            "AS task FROM tasks t WHERE conversation LIKE ? GROUP BY conversation ORDER BY updated DESC LIMIT ?",
-            (prefix + "%", limit))
+        # The check's own threads have their own share of the list: after a few long checks they filled all of it
+        # and the owner's threads were gone from the app.
+        select = ("SELECT conversation, MIN(created) AS created, MAX(created) AS updated, "
+                  "(SELECT prompt FROM tasks t2 WHERE t2.conversation = t.conversation ORDER BY created LIMIT 1) AS title, "
+                  "(SELECT status FROM tasks t3 WHERE t3.conversation = t.conversation ORDER BY created DESC LIMIT 1) "
+                  "AS status, (SELECT id FROM tasks t4 WHERE t4.conversation = t.conversation ORDER BY created DESC "
+                  "LIMIT 1) AS task FROM tasks t WHERE conversation LIKE ? ESCAPE '\\' {} "
+                  "GROUP BY conversation ORDER BY updated DESC LIMIT ?")
+        like = lambda text: text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"  # noqa: E731
+        own = self.store.query(select.format("AND conversation NOT LIKE ? ESCAPE '\\'"),
+                               (like(prefix), like(self.CHECKS), limit))
+        checks = self.store.query(select.format(""), (like(self.CHECKS), limit)) \
+            if self.CHECKS.startswith(prefix) else []
+        return sorted(own + checks, key=lambda row: row["updated"], reverse=True)
 
     def tasks(self, conversation: str) -> list[dict]:
         return self.store.query("SELECT * FROM tasks WHERE conversation = ? ORDER BY created", (conversation,))
