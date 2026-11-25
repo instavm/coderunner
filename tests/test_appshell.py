@@ -44,11 +44,19 @@ class AppShellTests(unittest.TestCase):
         main, preload = ((appshell.app_dir() / name).read_text() for name in ("main.js", "preload.js"))
         self.assertIn('preload: path.join(__dirname, "preload.js")', main)
         self.assertIn("contextIsolation: true, nodeIntegration: false, sandbox: true", main)
-        self.assertEqual(re.findall(r'ipcMain\.(?:handle|on)\("([\w-]+)"', main), ["pick-folder", "start-assistant"])
-        self.assertEqual(re.findall(r'ipcRenderer\.\w+\("([\w-]+)"', preload), ["pick-folder", "start-assistant"])
+        asks = ["pick-folder", "start-assistant", "open-thread", "open-app", "open-computer", "hide-panel", "task-started",
+                "thread-open"]
+        self.assertEqual(re.findall(r'ipcMain\.(?:handle|on)\("([\w-]+)"', main), asks)
+        self.assertEqual(re.findall(r'ipcRenderer\.(?:invoke|send)\("([\w-]+)"', preload), asks)
+        # What the shell says to the pages: which thread to open, and that a panel was shown.
+        self.assertEqual(re.findall(r'ipcRenderer\.on\("([\w-]+)"', preload), ["show-thread", "show-computer", "panel-shown"])
         self.assertEqual(re.findall(r'exposeInMainWorld\("(\w+)"', preload), ["coderunnerShell"])
         self.assertIn("if (asker !== ORIGIN) return null;", main)        # only the daemon's own page is answered
         self.assertIn("return asker === ORIGIN ? startDaemon() : false;", main)
+        # The menu bar's asks are heard only from the daemon's own pages, too.
+        for ask in asks[2:]:
+            self.assertRegex(main, r'ipcMain\.on\("%s", \(event[^)]*\) => \{\s*(?:if \(fromDaemon\(event\)|const win = .*\n\s+if '
+                                   r'\(fromDaemon\(event\)|if \(!fromDaemon\(event\))' % ask)
 
     @unittest.skipIf(shutil.which("node") is None, "node not installed")
     def test_the_shell_lets_the_daemons_page_hear_the_microphone_and_nothing_else(self):

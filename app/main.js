@@ -6,8 +6,13 @@
 //   - denies the page every permission except notifications;
 //   - shows the system's folder dialog when the page asks where to keep the models (preload.js);
 //   - brings the daemon back when it dies while the app is open, unless the owner stopped it (`coderunner down`
-//     leaves a mark): then the page offers "Start it", which asks this shell.
-const {app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, session, shell} = require("electron");
+//     leaves a mark): then the page offers "Start it", which asks this shell;
+//   - keeps a menu bar icon (macOS) that says whether tasks run, need the owner or finished unseen, with a small
+//     popover of the latest threads and a quick-ask window on a global shortcut (both pages served by the daemon,
+//     tray.html and ask.html), and tells the owner when a thread they are not looking at finishes or needs them.
+//     Closing the window on a Mac leaves the app in the menu bar; Cmd+Q quits.
+const {app, BrowserWindow, Menu, Notification, Tray, dialog, globalShortcut, ipcMain, nativeImage, nativeTheme, screen,
+       session, shell} = require("electron");
 const {execFile} = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -33,6 +38,13 @@ function adminToken() {
 
 const ADDRESS = daemonAddress();
 const ORIGIN = `http://${ADDRESS}`;
+const MAC = process.platform === "darwin";
+
+// The token, read again until there is one: on a first install the daemon writes it after the app has opened.
+let token = "";
+const currentToken = () => token || (token = adminToken());
+// What the shell itself asks the daemon (the menu bar's state), with the same token the page's requests get.
+const daemonHeaders = () => (currentToken() ? {Authorization: `Bearer ${currentToken()}`} : {});
 
 const escapeHtml = (text) => String(text).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 
@@ -100,18 +112,11 @@ function watchDaemon() {
   }, 5000);
 }
 
-function createWindow() {
-  const win = new BrowserWindow({
-    width: 1152, height: 720, minWidth: 760, minHeight: 520, title: "CodeRunner", show: false,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? "#101114" : "#f6f6f7",
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
-    trafficLightPosition: {x: 16, y: 14},
-    webPreferences: {contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: true,
-                     preload: path.join(__dirname, "preload.js")},
-  });
-  win.once("ready-to-show", () => win.show());
+const PAGE_PREFERENCES = {contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: true,
+                          preload: path.join(__dirname, "preload.js")};
 
-  // Links to anywhere but the daemon open in the default browser.
+// Links to anywhere but the daemon open in the default browser, from every window of the app.
+function keepToDaemon(win) {
   win.webContents.setWindowOpenHandler(({url}) => {
     if (/^https?:\/\//.test(url) && !url.startsWith(ORIGIN)) shell.openExternal(url);
     return {action: "deny"};
@@ -122,6 +127,29 @@ function createWindow() {
       if (/^https?:\/\//.test(url)) shell.openExternal(url);
     }
   });
+}
+
+// The main window, and the thread it shows (the page says which: thread-open). `conversation`: a thread to open
+// once the page is there.
+let mainWindow = null;
+let viewed = "";
+// `open`: what to show once the page is there, as the address's hash ("c=<id>", "computer=expanded").
+function createWindow(open = "") {
+  const win = new BrowserWindow({
+    width: 1152, height: 720, minWidth: 760, minHeight: 520, title: "CodeRunner", show: false,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#101114" : "#f6f6f7",
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    trafficLightPosition: {x: 16, y: 14},
+    webPreferences: PAGE_PREFERENCES,
+  });
+  win.once("ready-to-show", () => win.show());
+  win.on("focus", () => seen(viewed));
+  win.on("closed", () => {
+    if (mainWindow === win) { mainWindow = null; viewed = ""; }
+    if (!MAC) app.quit();           // elsewhere the app is its window, as before
+  });
+  keepToDaemon(win);
+  win.pending = open;
 
   let shown = "";
   const show = (title, message) => {
@@ -129,8 +157,11 @@ function createWindow() {
     shown = title + message;
   };
   const load = async () => {
-    if (await daemonUp()) {
-      win.loadURL(`${ORIGIN}/app/`);
+    const up = await daemonUp();
+    if (win.isDestroyed()) return;              // closed while the daemon was starting
+    if (up) {
+      win.loadURL(`${ORIGIN}/app/` + (win.pending ? `#${win.pending}` : ""));
+      win.pending = "";
       return;
     }
     if (!startDaemon()) {
@@ -146,12 +177,39 @@ function createWindow() {
   return win;
 }
 
+// Shows the main window, on a thread when one is given, or with the assistant's computer as large as the window
+// (computer): a window still opening is given it as it loads (#c=<id>, #computer=expanded), a page already
+// there is told (show-thread, show-computer).
+function showMain(conversation = "", computer = false) {
+  const open = computer ? "computer=expanded" : conversation ? `c=${encodeURIComponent(conversation)}` : "";
+  const tell = (contents) => (computer ? contents.send("show-computer") : contents.send("show-thread", conversation));
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = createWindow(open);
+  } else {
+    const contents = mainWindow.webContents;
+    if (open) {
+      if (!contents.getURL().startsWith(`${ORIGIN}/app/`)) mainWindow.pending = open;   // the daemon is starting
+      else if (contents.isLoading()) contents.once("did-finish-load", () => tell(contents));
+      else tell(contents);
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
+  if (MAC) app.focus({steal: true});
+  hidePanels();
+}
+
 function buildMenu() {
   const template = [
     ...(process.platform === "darwin" ? [{role: "appMenu"}] : []),
     {label: "File", submenu: [
       {label: "New Task", accelerator: "CmdOrCtrl+N",
-       click: (_, win) => win?.webContents.executeJavaScript("document.getElementById('newTask')?.click()")},
+       click: () => {
+         const open = mainWindow && !mainWindow.isDestroyed();
+         showMain();
+         if (open) mainWindow.webContents.executeJavaScript("document.getElementById('newTask')?.click()");
+       }},
       {type: "separator"}, process.platform === "darwin" ? {role: "close"} : {role: "quit"},
     ]},
     {role: "editMenu"},
@@ -162,17 +220,283 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+// ---- the menu bar icon -------------------------------------------------------------------------------------
+
+// The >_ mark drawn for the menu bar (app/tray, @1x and @2x): a template image the system tints for a light or
+// dark bar, the same with a dot (working, or finished unseen), and in colour for "needs you".
+const trayImage = (name) => {
+  const image = nativeImage.createFromPath(path.join(__dirname, "tray", `${name}.png`));
+  if (name.endsWith("Template")) image.setTemplateImage(true);
+  return image;
+};
+let tray = null;
+// The latest threads as the daemon lists them (/api/tray), how many run and how many wait for the owner, and
+// those that finished while the owner was not looking at them (a dot until the popover or that thread opens).
+const trayState = {ready: false, at: 0, running: 0, waiting: 0, computer: false, threads: new Map(), unseen: new Set(),
+                   image: ""};
+
+function drawTray() {
+  if (!tray || tray.isDestroyed()) return;
+  const {running, waiting, unseen} = trayState;
+  if (MAC) {
+    // Needs you is the one state meant to catch the eye: the mark in the bar's own colour with an amber dot.
+    const name = waiting ? (nativeTheme.shouldUseDarkColors ? "trayNeedsYouDark" : "trayNeedsYou")
+      : running || unseen.size ? "trayDotTemplate" : "trayTemplate";
+    if (name !== trayState.image) { tray.setImage(trayImage(name)); trayState.image = name; }
+    tray.setTitle(running >= 2 ? String(running) : "", {fontType: "monospacedDigit"});
+  }
+  tray.setToolTip(waiting ? "CodeRunner needs you" : running ? `CodeRunner: ${running} working` : "CodeRunner");
+}
+
+// The owner is looking at this thread: the main window shows it and has the focus.
+const looking = (conversation) => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() &&
+                                         mainWindow.isFocused() && viewed === conversation);
+
+function seen(conversation) {
+  if (conversation && trayState.unseen.delete(conversation)) drawTray();
+}
+
+const RUNNING = ["running", "queued"];
+async function refreshTray() {
+  let data;
+  try {
+    const response = await fetch(`${ORIGIN}/api/tray`, {headers: daemonHeaders(), signal: AbortSignal.timeout(4000)});
+    if (!response.ok) return;
+    data = await response.json();
+  } catch { return; }       // the daemon is away: the icon keeps what it said
+  const before = trayState.threads, now = new Map();
+  for (const thread of data.threads || []) {
+    now.set(thread.conversation, thread);
+    if (!trayState.ready) continue;               // the first look only learns where things stand
+    // A thread not seen before that ended, or asks, since the last look ran in between.
+    const was = before.get(thread.conversation) ||
+      ((thread.finished || 0) * 1000 > trayState.at || thread.waiting ? {status: "running", waiting: false, task: thread.task} : null);
+    if (!was || looking(thread.conversation)) continue;
+    const name = thread.title || "CodeRunner";
+    if (thread.waiting && !was.waiting) notify(name, "Needs you", thread.conversation);
+    if (["done", "failed"].includes(thread.status) && (RUNNING.includes(was.status) || was.task !== thread.task)) {
+      trayState.unseen.add(thread.conversation);
+      notify(name, thread.status === "failed" ? "Failed" : thread.reply || "Done", thread.conversation);
+    }
+  }
+  Object.assign(trayState, {threads: now, ready: true, at: Date.now(), running: data.running || 0, waiting: data.waiting || 0,
+                            computer: Boolean(data.computer)});
+  drawTray();
+  sizePopover();
+}
+
+// Looked again just after anything that changes what the icon says, and every few seconds while a task runs
+// (slowly when none does), in case the event stream is down.
+let refreshTimer = null;
+function refreshSoon(delay = 250) {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(async () => {
+    await refreshTray();
+    refreshSoon(trayState.running || trayState.waiting ? 4000 : 15000);
+  }, delay);
+}
+
+const CHANGES = ["started", "queued", "resumed", "paused", "done", "failed", "cancelled", "title"];
+async function followEvents() {
+  for (;;) {
+    try {
+      const response = await fetch(`${ORIGIN}/api/events?since=-1`, {headers: daemonHeaders()});
+      if (response.ok && response.body) {
+        refreshSoon();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for await (const chunk of response.body) {
+          buffer += decoder.decode(chunk, {stream: true});
+          for (let end = buffer.indexOf("\n\n"); end >= 0; end = buffer.indexOf("\n\n")) {
+            const data = buffer.slice(0, end).split("\n").filter((line) => line.startsWith("data:"))
+              .map((line) => line.slice(5).trim()).join("\n");
+            buffer = buffer.slice(end + 2);
+            let e = null;
+            try { e = data ? JSON.parse(data) : null; } catch { /* a keep-alive, or not an event */ }
+            const event = e?.type === "activity" ? String(e.event || "") : "";
+            if (e && (CHANGES.includes(e.type) || event.startsWith("approval.") ||
+                      (!trayState.computer && /^(browser|driver)\./.test(event))))     // the computer got busy
+              refreshSoon();
+          }
+        }
+      }
+    } catch { /* the daemon is away: tried again below */ }
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+}
+
+// A notification for a thread the owner is not looking at; a click opens that thread.
+const notes = new Set();          // kept, or a notification's click is lost when it is collected
+function notify(title, body, conversation) {
+  if (!Notification.isSupported()) return;
+  const note = new Notification({title, body: String(body).slice(0, 160)});
+  notes.add(note);
+  if (notes.size > 20) notes.delete(notes.values().next().value);
+  note.on("click", () => { notes.delete(note); showMain(conversation); });
+  note.on("close", () => notes.delete(note));
+  note.show();
+}
+
+function trayMenu() {
+  return Menu.buildFromTemplate([
+    {label: "Open CodeRunner", click: () => showMain()},
+    {label: "Quick Ask", click: () => toggleAsk()},
+    {type: "separator"},
+    {label: "Quit CodeRunner", role: "quit"},
+  ]);
+}
+
+function createTray() {
+  try {
+    if (MAC) {
+      tray = new Tray(trayImage("trayTemplate"));
+      trayState.image = "trayTemplate";
+      tray.on("click", () => togglePopover());
+      tray.on("right-click", () => tray.popUpContextMenu(trayMenu()));
+    } else {                      // elsewhere: the app's icon with a menu
+      tray = new Tray(nativeImage.createFromPath(path.join(__dirname, "icon.png")).resize({width: 22, height: 22}));
+      tray.setContextMenu(trayMenu());
+    }
+    tray.setToolTip("CodeRunner");
+  } catch { tray = null; }        // no menu bar or tray here
+}
+
+// ---- the popover and the quick ask -------------------------------------------------------------------------
+
+// A small window over the others: frameless and rounded; on a Mac a panel, which takes the keyboard without
+// bringing the app forward, with the system's material behind the page. Gone when it loses the focus.
+// clear: a see-through window the page draws itself into, its rounded bar and soft shadow (the quick ask).
+function panelWindow(width, height, clear = false) {
+  const look = clear ? {transparent: true, backgroundColor: "#00000000", hasShadow: false}
+    : MAC ? {vibrancy: "popover", visualEffectState: "active", backgroundColor: "#00000000", roundedCorners: true, hasShadow: true}
+      : {backgroundColor: nativeTheme.shouldUseDarkColors ? "#222120" : "#ffffff"};
+  const win = new BrowserWindow({
+    width, height, show: false, frame: false, resizable: false, minimizable: false, maximizable: false,
+    fullscreenable: false, skipTaskbar: true, alwaysOnTop: true, title: "CodeRunner",
+    ...(MAC ? {type: "panel"} : {}), ...look,
+    webPreferences: PAGE_PREFERENCES,
+  });
+  keepToDaemon(win);
+  win.on("blur", () => {
+    if (win.webContents.isDevToolsOpened()) return;
+    win.hide();
+    win.hiddenAt = Date.now();
+  });
+  win.webContents.on("did-fail-load", () => { win.failed = true; });
+  return win;
+}
+
+// One quiet line where a panel's page would be, while the daemon does not answer.
+function panelNote(text) {
+  const html = `<!doctype html><meta charset="utf-8"><title>CodeRunner</title><style>
+  :root { color-scheme: light dark; --text: #75736d; }
+  @media (prefers-color-scheme: dark) { :root { --text: #9c9a94; } }
+  body { font: 13px -apple-system, BlinkMacSystemFont, system-ui, sans-serif; margin: 0; height: 100vh;
+    display: grid; place-items: center; color: var(--text); background: transparent; }
+  </style><body>${escapeHtml(text)}</body>`;
+  return "data:text/html;charset=utf-8," + encodeURIComponent(html);
+}
+
+async function loadPanel(win, page) {
+  if (win.webContents.getURL().startsWith(`${ORIGIN}/app/${page}`) && !win.failed) return;
+  win.failed = false;
+  const up = await daemonUp();
+  try { await win.loadURL(up ? `${ORIGIN}/app/${page}` : panelNote("The assistant is not running")); }
+  catch { win.failed = true; }
+  if (!up) win.failed = true;     // asked again next time
+}
+
+// Taller while the assistant's computer is busy: the popover shows its screen live above the threads.
+let popover = null;
+const POPOVER = {width: 360, height: 420, withScreen: 640};
+function sizePopover() {
+  if (!popover || popover.isDestroyed()) return;
+  const height = trayState.computer ? POPOVER.withScreen : POPOVER.height;
+  if (popover.getSize()[1] !== height) popover.setSize(POPOVER.width, height);
+}
+
+async function togglePopover() {
+  if (!popover || popover.isDestroyed()) popover = panelWindow(POPOVER.width, POPOVER.height);
+  if (popover.isVisible()) { popover.hide(); return; }
+  if (Date.now() - (popover.hiddenAt || 0) < 300) return;      // the same click took its focus and hid it
+  await loadPanel(popover, "tray.html");
+  sizePopover();
+  placeUnderTray(popover);
+  popover.show();
+  popover.focus();
+  popover.webContents.send("panel-shown");
+  if (trayState.unseen.size) { trayState.unseen.clear(); drawTray(); }
+}
+
+function placeUnderTray(win) {
+  const [width] = win.getSize();
+  const icon = tray && !tray.isDestroyed() ? tray.getBounds() : {width: 0};
+  const at = icon.width ? {x: icon.x + icon.width / 2, y: icon.y + icon.height} : screen.getCursorScreenPoint();
+  const area = screen.getDisplayNearestPoint({x: Math.round(at.x), y: Math.round(at.y)}).workArea;
+  const x = Math.min(Math.max(Math.round(at.x - width / 2), area.x + 8), area.x + area.width - width - 8);
+  win.setPosition(x, Math.max(Math.round(at.y + 6), area.y + 6));
+}
+
+// The quick ask: a 680 x 64 bar, drawn by its page with room around it for its shadow.
+const ASK = {bar: 680, height: 64, room: 32};
+let asker = null;
+async function toggleAsk() {
+  if (!asker || asker.isDestroyed()) {
+    asker = panelWindow(ASK.bar + 2 * ASK.room, ASK.height + 2 * ASK.room, true);
+    if (MAC) asker.setVisibleOnAllWorkspaces(true, {visibleOnFullScreen: true, skipTransformProcessType: true});
+  }
+  if (asker.isVisible()) { asker.hide(); return; }
+  await loadPanel(asker, "ask.html");
+  const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+  const [width] = asker.getSize();
+  asker.setPosition(Math.round(area.x + (area.width - width) / 2), Math.round(area.y + area.height * 0.24 - ASK.room));
+  asker.show();
+  asker.focus();
+  asker.webContents.send("panel-shown");
+}
+
+function hidePanels() {
+  for (const win of [popover, asker]) if (win && !win.isDestroyed() && win.isVisible()) win.hide();
+}
+
+// The app's own settings (userData/settings.json). quickAskShortcut: Alt+Space unless the owner sets another, ""
+// for none; written with its default the first time, so there is a line to change.
+function settings() {
+  const file = path.join(app.getPath("userData"), "settings.json");
+  let saved = {};
+  try { saved = JSON.parse(fs.readFileSync(file, "utf8")) || {}; }
+  catch (error) { if (error.code !== "ENOENT") return {quickAskShortcut: "Alt+Space"}; }   // not JSON: left as it is
+  if (!("quickAskShortcut" in saved)) {
+    saved = {...saved, quickAskShortcut: "Alt+Space"};
+    try { fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, JSON.stringify(saved, null, 2) + "\n"); }
+    catch { /* used for this run only */ }
+  }
+  return saved;
+}
+
+// A shortcut another app holds, or one Electron does not know, leaves the quick ask without one.
+function registerQuickAsk() {
+  const shortcut = settings().quickAskShortcut;
+  if (typeof shortcut !== "string" || !shortcut) return;
+  try { globalShortcut.register(shortcut, () => toggleAsk()); } catch { /* none */ }
+}
+
+// One app at a time: opening it again shows the window it already has (it stays in the menu bar on a Mac).
+const primary = app.requestSingleInstanceLock();
+if (!primary) app.quit();
+app.on("second-instance", () => showMain());
+
 app.whenReady().then(() => {
+  if (!primary) return;
   // macOS's About window (CodeRunner, About CodeRunner): the product, its maker, the version.
   if (typeof app.setAboutPanelOptions === "function")
     app.setAboutPanelOptions({applicationName: "CodeRunner", applicationVersion: app.getVersion(), version: "",
                               credits: "by InstaVM", copyright: "© 2026 InstaVM"});
-  const token = adminToken();
   // The admin token rides only on requests to the daemon, websockets included (the computer's screen).
   session.defaultSession.webRequest.onBeforeSendHeaders(
     {urls: [`http://${ADDRESS}/*`, `ws://${ADDRESS}/*`]},
     (details, callback) => {
-      if (token) details.requestHeaders["Authorization"] = `Bearer ${token}`;
+      if (currentToken()) details.requestHeaders["Authorization"] = `Bearer ${currentToken()}`;
       callback({requestHeaders: details.requestHeaders});
     });
   // The page may show notifications and, for dictation, hear the microphone: sound only, never the camera,
@@ -207,10 +531,35 @@ app.whenReady().then(() => {
     try { asker = new URL(event.senderFrame.url).origin; } catch { /* refused */ }
     return asker === ORIGIN ? startDaemon() : false;
   });
+  // The popover's and the quick ask's: open a thread, or the app; put the panel away; a task was started (the
+  // icon looks again at once). The main page's: which thread it shows. Only the daemon's own pages are heard.
+  const fromDaemon = (event) => { try { return new URL(event.senderFrame.url).origin === ORIGIN; } catch { return false; } };
+  ipcMain.on("open-thread", (event, conversation) => { if (fromDaemon(event)) showMain(String(conversation || "")); });
+  ipcMain.on("open-app", (event) => { if (fromDaemon(event)) showMain(); });
+  ipcMain.on("open-computer", (event) => { if (fromDaemon(event)) showMain("", true); });
+  ipcMain.on("hide-panel", (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (fromDaemon(event) && win && win !== mainWindow) win.hide();
+  });
+  ipcMain.on("task-started", (event) => { if (fromDaemon(event)) refreshSoon(0); });
+  ipcMain.on("thread-open", (event, conversation) => {
+    if (!fromDaemon(event) || !mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return;
+    viewed = String(conversation || "");
+    seen(viewed);
+  });
   buildMenu();
-  createWindow();
+  mainWindow = createWindow();
   watchDaemon();
-  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  createTray();
+  if (MAC) registerQuickAsk();
+  followEvents();
+  refreshSoon(0);
+  nativeTheme.on("updated", () => { trayState.image = ""; drawTray(); });
+  app.on("activate", (_, visible) => { if (!mainWindow || mainWindow.isDestroyed() || !visible) showMain(); });
 });
 
+app.on("will-quit", () => globalShortcut.unregisterAll());
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+
+// For driving the app from a test (node --inspect): the same actions as the icon's click and the shortcut.
+module.exports = {togglePopover, toggleAsk, showMain, refreshTray, trayState};

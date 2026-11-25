@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeRunner</title>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="tray.css">
+</head>
+<body class="panel tray">
+<div id="live" class="tray-live" hidden>
+  <div id="liveScreen" class="tray-screen" aria-label="The assistant's computer, live"></div>
+  <button id="liveExpand" class="tray-expand" type="button" title="Expand" aria-label="Show the computer's screen in the app"></button>
+</div>
+<form id="trayAsk" class="tray-ask" autocomplete="off">
+  <div class="tray-field">
+    <span class="logo tray-logo" aria-hidden="true"></span>
+    <input id="trayInput" type="text" placeholder="What should I get done?" aria-label="Task" autofocus>
+    <button id="traySend" class="send-round" type="submit" aria-label="Start task" disabled></button>
+  </div>
+  <div id="trayNote" class="tray-note" role="status" hidden></div>
+</form>
+<nav id="threads" aria-label="Latest tasks"></nav>
+<footer class="tray-foot"><button id="openApp" class="linkish" type="button">Open CodeRunner</button></footer>
+<script type="module" src="tray.js"></script>
+</body>
+</html>
