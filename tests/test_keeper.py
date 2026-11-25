@@ -156,6 +156,22 @@ class AutomaticTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await keeper.ensure(desktop=True))
         self.assertEqual((vm.calls, len(events(keeper, "computer.chrome_failed"))), ([], 1))
 
+    async def test_chrome_comes_back_when_the_sandbox_restarted_its_own_display(self):
+        vm = FakeVM()
+        clock = [0.0]
+        keeper = make(vm)
+        keeper._clock = lambda: clock[0]
+        self.assertTrue(await keeper.ensure(desktop=True))
+        vm.chrome = False                                        # the display came back without Chrome on it
+        vm.calls.clear()
+        await keeper.screen_without_browser()
+        self.assertEqual((vm.calls, vm.chrome), (["chrome"], True))
+        vm.chrome = False
+        self.assertIsNone(keeper.screen_without_browser())      # not again at once: every poll would start one
+        clock[0] += keeper.BROWSER_GAP_S
+        await keeper.screen_without_browser()
+        self.assertTrue(vm.chrome)
+
     async def test_a_nearly_full_mac_disk_is_said_and_nothing_is_tried(self):
         vm = FakeVM(listed="stopped")
         keeper = make(vm, free_gb=0.8)

@@ -755,6 +755,8 @@ def admin_app(svc, daemon) -> Starlette:
         if info and info.get("available") and (info.get("running") or request.method == "GET"):
             if keeper is not None:
                 keeper.saw_ready()
+                if info.get("chrome") is False and info.get("running"):
+                    keeper.screen_without_browser()
             shown = {**info, "state": "ready", "message": ""}
             shown.pop("error", None)
         else:

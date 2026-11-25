@@ -89,6 +89,7 @@ class Keeper:
     SERVICE_EVERY_S = 3600          # the container service is restarted at most this often
     HEALTH_WAIT_S = 60
     LOW_DISK_GB = 2.0
+    BROWSER_GAP_S = 30              # Chrome is reopened on a screen without it at most this often
 
     def __init__(self, config, driver, sandbox, audit, *, installer: Callable | None = None,
                  on_mode: Callable[[], Any] | None = None, disk_free_gb: Callable[[], float] | None = None,
@@ -111,6 +112,8 @@ class Keeper:
         self._service_at = -math.inf
         self._installed = False
         self._failures = 0
+        self._browser_task: asyncio.Task | None = None
+        self._browser_at = -math.inf
 
     # ---- what the app is told ----------------------------------------------
 
@@ -122,6 +125,18 @@ class Keeper:
         """The gateway reached the screen itself: whatever an earlier attempt concluded, it is up now."""
         if self._task is None or self._task.done():
             self._set(READY)
+
+    def screen_without_browser(self) -> asyncio.Task | None:
+        """The screen is up but the assistant's Chrome is not on it: the sandbox brought its display back by
+        itself (Chrome goes with the display), so nothing here repaired anything and Chrome was not reopened."""
+        if self._browser_task is not None and not self._browser_task.done():
+            return self._browser_task
+        now = self._clock()
+        if now - self._browser_at < self.BROWSER_GAP_S:
+            return None
+        self._browser_at = now
+        self._browser_task = asyncio.get_running_loop().create_task(self._browser())
+        return self._browser_task
 
     def _set(self, state: str, message: str = "") -> None:
         self.state, self.message = state, message
