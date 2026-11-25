@@ -1,3 +1,4 @@
+import types
 import asyncio
 import os
 import pathlib
@@ -231,10 +232,19 @@ class AdminGatewayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await client.post("/api/control", json={"on": True}, headers=admin)).json(), {"on": False})
             self.svc.browser = FakeBrowser()
             self.assertEqual((await client.post("/api/control", json={"on": True})).status_code, 401)
+            # No screen in the sandbox: there is nothing to take, so the tasks do not wait.
+            screen = {"available": False}
+
+            async def desktop(start=False):
+                return screen
+
+            self.svc.sandbox = types.SimpleNamespace(desktop=desktop)
+            self.assertEqual((await client.post("/api/control", json={"on": True}, headers=admin)).json(), {"on": False})
+            screen = {"available": True}
             self.assertEqual((await client.post("/api/control", json={"on": True}, headers=admin)).json(), {"on": True})
             self.assertEqual((await client.get("/api/control", headers=admin)).json(), {"on": True})
             self.assertEqual((await client.post("/api/control", json={"on": False}, headers=admin)).json(), {"on": False})
-        self.assertEqual(self.svc.browser.told, [(True, "admin-token"), (False, "admin-token")])
+        self.assertEqual(self.svc.browser.told, [(False, "admin-token"), (True, "admin-token"), (False, "admin-token")])
 
     async def test_decide_approval_over_api(self):
         from coderunner.safety.policy import Action

@@ -1038,10 +1038,11 @@ async function connectScreen() {
   rfb.background = "#0d0d0c";
   rfb.viewOnly = !control;
   rfb.focusOnClick = control;
-  rfb.addEventListener("connect", () => { setNote(""); refreshNow(); });
+  rfb.addEventListener("connect", () => { setNote(""); showSwitch(true); refreshNow(); });
   rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({password: info.password}));
   rfb.addEventListener("disconnect", () => {
     rfb = null;
+    showSwitch(false);
     setNote("Reconnecting to the screen…");
     setScreenWord("Reconnecting");
     retry = setTimeout(connectScreen, 2500);
@@ -1091,7 +1092,14 @@ async function watchComputerSetup() {
     line.textContent = job.state === "failed" ? last : "A desktop and Chrome inside the sandbox, for the assistant to work on while you watch.";
   }
 }
+// Taking control is only offered while the screen is connected: with no screen there is nothing to take, and the
+// tasks would wait for an owner who cannot see them.
+function showSwitch(connected) {
+  $("control").hidden = !connected;
+  if (!connected && control) setControl(false);
+}
 function setControl(on) {
+  if (on && !rfb) on = false;
   control = on;
   $("watching").classList.toggle("on", !on);
   $("takeControl").classList.toggle("on", on);

@@ -733,8 +733,14 @@ def admin_app(svc, daemon) -> Starlette:
             body = {}
             with contextlib.suppress(Exception):
                 body = await request.json()
+            on = bool(body.get("on"))
+            if on:                      # only with a screen to take: otherwise the tasks would wait on nothing
+                screen = {}
+                with contextlib.suppress(Exception):
+                    screen = await svc.sandbox.desktop(start=False)
+                on = bool(screen.get("available"))
             if browser is not None and hasattr(browser, "set_owner_control"):
-                browser.set_owner_control(bool(body.get("on")), origin=principal(request))
+                browser.set_owner_control(on, origin=principal(request))
         return JSONResponse({"on": bool(getattr(browser, "owner_control", False))})
 
     async def computer(request: Request):
