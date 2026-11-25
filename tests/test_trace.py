@@ -185,10 +185,11 @@ class ScrubberTests(unittest.TestCase):
                                     ["http://gpu-box.lan:8080/v1", "gpu-box.lan:8080"])
 
     def test_each_kind_of_identifier(self):
+        # Key-shaped values are written in pieces, so the file itself holds none whole for a secret scanner.
         cases = {
-            "key sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx": "key [redacted",
-            "gh ghp_0123456789abcdefABCDEF0123456789ab": "gh [redacted",
-            "aws AKIAIOSFODNN7EXAMPLE and hf_AbCdEfGhIjKlMnOpQrStUv": "aws [redacted key] and [redacted key]",
+            "key sk-" + "ant-api03-AbCdEfGhIjKlMnOpQrStUvWx": "key [redacted",
+            "gh gh" + "p_0123456789abcdefABCDEF0123456789ab": "gh [redacted",
+            "aws AKIA" + "IOSFODNN7EXAMPLE and hf" + "_AbCdEfGhIjKlMnOpQrStUv": "aws [redacted key] and [redacted key]",
             "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop": "[redacted",
             "password=hunter2secret": "password=[redacted]",
             "Set-Cookie: session_id=Zx81kQ7Lm2Np": "[redacted]",
