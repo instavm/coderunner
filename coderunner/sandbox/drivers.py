@@ -144,12 +144,26 @@ class AppleDriver(Driver):
     def restart_service(self) -> bool:
         # After the Mac's disk filled, `container list` said running while exec, stop and kill all answered "container
         # is not running"; stopping and starting the service brought the VM back with its disk intact.
+        # The service is the owner's too: with any other container running it is left alone.
+        if self._others_running():
+            return False
         try:
             _run(["container", "system", "stop"], timeout=120)
         except subprocess.SubprocessError:
             pass
         return _run(["container", "system", "start", "--disable-kernel-install", "--timeout", "60"],
                     timeout=90).returncode == 0
+
+    def _others_running(self) -> bool:
+        """Whether a container other than ours is running (or the list cannot be read, which counts as yes)."""
+        try:
+            listed = _run(["container", "list", "--format", "json"], timeout=30)
+            running = json.loads(listed.stdout or "[]") if listed.returncode == 0 else None
+        except (subprocess.SubprocessError, ValueError):
+            running = None
+        if not isinstance(running, list):
+            return True
+        return any((c.get("configuration") or {}).get("id") != self.container for c in running)
 
     def delete(self) -> bool:
         # With the service stopped (after a restart) nothing can be deleted, nor told apart from missing.

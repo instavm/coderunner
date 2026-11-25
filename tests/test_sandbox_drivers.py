@@ -50,6 +50,33 @@ class AppleDriverTests(unittest.TestCase):
         with mock.patch.object(drivers, "_run", return_value=older):
             self.assertEqual(driver.status(), "running")
 
+    def test_the_service_is_restarted_only_when_no_other_container_runs(self):
+        driver = drivers.AppleDriver(Config({}))
+
+        def listing(*ids, rc=0):
+            cli = FakeContainerCLI(service=True)
+            plain = cli.__call__
+
+            def run(args, timeout=60):
+                if args[:2] == ["container", "list"]:
+                    cli.calls.append(args)
+                    out = json.dumps([{"configuration": {"id": i}, "status": "running"} for i in ids])
+                    return subprocess.CompletedProcess(args, rc, out, "")
+                return plain(args, timeout)
+            return cli, run
+
+        cli, run = listing(driver.container, "postgres")      # the owner's own container would be stopped too
+        with mock.patch.object(drivers, "_run", run):
+            self.assertFalse(driver.restart_service())
+        self.assertNotIn(["container", "system", "stop"], cli.calls)
+        cli, run = listing("x", rc=1)                          # a list that cannot be read: left alone as well
+        with mock.patch.object(drivers, "_run", run):
+            self.assertFalse(driver.restart_service())
+        cli, run = listing(driver.container)                   # ours alone: stopped and started
+        with mock.patch.object(drivers, "_run", run):
+            self.assertTrue(driver.restart_service())
+        self.assertIn(["container", "system", "stop"], cli.calls)
+
 
 
 class NoneDriverTests(unittest.TestCase):
