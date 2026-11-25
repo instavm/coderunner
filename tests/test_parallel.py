@@ -311,6 +311,34 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(messages[5]["content"].endswith(loop_module.DROPPED))
         self.assertIn("w" * 30000, messages[7]["content"])     # the latest step's page stays whole
 
+    def test_old_medium_results_go_too_when_the_long_ones_do_not_reach_the_low_watermark(self):
+        agent = self.agent(Svc())
+        # Two old pages and many old click results under BIG_RESULT, then two steps kept whole.
+        results = [page(0, 9000), page(1, 9000)] + ["c" * 1200] * 40 + ["k" * 800] * 2
+        messages = self.steps(results)
+        done = agent._trim(messages, [0, 0], 32768, 32768)
+        self.assertIsNotNone(done)
+        self.assertLessEqual(done["after"], loop_module.LOW_WATER * 32768)
+        tools = [m for m in messages if m["role"] == "tool"]
+        self.assertTrue(all(m["content"].endswith(loop_module.DROPPED) for m in tools[:2]))
+        self.assertTrue(any(m["content"].endswith(loop_module.DROPPED) for m in tools[2:42]))
+        self.assertEqual([m["content"] for m in tools[-2:]], ["k" * 800] * 2)     # the latest two steps stay
+        # Results too short to shrink are never touched.
+        short = self.steps(["s" * 500] * 200)
+        snapshot = [dict(m) for m in short]
+        self.assertIsNone(agent._trim(short, [0, 0], 32768, 32768))
+        self.assertEqual(short, snapshot)
+
+    def test_a_trim_that_must_but_would_free_almost_nothing_is_not_made(self):
+        agent = self.agent(Svc())
+        # Past FIT of the room with one old long result: dropping it frees ~400 tokens of ~28,000, at the price
+        # of reading everything after it again.
+        messages = self.steps(["z" * 2000] + ["s" * 500] * 165)
+        snapshot = [dict(m) for m in messages]
+        self.assertGreater(agent._size(messages, [0, 0]), loop_module.FIT * 32768)
+        self.assertIsNone(agent._trim(messages, [0, 0], 32768, 32768))
+        self.assertEqual(messages, snapshot)
+
     async def test_six_pages_at_once_are_cut_and_a_task_that_cannot_fit_stops_in_a_sentence(self):
         with FakeOpenAI() as fake:
             svc = Svc()
@@ -350,21 +378,21 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
             svc.registry = build_registry(svc)
 
             async def looked(args, ctx):
-                return "x" * 1400                  # a short result each time: nothing the trims let go
+                return "x" * 590                   # a short result each time: nothing the trims let go
             svc.registry.tools["lookup"] = Tool("lookup", "Look up a review.", {
                 "type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}, looked)
             agent = Agent(svc, svc.llm, svc.registry)
             step = lambda n: {"role": "assistant", "content": "", "tool_calls": [{"id": f"c{n}", "type": "function",
                               "function": {"name": "lookup", "arguments": f'{{"q": "review {n}", "say": "Read review {n}."}}'}}]}
-            fake.script = [step(n) for n in range(10)] + [{"role": "assistant", "content": "The Sony WH-CH720N, from two sites."}]
-            rooms = iter([100000] * 10 + [6000] * 5)
+            fake.script = [step(n) for n in range(24)] + [{"role": "assistant", "content": "The Sony WH-CH720N, from two sites."}]
+            rooms = iter([100000] * 24 + [6000] * 5)
             with mock.patch.object(agent, "_room", side_effect=lambda context, conversation: next(rooms)):
                 ctx = RunContext(conversation="app:full")
                 reply = await agent.run(ctx, "Best headphones?")
             self.assertEqual(reply, "The Sony WH-CH720N, from two sites.")
             sent = fake.requests[-1]["messages"]
             self.assertEqual(sent[-1]["content"], loop_module.OUT_OF_ROOM)
-            self.assertIn("- Read review 9.", json.dumps(sent))            # what it said along the way
+            self.assertIn("- Read review 23.", json.dumps(sent))            # what it said along the way
             self.assertEqual([m["content"] for m in sent if m["role"] == "user"][1], "Best headphones?")
             self.assertLess(len(sent), 12)                                  # the middle steps let go
             self.assertTrue(ctx.incomplete)

@@ -8,6 +8,7 @@ are normalised here so the agent loop sees one shape.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -76,6 +77,96 @@ class LLMError(Exception):
     pass
 
 
+KEEP_MISSES = 3         # restores in a row that the server did not resume from, before slot keeping stops
+
+
+class SlotKeeper:
+    """Keeps a task's slot on a llama.cpp server through a side request (the step judge's) in another slot. On the owner's server such a request made the next step of the task read its whole
+    conversation again: 268 of 278 steps after a judge call in the bench runs of 24-25 November started from
+    nothing (~33 s each at ~510 tokens a second), 46% of all the time spent reading prompts.
+
+    Before a side request, each idle task slot holding a conversation is kept in a file (POST /slots/N
+    ?action=save, needs the server's --slot-save-path); the task's next request puts it back first (?action=
+    restore), only when that request extends the one before (otherwise the server reads from the change anyway).
+    A server without --slot-save-path refuses the first save and keeping stops; so does one whose restored
+    slots the next request does not resume from (KEEP_MISSES in a row). A save and a restore are a file written
+    and read on the server, where reading the conversation again is ~40 s at 20,000 tokens."""
+
+    def __init__(self, llm: "LLM", root: str):
+        self._llm = llm
+        self._root = root
+        self.on = True
+        self.misses = 0
+        self._turns: dict[int, int] = {}        # slot -> requests answered in it
+        self._saved: dict[int, int] = {}        # slot -> its request count when it was last kept
+        self._dirty: set[int] = set()           # kept slots a side request may have emptied since
+        self._busy: set[int] = set()            # slots with a request in flight (not idle: not emptied)
+        self._sent: dict[int, list[dict]] = {}  # slot -> the messages of its last request
+        self._lock = asyncio.Lock()
+
+    def _file(self, slot: int) -> str:
+        return f"task-{slot}-{re.sub(r'[^A-Za-z0-9_.-]', '_', self._llm.model)[:80]}.bin"
+
+    async def _action(self, slot: int, action: str) -> dict | None:
+        try:
+            response = await self._llm._client.post(f"{self._root}/slots/{slot}", params={"action": action},
+                                               json={"filename": self._file(slot)}, timeout=60)
+        except httpx.HTTPError:
+            return None
+        if response.status_code >= 400:
+            if action == "save" and response.status_code in (400, 404, 405, 501):
+                self.on = False         # no --slot-save-path, the slots endpoint off, or not llama.cpp
+            return None
+        try:
+            data = response.json()
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    async def before_side(self, side_slot: int | None) -> None:
+        """Keep every idle task slot that changed since it was last kept, before a request in side_slot."""
+        if not self.on:
+            return
+        async with self._lock:
+            for slot, turns in list(self._turns.items()):
+                if slot == side_slot or slot in self._busy:
+                    continue
+                if self._saved.get(slot) != turns:
+                    if await self._action(slot, "save") is None:
+                        self._saved.pop(slot, None)
+                        if not self.on:
+                            return
+                        continue
+                    self._saved[slot] = turns
+                self._dirty.add(slot)
+
+    async def before_turn(self, slot: int, messages: list[dict]) -> int:
+        """Put the slot back as it was kept when a side request came since; returns the tokens restored."""
+        self._busy.add(slot)
+        if not self.on or slot not in self._dirty:
+            return 0
+        async with self._lock:
+            self._dirty.discard(slot)
+            sent = self._sent.get(slot)
+            if self._saved.get(slot) != self._turns.get(slot) or not sent or messages[:len(sent)] != sent:
+                return 0                # an edited conversation is read from the change whatever is restored
+            done = await self._action(slot, "restore")
+            return int((done or {}).get("n_restored") or 0) if done is not None else 0
+
+    def after_turn(self, slot: int, messages: list[dict], restored: int, cached: int | None, ok: bool) -> None:
+        self._busy.discard(slot)
+        if not ok:
+            return
+        self._turns[slot] = self._turns.get(slot, 0) + 1
+        self._sent[slot] = list(messages)
+        if restored and cached is not None:
+            # A restored slot the server did not resume from (a hybrid model's state that cannot be rolled back
+            # to where the new prompt differs) costs the save and the restore for nothing.
+            self.misses = 0 if cached >= restored // 2 else self.misses + 1
+            if self.misses >= KEEP_MISSES:
+                self.on = False
+
+
 class LLM:
     def __init__(self, base_url: str, model: str, api_key: str = "", timeout: float = 600):
         self.base_url = base_url.rstrip("/")
@@ -93,6 +184,20 @@ class LLM:
         self.think_kwargs: dict = {}        # template settings for a step with reasoning (see settle_thinking)
         self.steady_thinking = False        # no setting keeps the prompt the same: a task keeps to one
         self._settled = False
+        # Keeps the tasks' slots through side requests in other slots (the owner's server; see SlotKeeper).
+        self.keeper: SlotKeeper | None = None
+
+    def keep_slots(self) -> SlotKeeper:
+        """Turn slot keeping on for this client (a llama.cpp server whose slots tasks keep to)."""
+        if self.keeper is None:
+            root = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
+            self.keeper = SlotKeeper(self, root)
+        return self.keeper
+
+    async def side_request(self, slot: int | None) -> None:
+        """Called before a request in another slot than the tasks' (the step judge's)."""
+        if self.keeper is not None:
+            await self.keeper.before_side(slot)
 
     async def settle_thinking(self) -> None:
         """Some chat templates write the reasoning setting at the top of the system prompt (Bonsai's: "Reasoning
@@ -130,6 +235,23 @@ class LLM:
     async def chat(self, messages: list[dict], tools: list[dict] | None = None,
                    tool_choice: str | dict | None = None, think: bool | None = None, **options: Any) -> dict:
         """think=False asks a reasoning model to answer directly (None: the model's default)."""
+        slot = options.get("id_slot")
+        if self.keeper is None or not isinstance(slot, int):
+            return await self._chat(messages, tools, tool_choice, think, **options)
+        restored = await self.keeper.before_turn(slot, messages)
+        reply: dict | None = None
+        try:
+            reply = await self._chat(messages, tools, tool_choice, think, **options)
+        finally:
+            cached = (reply or {}).get("timings", {}).get("cache_n")
+            self.keeper.after_turn(slot, messages, restored, cached if isinstance(cached, int) else None,
+                                   reply is not None)
+        if restored:
+            reply["restored"] = restored
+        return reply
+
+    async def _chat(self, messages: list[dict], tools: list[dict] | None = None,
+                    tool_choice: str | dict | None = None, think: bool | None = None, **options: Any) -> dict:
         payload: dict[str, Any] = {"model": self.model, "messages": messages, "stream": False, **options}
         quiet = think is False and not self._always_thinks
         if quiet:
@@ -152,7 +274,7 @@ class LLM:
                 response = await self._post(payload)
         if response.status_code == 400 and quiet:
             self._always_thinks = True
-            return await self.chat(messages, tools, tool_choice, **options)
+            return await self._chat(messages, tools, tool_choice, **options)
         if response.status_code >= 400:
             raise LLMError(f"Model runtime returned {response.status_code}: {response.text[:500]}")
         data = response.json()
