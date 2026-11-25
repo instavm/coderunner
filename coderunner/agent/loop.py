@@ -244,6 +244,10 @@ ADD_LINKS = ("Your reply has no links, and I asked for them. Without calling any
              "with a link to the page each item or figure came from, as [name](https://...), using only addresses "
              "of pages you opened in this task.")
 REMIND_EVERY = 6      # steps between plan reminders while the plan stays the same
+# A message the owner sent while the task works: their own words, trusted like the request. The plan and the
+# task's limits stay as they are.
+STEER = "{owner} adds while you work: {text}"
+STEER_PICTURES = "Pictures {owner} attached with that:"
 TRIM_AT = 0.6         # old pages are dropped once the conversation fills this share of the model's context
 # A trim makes the runtime read the conversation again from the first result it shortened, however little it
 # took away (hybrid models cannot resume from the middle). On the owner's 27B server, 9 research tasks trimmed
@@ -365,6 +369,10 @@ class RunContext:
     # and the sites whose recipe was looked up already (agent.recipes).
     trail: list[dict] = field(default_factory=list)
     sites_noted: set[str] = field(default_factory=set)
+    # What the owner sent to the thread while the run works (server.tasks): {"id", "text", "images"?} each, read
+    # before the next model request; and what was read, kept with the request in the conversation.
+    inbox: list[dict] = field(default_factory=list)
+    heard: list[str] = field(default_factory=list)
     # Called with each step as it happens (tool calls, notes, the plan), for an app showing the task live.
     events: Callable[[dict], None] | None = None
 
@@ -675,11 +683,38 @@ class Agent:
             return await self._run(ctx, text, images)
         except asyncio.CancelledError:
             # Stopped midway: the conversation keeps the request and what it had found, so "go on" can.
-            self._remember(ctx.conversation, "user", text)
+            self._remember(ctx.conversation, "user", self._asked(ctx, text))
             self._remember(ctx.conversation, "assistant", stopped_reply(ctx))
             raise
         finally:
             current_run.reset(token)
+
+    def _steer(self, ctx: RunContext, messages: list[dict]) -> bool:
+        """What the owner sent while the run worked, read before the next request. Appended after everything, so
+        what the runtime has read stays read; a tool call still running finishes first (nothing is aborted)."""
+        if not ctx.inbox or not ctx.origin_is_owner:
+            return False
+        taken = list(ctx.inbox)
+        ctx.inbox.clear()
+        owner = self.svc.config.get("owner.name") or "the owner"
+        from .tools import handles
+        for item in taken:
+            said = str(item.get("text") or "")
+            line = STEER.format(owner=owner, text=said)
+            messages.append({"role": "user", "content": line})
+            ctx.heard.append(line)
+            ctx.known |= handles(said)
+            if item.get("images"):
+                messages.append({"role": "user", "content": [{"type": "text", "text": STEER_PICTURES.format(owner=owner)}] + [
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}} for mime, data in item["images"]]})
+        ctx.emit({"type": "steer_taken", "ids": [item.get("id") for item in taken]})
+        self.svc.audit.write("agent.steered", conversation=ctx.conversation, messages=len(taken))
+        return True
+
+    @staticmethod
+    def _asked(ctx: RunContext, text: str) -> str:
+        """The request as the conversation keeps it: with what the owner added while it ran."""
+        return "\n\n".join([text, *ctx.heard])
 
     async def _turn(self, ctx: RunContext, messages: list[dict], think: bool | None, capped: dict,
                     **extra: Any) -> dict:
@@ -838,7 +873,8 @@ class Agent:
                     note += PLAN_DONE           # once, as the last step is marked done: not a stop
                 messages.append({"role": "user", "content": note})
                 reminded, since = [dict(item) for item in ctx.plan], 1
-            think = None if thinking != "auto" or step == 0 or failed else False
+            steered = self._steer(ctx, messages)        # the owner's words last, just before the request
+            think = None if thinking != "auto" or step == 0 or failed or steered else False
             if thinking == "off" or (thinking == "auto" and steady):
                 think = False
             # Twice the limit where the model may think first: its thinking counts against it.
@@ -996,7 +1032,7 @@ class Agent:
         if answered and not ctx.incomplete and ctx.origin_is_owner:
             # How the sites were used, for the next task on them; never after a task that gave up or ran out.
             self._save_recipes(ctx, text, final)
-        self._remember(ctx.conversation, "user", text)
+        self._remember(ctx.conversation, "user", self._asked(ctx, text))
         self._remember(ctx.conversation, "assistant", final)
         self.svc.audit.write("agent.finish", conversation=ctx.conversation, origin=ctx.origin, tainted=ctx.tainted)
         return final

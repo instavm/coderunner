@@ -313,8 +313,27 @@ class TaskView {
       case "paused": this.setNow(e.text || "Paused while you have control"); break;
       case "resumed": this.setNow("Thinking"); break;
       case "files": this.showProduced(e.files); break;
+      case "steer": this.addSteer(e); break;
+      // Read by the task at its step: its line says so until its next step says what it does.
+      case "steer_taken": if (this.now && e.ts && Date.now() / 1000 - e.ts < 5) this.now.what.textContent = "Got it"; break;
+      case "steer_moved": this.steers?.get(e.id)?.remove(); this.steers?.delete(e.id); break;   // a task of its own now
     }
     this.tick();
+  }
+
+  // What the owner sent while it works: a small bubble under the line that says what it is doing.
+  addSteer(e) {
+    this.steers = this.steers || new Map();
+    if (this.steers.has(e.id)) return;
+    const box = el("div", "steer");
+    if (Array.isArray(e.attachments) && e.attachments.length) {
+      const files = el("div", "attached");
+      for (const file of e.attachments) files.appendChild(attachedFile(file));
+      box.appendChild(files);
+    }
+    if (e.text) box.appendChild(el("div", "bubble-user", e.text));
+    this.steers.set(e.id, box);
+    this.flow.appendChild(box);
   }
 
   ask(e) {
@@ -872,6 +891,8 @@ $("composer").onsubmit = async (event) => {
     const task = await api("/api/tasks", {method: "POST",
       body: JSON.stringify({message, conversation: state.conversation || "", attachments})});
     $("input").value = ""; grow();
+    // Sent to the task at work in this thread (the server decides): shown under it at once.
+    if (task.steer && !attachments.length) state.views.get(task.id)?.addSteer({id: task.steer, text: message});
     for (const item of [...waiting]) dropWaiting(item);
     if (task.conversation !== state.conversation) {
       await openConversation(task.conversation, message || "Attached files");
@@ -1293,6 +1314,7 @@ function refreshNow() {
   $("computerState").textContent = control ? "You're in control" : rfb ? (busy ? "Working" : "Idle") : screenWord || (busy ? "Working" : "Connecting");
   // The line speaks for the open task while it runs; otherwise for the others (its last words went stale).
   const open = [...state.running.values()].some((r) => r.conversation === state.conversation);
+  $("input").placeholder = open && state.conversation ? "Add to this task…" : "Describe a task…";
   // Another task at work: what it is doing, and a click opens its thread.
   const other = !open && busy ? [...state.running.values()][0] : null;
   const line = $("nowLine");
