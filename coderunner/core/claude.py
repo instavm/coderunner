@@ -107,6 +107,7 @@ class Claude:
     """The chat interface of core.llm.LLM, served by Anthropic's API."""
 
     remote = True
+    concurrent = True       # requests do not share a model's slots with the running tasks: a side question may go any time
     # Room for what a task reads: old pages are dropped past 60% of this, which keeps a prompt under the
     # 100,000 tokens where Haiku's price changes; a page is given whole enough to hold its facts (a local 9B
     # model gets 12,000 characters of it, and an encyclopedia page's figures sat beyond that).

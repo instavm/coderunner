@@ -23,6 +23,7 @@ from coderunner.safety.guard import Guard
 from coderunner.safety.policy import Policy
 from coderunner.safety.secrets_store import SecretStore
 from coderunner.core.store import Store
+from coderunner.server.titles import SYSTEM as TITLE_SYSTEM
 
 
 def free_port() -> int:
@@ -43,6 +44,8 @@ class FakeOpenAI:
         self.requests: list[dict] = []
         self.judged: list[str] = []
         self.judge = lambda state: False
+        self.titled: list[dict] = []            # requests for a thread's name (server/titles.py), apart from the script
+        self.title = lambda prompt: "Fake title"
         self.served = ["test"]                  # the models /v1/models lists
         self.authorizations: list[str] = []
         self.port = free_port()
@@ -55,6 +58,10 @@ class FakeOpenAI:
                 self.judged.append(state)
                 answer = "B" if self.judge(state) else "A"
                 return JSONResponse({"choices": [{"message": {"role": "assistant", "content": answer}}]})
+            if str(messages[0].get("content", "")).startswith(TITLE_SYSTEM):     # a thread's name, not a step
+                self.titled.append(body)
+                return JSONResponse({"choices": [{"message": {"role": "assistant",
+                                                              "content": self.title(messages[-1]["content"])}}]})
             if body.get("max_tokens") == 1:      # the daemon warming the model's cache: not part of the script
                 return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
             self.requests.append(body)
