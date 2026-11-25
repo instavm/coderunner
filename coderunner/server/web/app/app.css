@@ -140,6 +140,8 @@ button.check-row:hover .check-what { color: var(--accent); }
 .md { white-space: normal; }
 .md p { margin: 0 0 8px; } .md p:last-child { margin-bottom: 0; }
 .md ul, .md ol { margin: 4px 0 8px; padding-left: 22px; } .md li { margin: 2px 0; }
+.md-pre { margin: 6px 0 8px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); overflow-x: auto; }
+.md-pre code { font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; background: none; padding: 0; }
 .md code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface-2); padding: 1px 5px; border-radius: 5px; }
 .md-cards { display: grid; gap: 8px; margin: 10px 0; white-space: normal; }
 .md-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--surface); }

@@ -119,7 +119,7 @@ function table(heads, rows) {
   return wrap;
 }
 
-// The blocks of a text, in order: paragraphs, lists, tables (or their cards), headings.
+// The blocks of a text, in order: paragraphs, lists, tables (or their cards), headings, code.
 export function blocks(text) {
   const out = [];
   let list = null, para = null;
@@ -129,6 +129,15 @@ export function blocks(text) {
   const isRule = (line) => isRow(line) && cells(line).every((cell) => /^:?-{2,}:?$/.test(cell));
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (/^\s*```/.test(line)) {                           // code or text art, as written: monospace, spaces kept
+      const body = [];
+      for (i += 1; i < lines.length && !/^\s*```\s*$/.test(lines[i]); i++) body.push(lines[i]);
+      const pre = el("pre", "md-pre");
+      pre.appendChild(el("code", "", body.join("\n")));
+      out.push(pre);
+      list = null; para = null;
+      continue;
+    }
     if (isRow(line) && isRule(lines[i + 1])) {             // a table: its head, a rule, then its rows
       const heads = cells(line), rows = [];
       for (i += 2; i < lines.length && isRow(lines[i]); i++) rows.push(cells(lines[i]));
