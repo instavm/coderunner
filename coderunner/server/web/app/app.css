@@ -316,6 +316,11 @@ a.att-file:hover { border-color: var(--accent); }
 
 /* expanded screen */
 #shell.expanded #computer { position: fixed; inset: 0; z-index: 10; background: #0d0d0c; }
+/* The window is dragged by the strips under the headers; covered by the big screen they still caught clicks (the
+   Screen tab sat inside the sidebar's), so while it is expanded its own header is the strip. */
+#shell.expanded .side-head, #shell.expanded #mainHead { -webkit-app-region: no-drag; }
+#shell.expanded .panel-head { -webkit-app-region: drag; }
+#shell.expanded .panel-head button, #shell.expanded .views, #shell.expanded .views button, #shell.expanded #screenWrap { -webkit-app-region: no-drag; }
 #shell.expanded .panel-head { padding: 10px 16px; color: #ecebe6; }
 .mac-shell #shell.expanded .panel-head { padding-left: 92px; }      /* clear of the window's close, minimise and zoom */
 #shell.expanded .panel-head .muted { color: #9b988f; }
