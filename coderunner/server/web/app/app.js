@@ -174,6 +174,7 @@ const state = {
   loading: null,                // {id, events}: the thread being read, and its live events held meanwhile
   remoteOn: false,              // remote mode: every task is on Claude already, so none is offered there again
   lastSeq: 0,
+  developer: false,             // developer mode (the desktop app's Help menu): the thread's "Export trace"
 };
 
 // ---- a task in the thread ----------------------------------------------------
@@ -557,6 +558,7 @@ async function openConversation(id, title, again) {
   const kept = again ? $("thread").scrollTop : null;
   $("composer").hidden = false;
   state.conversation = id;
+  showTraceButton();
   window.coderunnerShell?.threadOpen?.(id || "");       // the desktop app does not tell the owner about this one
   // The task being read comes to the front on the assistant's computer and goes first at the model.
   api("/api/focus", {method: "POST", body: JSON.stringify({conversation: id || ""})}).catch(() => {});
@@ -590,6 +592,7 @@ const CHECK_MARKS = {passed: "✓", failed: "✕", blocked: "!", needs_you: "→
 async function showCheck() {
   if (state.setup) return;
   state.conversation = "check";             // not a conversation: no task's events belong to it
+  showTraceButton();
   state.loading = null;
   state.views.clear();
   $("title").textContent = "Test this Mac";
@@ -656,6 +659,42 @@ async function showCheck() {
 }
 // Opened from the app's Help menu (Test this Mac); the page has no button for it.
 window.coderunnerShell?.onTestThisMac?.(() => showCheck());
+
+// ---- developer mode: a thread's trace for the developers ----------------------------------------------------
+// Off unless the desktop app's Help menu turns it on. Then the open thread's header has "Export trace": a file of
+// what each task was asked, planned, did and answered (server/trace.py), keys and contact details removed. The
+// first time, one line says what is in it before it is saved.
+const TRACE_EXPLAINED = "coderunner.traceExplained";
+function showTraceButton() {
+  const on = state.developer && typeof state.conversation === "string" && state.conversation.startsWith("app:");
+  $("exportTrace").hidden = !on;
+  if (!on) $("traceAsk").hidden = true;
+}
+function setDeveloper(on) { state.developer = on === true; showTraceButton(); }
+function saveTrace() {
+  $("traceAsk").hidden = true;
+  const id = state.conversation;
+  if (!state.developer || typeof id !== "string" || !id.startsWith("app:")) return;
+  try { localStorage.setItem(TRACE_EXPLAINED, "1"); } catch { /* said again next time */ }
+  const link = el("a");
+  link.href = `/api/conversations/${encodeURIComponent(id)}/trace`;
+  link.download = "";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+$("exportTrace").onclick = () => {
+  let explained = false;
+  try { explained = localStorage.getItem(TRACE_EXPLAINED) === "1"; } catch { /* asked */ }
+  if (explained) { saveTrace(); return; }
+  $("traceAsk").hidden = !$("traceAsk").hidden;
+  if (!$("traceAsk").hidden) $("traceSave").focus();
+};
+$("traceSave").onclick = saveTrace;
+$("traceCancel").onclick = () => { $("traceAsk").hidden = true; };
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("traceAsk").hidden) $("traceAsk").hidden = true; });
+window.coderunnerShell?.onDeveloperMode?.((on) => setDeveloper(on));
+window.coderunnerShell?.developerMode?.().then(setDeveloper, () => {});
 
 
 function scrollDown() { const t = $("thread"); t.scrollTop = t.scrollHeight; }
@@ -1561,9 +1600,11 @@ const CLOSE_ICON = "M6 6l12 12 M18 6L6 18";
 const SEND_ICON = "M12 19V5 M6 11l6-6l6 6";
 const SCREEN_ICON = "M4 5h16v14H4z M15 5v14";
 const SIDEBAR_ICON = "M4 5h16v14H4z M9 5v14";
+const TRACE_ICON = "M12 4v11 M7 10l5 5l5-5 M5 20h14";
 // The glyph buttons in the page drawn as line icons, one set throughout.
 for (const [id, d] of [["newTask", PLUS_ICON], ["expand", EXPAND_ICON], ["closeComputer", CLOSE_ICON], ["send", SEND_ICON],
-                       ["toggleComputer", SCREEN_ICON], ["toggleSidebar", SIDEBAR_ICON], ["newTaskHead", PLUS_ICON]])
+                       ["toggleComputer", SCREEN_ICON], ["toggleSidebar", SIDEBAR_ICON], ["newTaskHead", PLUS_ICON],
+                       ["exportTrace", TRACE_ICON]])
   document.getElementById(id)?.replaceChildren(icon(d));
 
 // A small line icon, drawn with strokes on a 24 by 24 grid.

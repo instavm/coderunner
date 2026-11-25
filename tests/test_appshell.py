@@ -45,11 +45,14 @@ class AppShellTests(unittest.TestCase):
         self.assertIn('preload: path.join(__dirname, "preload.js")', main)
         self.assertIn("contextIsolation: true, nodeIntegration: false, sandbox: true", main)
         asks = ["pick-folder", "start-assistant", "open-thread", "open-app", "open-computer", "hide-panel", "task-started",
-                "thread-open"]
+                "thread-open", "developer-mode"]
         self.assertEqual(re.findall(r'ipcMain\.(?:handle|on)\("([\w-]+)"', main), asks)
         self.assertEqual(re.findall(r'ipcRenderer\.(?:invoke|send)\("([\w-]+)"', preload), asks)
-        # What the shell says to the pages: which thread to open, and that a panel was shown.
-        self.assertEqual(re.findall(r'ipcRenderer\.on\("([\w-]+)"', preload), ["show-thread", "show-computer", "panel-shown", "test-this-mac"])
+        # What the shell says to the pages: which thread to open, that a panel was shown, developer mode turned on or off.
+        self.assertEqual(re.findall(r'ipcRenderer\.on\("([\w-]+)"', preload),
+                         ["show-thread", "show-computer", "panel-shown", "test-this-mac", "developer-mode"])
+        self.assertIn('ipcMain.handle("developer-mode", (event) => fromDaemon(event) && developerMode());', main)
+        asks.remove("developer-mode")
         self.assertEqual(re.findall(r'exposeInMainWorld\("(\w+)"', preload), ["coderunnerShell"])
         self.assertIn("if (asker !== ORIGIN) return null;", main)        # only the daemon's own page is answered
         self.assertIn("return asker === ORIGIN ? startDaemon() : false;", main)

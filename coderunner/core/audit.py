@@ -30,9 +30,18 @@ class AuditLog:
         self.path = path or paths.audit_path()
         self._lock = threading.Lock()
         self.listeners: list = []       # called with each record, e.g. to show a task's steps as they happen
+        # Fields added to every record written while it says so: the app's task the record belongs to
+        # (server/tasks.py), so a thread's trace finds its records when tasks run side by side.
+        self.context = None
 
     def write(self, event: str, **fields: Any) -> dict:
-        record = {"ts": time.time(), "event": event, **_scrub(fields)}
+        extra: dict = {}
+        if self.context is not None:
+            try:
+                extra = self.context() or {}
+            except Exception:       # never in the way of the record itself
+                extra = {}
+        record = {"ts": time.time(), "event": event, **extra, **_scrub(fields)}
         line = json.dumps(record, default=str, ensure_ascii=False)
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)

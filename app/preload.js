@@ -1,6 +1,6 @@
 // What the page may ask of the desktop shell, and nothing else: a folder chosen by the owner in the system's own
 // dialog (where to keep the models), the assistant started again when it has stopped, and the Help menu's
-// "Test this Mac". The page is the
+// "Test this Mac" and "Developer Mode". The page is the
 // daemon's; it has no other reach into the computer.
 const {contextBridge, ipcRenderer} = require("electron");
 
@@ -23,4 +23,7 @@ contextBridge.exposeInMainWorld("coderunnerShell", {
   onShowComputer: (callback) => ipcRenderer.on("show-computer", () => callback()),
   onShown: (callback) => ipcRenderer.on("panel-shown", () => callback()),
   onTestThisMac: (callback) => ipcRenderer.on("test-this-mac", () => callback()),
+  // Developer mode (the Help menu): whether it is on as the page loads, and word when it changes.
+  developerMode: () => ipcRenderer.invoke("developer-mode"),
+  onDeveloperMode: (callback) => ipcRenderer.on("developer-mode", (_, on) => callback(on === true)),
 });
