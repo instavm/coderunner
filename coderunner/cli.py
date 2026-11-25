@@ -196,55 +196,22 @@ def cmd_sandbox(args, config: Config) -> int:
                 if args.action == "shell" else driver.logs_argv(args.follow))
         os.execvp(argv[0], argv)              # does not return
         return 1
-    # reset: delete the VM and its filesystem, then create it again with the installer. Settings not given here
-    # are kept from the old sandbox: a reset must not reopen the network of a `--network none` sandbox, drop its
-    # mounts, or move it to another CodeRunner home. Only the sandbox is recreated (--no-assistant), not models.
-    from .sandbox import computer
-    installer = pathlib.Path(__file__).resolve().parent.parent / "install.sh"
-    carried = paths.home() / "sandbox-carry.tar"
-    kept = driver.settings() if state != "missing" else {}
-    chosen = {"cpus": args.cpus or kept.get("cpus"), "memory": args.memory or kept.get("memory"),
-              "network": args.network or kept.get("network"), "profile": kept.get("profile")}
-    options = [part for key, value in chosen.items() if value for part in (f"--{key}", value)]
-    for mount in args.mount or kept.get("mounts") or []:     # --mount replaces the old mounts
-        options += ["--mount", mount]
-    # The same image again unless --build asks for a fresh one: published images can lag behind the checkout.
-    options += ["--no-assistant", *(["--build"] if args.build else
-                                    ["--image", kept["image"]] if kept.get("image") else [])]
-    env = {**os.environ, **({"CODERUNNER_HOME": kept["home"]} if kept.get("home") else {})}
+    # reset: delete the VM and its filesystem, then create it again with the installer (sandbox/reset.py), keeping
+    # the old VM's settings where none are given. Only the sandbox is recreated (--no-assistant), not models.
+    from .sandbox import reset
+    options, env = reset.options_for(driver, state, cpus=args.cpus, memory=args.memory, network=args.network,
+                                     mounts=args.mount, build=args.build)
     free_gb = shutil.disk_usage(pathlib.Path.home()).free / 1e9
     if args.build and free_gb < BUILD_SPACE_GB:     # the installer refuses then, after the old sandbox is gone
         print(f"Building the image needs about {BUILD_SPACE_GB} GB free; {free_gb:.0f} GB is free. Nothing was "
               "deleted; free some space, or reset without --build to reuse the current image.")
         return 1
-    if state != "missing":
-        if not args.yes:
-            answer = input("Delete the sandbox and everything in its filesystem (host mounts are untouched)? [y/N] ")
-            if answer.strip().lower() not in ("y", "yes"):
-                print("Nothing was deleted.")
-                return 1
-        # A sandbox from before the data volume keeps the desktop Chrome's sign-ins, its downloads and the
-        # workspace on its own disk: they are copied out first and put back into the new one.
-        if state == "running":
-            print("Copying the browser profile, downloads and workspace out of the sandbox...", flush=True)
-            computer.carry_out(driver, carried)
-        if not driver.delete():
-            print("❌ The sandbox could not be deleted.")
+    if state != "missing" and not args.yes:
+        answer = input("Delete the sandbox and everything in its filesystem (host mounts are untouched)? [y/N] ")
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Nothing was deleted.")
             return 1
-        print("Deleted the sandbox.", flush=True)
-    if not installer.exists():
-        print(f"Create it again from the CodeRunner checkout: ./install.sh {' '.join(options)}")
-        if carried.exists():
-            print(f"The browser profile, downloads and workspace are kept in {carried}.")
-        return 0
-    print(f"Recreating it: ./install.sh {' '.join(options)}", flush=True)
-    code = subprocess.call([str(installer), *options], cwd=installer.parent, env=env)
-    if carried.exists():
-        if code == 0 and driver.status() == "running" and computer.carry_in(driver, carried):
-            print("Put the browser profile, downloads and workspace back.")
-        else:
-            print(f"The browser profile, downloads and workspace are kept in {carried}.")
-    return code
+    return reset.recreate(driver, state, options, env, lambda line: print(line, flush=True))
 
 
 def cmd_app(args, config: Config) -> int:

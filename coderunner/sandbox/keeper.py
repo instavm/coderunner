@@ -12,16 +12,25 @@ The daemon asks at start, the app whenever it wants the screen, and a task whene
      else the VM stopped and started; else the container service itself restarted (at most once an hour).
 
 Attempts repeat with a growing wait; after the last one fails it rests, and the app says one plain sentence.
-The VM and its disk are never deleted here.
+
+It also keeps the VM's disk small (watch_disk). That disk is a file on the Mac that only grows: blocks freed inside
+the VM are never given back. Once an hour it is measured; past its budget (sandbox.disk_budget_gb) the VM is created
+again the way `coderunner sandbox reset` does it, with the owner's data carried over on the data volume, which is
+never deleted. Only with no task running and the owner away from the Mac, at most once a day, never when the VM
+has not grown much since it was last made (a fresh VM above the budget would be made again for nothing), and never
+when the Mac lacks the room to make it. Each decision is audited, and the app says it once, quietly.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import math
 import pathlib
+import re
 import shutil
+import subprocess
 import sys
 import time
 from typing import Any, Awaitable, Callable
@@ -37,6 +46,22 @@ MESSAGES = {
     ABSENT: "This install has no computer for the assistant.",
 }
 VM_DISK_FULL = "The assistant's computer has run out of disk space."
+TIDYING = "Tidying the assistant's computer…"
+TIDIED = "Tidied the assistant's computer"
+NOTE_KEPT_S = 86400                 # the app shows the note once, if it opens within a day
+
+
+def mac_idle_seconds() -> float | None:
+    """Seconds since the owner last touched the Mac's keyboard, mouse or trackpad (HIDIdleTime); None elsewhere."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        out = subprocess.run(["ioreg", "-c", "IOHIDSystem", "-d", "4", "-r", "-k", "HIDIdleTime"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = re.search(r'"HIDIdleTime"\s*=\s*(\d+)', out or "")
+    return int(found.group(1)) / 1e9 if found else None
 
 # Inside the VM: can it write to its own disk, and is the desktop installed? Exit 3 is a disk that fails writes.
 PROBE = ("touch /var/tmp/.coderunner-probe && rm -f /var/tmp/.coderunner-probe || exit 3; "
@@ -95,12 +120,28 @@ class Keeper:
     HEALTH_WAIT_S = 60
     LOW_DISK_GB = 2.0
     BROWSER_GAP_S = 30              # Chrome is reopened on a screen without it at most this often
+    DISK_EVERY_S = 3600             # the VM's disk is measured this often
+    TIDY_GAP_S = 86400              # and made again at most this often
+    TIDY_GROWTH_GB = 1.0            # only when it has grown at least this much since it was last made
+    OWNER_AWAY_S = 900              # the owner counts as away after this long without touching the Mac
 
     def __init__(self, config, driver, sandbox, audit, *, installer: Callable | None = None,
                  on_mode: Callable[[], Any] | None = None, disk_free_gb: Callable[[], float] | None = None,
                  vnc_check: Callable[[str, int], Awaitable[bool]] | None = None,
-                 sleep: Callable[[float], Awaitable] | None = None, clock: Callable[[], float] = time.monotonic):
+                 sleep: Callable[[float], Awaitable] | None = None, clock: Callable[[], float] = time.monotonic,
+                 busy: Callable[[], bool] | None = None, owner_away: Callable[[], bool] | None = None,
+                 recreate: Callable[[Any], bool] | None = None, tidy_file: pathlib.Path | None = None,
+                 wall: Callable[[], float] = time.time):
+        """busy: whether a task is running; owner_away: whether the owner is away from the Mac (both required for
+        the disk budget: without them the VM is never made again); recreate: makes the VM again (sandbox/reset.py);
+        tidy_file: where the last time it was made, and its size then, are kept across restarts."""
         self.config, self.driver, self.sandbox, self.audit = config, driver, sandbox, audit
+        self._busy, self._owner_away = busy, owner_away
+        self._recreate = recreate
+        self._tidy_file = tidy_file
+        self._wall = wall
+        self._skipped = ""
+        self.note: dict | None = None       # {"text", "at"}: said once by the app after the VM was made again
         self._installer = installer
         self._on_mode = on_mode
         self._disk_free_gb = disk_free_gb or self._mac_disk_free_gb
@@ -351,6 +392,137 @@ class Keeper:
         if again is None:
             return self._ready()
         return "broken" if again == "missing" else await self._repair(again)
+
+    # ---- the VM's disk on the Mac -----------------------------------------------
+
+    def budget_gb(self) -> float:
+        try:
+            return max(0.0, float(self.config.get("sandbox.disk_budget_gb", 8) or 0))
+        except (TypeError, ValueError):
+            return 8.0
+
+    def disk_gb(self) -> float | None:
+        """What the VM's disk takes on the Mac now (a stat of its file), or None where it is not measured."""
+        try:
+            used = self.driver.disk_bytes()
+        except Exception:
+            return None
+        return round(used / 1e9, 1) if used else None
+
+    def public_note(self) -> dict | None:
+        """The quiet note for the app, while it is fresh."""
+        if self.note and self._wall() - self.note["at"] < NOTE_KEPT_S:
+            return dict(self.note)
+        return None
+
+    async def watch_disk(self) -> None:
+        """The daemon's slow loop: the VM's disk looked at once an hour."""
+        while True:
+            await self._sleep(self.DISK_EVERY_S)
+            try:
+                await self.check_disk()
+            except Exception as exc:          # never let a surprise end the watch
+                self.audit.write("computer.error", error=f"disk: {type(exc).__name__}: {exc}"[:200])
+
+    async def check_disk(self) -> str:
+        """One look at the VM's disk; what was decided. "tidying" starts making the VM again (in self._task)."""
+        budget = self.budget_gb()
+        used = await asyncio.to_thread(self.disk_gb)
+        if used is None or budget <= 0:
+            return "unmeasured" if used is None else "off"
+        kept = self._tidy_state()
+        if kept.get("pending") and self.state == READY:
+            # The size of the VM as made, its desktop and Chrome included: growth is counted from here.
+            kept = {**kept, "fresh_gb": used}
+            kept.pop("pending")
+            self._save_tidy_state(kept)
+        if used <= budget:
+            self._skipped = ""
+            return "within"
+        image_gb = None
+        fresh = kept.get("fresh_gb")
+        if fresh is None:
+            image_gb = await asyncio.to_thread(self._image_gb)
+            fresh = image_gb or 0.0
+        if used - fresh < self.TIDY_GROWTH_GB:
+            return self._skip("fresh", used, budget, fresh_gb=fresh)
+        if self._wall() - float(kept.get("at") or 0) < self.TIDY_GAP_S:
+            return self._skip("today", used, budget)
+        if self._task is not None and not self._task.done():
+            return self._skip("working", used, budget)
+        if self._busy is None or self._owner_away is None or self._recreate is None:
+            return self._skip("unwired", used, budget)
+        if self._busy():
+            return self._skip("task", used, budget)
+        if not self._owner_away():
+            return self._skip("owner", used, budget)
+        if image_gb is None:
+            image_gb = await asyncio.to_thread(self._image_gb)
+        need = (image_gb or fresh or used) + self.LOW_DISK_GB
+        try:
+            free = self._disk_free_gb()
+        except Exception:
+            free = 0.0
+        if free < need:
+            return self._skip("low_disk", used, budget, free_gb=round(free, 1), need_gb=round(need, 1))
+        self._skipped = ""
+        self._last_start = self._clock()
+        self._healthy_event().clear()
+        self._set(WORKING, TIDYING)
+        self._task = asyncio.get_running_loop().create_task(self._tidy(used, budget))
+        return "tidying"
+
+    async def _tidy(self, used: float, budget: float) -> str:
+        # Kept before anything is deleted: a daemon that stops midway does not try again within the day.
+        kept = {"at": self._wall(), "pending": True, "before_gb": used}
+        self._save_tidy_state(kept)
+        self.audit.write("sandbox.tidy", used_gb=used, budget_gb=budget)
+        ok = bool(await self._call(self._recreate, self.driver, default=False))
+        self.audit.write("sandbox.tidied", ok=ok, was_gb=used, used_gb=await asyncio.to_thread(self.disk_gb))
+        if ok:
+            self.note = {"text": TIDIED, "at": self._wall()}
+        else:                                # nothing to count growth from: the image's size stands in for it
+            kept.pop("pending")
+            self._save_tidy_state(kept)
+        outcome = await self._run()          # up again, with its desktop and Chrome
+        fresh = await asyncio.to_thread(self.disk_gb) if ok and outcome == READY else None
+        if fresh is not None:                # its size as made, desktop included: growth counts from here
+            kept.pop("pending")
+            self._save_tidy_state({**kept, "fresh_gb": fresh})
+        return outcome
+
+    def _skip(self, reason: str, used: float, budget: float, **more) -> str:
+        if reason != self._skipped:          # audited when the reason changes, not every hour
+            self.audit.write("sandbox.tidy_skipped", reason=reason, used_gb=used, budget_gb=budget, **more)
+            self._skipped = reason
+        return reason
+
+    def _image_gb(self) -> float | None:
+        try:
+            image = (self.driver.settings() or {}).get("image") or ""
+            size = self.driver.image_bytes(image) if image else None
+        except Exception:
+            return None
+        return round(size / 1e9, 1) if size else None
+
+    def _tidy_path(self) -> pathlib.Path:
+        if self._tidy_file is None:
+            from ..core import paths
+            self._tidy_file = paths.assistant_dir() / "sandbox-tidy.json"
+        return self._tidy_file
+
+    def _tidy_state(self) -> dict:
+        try:
+            kept = json.loads(self._tidy_path().read_text())
+        except (OSError, ValueError):
+            return {}
+        return kept if isinstance(kept, dict) else {}
+
+    def _save_tidy_state(self, kept: dict) -> None:
+        with contextlib.suppress(OSError):
+            path = self._tidy_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(kept))
 
     # ---- pieces -------------------------------------------------------------
 

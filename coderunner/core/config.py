@@ -21,6 +21,7 @@ DEFAULTS: dict[str, Any] = {
         "url": "",                   # MCP/REST base, e.g. http://coderunner.local:8222
         "network": "default",        # default | none | proxy
         "memory_gb": 2,              # VM memory, subtracted from the model budget (install.sh --memory, lite: 2g)
+        "disk_budget_gb": 8,         # the VM's disk on the Mac past this: recreated when idle, data kept; 0: never
     },
     "gateway": {
         "sandbox_bind": "auto",      # host address the sandbox can reach, or "auto"

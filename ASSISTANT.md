@@ -262,6 +262,11 @@ declares success. If a model fails the test, the next candidate is tried.
   CPUs (`./install.sh --memory 4g --cpus 8` for more; `sandbox.memory_gb`
   tells model selection what it takes). The image keeps its build tools,
   Java, ffmpeg, Node and Playwright browsers, so most work needs no install.
+  The VM's disk is a file on the Mac that never shrinks, so caches are cleared
+  at each start, Chrome's cache is capped at 256 MB, and past
+  `sandbox.disk_budget_gb` (8 GB; 0 turns it off) the daemon creates the VM
+  again as `coderunner sandbox reset` does, keeping the data volume: only with
+  no task running and you away from the Mac, at most once a day.
   Apple's container service is started with the sandbox when it is stopped
   (as after a restart). The assistant browses with your own browser on the
   host. `./install.sh --profile full` adds Jupyter kernels and the headless

@@ -822,6 +822,9 @@ def admin_app(svc, daemon) -> Starlette:
             shown = {"available": False, "running": False, **told}
         shown["mode"] = svc.browser.mode
         shown["browser_running"] = svc.browser.running()
+        note = keeper.public_note() if keeper is not None and hasattr(keeper, "public_note") else None
+        if isinstance(note, dict):          # "Tidied the assistant's computer": the app says it once
+            shown["note"] = note
         return JSONResponse(shown)
 
     async def computer_screen(websocket: WebSocket):

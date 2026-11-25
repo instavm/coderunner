@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
+import pathlib
 import platform
 import shutil
 import subprocess
@@ -78,6 +80,14 @@ class Driver:
             return None, str(exc)
         return done.returncode, (done.stdout + done.stderr).decode(errors="replace")
 
+    def disk_bytes(self) -> int | None:
+        """What the VM's disk takes on this computer's disk, or None where that is not measured here."""
+        return None
+
+    def image_bytes(self, image: str) -> int | None:
+        """About what a new VM's disk from `image` takes when created, or None when unknown."""
+        return None
+
     def restart_service(self) -> bool:
         """Restart the platform's container service itself, for a VM that is listed as running but takes no
         commands. Only where that is ours to do (Apple `container`); False elsewhere."""
@@ -99,8 +109,16 @@ class Driver:
         return "http://127.0.0.1:8222"
 
 
+def _allocated(path: pathlib.Path) -> int:
+    """Bytes a file really takes on disk: the VM's disk file is sparse, hundreds of GB on paper."""
+    return os.stat(path).st_blocks * 512
+
+
 class AppleDriver(Driver):
     name = "apple"
+    # Where Apple's container service keeps VMs (containers/<name>/rootfs.ext4) and unpacked images (snapshots/).
+    root = pathlib.Path.home() / "Library" / "Application Support" / "com.apple.container"
+    UNPACKED = 3                    # an image's compressed layers unpack to about three times their size
 
     def available(self) -> bool:
         return platform.system() == "Darwin" and shutil.which("container") is not None
@@ -178,6 +196,36 @@ class AppleDriver(Driver):
 
     def logs_argv(self, follow: bool) -> list[str]:
         return ["container", "logs", *(["--follow"] if follow else []), self.container]
+
+    def disk_bytes(self) -> int | None:
+        # The VM's root disk only grows on the Mac: blocks freed inside are not given back (fstrim is refused).
+        try:
+            return _allocated(self.root / "containers" / self.container / "rootfs.ext4")
+        except OSError:
+            return None
+
+    def image_bytes(self, image: str) -> int | None:
+        try:
+            listed = _run(["container", "image", "list", "--format", "json"], timeout=30)
+            images = json.loads(listed.stdout or "[]") if listed.returncode == 0 else []
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+        want = image.removeprefix("docker.io/library/")
+        arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine(), platform.machine())
+        for entry in images if isinstance(images, list) else []:
+            name = str((entry.get("configuration") or {}).get("name") or "").removeprefix("docker.io/library/")
+            if name != want:
+                continue
+            for variant in entry.get("variants") or []:
+                found = variant.get("platform") or {}
+                if found.get("os") != "linux" or found.get("architecture") != arch:
+                    continue
+                snapshot = self.root / "snapshots" / str(variant.get("digest", "")).split(":")[-1]
+                if snapshot.is_dir():
+                    return sum(_allocated(pathlib.Path(top) / file) for top, _, files in os.walk(snapshot)
+                               for file in files)
+                return int(variant.get("size") or 0) * self.UNPACKED or None
+        return None
 
     def settings(self) -> dict:
         info = self._inspect()

@@ -148,6 +148,35 @@ class Daemon:
         if await self.computer.ensure(desktop=False, timeout=600):
             await self._vm_timezone()
 
+    def _disk_status(self) -> dict:
+        keeper = self.svc.computer
+        try:
+            used, budget = keeper.disk_gb(), keeper.budget_gb()
+        except Exception:
+            return {"disk_gb": None, "disk_budget_gb": None}
+        number = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None  # noqa: E731
+        return {"disk_gb": number(used), "disk_budget_gb": number(budget)}
+
+    def _tasks_busy(self) -> bool:
+        """A task running or waiting for a place, or a check under way: the VM is not to be made again now."""
+        tasks = getattr(self, "tasks", None)
+        if tasks is None:
+            return True                     # not ready to tell yet
+        check = getattr(self, "check", None)
+        return bool(tasks.running or tasks.waiting or getattr(check, "state", "") == "running")
+
+    def _owner_away(self) -> bool:
+        """The owner is not using the computer: not typing in its terminal, not in control of its screen, and
+        away from the Mac itself (no keyboard, mouse or trackpad for a while). Unknown counts as present."""
+        from ..sandbox.keeper import Keeper, mac_idle_seconds
+        svc = self.svc
+        if svc.terminal is not None and svc.terminal.typing():
+            return False
+        if getattr(svc.browser, "owner_control", False):
+            return False
+        idle = mac_idle_seconds()
+        return idle is not None and idle >= Keeper.OWNER_AWAY_S
+
     def _computer_mode(self) -> None:
         """The keeper gave the sandbox its desktop and moved the assistant's browser there."""
         self.svc.browser.restart = self._restart_vm_browser
@@ -274,7 +303,10 @@ class Daemon:
         if self.config.get("browser.mode") == "computer":
             svc.browser.restart = self._restart_vm_browser      # what the broker falls back to when Chrome is stuck
         from ..sandbox.keeper import Keeper
-        svc.computer = self.computer = Keeper(self.config, driver, svc.sandbox, audit, on_mode=self._computer_mode)
+        from ..sandbox.reset import recreate_quietly
+        svc.computer = self.computer = Keeper(self.config, driver, svc.sandbox, audit, on_mode=self._computer_mode,
+                                              busy=self._tasks_busy, owner_away=self._owner_away,
+                                              recreate=recreate_quietly)
         svc.browser.computer = svc.computer                     # a task that needs the screen asks for it
         if claude is not None:
             # A model with room to read gets more of each page at once, and links whole enough to cite: a local
@@ -491,7 +523,9 @@ class Daemon:
                        "decision": svc.remote["model"] if svc.remote else self.config.get("models.decision") or "",
                        "embedding": self.config.get("models.embedding") or svc.embedding_model,
                        "local_chat": self.config.get("models.chat") or ""},
-            "sandbox": {"driver": self.driver.name, "url": svc.sandbox.base_url, "healthy": await svc.sandbox.health()},
+            "sandbox": {"driver": self.driver.name, "url": svc.sandbox.base_url, "healthy": await svc.sandbox.health(),
+                        # what its disk takes on the Mac (None where not measured), and the budget it is kept to
+                        **self._disk_status()},
             "network": self.config.get("sandbox.network"),
             "channels": sorted(svc.channels),
             "connectors": sorted({c.connector for c in svc.connectors}),
@@ -575,6 +609,7 @@ class Daemon:
             self._tasks.append(asyncio.create_task(self._proxy_with_retry(proxy_servers)))
         self._tasks.append(asyncio.create_task(svc.scheduler.run_forever()))
         self._tasks.append(asyncio.create_task(svc.files.run_forever()))
+        self._tasks.append(asyncio.create_task(self.computer.watch_disk()))     # the VM's disk kept small
         if svc.chrome is not None:
             try:
                 await svc.chrome.start()
