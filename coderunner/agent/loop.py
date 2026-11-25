@@ -782,8 +782,11 @@ class Agent:
         cut = compaction.cut_point(messages, head, compaction.keep_tokens(held))
         summarized = [m for m in messages[head:cut or head] if not compaction.is_summary(m)]
         text, why, usage = "", "", {}
+        fast = getattr(self.llm, "remote", False) and getattr(self.llm, "provider", "") != "openai"
         if cut is None or compaction.tokens_of(summarized) < compaction.MIN_SUMMARIZED * held:
             why = "nothing_to_summarize"
+        elif held < compaction.SUMMARY_MIN_ROOM and not fast:
+            why = "small_room"              # the key-line trim, in one go: cheaper than a summary at this size
         elif ctx.compaction.get("fails", 0) >= compaction.SUMMARY_FAILS:
             why = "summaries_failed_before"
         else:
@@ -796,7 +799,7 @@ class Agent:
             done = self._fallback(messages, known, context, room, words, size, bool(force))
             record.update(fallback=why, after=done["after"] if done else size, seconds=round(time.monotonic() - started, 1),
                           **({"results": done["results"]} if done else {}))
-            if done or why not in ("nothing_to_summarize", "summaries_failed_before"):     # not each step it waits
+            if done or why not in ("nothing_to_summarize", "summaries_failed_before", "small_room"):
                 self.svc.audit.write("agent.compacted", conversation=ctx.conversation, **record)
             return done
         tail = messages[cut:]

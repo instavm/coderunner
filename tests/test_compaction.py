@@ -35,6 +35,18 @@ def page_text(n: int, chars: int = 3500) -> str:
     return "\n".join(lines)
 
 
+
+def setUpModule():
+    # These tests use small rooms to keep the fakes short; summaries are tested as on a large room or a fast model.
+    from coderunner.agent import compaction as _compaction
+    global _SUMMARY_MIN_ROOM
+    _SUMMARY_MIN_ROOM, _compaction.SUMMARY_MIN_ROOM = _compaction.SUMMARY_MIN_ROOM, 0
+
+
+def tearDownModule():
+    from coderunner.agent import compaction as _compaction
+    _compaction.SUMMARY_MIN_ROOM = _SUMMARY_MIN_ROOM
+
 class Pages:
     async def navigate(self, url, tainted=False):
         n = int(url.rsplit("/", 1)[1])
@@ -211,6 +223,20 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(price(n), text)                                       # in the summary or the tail
         tail = [m for m in last[len(head):] if m.get("role") == "tool"]
         self.assertFalse(any(is_cut(m["content"]) for m in tail))               # the kept steps are verbatim
+
+    async def test_a_small_room_on_a_local_model_trims_in_one_go_without_a_summary(self):
+        # At 32K on Bonsai 2.5 a summary took 28-38 s every 3-4 steps: below SUMMARY_MIN_ROOM it is not asked for.
+        compaction.SUMMARY_MIN_ROOM = 48_000
+        try:
+            model = Model(16384, [opened(n) for n in range(20)])
+            agent, svc = agent_for(model)
+            await agent.run(RunContext(conversation="c-small"), REQUEST)
+        finally:
+            compaction.SUMMARY_MIN_ROOM = 0
+        self.assertEqual(model.summaries(), [])
+        reasons = {r.get("fallback") for r in compacted(svc)}
+        self.assertEqual(reasons, {"small_room"})
+        self.assertTrue(all(paired(step) for step in model.steps()))
 
     async def test_the_summary_is_carried_forward_and_refined(self):
         model = Model(16384, [opened(n) for n in range(30)])

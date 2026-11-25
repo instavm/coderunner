@@ -11,6 +11,18 @@ from coderunner.core.llm import LLM, parse_text_tool_calls
 from fakes import FakeOpenAI, Svc, tool_call
 
 
+
+def setUpModule():
+    # These tests use small rooms to keep the fakes short; summaries are tested as on a large room or a fast model.
+    from coderunner.agent import compaction as _compaction
+    global _SUMMARY_MIN_ROOM
+    _SUMMARY_MIN_ROOM, _compaction.SUMMARY_MIN_ROOM = _compaction.SUMMARY_MIN_ROOM, 0
+
+
+def tearDownModule():
+    from coderunner.agent import compaction as _compaction
+    _compaction.SUMMARY_MIN_ROOM = _SUMMARY_MIN_ROOM
+
 class FakeSandbox:
     def __init__(self):
         self.calls = []

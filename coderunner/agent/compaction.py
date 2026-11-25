@@ -26,6 +26,11 @@ KEEP_MOST = 20000           # tokens kept verbatim at most (Pi's keepRecent), so
 MIN_SUMMARIZED = 0.1        # a compaction that would summarize less than this share of the room is not made
 HUGE_RESULT = 0.12          # a single result in the kept tail larger than this share of the room is digested
 SUMMARY_TOKENS = 700
+# Below this room per task a local model's summaries cost more than they save: at 32K on Bonsai 2.5 (~32 tokens a
+# second written) a summary took 28-38 s and came every 3-4 steps, nine in one task, and the task took 24 min
+# against 13.6 with the extractive trim; Pi's design assumes a large window (16K reserved of 200K). A fast model
+# (Claude) writes one in a second or two and summarizes at any size.
+SUMMARY_MIN_ROOM = 48_000
 SUMMARY_TIMEOUT_S = 60
 SUMMARY_MIN_CHARS = 200
 SUMMARY_FAILS = 2           # failed summaries in a run before it keeps to the extractive trim

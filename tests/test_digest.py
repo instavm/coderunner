@@ -48,6 +48,18 @@ def conversation(steps: int) -> tuple[list[dict], list[str]]:
     return messages, sorted({p[1] for p in PRODUCTS})
 
 
+
+def setUpModule():
+    # These tests use small rooms to keep the fakes short; summaries are tested as on a large room or a fast model.
+    from coderunner.agent import compaction as _compaction
+    global _SUMMARY_MIN_ROOM
+    _SUMMARY_MIN_ROOM, _compaction.SUMMARY_MIN_ROOM = _compaction.SUMMARY_MIN_ROOM, 0
+
+
+def tearDownModule():
+    from coderunner.agent import compaction as _compaction
+    _compaction.SUMMARY_MIN_ROOM = _SUMMARY_MIN_ROOM
+
 class DigestTests(unittest.TestCase):
     def test_a_page_keeps_its_address_title_and_the_lines_that_matter_within_its_cap(self):
         page = product(3, *PRODUCTS[0])
