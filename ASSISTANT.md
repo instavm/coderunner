@@ -895,7 +895,8 @@ inside the VM, else the VM stopped and started, else Apple's container service r
 for a VM listed as running that takes no commands. A Mac with less than 2 GB free is said to be the cause and
 nothing is tried. Attempts repeat after 5, 15, 45 and 120 seconds, then rest (5 minutes, doubling to an hour);
 the VM and its disk are never deleted. The desktop Chrome's profile, its Downloads and `/workspace` live on the
-`coderunner-data` volume (`/data`), which outlives a VM created again for an image upgrade. The app's files are served with `Cache-Control: no-cache`, so a
+`coderunner-data` volume (`/data`), which outlives a VM created again for an image upgrade; `coderunner sandbox
+reset` of a VM from before the volume copies them out first and puts them back into the new one. The app's files are served with `Cache-Control: no-cache`, so a
 browser does not pair an old page with a new script.
 
 Where no model is set up yet, the app opens on a setup screen instead of tasks, with the window to itself (no

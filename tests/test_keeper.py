@@ -440,6 +440,93 @@ class PersistenceTests(unittest.TestCase):
         self.assertFalse((home / "Downloads").is_symlink())
         self.assertFalse(workspace.is_symlink())
 
+    def test_a_reset_carries_the_profile_downloads_and_workspace_of_a_vm_from_before_the_volume(self):
+        from coderunner.sandbox import computer
+        root = pathlib.Path(tempfile.mkdtemp())
+        old, new, shims = root / "old", root / "new", root / "bin"
+        shims.mkdir()
+        (shims / "getent").write_text("#!/bin/sh\necho 'box:x:1000:1000::/home/box:/bin/bash'\n")
+        (shims / "getent").chmod(0o755)
+        profile = old / "home/box/.config/coderunner-chrome"
+        (profile / "Default/Cache").mkdir(parents=True)
+        (profile / "Default/Cookies").write_text("signed in")
+        (profile / "Default/Cache/data_0").write_text("cache")
+        (old / "home/box/Downloads").mkdir(parents=True)
+        (old / "home/box/Downloads/report.pdf").write_text("pdf")
+        (old / "workspace").mkdir()
+        (old / "workspace/notes.txt").write_text("notes")
+        # The new VM already links its folders into the data volume (entrypoint.sh).
+        data = new / "data"
+        for name in ("chrome-profile", "downloads", "workspace"):
+            (data / name).mkdir(parents=True)
+        (new / "home/box/.config").mkdir(parents=True)
+        (new / "home/box/.config/coderunner-chrome").symlink_to(data / "chrome-profile")
+        (new / "home/box/Downloads").symlink_to(data / "downloads")
+        (new / "workspace").symlink_to(data / "workspace")
+
+        class Driver:
+            def __init__(self, at):
+                self.at = at
+
+            def exec_argv(self, command, tty):
+                script = command[2].replace("cd / ", f"cd {self.at} ").replace("-C / ", f"-C {self.at} ")
+                if "GNU" not in subprocess.run(["tar", "--version"], capture_output=True, text=True).stdout:
+                    # The VM's tar is GNU's; bsdtar (macOS) extracts through a linked folder only with -P.
+                    script = script.replace("--keep-directory-symlink", "-P")
+                return ["env", f"PATH={shims}:/usr/bin:/bin", "sh", "-c", script]
+
+        carried, said = root / "carry.tar", []
+        self.assertTrue(computer.carry_out(Driver(old), carried, said.append), said)
+        self.assertTrue(computer.carry_in(Driver(new), carried, said.append), said)
+        self.assertEqual((data / "chrome-profile/Default/Cookies").read_text(), "signed in")
+        self.assertFalse((data / "chrome-profile/Default/Cache").exists())          # caches are left behind
+        self.assertEqual((data / "downloads/report.pdf").read_text(), "pdf")
+        self.assertEqual((data / "workspace/notes.txt").read_text(), "notes")
+        self.assertTrue((new / "workspace").is_symlink())
+        self.assertFalse(carried.exists())
+        # A VM already on the volume has nothing to carry.
+        self.assertIsNone(computer.carry_out(Driver(new), carried, said.append))
+
+    def test_reset_copies_out_before_deleting_and_back_after_recreating(self):
+        import argparse
+        import os
+        from coderunner import cli
+        from coderunner.sandbox import computer
+        order = []
+
+        class Driver:
+            name = "apple"
+
+            def status(self):
+                return "running"
+
+            def settings(self):
+                return {}
+
+            def delete(self):
+                order.append("delete")
+                return True
+
+        def out(driver, target, say=print):
+            order.append("out")
+            target.write_bytes(b"tar")
+            return True
+
+        def back(driver, source, say=print):
+            order.append("in")
+            source.unlink()
+            return True
+        home = tempfile.mkdtemp()
+        args = argparse.Namespace(action="reset", cpus=None, memory=None, network=None, mount=None, build=False,
+                                  yes=True)
+        with mock.patch.dict(os.environ, {"CODERUNNER_HOME": home}), \
+                mock.patch("coderunner.sandbox.driver_for", return_value=Driver()), \
+                mock.patch.object(computer, "carry_out", out), mock.patch.object(computer, "carry_in", back), \
+                mock.patch.object(cli.subprocess, "call", side_effect=lambda *a, **k: order.append("install") or 0), \
+                mock.patch("builtins.print"):
+            self.assertEqual(cli.cmd_sandbox(args, mock.Mock()), 0)
+        self.assertEqual(order, ["out", "delete", "install", "in"])
+
     def test_the_installer_gives_the_vm_the_data_volume_and_the_desktop_image(self):
         install = (ROOT / "install.sh").read_text()
         self.assertEqual(len(re.findall(r'--volume "\$DATA_VOLUME:/data"', install)), 2)     # Apple and Docker

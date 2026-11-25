@@ -199,7 +199,9 @@ def cmd_sandbox(args, config: Config) -> int:
     # reset: delete the VM and its filesystem, then create it again with the installer. Settings not given here
     # are kept from the old sandbox: a reset must not reopen the network of a `--network none` sandbox, drop its
     # mounts, or move it to another CodeRunner home. Only the sandbox is recreated (--no-assistant), not models.
+    from .sandbox import computer
     installer = pathlib.Path(__file__).resolve().parent.parent / "install.sh"
+    carried = paths.home() / "sandbox-carry.tar"
     kept = driver.settings() if state != "missing" else {}
     chosen = {"cpus": args.cpus or kept.get("cpus"), "memory": args.memory or kept.get("memory"),
               "network": args.network or kept.get("network"), "profile": kept.get("profile")}
@@ -221,15 +223,28 @@ def cmd_sandbox(args, config: Config) -> int:
             if answer.strip().lower() not in ("y", "yes"):
                 print("Nothing was deleted.")
                 return 1
+        # A sandbox from before the data volume keeps the desktop Chrome's sign-ins, its downloads and the
+        # workspace on its own disk: they are copied out first and put back into the new one.
+        if state == "running":
+            print("Copying the browser profile, downloads and workspace out of the sandbox...", flush=True)
+            computer.carry_out(driver, carried)
         if not driver.delete():
             print("❌ The sandbox could not be deleted.")
             return 1
         print("Deleted the sandbox.", flush=True)
     if not installer.exists():
         print(f"Create it again from the CodeRunner checkout: ./install.sh {' '.join(options)}")
+        if carried.exists():
+            print(f"The browser profile, downloads and workspace are kept in {carried}.")
         return 0
     print(f"Recreating it: ./install.sh {' '.join(options)}", flush=True)
-    return subprocess.call([str(installer), *options], cwd=installer.parent, env=env)
+    code = subprocess.call([str(installer), *options], cwd=installer.parent, env=env)
+    if carried.exists():
+        if code == 0 and driver.status() == "running" and computer.carry_in(driver, carried):
+            print("Put the browser profile, downloads and workspace back.")
+        else:
+            print(f"The browser profile, downloads and workspace are kept in {carried}.")
+    return code
 
 
 def cmd_app(args, config: Config) -> int:
