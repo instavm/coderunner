@@ -239,8 +239,16 @@ TRIM_AT = 0.6         # old pages are dropped once the conversation fills this s
 # where a normal turn re-reads ~1,200. So a trim goes down to LOW_WATER in one go, keeping the latest
 # KEEP_STEPS steps whole, and is not made at all when it would free less than MIN_FREED: the next one is then
 # far away. Both are shares of the context, or of the room the other slots leave when that is smaller.
+# On the owner's server from 24 November, trims still reached LOW_WATER in only 2 of 334 (median 27,200 tokens down
+# to 20,200): what was left was mostly results under BIG_RESULT (click and code results) and the latest steps,
+# so the next trim came a page or two later, and must-trims late in a task re-read ~25,000 tokens to free ~400.
+# A trim therefore also lets go of old results longer than MEDIUM_RESULT once the long ones are not enough, and
+# one that must but would free less than MIN_MUST_FREED is not made: the latest step's results are cut to fit
+# instead (_cut_step), and a task that is full answers from what it has.
 LOW_WATER = 0.35
 MIN_FREED = 0.15
+MIN_MUST_FREED = 0.03
+MEDIUM_RESULT = 600
 KEEP_STEPS = 2
 CHARS_PER_TOKEN = 3.5
 # The local runtime's context is shared by every slot (the tasks' and the judge's), so a task keeps its
@@ -482,9 +490,10 @@ class Agent:
 
     def _trim(self, messages: list[dict], known: list[int], context: int, room: int) -> dict | None:
         """Old results let go when the conversation nears its room: pages first, then other long results (shell
-        output, file text), oldest first, down to LOW_WATER, never from the latest KEEP_STEPS steps. Nothing is
-        changed when that would free less than MIN_FREED, unless the conversation is past FIT of its room: then
-        it must shrink, from the latest step's results back if need be. Returns what it did, for the audit."""
+        output, file text), then results longer than MEDIUM_RESULT, oldest first, down to LOW_WATER, never from
+        the latest KEEP_STEPS steps. Nothing is changed when that would free less than MIN_FREED, unless the
+        conversation is past FIT of its room: then it must shrink, from the latest step's results back if need
+        be, unless even that frees less than MIN_MUST_FREED. Returns what it did, for the audit."""
         size = self._size(messages, known)
         if size <= min(TRIM_AT * context, FIT * room):
             return None
@@ -493,22 +502,24 @@ class Agent:
         steps = [i for i, m in enumerate(messages) if m.get("tool_calls")]
         keep_from = steps[-KEEP_STEPS] if len(steps) >= KEEP_STEPS else 0
         trial, removed = list(messages), []
-        for pages_only in (True, False):
+        for least, pages_only in ((BIG_RESULT, True), (BIG_RESULT, False), (MEDIUM_RESULT, False)):
             for index, m in enumerate(trial[:keep_from]):
                 if size - self._freed(removed, known) <= LOW_WATER * base:
                     break
                 text = m.get("content")
-                if (m.get("role") != "tool" or not isinstance(text, str) or len(text) <= BIG_RESULT
+                if (m.get("role") != "tool" or not isinstance(text, str) or len(text) <= least
                         or text.endswith(DROPPED) or (pages_only and not text.startswith(PAGE_PREFIX))):
                     continue
                 short = dropped(text)
+                if len(short) >= len(text):
+                    continue
                 trial[index] = {**m, "content": short}
                 removed.append((index, len(text) - len(short)))
         if not must and self._freed(removed, known) < MIN_FREED * base:
             return None
         if must and size - self._freed(removed, known) > FIT * room:
             removed += self._drop_old(trial, steps[-1] if steps else 0, pages_only=False)
-        if not removed:
+        if not removed or (must and self._freed(removed, known) < MIN_MUST_FREED * base):
             return None
         freed = self._freed(removed, known)
         messages[:] = trial
@@ -777,7 +788,8 @@ class Agent:
                 self.svc.audit.write("agent.turn", step=step, think=think, read=timings.get("prompt_n"),
                                      cached=timings.get("cache_n"), wrote=timings.get("predicted_n"),
                                      read_ms=round(timings.get("prompt_ms") or 0),
-                                     wrote_ms=round(timings.get("predicted_ms") or 0))
+                                     wrote_ms=round(timings.get("predicted_ms") or 0),
+                                     **({"restored": reply["restored"]} if reply.get("restored") else {}))
             if usage.get("prompt_tokens"):
                 known = [len(messages), int(usage["prompt_tokens"])]
                 turns = getattr(self.svc, "turns", None)
