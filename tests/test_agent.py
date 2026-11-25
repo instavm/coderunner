@@ -1178,3 +1178,25 @@ class SandboxDownTests(unittest.IsolatedAsyncioTestCase):
         result = await registry.invoke("run_python", {"code": "print(1)"}, RunContext(conversation="s"))
         self.assertIn(SANDBOX_DOWN, result)
         self.assertIn(SANDBOX_DOWN, await registry.invoke("run_shell", {"command": "date"}, RunContext(conversation="s")))
+
+    async def test_a_sandbox_that_went_away_is_brought_back_for_the_task(self):
+        # The keeper starts or repairs the VM, and the step is tried once more instead of failing.
+        import httpx
+        from unittest import mock
+        from coderunner.agent.tools import SANDBOX_DOWN
+        svc = Svc()
+        gone = httpx.ConnectError("connection refused")
+        svc.sandbox = mock.Mock(start_session=mock.AsyncMock(), execute=mock.AsyncMock(
+            side_effect=[gone, {"stdout": "1\n"}]), shell=mock.AsyncMock(
+            side_effect=[gone, {"output": "Tue", "exit_code": 0, "cwd": "/root"}]))
+        svc.computer = mock.Mock(ensure=mock.AsyncMock(return_value=True))
+        registry = build_registry(svc)
+        self.assertIn("\n1\n", await registry.invoke("run_python", {"code": "print(1)"}, RunContext(conversation="s")))
+        svc.computer.ensure.assert_awaited_with(desktop=False, timeout=180)
+        shell = await registry.invoke("run_shell", {"command": "date"}, RunContext(conversation="s"))
+        self.assertIn("Tue", shell)
+        # Not back: said plainly, after one more try only.
+        svc.computer.ensure = mock.AsyncMock(return_value=False)
+        svc.sandbox.execute = mock.AsyncMock(side_effect=gone)
+        self.assertIn(SANDBOX_DOWN, await registry.invoke("run_python", {"code": "1"}, RunContext(conversation="s")))
+        self.assertEqual(svc.sandbox.execute.await_count, 1)

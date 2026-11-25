@@ -72,6 +72,54 @@ def _as_user(argv: list[str], account: pwd.struct_passwd, **kwargs) -> subproces
         out.close()
 
 
+# The desktop's backdrop: a vertical gradient xfdesktop draws itself, no image file, from deep navy at the top to the
+# app's blue at the bottom. desktop-setup.sh writes the same values.
+BACKDROP_TOP = ("0.059", "0.090", "0.200", "1")
+BACKDROP_BOTTOM = ("0.200", "0.380", "0.870", "1")
+BACKDROP_MARK = ".coderunner-backdrop"           # beside the settings: applied once, then the owner's to change
+STOCK_BACKDROP = "xfce-shapes"
+
+
+def backdrop_xml() -> str:
+    def rgba(name, values):
+        items = "".join(f'\n            <value type="double" value="{v}"/>' for v in values)
+        return f'          <property name="{name}" type="array">{items}\n          </property>\n'
+    workspaces = "".join(
+        f'        <property name="workspace{n}" type="empty">\n'
+        '          <property name="image-style" type="int" value="0"/>\n'
+        '          <property name="color-style" type="int" value="2"/>\n'
+        f'{rgba("rgba1", BACKDROP_TOP)}{rgba("rgba2", BACKDROP_BOTTOM)}'
+        '        </property>\n' for n in range(4))
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n<channel name="xfce4-desktop" version="1.0">\n'
+            '  <property name="backdrop" type="empty">\n    <property name="screen0" type="empty">\n'
+            f'      <property name="monitorVNC-0" type="empty">\n{workspaces}      </property>\n'
+            '    </property>\n  </property>\n</channel>\n')
+
+
+def apply_backdrop(home: pathlib.Path, uid: int = -1, gid: int = -1) -> bool:
+    """The gradient backdrop on a desktop that still has the stock one (no settings yet, or xfce-shapes), once:
+    before the session starts, so xfdesktop reads it. An owner's own backdrop is never replaced."""
+    folder = home / ".config" / "xfce4" / "xfconf" / "xfce-perchannel-xml"
+    target, mark = folder / "xfce4-desktop.xml", home / ".config" / "xfce4" / BACKDROP_MARK
+    if mark.exists():
+        return False
+    try:
+        current = target.read_text(errors="replace") if target.exists() else ""
+    except OSError:
+        return False
+    if current and STOCK_BACKDROP not in current:
+        return False
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        target.write_text(backdrop_xml())
+        mark.write_text("")
+        for path in (target, mark):
+            os.chown(path, uid, gid)
+    except OSError:
+        return False
+    return True
+
+
 def _alive(process: subprocess.Popen | None) -> bool:
     return process is not None and process.poll() is None
 
@@ -113,7 +161,7 @@ class Desktop:
                 return
             account = _account()
             if account is None or not available():
-                raise RuntimeError("This sandbox has no desktop. Run `coderunner browser computer`.")
+                raise RuntimeError("This sandbox has no desktop yet.")
             if not _alive(self.server):
                 with contextlib.suppress(FileNotFoundError):       # a stale lock from a server that crashed
                     os.unlink(f"/tmp/.X{DISPLAY_NUMBER}-lock")
@@ -132,6 +180,8 @@ class Desktop:
                         raise RuntimeError("The desktop's display server exited at startup")
                     await asyncio.sleep(0.1)
             if not _alive(self.session):
+                with contextlib.suppress(Exception):
+                    apply_backdrop(pathlib.Path(account.pw_dir), account.pw_uid, account.pw_gid)
                 self.session = _as_user(["dbus-launch", "--exit-with-session", "startxfce4"], account)
                 await asyncio.sleep(1.5)        # the panel and window manager settle before the first window
 
@@ -275,7 +325,7 @@ CHROME_RELAY = ChromeRelay(DESKTOP)
 async def api_desktop(request: Request):
     if request.method == "POST":
         if not available():
-            return JSONResponse({"error": "This sandbox has no desktop. Run `coderunner browser computer`."},
+            return JSONResponse({"error": "This sandbox has no desktop yet."},
                                 status_code=409)
         try:
             await DESKTOP.ensure()

@@ -176,17 +176,30 @@ def sandbox_tools(svc) -> list[Tool]:
         slot = getattr(getattr(ctx, "events", None), "slot", 0) or 0
         return "main" if not slot else f"task{slot + 1}"
 
+    async def brought_back() -> bool:
+        """The VM did not answer: the keeper gets it back (started, or repaired) for one more try."""
+        keeper = getattr(svc, "computer", None)
+        if keeper is None:
+            return False
+        try:
+            return await keeper.ensure(desktop=False, timeout=180)
+        except Exception:
+            return False
+
     async def run_python(args, ctx):
         session = args.get("session") or own(ctx)
         args = {**args, "code": in_sandbox(args["code"])}
         if not await approved(f"Run in the sandbox:\n{args['code']}", session, ctx):
             return "Error: the owner did not approve running this code."
-        try:
-            await svc.sandbox.start_session(session)
-            result = await svc.sandbox.execute(args["code"], session_id=session)
-        except (httpx.TransportError, OSError):
-            # A bare connection error had models retry run_python, then run_shell, a step each.
-            return SANDBOX_DOWN
+        for last in (False, True):
+            try:
+                await svc.sandbox.start_session(session)
+                result = await svc.sandbox.execute(args["code"], session_id=session)
+                break
+            except (httpx.TransportError, OSError):
+                # A bare connection error had models retry run_python, then run_shell, a step each.
+                if last or not await brought_back():
+                    return SANDBOX_DOWN
         return (result.get("stdout", "") + (("\n" + result["stderr"]) if result.get("stderr") else "")).strip() \
             or "(no output)"
 
@@ -195,16 +208,19 @@ def sandbox_tools(svc) -> list[Tool]:
         timeout = max(1, min(int(args.get("timeout") or 120), 3600))
         if not await approved(f"Run in the sandbox shell:\n{command}", session, ctx):
             return "Error: the owner did not approve running this command."
-        try:
-            result = await svc.sandbox.shell(command, session, timeout, bool(args.get("background")))
-        except ShellUnsupported:
-            # An image from before the shell API: one-off commands through Python, as before.
-            code = ("import subprocess\n"
-                    f"r = subprocess.run({command!r}, shell=True, capture_output=True, text=True, timeout=600)\n"
-                    "print(r.stdout[-20000:]); print(r.stderr[-5000:]); print('exit code', r.returncode)")
-            return await run_python({"code": code, "session": "shell"}, ctx)
-        except (httpx.TransportError, OSError):
-            return SANDBOX_DOWN
+        for last in (False, True):
+            try:
+                result = await svc.sandbox.shell(command, session, timeout, bool(args.get("background")))
+                break
+            except ShellUnsupported:
+                # An image from before the shell API: one-off commands through Python, as before.
+                code = ("import subprocess\n"
+                        f"r = subprocess.run({command!r}, shell=True, capture_output=True, text=True, timeout=600)\n"
+                        "print(r.stdout[-20000:]); print(r.stderr[-5000:]); print('exit code', r.returncode)")
+                return await run_python({"code": code, "session": "shell"}, ctx)
+            except (httpx.TransportError, OSError):
+                if last or not await brought_back():
+                    return SANDBOX_DOWN
         limit = int(getattr(svc.llm, "tool_output_chars", 0) or svc.config.get("agent.tool_output_chars", 12000)) - 400
         if "job" in result:
             return (f"Started job {result['job']} in {result.get('cwd', '')}; it keeps running on its own. "

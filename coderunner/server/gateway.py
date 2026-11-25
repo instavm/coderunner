@@ -744,50 +744,31 @@ def admin_app(svc, daemon) -> Starlette:
         return JSONResponse({"on": bool(getattr(browser, "owner_control", False))})
 
     async def computer(request: Request):
-        """The sandbox's screen; POST brings it up. The password opens the screen through /api/computer/screen."""
-        body = {}
-        if request.method == "POST":
-            with contextlib.suppress(Exception):
-                body = await request.json()
-        driver = getattr(daemon, "driver", None)
-        if body.get("start") and driver is not None:           # the owner's "Start it": the VM, then its screen
-            daemon.sandbox_starting = True
-            try:
-                await asyncio.to_thread(driver.start)
-                svc.audit.write("sandbox.started", driver=driver.name, origin=principal(request))
-            except Exception as exc:
-                svc.audit.write("sandbox.start_failed", driver=driver.name, error=str(exc)[:200])
-            finally:
-                daemon.sandbox_starting = False
-        try:
-            info = await svc.sandbox.desktop(start=request.method == "POST")
-        except Exception:               # no sandbox, or one that is not answering yet: said in the app's words
-            # Which of the three it is: still coming up (the daemon starts it), stopped, or never installed. The
-            # app says "starting" for the first, offers a button for the second, and never a command to type.
-            state = "starting" if getattr(daemon, "sandbox_starting", False) else "stopped"
-            if state == "stopped" and driver is not None:
-                with contextlib.suppress(Exception):
-                    found = await asyncio.to_thread(driver.status)
-                    state = "starting" if found == "running" else "absent" if found in ("missing", "unavailable") else "stopped"
-            info = {"available": False, "running": False, "reachable": False, "state": state,
-                    "error": {"starting": "The assistant's computer is starting.",
-                              "stopped": "The assistant's computer is stopped.",
-                              "absent": "This install has no computer for the assistant."}[state]}
-        info["mode"] = svc.browser.mode
-        info["browser_running"] = svc.browser.running()
-        return JSONResponse(info)
-
-    async def computer_setup(request: Request):
-        """`coderunner browser computer` for the app: the desktop and Chrome installed in the sandbox."""
-        job = getattr(daemon, "computer_setup", None)
-        if job is None:
-            return JSONResponse({"error": "not available here"}, status_code=503)
-        if request.method == "GET":
-            return JSONResponse(job.public())
-        started = job.start()
-        svc.audit.write("computer.setup_started" if started else "computer.setup_already_running",
-                        origin=principal(request))
-        return JSONResponse({**job.public(), "started": started}, status_code=200 if started else 409)
+        """The sandbox's screen for the app; POST brings it up. The password opens the screen through
+        /api/computer/screen. Nothing here asks the owner to start or set anything up: while the screen is not
+        there, the keeper (sandbox/keeper.py) gets the computer ready by itself and the app says only how that
+        stands, in its own words: never the sandbox's error, a command to type, or a button."""
+        keeper = getattr(svc, "computer", None)
+        info = None
+        with contextlib.suppress(Exception):
+            info = await asyncio.wait_for(svc.sandbox.desktop(start=request.method == "POST"), 20)
+        if info and info.get("available") and (info.get("running") or request.method == "GET"):
+            if keeper is not None:
+                keeper.saw_ready()
+            shown = {**info, "state": "ready", "message": ""}
+            shown.pop("error", None)
+        else:
+            if keeper is not None:
+                keeper.kick(desktop=True)
+                told = keeper.public()
+            else:
+                told = {"state": "absent", "message": "This install has no computer for the assistant."}
+            if told["state"] == "ready":         # it was a moment ago; the next look finds out more
+                told = {"state": "working", "message": "Getting the computer ready…"}
+            shown = {"available": False, "running": False, **told}
+        shown["mode"] = svc.browser.mode
+        shown["browser_running"] = svc.browser.running()
+        return JSONResponse(shown)
 
     async def computer_screen(websocket: WebSocket):
         """The VM's VNC server, relayed as a binary websocket for the app's viewer (noVNC)."""
@@ -798,8 +779,11 @@ def admin_app(svc, daemon) -> Starlette:
         try:
             info = await svc.sandbox.desktop(start=True)
             reader, writer = await asyncio.wait_for(asyncio.open_connection(host, int(info.get("port") or 5900)), 10)
-        except Exception as exc:
-            await websocket.close(code=1011, reason=f"The computer's screen is not reachable: {exc}"[:120])
+        except Exception:
+            keeper = getattr(svc, "computer", None)
+            if keeper is not None:
+                keeper.kick(desktop=True)
+            await websocket.close(code=1011, reason="The computer's screen is not ready.")
             return
         svc.audit.write("computer.screen_opened", by=websocket.scope.get("state", {}).get("principal", "?"))
 
@@ -876,7 +860,6 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/computer", computer, methods=["GET", "POST"]),
         Route("/api/control", control, methods=["GET", "POST"]),
         Route("/api/focus", focus, methods=["POST"]),
-        Route("/api/computer/setup", computer_setup, methods=["GET", "POST"]),
         WebSocketRoute("/api/computer/screen", computer_screen),
     ])
     return OwnerAuth(app, svc)

@@ -270,6 +270,7 @@ class BrowserBroker:
         self.config = config
         self.page_chars = PAGE_CHARS            # how much of a page is returned at once (more for a larger model)
         self.restart = None                     # async: start the browser itself again (the sandbox's Chrome)
+        self.computer = None                    # sandbox.keeper.Keeper: brings the sandbox's computer back
         self.sandbox = sandbox      # (url, credential) of the sandbox VM, for browser.mode "computer"
         self.policy = policy
         self.audit = audit
@@ -779,7 +780,16 @@ class BrowserBroker:
                 raise BrowserError("No Chrome, Brave, Edge or Chromium found. Install one or set browser.executable.")
             profile = paths.assistant_dir() / "browser-profile"
             try:
-                self._process, self._cdp = await launcher.launch(executable, profile, self.headless)
+                try:
+                    self._process, self._cdp = await launcher.launch(executable, profile, self.headless)
+                except (OSError, CDPError):
+                    # The sandbox's computer is down or broken: it is brought back (started, repaired, given its
+                    # desktop) and the browser launched once more, instead of the task giving up.
+                    if self.mode != "computer" or self.computer is None or \
+                            not await self.computer.ensure(desktop=True, timeout=600):
+                        raise
+                    self.audit.write("browser.computer_brought_back")
+                    self._process, self._cdp = await launcher.launch(executable, profile, self.headless)
             except (OSError, CDPError) as exc:
                 raise BrowserError(f"Could not start the browser: {exc}") from None
             self._launched_by = launcher

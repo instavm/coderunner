@@ -107,8 +107,8 @@ COPY ./server.py /app/server.py
 COPY ./auth.py /app/auth.py
 COPY ./shell_session.py /app/shell_session.py
 COPY ./desktop.py /app/desktop.py
-# The sandbox's own computer (Xfce on a VNC screen, and Google Chrome): build with --build-arg DESKTOP=1, or add it
-# to a sandbox later with `coderunner browser computer`.
+# The sandbox's own computer (Xfce on a VNC screen, and Google Chrome): build with --build-arg DESKTOP=1 (install.sh
+# does for the assistant); the daemon installs it by itself into a sandbox without one.
 ARG DESKTOP=0
 COPY ./desktop-setup.sh /tmp/desktop-setup.sh
 RUN if [ "$DESKTOP" = "1" ]; then bash /tmp/desktop-setup.sh; fi && rm /tmp/desktop-setup.sh

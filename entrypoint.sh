@@ -1,6 +1,55 @@
 #!/bin/bash
 set -u
 
+# What the owner would miss if the VM were created again (an image upgrade, `coderunner sandbox reset`) lives on
+# the data volume mounted at /data, which outlives the VM: the desktop Chrome's profile (its sign-ins), its
+# Downloads, and /workspace when nothing from the host is mounted there. Each path becomes a link into /data; what
+# was already there moves over the first time. Without a data volume (a sandbox created before it) nothing changes.
+DATA="${CODERUNNER_DATA:-/data}"
+keep() {    # keep <path> <name under $DATA> <owner or empty>
+    local path="$1" store="$DATA/$2" owner="$3" copied=""
+    mkdir -p "$store" || return 0
+    if [ -L "$path" ]; then
+        [ "$(readlink "$path")" = "$store" ] && return 0
+        rm -f "$path"
+    elif [ -d "$path" ]; then
+        if [ -n "$(ls -A "$path" 2>/dev/null)" ]; then
+            if [ -z "$(ls -A "$store" 2>/dev/null)" ]; then
+                cp -a "$path/." "$store/" || return 0          # a full disk: leave it where it is
+                rm -rf "$path"
+                copied=1
+            else
+                mv "$path" "$path.before-data-volume-$(date +%s)" || return 0
+            fi
+        else
+            rmdir "$path" || return 0
+        fi
+    fi
+    mkdir -p "$(dirname "$path")"
+    ln -s "$store" "$path" || return 0
+    if [ -n "$owner" ]; then
+        chown -h "$owner:$owner" "$path" 2>/dev/null
+        chown ${copied:+-R} "$owner:$owner" "$store" 2>/dev/null
+    fi
+    return 0
+}
+if [ -d "$DATA" ] && { [ -n "${CODERUNNER_DATA:-}" ] || awk -v d="$DATA" '$2 == d {found=1} END {exit !found}' /proc/mounts 2>/dev/null; }; then
+    desktop_user="${CODERUNNER_DESKTOP_USER:-box}"
+    home="${CODERUNNER_DESKTOP_HOME:-$(getent passwd "$desktop_user" 2>/dev/null | cut -d: -f6)}"
+    if [ -n "$home" ]; then
+        keep "$home/.config/coderunner-chrome" chrome-profile "$desktop_user"
+        keep "$home/Downloads" downloads "$desktop_user"
+        workspace_owner="$desktop_user"
+    else
+        workspace_owner=""
+    fi
+    # Host folders mounted at or under /workspace stay as they are: they already live on the host.
+    workspace="${CODERUNNER_WORKSPACE:-/workspace}"
+    if ! awk -v w="$workspace" '$2 == w || index($2, w "/") == 1 {found=1} END {exit !found}' /proc/mounts 2>/dev/null; then
+        keep "$workspace" workspace "$workspace_owner"
+    fi
+fi
+
 # Lite profile: no Jupyter server and no browser. server.py runs code as plain processes, so the
 # sandbox fits in about 1 GB. The assistant browses with the owner's browser on the host.
 if [ "${CODERUNNER_PROFILE:-full}" = "lite" ]; then

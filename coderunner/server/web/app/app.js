@@ -993,6 +993,10 @@ let screenWord = "";                // why there is no screen, while there is no
 function setNote(text) { $("screenNote").textContent = text; }
 function setScreenWord(word) { screenWord = word; $("computerState").textContent = word; }
 
+// The daemon keeps the computer up by itself (started, repaired, given its desktop): there is nothing here to press.
+// While there is no screen the panel says only how that stands, and looks again, less often the longer it waits.
+let screenWait = 2000;
+const SCREEN_WORDS = {failed: "Unavailable", disk_full: "Disk full", absent: "Not installed"};
 async function connectScreen() {
   clearTimeout(retry);
   let info;
@@ -1003,33 +1007,15 @@ async function connectScreen() {
     retry = setTimeout(connectScreen, 4000);
     return;
   }
-  $("startComputer")?.remove();
-  if (info.reachable === false) {   // no sandbox answering: coming up, stopped, or never installed
-    const starting = info.state === "starting";
-    setNote(starting ? "Starting the computer…" : info.error);
-    setScreenWord(starting ? "Starting" : info.state === "absent" ? "Not installed" : "Stopped");
-    if (computerBox) computerBox.box.hidden = true;
-    if (info.state === "stopped") {
-      const start = el("button", "btn primary", "Start it");
-      start.id = "startComputer"; start.type = "button";
-      start.onclick = async () => {
-        start.remove(); setNote("Starting the computer…"); setScreenWord("Starting");
-        clearTimeout(retry);
-        try { await api("/api/computer", {method: "POST", body: JSON.stringify({start: true})}); } catch { /* said above the thread */ }
-        connectScreen();
-      };
-      $("screenNote").appendChild(start);
-    }
-    retry = setTimeout(connectScreen, starting ? 3000 : 10000);
+  if (!info.available || !info.running) {
+    setNote(info.message || "Getting the computer ready…");
+    setScreenWord(SCREEN_WORDS[info.state] || "Getting ready");
+    const resting = info.state in SCREEN_WORDS;
+    screenWait = resting ? 30000 : Math.min(screenWait * 1.5, 15000);
+    retry = setTimeout(connectScreen, screenWait);
     return;
   }
-  if (!info.available) {
-    setNote(info.error || "This computer has no screen yet.");
-    setScreenWord("No screen");
-    watchComputerSetup();           // offers to set it up, or shows a setup that is running
-    return;
-  }
-  if (computerBox) computerBox.box.hidden = true;
+  screenWait = 2000;
   const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/computer/screen`;
   screenWord = "";
   rfb = new RFB($("screen"), url, {credentials: {password: info.password}, wsProtocols: ["binary"], shared: true});
@@ -1049,49 +1035,6 @@ async function connectScreen() {
   });
 }
 
-// The sandbox has no desktop yet: `coderunner browser computer` from here, with its progress. The daemon
-// starts again when it is done, and the screen connects.
-let computerTimer = null;
-let computerBox = null;         // made here, not in the page: a browser may still hold an older index.html
-function computerSetupBox() {
-  if (computerBox) return computerBox;
-  const box = el("div", "panel-section"), button = el("button", "btn primary", "Set up the computer");
-  box.id = "computerSetupBox";
-  button.type = "button";
-  button.onclick = async () => {
-    button.disabled = true;
-    await api("/api/computer/setup", {method: "POST", body: "{}"}).catch(() => {});      // 409: one is running
-    watchComputerSetup();
-  };
-  box.append(button, el("div", "muted small setup-line"));
-  $("screenWrap").after(box);
-  return computerBox = {box, button, line: box.lastChild};
-}
-
-async function watchComputerSetup() {
-  clearTimeout(computerTimer);
-  let job;
-  try { job = await api("/api/computer/setup"); }
-  catch { computerTimer = setTimeout(watchComputerSetup, 2500); return; }
-  const {box, button, line} = computerSetupBox();
-  box.hidden = false;
-  const last = job.lines[job.lines.length - 1] || "";
-  if (job.state === "running") {
-    button.disabled = true;
-    button.textContent = "Setting up the computer…";
-    line.textContent = last || "Installing a desktop and Chrome in the sandbox; this takes a few minutes.";
-    computerTimer = setTimeout(watchComputerSetup, 2500);
-  } else if (job.state === "done") {
-    button.disabled = true;
-    button.textContent = "The computer is ready";
-    line.textContent = "Starting the assistant with it…";
-    retry = setTimeout(connectScreen, 8000);
-  } else {
-    button.disabled = false;
-    button.textContent = job.state === "failed" ? "Try again" : "Set up the computer";
-    line.textContent = job.state === "failed" ? last : "A desktop and Chrome inside the sandbox, for the assistant to work on while you watch.";
-  }
-}
 // Taking control is only offered while the screen is connected: with no screen there is nothing to take, and the
 // tasks would wait for an owner who cannot see them.
 function showSwitch(connected) {
@@ -1129,7 +1072,7 @@ $("toggleComputer").onclick = () => showComputer($("shell").classList.contains("
 function setNow(text) { state.nowText = text; refreshNow(); }
 function refreshNow() {
   const busy = state.running.size > 0;
-  // Without a screen the word is why (starting, stopped, not installed), not "Connecting" again every few seconds.
+  // Without a screen the word is why (getting ready, unavailable, disk full), not "Connecting" every few seconds.
   $("computerState").textContent = control ? "You're in control" : rfb ? (busy ? "Working" : "Idle") : screenWord || (busy ? "Working" : "Connecting");
   // The line speaks for the open task while it runs; otherwise for the others (its last words went stale).
   const open = [...state.running.values()].some((r) => r.conversation === state.conversation);

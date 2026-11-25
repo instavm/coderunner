@@ -1,6 +1,7 @@
 #!/bin/bash
 # Installs the sandbox's desktop: Xfce on TigerVNC's Xvnc, and Google Chrome, run by the unprivileged user "box".
-# Used by the Dockerfile (DESKTOP=1) and by `coderunner browser computer` on a sandbox that already exists.
+# Used by the Dockerfile (DESKTOP=1), and on a sandbox that already exists by the daemon (sandbox/keeper.py) and by
+# `coderunner browser computer`.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 USER_NAME="${CODERUNNER_DESKTOP_USER:-box}"
@@ -40,6 +41,36 @@ cat > "$home/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-power-manager.xml" <
   </property>
 </channel>
 EOF
+# The backdrop: a vertical gradient xfdesktop draws itself (no image file), deep navy at the top to the app's blue
+# at the bottom; desktop.py holds the same values and applies them once to a desktop set up before this. An
+# owner's own backdrop is kept: only missing settings, or the stock xfce-shapes, are replaced.
+desktop_xml="$home/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml"
+if [ ! -s "$desktop_xml" ] || grep -q xfce-shapes "$desktop_xml"; then
+    {
+        echo '<?xml version="1.0" encoding="UTF-8"?>'
+        echo '<channel name="xfce4-desktop" version="1.0">'
+        echo '  <property name="backdrop" type="empty">'
+        echo '    <property name="screen0" type="empty">'
+        echo '      <property name="monitorVNC-0" type="empty">'
+        for n in 0 1 2 3; do
+            echo "        <property name=\"workspace$n\" type=\"empty\">"
+            echo '          <property name="image-style" type="int" value="0"/>'
+            echo '          <property name="color-style" type="int" value="2"/>'
+            for pair in "rgba1 0.059 0.090 0.200 1" "rgba2 0.200 0.380 0.870 1"; do
+                read -r name a b c d <<< "$pair"
+                echo "          <property name=\"$name\" type=\"array\">"
+                for v in "$a" "$b" "$c" "$d"; do echo "            <value type=\"double\" value=\"$v\"/>"; done
+                echo '          </property>'
+            done
+            echo '        </property>'
+        done
+        echo '      </property>'
+        echo '    </property>'
+        echo '  </property>'
+        echo '</channel>'
+    } > "$desktop_xml"
+    touch "$home/.config/xfce4/.coderunner-backdrop"
+fi
 chown -R "$USER_NAME:$USER_NAME" "$home/.config"
 chown "$USER_NAME:$USER_NAME" /workspace 2>/dev/null || true
 mkdir -p /app/desktop && chmod 700 /app/desktop

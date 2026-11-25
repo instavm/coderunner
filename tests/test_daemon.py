@@ -271,29 +271,29 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
             failures = [r for r in daemon.svc.audit.tail(50) if r["event"] == "gateway.bind_failed"]
             self.assertEqual(len(failures), 1)
 
-    async def test_a_stopped_sandbox_is_started_with_the_daemon(self):
-        # After a restart macOS brings back the daemon but not the VM: the daemon starts it.
-        class Driver:
-            name = "apple"
-
-            def __init__(self, state):
-                self.state, self.started = state, 0
-
-            def status(self):
-                return self.state
-
-            def start(self):
-                self.started += 1
-
+    async def test_the_sandbox_and_its_computer_are_seen_to_with_the_daemon(self):
+        # After a restart macOS brings back the daemon but not the VM: the daemon's keeper starts it, by itself.
+        from coderunner.sandbox.keeper import Keeper
         with FakeOpenAI() as fake:
             daemon = self.make_daemon(fake)
-            for state, starts in (("stopped", 1), ("service-stopped", 1), ("running", 0), ("missing", 0),
-                                  ("unavailable", 0)):
-                daemon.driver = Driver(state)
+            self.assertIsInstance(daemon.computer, Keeper)
+            self.assertIs(daemon.svc.computer, daemon.computer)
+            self.assertIs(daemon.svc.browser.computer, daemon.computer)          # a browser task can ask for it
+            zones = []
+
+            async def timezone():
+                zones.append(True)
+            daemon._vm_timezone = timezone
+            for ready, set_zone in ((True, 1), (False, 0)):
+                zones.clear()
+                daemon.computer = mock.Mock(ensure=mock.AsyncMock(return_value=ready))
                 await daemon._start_sandbox()
-                self.assertEqual(daemon.driver.started, starts, state)
-            started = [r for r in daemon.svc.audit.tail(50) if r["event"] == "sandbox.started"]
-            self.assertEqual([r["was"] for r in started], ["stopped", "service-stopped"])
+                daemon.computer.ensure.assert_awaited_once_with(desktop=False, timeout=600)
+                self.assertEqual(len(zones), set_zone)
+            # Once the keeper gives the sandbox its desktop, a stuck Chrome there can be restarted.
+            daemon.svc.browser.restart = None
+            daemon._computer_mode()
+            self.assertEqual(daemon.svc.browser.restart, daemon._restart_vm_browser)
 
 
 if __name__ == "__main__":

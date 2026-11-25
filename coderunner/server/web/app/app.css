@@ -297,7 +297,6 @@ a.att-file:hover { border-color: var(--accent); }
 .notice { margin: 0 auto 8px; width: min(760px, calc(100% - 48px)); box-sizing: border-box; padding: 8px 12px; border-radius: 10px; font-size: 13px;
   color: var(--danger); background: var(--surface); border: 1px solid var(--line); }
 .notice[hidden] { display: none; }
-#screenNote .btn { display: block; margin: 10px auto 0; pointer-events: auto; }
 
 /* Files waiting in the composer, and files in a task's thread. */
 .attachments { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 4px 10px; }
@@ -340,8 +339,6 @@ a.att-file:hover { border-color: var(--accent); }
     transition-duration: .001s !important; scroll-behavior: auto !important; }
 }
 #main.dropping #composer { border-color: var(--accent); border-style: dashed; box-shadow: 0 0 0 3px var(--accent-soft); }
-#computerSetupBox[hidden] { display: none; }
-.setup-line { margin-top: 8px; word-break: break-word; }
 #shell.first-run { grid-template-columns: minmax(0, 1fr); }
 #shell.first-run #sidebar, #shell.first-run #computer { display: none; }
 #shell.first-run #mainHead { border-bottom: 0; padding: 0; min-height: 36px; }

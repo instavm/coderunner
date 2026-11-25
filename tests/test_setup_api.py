@@ -458,7 +458,7 @@ class ComputerSetupTests(unittest.TestCase):
         self.checkout, self.vm = self.root / "checkout", self.root / "vm"
         self.checkout.mkdir()
         self.vm.mkdir()
-        for name in ("desktop.py", "server.py", "entrypoint.sh"):
+        for name in ("desktop.py", "server.py", "auth.py", "shell_session.py", "entrypoint.sh"):
             (self.checkout / name).write_text(f"# {name}\n")
         (self.checkout / "desktop-setup.sh").write_text("echo installing xfce\necho\necho Desktop installed\n")
         self.svc = Svc()
@@ -468,7 +468,8 @@ class ComputerSetupTests(unittest.TestCase):
         from coderunner.sandbox import computer
         driver, said = FakeDriver(self.vm), []
         self.assertTrue(computer.setup(self.svc.config, said.append, driver=driver, checkout=self.checkout))
-        self.assertEqual(sorted(p.name for p in self.vm.iterdir()), ["app_desktop.py", "app_server.py", "entrypoint.sh"])
+        self.assertEqual(sorted(p.name for p in self.vm.iterdir()),
+                         ["app_auth.py", "app_desktop.py", "app_server.py", "app_shell_session.py", "entrypoint.sh"])
         self.assertEqual((self.vm / "app_server.py").read_text(), "# server.py\n")
         self.assertEqual(said[1:3], ["installing xfce", "Desktop installed"])          # the script's own lines
         self.assertEqual(driver.calls, ["stop", "start"])                               # restarted to pick it up
@@ -488,78 +489,47 @@ class ComputerSetupTests(unittest.TestCase):
         (self.checkout / "desktop-setup.sh").unlink()
         said = []
         self.assertFalse(computer.setup(self.svc.config, said.append, driver=FakeDriver(self.vm), checkout=self.checkout))
-        self.assertIn("run this from a checkout", said[0])
-
-    def test_the_app_starts_it_and_follows_it(self):
-        from coderunner.server.setup import ComputerJob
-        finished = []
-        job = ComputerJob(self.svc.config, self.svc.audit, on_done=finished.append,
-                          run=lambda config, say: (say("installing"), True)[1])
-        self.assertEqual(job.public()["state"], "idle")
-        self.assertTrue(job.start())
-        self.assertTrue(until(lambda: len(finished) == 1))                # told once it is done: the daemon restarts
-        self.assertEqual((job.public()["state"], job.public()["lines"], job.public()["result"]),
-                         ("done", ["installing"], {"ok": True}))
-
-        def broken(config, say):
-            raise OSError("container: command not found")
-        job = ComputerJob(self.svc.config, on_done=finished.append, run=broken)
-        job.start()
-        self.assertTrue(until(lambda: job.public()["state"] == "failed"))
-        self.assertIn("container: command not found", job.public()["lines"][-1])
-        self.assertEqual(len(finished), 1)                                    # no restart after a failure
+        self.assertIn("files are missing", said[0])
 
 
 class ComputerRouteTests(unittest.IsolatedAsyncioTestCase):
-    async def test_the_computer_panel_is_told_whether_the_computer_is_starting_stopped_or_absent(self):
+    async def test_the_computer_panel_is_told_how_getting_the_computer_ready_stands_and_nothing_to_press(self):
+        from coderunner.sandbox.keeper import Keeper
         svc = Svc()
         svc.registry = build_registry(svc)
         svc.browser = mock.Mock(mode="computer", running=lambda: False)
-        svc.sandbox = mock.Mock(desktop=mock.AsyncMock(side_effect=RuntimeError("connection refused")))
+        svc.sandbox = mock.Mock(desktop=mock.AsyncMock(side_effect=RuntimeError("connection refused")),
+                                base_url="http://coderunner.local:8222")
+        svc.computer = mock.Mock(spec=Keeper)
+        svc.computer.public.return_value = {"state": "working", "message": "Getting the computer ready…"}
         daemon = FakeDaemon(svc)
-        daemon.driver = mock.Mock(name="apple", status=mock.Mock(return_value="stopped"), start=mock.Mock())
-        daemon.driver.name = "apple"
         admin = {"Authorization": "Bearer " + ADMIN}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=admin_app(svc, daemon)),
                                      base_url="http://127.0.0.1:8224") as client:
-            async def shown(body=None):
-                got = (await client.post("/api/computer", json=body or {}, headers=admin)).json()
-                return got["state"], got["error"]
-            self.assertEqual(await shown(), ("stopped", "The assistant's computer is stopped."))
-            daemon.sandbox_starting = True                      # the daemon is bringing it up after a start
-            self.assertEqual(await shown(), ("starting", "The assistant's computer is starting."))
-            daemon.sandbox_starting = False
-            daemon.driver.status.return_value = "running"       # the VM is up, the server in it not yet
-            self.assertEqual(await shown(), ("starting", "The assistant's computer is starting."))
-            daemon.driver.status.return_value = "missing"
-            self.assertEqual(await shown(), ("absent", "This install has no computer for the assistant."))
-            # No exception's name and no command to type reach the app; "Start it" starts the VM.
-            for state in ("stopped", "running", "missing"):
-                daemon.driver.status.return_value = state
-                text = (await client.post("/api/computer", json={}, headers=admin)).text
-                self.assertNotRegex(text, r"RuntimeError|coderunner up|connection refused")
-            daemon.driver.status.return_value = "stopped"
-            await shown({"start": True})
-            daemon.driver.start.assert_called_once()
-
-    async def test_the_computer_panel_can_ask_for_its_setup(self):
-        from coderunner.server.setup import ComputerJob
-        svc = Svc()
-        svc.registry = build_registry(svc)
-        daemon = FakeDaemon(svc)
-        release = threading.Event()
-        daemon.computer_setup = ComputerJob(svc.config, run=lambda config, say: (say("installing"), release.wait(5))[1])
-        admin = {"Authorization": "Bearer " + ADMIN}
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=admin_app(svc, daemon)),
-                                     base_url="http://127.0.0.1:8224") as client:
-            self.assertEqual((await client.post("/api/computer/setup", json={})).status_code, 401)
-            self.assertEqual((await client.get("/api/computer/setup", headers=admin)).json()["state"], "idle")
-            started = await client.post("/api/computer/setup", json={}, headers=admin)
-            self.assertEqual((started.status_code, started.json()["started"]), (200, True))
-            self.assertEqual((await client.post("/api/computer/setup", json={}, headers=admin)).status_code, 409)
-            release.set()
-            self.assertTrue(until(lambda: daemon.computer_setup.public()["state"] == "done"))
-            self.assertEqual((await client.get("/api/computer/setup", headers=admin)).json()["lines"], ["installing"])
+            async def shown():
+                got = (await client.post("/api/computer", json={}, headers=admin)).json()
+                return got["available"], got["state"], got["message"]
+            self.assertEqual(await shown(), (False, "working", "Getting the computer ready…"))
+            svc.computer.kick.assert_called_with(desktop=True)            # asking for the screen gets it ready
+            svc.computer.public.return_value = {"state": "failed", "message":
+                                                "The assistant's computer could not be started. It will try again shortly."}
+            self.assertEqual((await shown())[1], "failed")
+            # The sandbox's own words (409) never reach the app, nor a command to type.
+            svc.sandbox.desktop = mock.AsyncMock(return_value={
+                "available": False, "running": False, "error": "This sandbox has no desktop. Run `coderunner computer setup`."})
+            text = (await client.post("/api/computer", json={}, headers=admin)).text
+            self.assertNotRegex(text, r"RuntimeError|coderunner|connection refused|Run `")
+            # A keeper that thought it ready a moment ago still makes the panel say it is getting ready.
+            svc.computer.public.return_value = {"state": "ready", "message": ""}
+            self.assertEqual((await shown())[1:], ("working", "Getting the computer ready…"))
+            svc.sandbox.desktop = mock.AsyncMock(return_value={"available": True, "running": True, "port": 5900,
+                                                               "password": "pw"})
+            got = (await client.post("/api/computer", json={}, headers=admin)).json()
+            self.assertEqual((got["state"], got["password"], got["running"]), ("ready", "pw", True))
+            svc.computer.saw_ready.assert_called()
+            # There is no setup to ask for any more.
+            self.assertEqual((await client.post("/api/computer/setup", json={}, headers=admin)).status_code, 404)
+            self.assertEqual((await client.post("/api/computer", json={})).status_code, 401)
 
 
 class RestartTests(unittest.IsolatedAsyncioTestCase):
