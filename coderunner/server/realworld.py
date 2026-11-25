@@ -135,7 +135,10 @@ def grade(task: Real, answer: str, visited: list[str], approvals: list[dict], to
                                                   "stopped at the approval for the next step" if gated else
                                                   "stopped before committing" if task.stops else "",
                                                   f"a routine {figures['routine']}" if task.routine else ""])), figures
-    if WALL.search(answer):
+    # Blocked only when the wall is what stopped it: an answer that names a site that turned it away, then went on
+    # and linked pages it opened elsewhere, is graded on what it gave (Haiku's San Francisco listings, done on
+    # Trulia after Redfin refused, were counted as blocked).
+    if WALL.search(answer) and (GAVE_UP.search(answer) or not linked):
         return "blocked", "a site turned automated visits away; " + "; ".join(problems), figures
     return "failed", "; ".join(problems), figures
 
@@ -302,7 +305,7 @@ WORLD = [
          "Find three 2-bedroom condos for sale in San Francisco under $1,200,000 on Redfin (or another listings site if "
          "it turns you away). For each give the price, the area in square feet, the price per square foot, the "
          "monthly HOA fee and the link, and say which is the best value per square foot.",
-         {"two bedrooms": r"\b2\s?(bd|beds?|br|bedrooms?)\b|two.bedroom", "HOA fees": r"\bHOA\b",
+         {"two bedrooms": r"\b2[\s-]?(bd|beds?|br|bedrooms?)\b|two.bedroom", "HOA fees": r"\bHOA\b",
           "per square foot": r"sq\.?\s?ft|square f|/\s?ft", "the best value": r"best value|cheapest|lowest|best"},
          links=1, prices=3, long=True),
     Real("bayrent", "research", "rent against income in three Bay Area cities, worked out in the sandbox",

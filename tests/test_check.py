@@ -279,6 +279,22 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("scores of 90% or more", realworld.grade(world["streaming"], films.replace("96%", "86%")
                                                                .replace("100%", "88%"), [], [], [])[1])
 
+    def test_a_wall_counts_as_blocked_only_when_it_stopped_the_task(self):
+        from coderunner.server import realworld
+        world = {t.name: t for t in realworld.WORLD}
+        # Haiku's answer: Redfin refused, the listings came from Trulia, "2-bedroom" written with a hyphen.
+        done = ("Redfin blocked access with a security check, so these three 2-bedroom San Francisco condos under "
+                "$1.2M come from Trulia.\n\n"
+                "**[152 Lombard St #502](https://www.trulia.com/home/152-lombard-st-502)** is $1,200,000 for 1,252 sq ft, "
+                "$958/sq ft, with a $1,531/mo HOA.\n"
+                "- [1085 De Haro St](https://www.trulia.com/home/1085-de-haro-st): $1,175,000 for 1,088 sq ft, $1,080/sq ft, $400/mo HOA.\n"
+                "- [3295 Clay St #6](https://www.trulia.com/home/3295-clay-st-6): $1,125,000 for 1,132 sq ft, $994/sq ft, $550/mo HOA.")
+        state, why, _ = realworld.grade(world["sflistings"], done, ["https://www.trulia.com/for_sale/San_Francisco"], [], [])
+        self.assertNotEqual(state, "blocked", why)
+        self.assertNotIn("two bedrooms", why)
+        stopped = "Redfin blocked access with a security check, and I could not complete the search on another site."
+        self.assertEqual(realworld.grade(world["sflistings"], stopped, [], [], [])[0], "blocked")
+
     def test_an_answer_is_graded_on_its_parts_its_links_its_prices_and_what_was_committed(self):
         from coderunner.server import realworld
         task = next(t for t in realworld.TASKS if t.name == "phone")

@@ -566,7 +566,7 @@ async function openConversation(id, title, again) {
 // does everything work on this Mac?
 
 let checkTimer = null;
-const CHECK_MARKS = {passed: "✓", failed: "✕", blocked: "!", needs_you: "→", skipped: "–", waiting: "", running: ""};
+const CHECK_MARKS = {passed: "✓", failed: "✕", blocked: "!", needs_you: "→", skipped: "–", invalid: "–", waiting: "", running: ""};
 
 async function showCheck() {
   if (state.setup) return;
@@ -592,7 +592,7 @@ async function showCheck() {
       result = null;
     const quick = data.names.filter((n) => !n.long);
     const rows = running ? data.tasks : result ? result.tasks : [];
-    const failing = result ? result.tasks.filter((t) => t.state !== "passed" && t.state !== "skipped") : [];
+    const failing = result ? result.tasks.filter((t) => !["passed", "skipped", "invalid"].includes(t.state)) : [];
     const head = running ? "Testing…" : !result ? "Test this Mac" : failing.length ? `${failing.length} ${failing.length === 1 ? "thing needs" : "things need"} attention` : "Everything works";
     box.replaceChildren(el("h1", "", head));
     if (!running && !result)

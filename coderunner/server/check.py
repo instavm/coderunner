@@ -23,6 +23,7 @@ import pathlib
 import re
 import secrets
 import shutil
+import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
@@ -164,6 +165,18 @@ SUITES = {"check": CHECKS, "real": realworld.EVERY, "research": realworld.RESEAR
 WEB = ("real", "research", "world", "everyday")         # the sets run on real websites
 ANSWER_CHARS = 6000                 # of each answer kept in the result, to read one model's against another's
 REAL_STEPS = 60                     # a trip plan over several sites needs more steps than a day's ordinary task
+
+
+def _commit() -> str:
+    """The checkout's commit, with "+" when it has changes not committed: what a result was made with."""
+    here = pathlib.Path(__file__).resolve().parent
+    try:
+        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=here, capture_output=True, text=True, timeout=5)
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=here, capture_output=True,
+                               text=True, timeout=5)
+        return head.stdout.strip() + ("+" if dirty.stdout.strip() else "") if head.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def result_path(suite: str = "check") -> pathlib.Path:
@@ -376,8 +389,15 @@ class CheckJob:
             waits = sum(t["state"] == "needs_you" for t in ran)       # went as far as it can without the owner
             passed = sum(t["state"] == "passed" for t in ran)
             remote = getattr(svc, "remote", None)
+            # The model that served at the end (a server that changed its model's name mid-run is followed by the
+            # client, and the saved name was the old one), the browser driver beside it, and the code that ran.
+            serving = getattr(getattr(svc, "llm", None), "model", "") or ""
+            driver = config.get("models.driver") or {}
             self.result = {"date": datetime.datetime.now().isoformat(timespec="seconds"), "suite": self.suite,
-                           "model": remote["model"] if remote else config.get("models.chat") or "",
+                           "model": serving.replace("coderunner-", "") or (remote["model"] if remote else config.get("models.chat") or ""),
+                           "driver": driver.get("model", "") if isinstance(driver, dict) and driver.get("with_server") else "",
+                           "commit": _commit(),
+                           "invalid": sum(t["state"] == "invalid" for t in self.tasks),
                            "minutes": self.minutes,
                            "blocked": sum(t["state"] == "blocked" for t in self.tasks),
                            "passed": passed, "ran": len(ran), "skipped": sum(t["state"] == "skipped" for t in self.tasks),
@@ -390,6 +410,7 @@ class CheckJob:
             self._say(f"{passed} of {len(ran)} passed" + (f", {self.result['blocked']} blocked by a site" if self.result["blocked"] else "")
                       + (f", {waits} stopped at a step that is yours" if waits else "")
                       + (f", {self.result['skipped']} skipped" if self.result["skipped"] else "")
+                      + (f", {self.result['invalid']} not counted (ended before a step)" if self.result["invalid"] else "")
                       + f", in {self.result['seconds'] // 60} min {self.result['seconds'] % 60} s"
                       + (f"; {self.result['passed_final']} passed by the end."
                          if self.result['passed_final'] != passed else "."))
@@ -471,6 +492,10 @@ class CheckJob:
         events = self.daemon.tasks.bus.since(since, conversation)
         run.tools = [e.get("name", "") for e in events if e.get("type") == "tool"]
         if status != "done":
+            if not run.tools and status == "failed":         # stopped at its limit (cancelled) still counts
+                # Ended before a single step: the model server switched or went away under it. Not the model's
+                # doing, so not counted either way (a run's passportfees "failed" with 0 steps at a switch).
+                return "invalid", answer[:200] or "ended before its first step", {}
             return "failed", answer[:200] or f"the task ended as {status}", {}
         if not isinstance(check, realworld.Real):
             passed, why = check.check(answer, run)
