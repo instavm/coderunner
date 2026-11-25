@@ -156,6 +156,9 @@ a.link.named:hover { text-decoration: underline; }
 .site-mark { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-right: 4px; border-radius: 4px;
   background: var(--surface-2); border: 1px solid var(--line); color: var(--muted); font-size: 9.5px; font-weight: 650; line-height: 1;
   vertical-align: -2px; text-decoration: none; }
+/* A file on this computer: a small page mark before its name. */
+.file-mark { display: inline-block; width: 11px; height: 13px; margin-right: 5px; vertical-align: -2px; border: 1.5px solid currentColor;
+  border-radius: 2px 5px 2px 2px; opacity: .65; }
 /* Things better seen than read: a row of cards under the text. */
 .items { display: flex; gap: 10px; margin: 10px 0 4px; overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x proximity; }
 .item { flex: 0 0 148px; scroll-snap-align: start; color: inherit; text-decoration: none; border-radius: 12px; background: var(--surface);

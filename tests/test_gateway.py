@@ -215,6 +215,40 @@ class AdminGatewayTests(unittest.IsolatedAsyncioTestCase):
             await client.post("/api/tools/act", headers=admin, json={"client": "c2"})
         self.assertEqual(seen, [False, True, False])
 
+    async def test_a_linked_file_opens_only_from_the_shared_folders_and_what_could_run_is_only_shown(self):
+        import os
+        import subprocess
+        import sys
+        import tempfile
+        from unittest import mock
+        shared = pathlib.Path(tempfile.mkdtemp()).resolve()
+        outside = pathlib.Path(tempfile.mkdtemp()).resolve()
+        (shared / "Lease.pdf").write_bytes(b"%PDF")
+        (shared / "run.command").write_text("echo hi")
+        os.chmod(shared / "run.command", 0o755)
+        (shared / "tool.py").write_text("print(1)")
+        (outside / "secret.pdf").write_bytes(b"%PDF")
+        self.svc.files = types.SimpleNamespace(folders=types.SimpleNamespace(
+            inside=lambda path: shared in pathlib.Path(path).parents))
+        ran = []
+
+        def run(argv, **kwargs):
+            ran.append(argv)
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+        admin = {"Authorization": "Bearer " + ADMIN}
+        with mock.patch("coderunner.server.gateway.subprocess.run", run), \
+                mock.patch("coderunner.server.gateway.sys.platform", "darwin"):
+            async with self.client() as client:
+                post = lambda path: client.post("/api/files/open", json={"path": str(path)}, headers=admin)  # noqa: E731
+                self.assertEqual((await post(shared / "Lease.pdf")).json(), {"opened": True, "shown": False})
+                self.assertEqual((await post(shared / "run.command")).json(), {"opened": False, "shown": True})
+                self.assertEqual((await post(shared / "tool.py")).json(), {"opened": False, "shown": True})
+                self.assertEqual((await post(outside / "secret.pdf")).status_code, 404)
+                self.assertEqual((await post(shared / "missing.pdf")).status_code, 404)
+                self.assertEqual((await client.post("/api/files/open", json={"path": str(shared / "Lease.pdf")})).status_code, 401)
+        self.assertEqual(ran, [["open", str(shared / "Lease.pdf")], ["open", "-R", str(shared / "run.command")],
+                               ["open", "-R", str(shared / "tool.py")]])
+
     async def test_the_app_tells_when_the_owner_takes_and_hands_back_the_screen(self):
         class FakeBrowser:
             owner_control = False

@@ -18,10 +18,13 @@ import hashlib
 import hmac
 import json
 import mimetypes
+import os
 import pathlib
 import re
 import secrets
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -393,6 +396,30 @@ def admin_app(svc, daemon) -> Starlette:
         result, images = await invoke_for_client(body.get("client", "local"), principal(request),
                                                  request.path_params["name"], body.get("arguments", {}))
         return JSONResponse({"result": result, "images": images})
+
+    async def open_file(request: Request):
+        """A file an answer links to, opened on this computer when the owner clicks it: only a file in the shared
+        folders. Documents, pictures, sound and video open in their usual app; anything that could run (an app,
+        a script, code) is shown in Finder instead, so a link written by a model never starts a program."""
+        index = svc.files
+        try:
+            body = await request.json()
+            path = pathlib.Path(os.path.expanduser(str(body.get("path") or ""))).resolve()
+        except Exception:
+            return JSONResponse({"error": "Which file?"}, status_code=400)
+        if index is None or not path.is_file() or not index.folders.inside(str(path)):
+            return JSONResponse({"error": "That file is not in your shared folders."}, status_code=404)
+        from ..files.kinds import AUDIO, DATA, DOCS, IMAGES, PROSE, VIDEO
+        opens = path.suffix.lower() in PROSE | DATA | DOCS | IMAGES | AUDIO | VIDEO and not os.access(path, os.X_OK)
+        if sys.platform == "darwin":
+            argv = ["open", str(path)] if opens else ["open", "-R", str(path)]
+        else:
+            argv = ["xdg-open", str(path if opens else path.parent)]
+        done = await asyncio.to_thread(subprocess.run, argv, capture_output=True, timeout=20)
+        svc.audit.write("file.opened", path=str(path), shown=not opens, origin=principal(request))
+        if done.returncode:
+            return JSONResponse({"error": "It could not be opened."}, status_code=500)
+        return JSONResponse({"opened": opens, "shown": not opens})
 
     async def files(request: Request):
         index = svc.files
@@ -841,6 +868,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/tools/{name}", call_tool, methods=["POST"]),
         Route("/api/schedules", schedules, methods=["GET", "POST"]),
         Route("/api/files", files, methods=["GET", "POST"]),
+        Route("/api/files/open", open_file, methods=["POST"]),
         Route("/api/schedules/{id:int}", delete_schedule, methods=["DELETE"]),
         Route("/api/pair", pair_start, methods=["POST"]),
         Route("/api/devices", devices, methods=["GET"]),

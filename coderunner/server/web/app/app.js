@@ -675,6 +675,12 @@ function showEvent(e) {
   else if (nearBottom) scrollDown();
 }
 
+// A file an answer links to: opened on this computer by the assistant (only from the shared folders).
+document.addEventListener("open-file", async (event) => {
+  try { await api("/api/files/open", {method: "POST", body: JSON.stringify({path: event.detail.path})}); }
+  catch (err) { notice(err.message); }
+});
+
 function listen() {
   const source = new EventSource(`/api/events?since=${state.lastSeq || -1}`);
   source.onmessage = (message) => {

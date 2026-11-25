@@ -22,6 +22,24 @@ export function link(url, label, named) {
   return a;
 }
 
+// A file on this computer that an answer names: its name is the link, and a click asks the app to open it
+// (the assistant opens only files in the shared folders, and only shows in Finder anything that could run).
+// Never an href to the file itself: the page has no business reading the owner's files.
+const FILE_PATH = /^(?:file:\/\/)?(?:\/|~\/)[^)<>]+$/;
+export function fileLink(path, label) {
+  let real = path.replace(/^file:\/\//, "");
+  try { real = decodeURIComponent(real); } catch { /* left as written */ }
+  const a = el("a", "link named file-link");
+  a.appendChild(el("span", "file-mark"));
+  a.appendChild(document.createTextNode(label));
+  a.href = "#"; a.title = real; a.dataset.path = real;
+  a.addEventListener("click", (event) => {
+    event.preventDefault();
+    document.dispatchEvent(new CustomEvent("open-file", {detail: {path: real}}));
+  });
+  return a;
+}
+
 export function linkLabel(url) {
   try {
     const u = new URL(url), site = u.host.replace(/^www\./, "");
@@ -46,14 +64,17 @@ export function richText(node, text) {
 }
 
 export function inline(node, text) {
-  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g;
+  // A file's path may hold spaces when written in angle brackets: [Lease.pdf](</Users/me/My Files/Lease.pdf>).
+  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\((?:https?:\/\/|file:\/\/|\/|~\/)[^\s)]+\)|\[[^\]]+\]\(<(?:file:\/\/|\/|~\/)[^>]+>\))/g;
   for (const part of String(text).split(pattern)) {
     if (!part) continue;
     if (part.startsWith("**") && part.endsWith("**") && part.length > 4) node.appendChild(el("strong", "", part.slice(2, -2)));
     else if (part.startsWith("`") && part.endsWith("`") && part.length > 2) node.appendChild(el("code", "", part.slice(1, -1)));
     else {
       const m = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
+      const f = !m && (part.match(/^\[([^\]]+)\]\(<([^>]+)>\)$/) || part.match(/^\[([^\]]+)\]\(([^\s)]+)\)$/));
       if (m) node.appendChild(link(m[2], m[1].replace(/\*\*/g, ""), true));      // the page's name is the link
+      else if (f && FILE_PATH.test(f[2])) node.appendChild(fileLink(f[2], f[1].replace(/\*\*/g, "")));
       else richText(node, part);                // also text that only begins with a bracket
     }
   }
