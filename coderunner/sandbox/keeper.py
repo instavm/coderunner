@@ -50,6 +50,11 @@ END_SESSION = "pkill -x Xvnc; pkill -f '[x]fce4-session'; pkill -f '[d]bus-launc
 STEPS = ("session", "container", "service")
 FIRST_STEP = {"session": "session", "screen": "session", "unhealthy": "container", "unavailable": "container",
               "stuck": "container", "io": "container"}
+# The container service is everyone's: restarted only when commands into the VM themselves fail (exec answering
+# "container is not running" while it is listed as running, or its disk failing). A server that answers badly
+# is not that: a lite sandbox's health check said 503 for ever, and its container and then the service were
+# restarted though the VM was fine.
+NEEDS_SERVICE = ("stuck", "io")
 
 
 def classify(code: int | None, output: str) -> str:
@@ -282,6 +287,9 @@ class Keeper:
         for step in STEPS[STEPS.index(FIRST_STEP.get(problem, "container")):]:
             if self._disk_low():
                 return self._disk_full()
+            if step == "service" and problem not in NEEDS_SERVICE:
+                self.audit.write("computer.repair_skipped", step=step, reason="the VM takes commands")
+                break
             if step == "service" and self._clock() - self._service_at < self.SERVICE_EVERY_S:
                 self.audit.write("computer.repair_skipped", step=step, reason="restarted recently")
                 break

@@ -330,6 +330,20 @@ class RepairTests(unittest.IsolatedAsyncioTestCase):
         await keeper._task
         self.assertEqual(events(keeper, "computer.unavailable")[-1]["rest_s"], 2 * Keeper.REST_S)
 
+    async def test_a_vm_that_takes_commands_never_gets_the_container_service_restarted(self):
+        # A lite sandbox's health check said 503 for ever: the VM was fine, its exec worked, and the keeper
+        # restarted its container and then the container service, again and again.
+        vm = FakeVM()
+
+        async def degraded():
+            return False
+        vm.health = degraded
+        keeper = make(vm)
+        self.assertFalse(await keeper.ensure(desktop=True, timeout=30))
+        self.assertNotIn("service", vm.calls)
+        self.assertTrue(all(r["reason"] == "the VM takes commands" for r in events(keeper, "computer.repair_skipped")))
+        self.assertFalse(vm.deleted)
+
     async def test_a_driver_that_raises_counts_as_a_failed_step(self):
         vm = FakeVM(stuck=True, io=True)
 
