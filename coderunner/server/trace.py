@@ -400,7 +400,7 @@ def _task(number: int, task: dict, events: list[dict], records: list[dict]) -> d
     approvals: dict[str, dict] = {}
     plans = 0
     totals = {"steps": 0, "failed_steps": 0, "turns": 0, "read": 0, "cached": 0, "wrote": 0, "read_ms": 0,
-              "wrote_ms": 0, "approvals": 0, "interim_answers": 0}
+              "wrote_ms": 0, "approvals": 0, "interim_answers": 0, "compactions": 0}
     for e in events:
         kind, ts = e.get("type"), e.get("ts") or t0
         if kind == "started":
@@ -506,6 +506,12 @@ def _record(r: dict, add, approvals: dict, info: dict, totals: dict) -> None:
             totals[key] += int(r.get(key) or 0)
         add(ts, "turn", step=r.get("step"), think=r.get("think"), read=r.get("read"), cached=r.get("cached"),
             wrote=r.get("wrote"), read_ms=r.get("read_ms"), wrote_ms=r.get("wrote_ms"))
+    elif event == "agent.compacted":
+        # The conversation made shorter: by the model's summary, or by the extractive trim when that failed.
+        totals["compactions"] += 1
+        add(ts, "compaction", **{k: (_cut(v, LINE_CHARS) if isinstance(v, str) else v) for k, v in r.items()
+                                 if k in ("step", "reason", "room", "before", "after", "tail", "summary", "summarized",
+                                          "seconds", "fallback", "results")})
     elif event == "task.running":
         info["model"], info["slot"] = r.get("model") or None, r.get("slot")
     elif event.startswith(("decision.", "guard.", "egress.")) or event == "policy":
@@ -624,7 +630,8 @@ def _md_task(task: dict) -> list[str]:
     tot = task["totals"]
     out += ["", f"**Totals** {tot['steps']} steps ({tot['failed_steps']} failed) · {tot['turns']} model turns · "
                 f"read {_num(tot['read'])} new tokens + {_num(tot['cached'])} cached in {tot['read_s']} s · "
-                f"wrote {_num(tot['wrote'])} in {tot['wrote_s']} s · {tot['approvals']} approvals", "",
+                f"wrote {_num(tot['wrote'])} in {tot['wrote_s']} s · {tot['approvals']} approvals"
+                + (f" · {tot['compactions']} compactions" if tot.get("compactions") else ""), "",
             "### Timeline", ""]
     for e in task["timeline"]:
         out += _md_entry(e)
@@ -675,6 +682,11 @@ def _md_entry(e: dict) -> list[str]:
         return [head + f"**Control**: {_inline(e.get('what'))}" + (f". {rest}" if rest else "")]
     if kind == "interim":
         return [head + "**Interim answer**", _block(e.get("text") or "")]
+    if kind == "compaction":
+        how = (f"fallback trim of {_num(e.get('results', 0))} results ({_inline(e['fallback'])})" if e.get("fallback")
+               else f"summary {_num(e.get('summary', 0))} tokens, last steps kept verbatim {_num(e.get('tail', 0))}")
+        return [head + f"**Compacted** (step {e.get('step')}, {_inline(e.get('reason') or '')}): "
+                       f"{_num(e.get('before', 0))} → {_num(e.get('after', 0))} tokens · {how} · {e.get('seconds', 0)} s"]
     if kind == "end":
         return [head + f"**Ended: {_inline(e.get('how'))}**" + (" (incomplete)" if e.get("incomplete") else "")]
     if kind == "error":

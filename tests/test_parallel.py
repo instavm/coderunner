@@ -385,6 +385,8 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
             step = lambda n: {"role": "assistant", "content": "", "tool_calls": [{"id": f"c{n}", "type": "function",
                               "function": {"name": "lookup", "arguments": f'{{"q": "review {n}", "say": "Read review {n}."}}'}}]}
             fake.script = [step(n) for n in range(24)] + [{"role": "assistant", "content": "The Sony WH-CH720N, from two sites."}]
+            # No summary to be had (agent.compaction), and results too short for the trim to let go of.
+            fake.summary = lambda body: {"_status": 500, "error": "Compute error."}
             rooms = iter([100000] * 24 + [6000] * 5)
             with mock.patch.object(agent, "_room", side_effect=lambda context, conversation: next(rooms)):
                 ctx = RunContext(conversation="app:full")

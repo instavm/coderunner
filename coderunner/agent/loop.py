@@ -16,6 +16,7 @@ from ..browser.broker import NO_CHANGE
 from ..core import paths
 from ..core.llm import LLM, LLMError
 from ..safety.policy import current_run
+from . import compaction
 from .digest import Readings, cut_level, digest, is_cut, let_go, normal_url, request_words
 from .recipes import Recipes, host_of, matches, save_from_run
 from .tools import ToolRegistry, progress_line
@@ -321,11 +322,8 @@ SHORT_FIT = 0.6
 # moderate (26K tokens at 128K, 45K at 256K, not 46K and 92K) and the next trim is still far away.
 SCALE_FROM = 32768
 LOW_WATER_BEYOND = 0.15
-# Past this share of the trim point, once before each trim, the model is asked to say what it has found.
-NEAR_TRIM = 0.8
-SAY_FINDINGS = ("[Reminder, not a new request] Older pages will soon be cut to a few lines. In your next step's say "
-                "field, or with tell_owner, note the facts you have found that you will still need: figures, names "
-                "and links.")
+# Since 25 November the trims above are the fallback only: a long task's conversation is compacted with a summary
+# the model writes (agent.compaction, _shrink), and trimmed in one go when that summary fails.
 CHARS_PER_TOKEN = 3.5
 
 
@@ -442,6 +440,9 @@ class RunContext:
     heard: list[str] = field(default_factory=list)
     # Called with each step as it happens (tool calls, notes, the plan), for an app showing the task live.
     events: Callable[[dict], None] | None = None
+    # The run's compactions (agent.compaction): how many summaries failed, so a model that cannot write one is not
+    # asked again and again.
+    compaction: dict = field(default_factory=dict)
 
     def emit(self, event: dict) -> None:
         if self.events is not None:
@@ -745,7 +746,8 @@ class Agent:
         said = "\n".join(f"- {line}" for line in ctx.said[-30:])
         note = ("[What you found earlier, as you told me while working]\n" + said if said else "") + (
             "\n" + PLAN_REMINDER + render_plan(ctx.plan) if ctx.plan else "")
-        kept = messages[:head] + ([{"role": "user", "content": note.strip()}] if note.strip() else [])
+        summary = [m for m in messages[head:] if compaction.is_summary(m)][-1:]     # the latest summary, if any
+        kept = messages[:head] + summary + ([{"role": "user", "content": note.strip()}] if note.strip() else [])
         budget = room / 2 - self._size(kept, [0, 0])
         if budget <= 0:
             return None
@@ -756,7 +758,117 @@ class Agent:
             tail.insert(0, messages[i])
         while tail and not (tail[0].get("role") == "assistant" and tail[0].get("tool_calls")):
             tail.pop(0)                         # a tool's result goes with the call that asked for it
-        return kept + tail
+        return kept + [m for m in tail if not compaction.is_summary(m)]
+
+    async def _shrink(self, ctx: RunContext, messages: list[dict], known: list[int], context: int, room: int,
+                      words: frozenset[str], head: int, step: int, force: str = "") -> dict | None:
+        """The conversation compacted once it passes agent.compaction's threshold of its room, or at once when
+        `force` says why (the runtime said its context is full): the model summarizes the work so far and the
+        conversation becomes the instructions and the request (messages[:head]), that summary, the plan, the
+        owner's words while it ran, and the latest steps verbatim. When the summary fails, times out or is not
+        one, the extractive trim (_trim) is made instead, in one go. Changes messages and known in place, writes
+        agent.compacted, and returns what it did (None when nothing changed)."""
+        base = min(context, room)
+        size = self._size(messages, known)
+        if not force and size <= compaction.threshold(base):
+            return None
+        started = time.monotonic()
+        record: dict[str, Any] = {"step": step, "reason": force or "threshold", "room": room, "before": size}
+        # A runtime that says it is full holds less than the room we counted: what it was sent is its room then.
+        held = min(base, size) if force else base
+        cut = compaction.cut_point(messages, head, compaction.keep_tokens(held))
+        summarized = [m for m in messages[head:cut or head] if not compaction.is_summary(m)]
+        text, why, usage = "", "", {}
+        if cut is None or compaction.tokens_of(summarized) < compaction.MIN_SUMMARIZED * held:
+            why = "nothing_to_summarize"
+        elif ctx.compaction.get("fails", 0) >= compaction.SUMMARY_FAILS:
+            why = "summaries_failed_before"
+        else:
+            # Appended to the conversation as it is, so the runtime reads only the instruction; when the runtime
+            # is full already, to the part before the cut (which it has read too, as the start of what it holds).
+            text, why, usage = await self._summary(ctx, messages if not force else messages[:cut])
+            if why:
+                ctx.compaction["fails"] = ctx.compaction.get("fails", 0) + 1
+        if why:
+            done = self._fallback(messages, known, context, room, words, size, bool(force))
+            record.update(fallback=why, after=done["after"] if done else size, seconds=round(time.monotonic() - started, 1),
+                          **({"results": done["results"]} if done else {}))
+            if done or why not in ("nothing_to_summarize", "summaries_failed_before"):     # not each step it waits
+                self.svc.audit.write("agent.compacted", conversation=ctx.conversation, **record)
+            return done
+        tail = messages[cut:]
+        # A single huge result among the kept steps (not the latest, which the model has not acted on) keeps its
+        # key lines: changed now, with everything else, so nothing is changed between compactions.
+        numbers, own = step_numbers(messages), own_results(messages)
+        steps = [i for i, m in enumerate(tail) if m.get("tool_calls")]
+        for i in range(steps[-1] if steps else 0):
+            m = tail[i]
+            if (m.get("role") == "tool" and isinstance(m.get("content"), str) and not shrunk(m["content"])
+                    and m.get("tool_call_id") not in own
+                    and compaction.message_tokens(m) > compaction.HUGE_RESULT * base):
+                tail[i] = {**m, "content": cut_down(m["content"], numbers[cut + i], words)}
+        # The owner's words while it ran are theirs, never only inside a summary.
+        heard = set(ctx.heard)
+        steers = [m for m in messages[head:cut] if m.get("role") == "user" and m.get("content") in heard]
+        plan = [{"role": "user", "content": PLAN_REMINDER + render_plan(ctx.plan)}] if ctx.plan else []
+        rebuilt = messages[:head] + [compaction.summary_message(text)] + plan + steers + tail
+        messages[:] = rebuilt
+        known[:] = [len(rebuilt), compaction.tokens_of(rebuilt)]
+        record.update(after=known[1], tail=compaction.tokens_of(tail),
+                      summary=int(usage.get("completion_tokens") or len(text) / CHARS_PER_TOKEN),
+                      summarized=len(summarized), seconds=round(time.monotonic() - started, 1))
+        self.svc.audit.write("agent.compacted", conversation=ctx.conversation, **record)
+        return record
+
+    async def _summary(self, ctx: RunContext, messages: list[dict]) -> tuple[str, str, dict]:
+        """The model's summary of the conversation so far: (summary, "", usage), or ("", why not, {})."""
+        ask = messages + [{"role": "user", "content": compaction.SUMMARIZE}]
+        timeout = float(self.svc.config.get("agent.summary_timeout", compaction.SUMMARY_TIMEOUT_S)
+                        or compaction.SUMMARY_TIMEOUT_S)
+        try:
+            # Reasoning off and the tools switched off, not left out: the request then extends the last one.
+            reply = await self._turn(ctx, ask, False, {"max_tokens": compaction.SUMMARY_TOKENS}, timeout=timeout,
+                                     tool_choice="none")
+        except (asyncio.TimeoutError, TimeoutError):
+            return "", "timeout", {}
+        except LLMError:
+            return "", "failed", {}
+        text, why = compaction.usable(reply)
+        return text, why, reply.get("usage") or {}
+
+    def _fallback(self, messages: list[dict], known: list[int], context: int, room: int, words: frozenset[str],
+                  size: int, force: bool) -> dict | None:
+        """Today's extractive trim, in one go. force: the runtime is full, so every long result before the latest
+        step goes to its key lines even where _trim would not bother."""
+        done = self._trim(messages, known, context, room, words)
+        if done is not None or not force:
+            return done
+        steps = [i for i, m in enumerate(messages) if m.get("tool_calls")]
+        removed = self._drop_old(messages, steps[-1] if steps else 0, pages_only=False, words=words)
+        if not removed:
+            return None
+        self._fit_digests(messages, DIGESTS * low_water(min(context, room)) * CHARS_PER_TOKEN, removed, words)
+        freed = self._freed(removed, known)
+        known[1] = max(0, known[1] - int(sum(n for i, n in removed if i < known[0]) / CHARS_PER_TOKEN))
+        return {"results": len(removed), "freed": freed, "before": size, "after": size - freed, "must": True}
+
+    async def _ask(self, ctx: RunContext, messages: list[dict], think: bool | None, capped: dict, known: list[int],
+                   context: int, room: int, words: frozenset[str], head: int, step: int) -> dict:
+        """One step's reply; when the runtime says its context is full (an error saying so, or a reply stopped
+        for length well before its limit), the conversation is compacted and the request sent once more."""
+        try:
+            reply = await self._turn(ctx, messages, think, capped)
+        except LLMError as exc:
+            if not compaction.OVERFLOW.search(str(exc)):
+                raise
+            if await self._shrink(ctx, messages, known, context, room, words, head, step, force="overflow") is None:
+                raise
+            return await self._turn(ctx, messages, think, capped)
+        if not compaction.ran_out_of_room(reply, int(capped.get("max_tokens") or 0)):
+            return reply
+        if await self._shrink(ctx, messages, known, context, room, words, head, step, force="length") is None:
+            return reply
+        return await self._turn(ctx, messages, think, capped)
 
     def _room(self, context: int, conversation: str) -> int:
         """Tokens this task's conversation may hold: the runtime's context less what the other slots hold."""
@@ -835,24 +947,27 @@ class Agent:
         return "\n\n".join([text, *ctx.heard])
 
     async def _turn(self, ctx: RunContext, messages: list[dict], think: bool | None, capped: dict,
-                    **extra: Any) -> dict:
+                    timeout: float | None = None, **extra: Any) -> dict:
         """One reply from the model. On a local model tasks take turns (server.tasks.Turns) and each keeps its
         own slot in the runtime, so its conversation stays read while the other task has the model: without
         that, every change of task read the whole conversation again. extra: tool_choice="none" for a reply
-        written without tools (the tools stay in the request, so it extends the one before)."""
+        written without tools (the tools stay in the request, so it extends the one before). timeout: seconds the
+        model may take once it has the turn (a summary's), past which asyncio.TimeoutError is raised."""
+        def timed(call):
+            return asyncio.wait_for(call, timeout) if timeout else call
         turns = getattr(self.svc, "turns", None)
         slot = getattr(ctx.events, "slot", None)
         if getattr(self.llm, "provider", "") == "openai" and slot is not None and slot < max(1, self.llm.slots - 1):
             # The owner's own server serves its slots at once: no turns, but each task keeps to its slot, so what
             # it has read stays read (the judge has the last one). Unpinned, a judge call or the other task could
             # take a slot holding 20,000 tokens of conversation, read again at ~500 a second: 40 s a step.
-            return await self.llm.chat(messages, tools=self.registry.schemas(), think=think, id_slot=slot, **capped,
-                                       **extra)
+            return await timed(self.llm.chat(messages, tools=self.registry.schemas(), think=think, id_slot=slot,
+                                             **capped, **extra))
         if turns is None or getattr(self.llm, "remote", False):
-            return await self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped, **extra)
+            return await timed(self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped, **extra))
         async with turns.turn(ctx.conversation):
-            return await self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped, **extra,
-                                       **({"id_slot": slot} if slot is not None else {}))
+            return await timed(self.llm.chat(messages, tools=self.registry.schemas(), think=think, **capped, **extra,
+                                             **({"id_slot": slot} if slot is not None else {})))
 
     async def _interim(self, ctx: RunContext, messages: list[dict], prompt: str, limit: int) -> str:
         """An answer from what the run has so far, posted to the thread at once as an interim one; the run then
@@ -930,7 +1045,6 @@ class Agent:
         words = request_words(text)
         readings = Readings(words)                  # the pages read, answered again from their key lines
         acts = 0                                    # the model's replies with tool calls: its steps, from 1
-        warned = False                              # asked to say its findings before the next trim
         # When the run has a deadline: how long before it the run writes an interim answer (0: none, or written
         # already), and how long before its hard stop it writes its final one. Counted from ctx each step, since
         # waiting for the owner moves both on (RunContext.pause).
@@ -950,17 +1064,9 @@ class Agent:
                 break
             self._drop_old_images(messages)
             room = self._room(context, ctx.conversation)
-            trimmed = self._trim(messages, known, context, room, words)
-            if trimmed:
-                self.svc.audit.write("agent.trimmed", room=room, step=step, **trimmed)
-                warned = False
-            elif not warned and (NEAR_TRIM * (due := min(TRIM_AT * context, FIT * room))
-                                 < self._size(messages, known) <= due):
-                # Once before each trim, appended: the model says what it will need in its own words, which a
-                # trim never cuts (its calls' say lines and tell_owner), beside the key lines kept of each page.
-                messages.append({"role": "user", "content": SAY_FINDINGS})
-                self.svc.audit.write("agent.trim_near", step=step)
-                warned = True
+            # Past its threshold the conversation is compacted in one go (a summary and the latest steps); below
+            # it, nothing written before is changed, so each request reads only what is new.
+            await self._shrink(ctx, messages, known, context, room, words, head, step)
             if self._size(messages, known) > 0.95 * room:
                 # Full: what it read before the latest step makes way, and it answers from what it has found (a
                 # task that ran 160 steps ended with only "I had to stop here", its findings unsaid).
@@ -1010,7 +1116,7 @@ class Agent:
             # Twice the limit where the model may think first: its thinking counts against it.
             capped = {"max_tokens": limit * (1 if think is False else 2)} if limit else {}
             try:
-                reply = await self._turn(ctx, messages, think, capped)
+                reply = await self._ask(ctx, messages, think, capped, known, context, room, words, head, step)
             except LLMError as exc:
                 self.svc.audit.write("agent.model_failed", error=str(exc)[:300])
                 # Said as a person would: what stopped it and what to do, never the runtime's own error.

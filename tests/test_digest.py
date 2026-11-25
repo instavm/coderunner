@@ -292,28 +292,22 @@ class Pages:
         return {"ok": True, "url": url, "title": "Page", "content": self.text}
 
 
-class NearTrimTests(unittest.IsolatedAsyncioTestCase):
-    async def test_once_before_each_trim_the_model_is_asked_to_say_its_findings_appended(self):
+class FallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_when_the_summary_fails_the_trim_keeps_each_pages_key_lines(self):
         with FakeOpenAI() as fake:
-            svc = Svc({"models": {"context": 8192}})        # each page is about 600 tokens
+            svc = Svc({"models": {"context": 12288}})       # each page is about 600 tokens
             svc.browser = Pages("Price ₹1,999\n" + "[1] link \"More\"\n" * 110)
             svc.llm = LLM(fake.base_url, "test")
             svc.registry = build_registry(svc)
+            fake.summary = lambda body: {"_status": 500, "error": "Compute error."}
             fake.script = [tool_call("browser_open", {"url": f"https://shop.example/{i}"}, f"c{i}")
-                           for i in range(14)] + [{"role": "assistant", "content": "done"}]
-            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="near"), REQUEST)
-            asked = [sum(m["content"] == loop_module.SAY_FINDINGS for m in r["messages"]) for r in fake.requests]
-            events = [e["event"] for e in svc.audit.tail(500) if e["event"] in ("agent.trim_near", "agent.trimmed")]
-            # Said once, then not again until a trim has been made: one per trim cycle.
-            self.assertEqual(events[:3], ["agent.trim_near", "agent.trimmed", "agent.trim_near"])
-            self.assertTrue(all(a != b for a, b in zip(events, events[1:])))
-            first = asked.index(1)
-            self.assertEqual(asked[first - 1], 0)
-            self.assertEqual(asked[first + 1], 1)                                # not said twice
-            # Appended at the end: the request before it is read as it was (the cache prefix holds).
-            self.assertEqual(fake.requests[first]["messages"][-1]["content"], loop_module.SAY_FINDINGS)
-            before = fake.requests[first - 1]["messages"]
-            self.assertEqual(fake.requests[first]["messages"][:len(before)], before)
+                           for i in range(20)] + [{"role": "assistant", "content": "done"}]
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="fallback"), REQUEST)
+            events = [e for e in svc.audit.tail(500) if e["event"] == "agent.compacted"]
+            self.assertTrue(events and events[0]["fallback"] == "failed")
+            pages = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
+            cut = [page for page in pages if is_cut(page)]
+            self.assertTrue(cut and all("₹1,999" in page for page in cut))
             await svc.llm.aclose()
 
 

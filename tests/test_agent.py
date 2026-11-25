@@ -1113,32 +1113,33 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("Reminder of your plan", str(fake.requests[0]["messages"]))
             await svc.llm.aclose()
 
-    async def test_old_pages_are_dropped_only_near_the_context_limit(self):
-        from coderunner.agent.loop import shrunk
+    async def test_old_pages_are_left_alone_until_the_conversation_is_compacted_in_one_go(self):
+        from coderunner.agent import compaction
         with FakeOpenAI() as fake:
-            svc = Svc({"models": {"context": 8192}})        # each page is about 950 tokens
+            svc = Svc({"models": {"context": 16384}})       # each page is about 950 tokens
             svc.browser = FakeBrowser("A long page\n" + "[1] link \"More\"\n" * 170)
             svc.llm = LLM(fake.base_url, "test")
             svc.registry = build_registry(svc)
-            fake.script = [tool_call("browser_snapshot", {"fresh": True}, f"c{i}") for i in range(6)] + [
+            fake.script = [tool_call("browser_snapshot", {"fresh": True}, f"c{i}") for i in range(14)] + [
                 {"role": "assistant", "content": "done"}]
             await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="s1"), "read it")
-            seen = [[shrunk(m["content"]) for m in r["messages"] if m["role"] == "tool"] for r in fake.requests]
-            # Pages accumulate untouched (every request extends the last, so the runtime reads only what is
-            # new) until the conversation fills 60% of the context; then the old ones go at once, the latest two
-            # steps kept. (Text the runtime has not counted yet is taken at 3 characters a token, so here at the
-            # fourth page.) At the fifth page a trim would free one page, under 15% of the context: none is made,
-            # so that request reads only what is new. At the sixth, two pages go in one trim.
-            self.assertEqual(seen[3], [False] * 3)
-            self.assertEqual(seen[4], [True] * 2 + [False] * 2)
-            self.assertEqual(seen[5], [True] * 2 + [False] * 3)
-            self.assertEqual(seen[6], [True] * 4 + [False] * 2)
-            self.assertEqual(fake.requests[5]["messages"][:-2], fake.requests[4]["messages"])
+            # Pages accumulate untouched (every request extends the last, so the runtime reads only what is new)
+            # until the conversation passes 75% of the context; then the model's summary and the latest steps
+            # take their place in one go, and the requests extend each other again.
+            self.assertEqual(len(fake.summarized), 1)
+            summary_at = next(i for i, r in enumerate(fake.requests) if any(compaction.is_summary(m) for m in r["messages"]))
+            for i in range(1, len(fake.requests)):
+                before, now = fake.requests[i - 1]["messages"], fake.requests[i]["messages"]
+                self.assertEqual(now[:len(before)] == before, i != summary_at, i)
+            # The summary request was the conversation as it stood, with the instruction appended.
+            asked = fake.summarized[0]["messages"]
+            self.assertEqual(asked[:-1], fake.requests[summary_at - 1]["messages"] + asked[len(fake.requests[summary_at - 1]["messages"]):-1])
             pages = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
             self.assertIn("A long page", pages[-1])
-            trims = [e for e in svc.audit.tail() if e["event"] == "agent.trimmed"]
-            self.assertEqual([e["results"] for e in trims], [2, 2])
-            self.assertTrue(all(e["freed"] > 0.15 * 8192 and e["after"] < e["before"] for e in trims))
+            self.assertLess(len(pages), 14)
+            events = [e for e in svc.audit.tail() if e["event"] == "agent.compacted"]
+            self.assertEqual(len(events), 1)
+            self.assertTrue(events[0]["after"] < events[0]["before"] and "fallback" not in events[0])
             await svc.llm.aclose()
 
     async def test_empty_answer_after_tool_is_asked_for_once(self):

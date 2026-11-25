@@ -23,7 +23,12 @@ from coderunner.safety.guard import Guard
 from coderunner.safety.policy import Policy
 from coderunner.safety.secrets_store import SecretStore
 from coderunner.core.store import Store
+from coderunner.agent.compaction import SUMMARIZE
 from coderunner.server.titles import SYSTEM as TITLE_SYSTEM
+
+SUMMARY = ("## Goal\nThe owner's request.\n## Constraints & Preferences\n(none)\n## Progress\n### Done\n- Read the pages so far.\n"
+           "### In progress\n- The rest.\n### Blocked\n(none)\n## Key Decisions\n(none)\n## Key facts found\n(none yet)\n"
+           "## Next Steps\n- Carry on.")
 
 
 def free_port() -> int:
@@ -46,6 +51,10 @@ class FakeOpenAI:
         self.judge = lambda state: False
         self.titled: list[dict] = []            # requests for a thread's name (server/titles.py), apart from the script
         self.title = lambda prompt: "Fake title"
+        # Requests for a summary of the conversation (agent.compaction), apart from the script: summary(body)
+        # gives the reply, a message dict or its text.
+        self.summarized: list[dict] = []
+        self.summary = lambda body: SUMMARY
         self.served = ["test"]                  # the models /v1/models lists
         self.authorizations: list[str] = []
         self.port = free_port()
@@ -64,6 +73,16 @@ class FakeOpenAI:
                                                               "content": self.title(messages[-1]["content"])}}]})
             if body.get("max_tokens") == 1:      # the daemon warming the model's cache: not part of the script
                 return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+            if str(messages[-1].get("content", "")) == SUMMARIZE:
+                self.summarized.append(body)
+                item = self.summary(body)
+                message = {"role": "assistant", "content": item} if isinstance(item, str) else dict(item)
+                if "_status" in message:
+                    return JSONResponse({"error": {"message": message.get("error", "")}}, status_code=message["_status"])
+                if "_delay" in message:
+                    await asyncio.sleep(message.pop("_delay"))
+                return JSONResponse({"choices": [{"message": message, "finish_reason": "stop"}],
+                                     "usage": {"completion_tokens": len(message.get("content") or "") // 4}})
             self.requests.append(body)
             item = self.script.pop(0) if self.script else {"role": "assistant", "content": "done"}
             message = item(body) if callable(item) else item
