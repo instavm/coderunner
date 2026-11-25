@@ -45,6 +45,15 @@ SCHEMA = [
     """CREATE TABLE IF NOT EXISTS task_events (
         seq INTEGER PRIMARY KEY, task TEXT, conversation TEXT, ts REAL, data TEXT)""",
     "CREATE INDEX IF NOT EXISTS task_events_conversation ON task_events(conversation, seq)",
+    # A task's journal (agent/journal.py), so it goes on after the daemon restarts: what it was started with, its
+    # conversation as the model last saw it (one row, replaced each step), and each tool call of its latest step,
+    # written before the call runs and again with its result. Deleted when the task ends.
+    """CREATE TABLE IF NOT EXISTS task_journal (
+        task TEXT PRIMARY KEY, job TEXT, state TEXT, restarts INTEGER DEFAULT 0, stopped INTEGER DEFAULT 0,
+        updated REAL)""",
+    """CREATE TABLE IF NOT EXISTS task_calls (
+        task TEXT, step INTEGER, pos INTEGER, name TEXT, result TEXT, flags TEXT, approval TEXT, at REAL,
+        PRIMARY KEY (task, step, pos))""",
     """CREATE TABLE IF NOT EXISTS devices (
         id TEXT PRIMARY KEY, name TEXT, created REAL, last_seen REAL)""",
     "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)",

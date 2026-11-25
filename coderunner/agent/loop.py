@@ -18,6 +18,7 @@ from ..core.llm import LLM, LLMError
 from ..safety.policy import current_run
 from . import compaction
 from .digest import Readings, cut_level, digest, is_cut, let_go, normal_url, request_words
+from .journal import BROWSER_MOVED, INTERRUPTED, ctx_state, portable, restore_ctx
 from .recipes import Recipes, host_of, matches, save_from_run
 from .tools import ToolRegistry, progress_line
 
@@ -438,6 +439,7 @@ class RunContext:
     # before the next model request; and what was read, kept with the request in the conversation.
     inbox: list[dict] = field(default_factory=list)
     heard: list[str] = field(default_factory=list)
+    request: str = ""           # the request it works on now: a follow-up's, or the one kept over a restart
     # Called with each step as it happens (tool calls, notes, the plan), for an app showing the task live.
     events: Callable[[dict], None] | None = None
     # The run's compactions (agent.compaction): how many summaries failed, so a model that cannot write one is not
@@ -912,9 +914,11 @@ class Agent:
         try:
             return await self._run(ctx, text, images)
         except asyncio.CancelledError:
-            # Stopped midway: the conversation keeps the request and what it had found, so "go on" can.
-            self._remember(ctx.conversation, "user", self._asked(ctx, text))
-            self._remember(ctx.conversation, "assistant", stopped_reply(ctx))
+            # Stopped midway: the conversation keeps the request and what it had found, so "go on" can. Not when
+            # the daemon is stopping: the task goes on from its journal when it starts again (server.tasks).
+            if not getattr(ctx.events, "shutdown", False):
+                self._remember(ctx.conversation, "user", self._asked(ctx, ctx.request or text))
+                self._remember(ctx.conversation, "assistant", stopped_reply(ctx))
             raise
         finally:
             current_run.reset(token)
@@ -940,6 +944,75 @@ class Agent:
         ctx.emit({"type": "steer_taken", "ids": [item.get("id") for item in taken]})
         self.svc.audit.write("agent.steered", conversation=ctx.conversation, messages=len(taken))
         return True
+
+    def _follow_up(self, ctx: RunContext, messages: list[dict], text: str, final: str) -> str | None:
+        """What the owner sent while the run wrote its answer, or that it had not read yet when it answered: their
+        next turn in this task, in the order sent, instead of a task of its own once this one ends. The answer so
+        far is posted to the thread and kept in the conversation with its request; returns the new request, or
+        None when there is nothing to follow up."""
+        if not ctx.inbox or not ctx.origin_is_owner:
+            return None
+        taken = list(ctx.inbox)
+        ctx.inbox.clear()
+        answer = without_meta(final).strip()
+        ctx.emit({"type": "interim", "text": answer, "answer": True})
+        self._remember(ctx.conversation, "user", self._asked(ctx, text))
+        self._remember(ctx.conversation, "assistant", answer)
+        ctx.heard = []
+        said = "\n\n".join(str(item.get("text") or "") for item in taken).strip()
+        ctx.request = said
+        messages.append({"role": "user", "content": said})
+        images = [image for item in taken for image in (item.get("images") or [])]
+        if images:
+            owner = self.svc.config.get("owner.name") or "the owner"
+            messages.append({"role": "user", "content": [{"type": "text", "text": STEER_PICTURES.format(owner=owner)}] + [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}} for mime, data in images]})
+        from .tools import handles
+        ctx.known |= handles(said)
+        ctx.emit({"type": "steer_taken", "ids": [item.get("id") for item in taken]})
+        self.svc.audit.write("agent.follow_up", conversation=ctx.conversation, messages=len(taken))
+        return said
+
+    async def _resume_step(self, ctx: RunContext, messages: list[dict], journal, acts: int) -> None:
+        """The step a restart came in the middle of (its reply kept, its calls not all done): a call's result as
+        kept; a call without one runs again if it never started, only reads (Tool.replay_safe) or was waiting for
+        the owner's approval (they are asked again), and is otherwise answered as interrupted. Calls after one
+        that failed are skipped, as in any step."""
+        last = messages[-1] if messages else {}
+        if last.get("role") != "assistant" or not last.get("tool_calls"):
+            return
+        rows, failed = journal.calls(acts), False
+        for pos, call in enumerate(last["tool_calls"]):
+            function = call.get("function", {})
+            name, arguments = function.get("name", ""), function.get("arguments", "{}")
+            row, tool = rows.get(pos), self.registry.tools.get(name)
+            asked = (row or {}).get("approval")
+            if row is not None and row.get("result") is not None:
+                result = row["result"]
+                restore_ctx(ctx, row.get("flags") or {})
+            elif failed:
+                result = SKIPPED
+            elif row is None or getattr(tool, "replay_safe", False) or (asked and name != "browser_batch"):
+                if asked:                   # the request the owner never answered is closed in the thread
+                    with contextlib.suppress(Exception):
+                        if getattr(self.svc.policy.get(asked), "status", "") == "pending":
+                            self.svc.policy._finish(asked, "expired", "once", "restart")    # said via the audit
+                        else:               # closed already (the app listed the approvals first)
+                            ctx.emit({"type": "activity", "event": "approval.decided", "id": asked,
+                                      "status": "expired"})
+                journal.intent(acts, pos, name)
+                ctx.emit({"type": "tool", "id": call.get("id", ""), "name": name, "arguments": arguments})
+                result = await self.registry.invoke(name, arguments, ctx)
+                ctx.emit({"type": "tool_done", "id": call.get("id", ""), "name": name,
+                          "ok": not result.startswith("Error:"), "preview": result[:300]})
+            else:
+                result = INTERRUPTED
+            self.svc.audit.write("agent.resumed_call", tool=name, how="kept" if row and row.get("result") is not None
+                                 else "skipped" if result == SKIPPED else "interrupted" if result == INTERRUPTED
+                                 else "again")
+            failed = result.startswith("Error:") or "\nError:" in result[:200]
+            messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result})
+            journal.result(acts, pos, name, result, ctx_state(ctx))
 
     @staticmethod
     def _asked(ctx: RunContext, text: str) -> str:
@@ -990,22 +1063,33 @@ class Agent:
         return text
 
     async def _run(self, ctx: RunContext, text: str, images: list[tuple[str, str]] | None) -> str:
-        if not ctx.origin_is_owner:
-            ctx.taint()
+        # A task the daemon restarted under goes on from its journal (agent/journal.py): its conversation as the
+        # model last saw it, and the run's own state.
+        journal = getattr(ctx.events, "journal", None)
+        saved = journal.state() if journal is not None and getattr(ctx.events, "resuming", False) else None
+        if saved and saved.get("messages"):
+            restore_ctx(ctx, saved.get("ctx") or {})
+            text, messages = saved.get("text") or text, saved["messages"]
+            ctx.request = text
         else:
-            from .tools import handles
-            ctx.known |= handles(text)
-            for earlier in self._history(ctx.conversation):
-                if earlier.get("role") == "user" and isinstance(earlier.get("content"), str):
-                    ctx.known |= handles(earlier["content"])
-        user_content: Any = text
-        if images:
-            user_content = [{"type": "text", "text": text}] + [
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}} for mime, data in images]
-        messages = [{"role": "system", "content": self._system()}, *self._history(ctx.conversation),
-                    {"role": "user", "content": await self._context(text, ctx)},
-                    {"role": "user", "content": user_content}]
-        self.svc.audit.write("agent.start", conversation=ctx.conversation, origin=ctx.origin)
+            saved = None
+            if not ctx.origin_is_owner:
+                ctx.taint()
+            else:
+                from .tools import handles
+                ctx.known |= handles(text)
+                for earlier in self._history(ctx.conversation):
+                    if earlier.get("role") == "user" and isinstance(earlier.get("content"), str):
+                        ctx.known |= handles(earlier["content"])
+            user_content: Any = text
+            if images:
+                user_content = [{"type": "text", "text": text}] + [
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}} for mime, data in images]
+            messages = [{"role": "system", "content": self._system()}, *self._history(ctx.conversation),
+                        {"role": "user", "content": await self._context(text, ctx)},
+                        {"role": "user", "content": user_content}]
+        self.svc.audit.write("agent.start", conversation=ctx.conversation, origin=ctx.origin,
+                             **({"resumed": saved["step"] + 1} if saved else {}))
         # Not a budget a task works within: a stop for one that goes round in circles. At 30, long tasks (a trip
         # planned from flights, hotels and a day-by-day plan) ended with "I'd need more steps to finish". Reaching
         # it posts an interim answer and grants it again, up to STEP_BUDGETS times in all.
@@ -1056,7 +1140,34 @@ class Agent:
             hurry_lead = time_lead(total)
             final_lead = time_lead(max(0.0, ctx.stop_at - ctx.deadline))
         hurried = not ctx.deadline
-        for step in range(max_steps * STEP_BUDGETS):
+        first = 0
+        if saved:
+            # From the step after the last one kept; the runtime reads the conversation again (known starts over).
+            first, acts, head = int(saved.get("step", -1)) + 1, int(saved.get("acts") or 0), int(saved.get("head") or 0)
+            reminded, since, cuts = saved.get("reminded") or [], int(saved.get("since") or 0), int(saved.get("cuts") or 0)
+            hurried = bool(saved.get("hurried", hurried))
+            hurry_lead, final_lead = saved.get("hurry_lead", hurry_lead), saved.get("final_lead", final_lead)
+            words = request_words(text)
+            readings = Readings(words)
+
+        def commit(at: int) -> None:
+            """The conversation and the run's state kept in the task's journal, replacing the last."""
+            if journal is None:
+                return
+            now = time.monotonic()
+            journal.save({"messages": portable(messages), "text": text, "step": at, "acts": acts, "head": head,
+                          "reminded": reminded, "since": since, "cuts": cuts, "hurried": hurried,
+                          "hurry_lead": hurry_lead, "final_lead": final_lead, "ctx": ctx_state(ctx),
+                          "taken": sorted(getattr(ctx.events, "taken", None) or ()),
+                          "clock": {"deadline": max(0.0, ctx.deadline - now) if ctx.deadline else 0.0,
+                                    "stop": max(0.0, ctx.stop_at - now) if ctx.stop_at else 0.0}})
+        if saved:
+            await self._resume_step(ctx, messages, journal, acts)
+            commit(first - 1)
+            if any((call.get("function") or {}).get("name", "").startswith("browser_")
+                   for m in messages for call in (m.get("tool_calls") or []) if isinstance(call, dict)):
+                messages.append({"role": "user", "content": BROWSER_MOVED})
+        for step in range(first, max_steps * STEP_BUDGETS):
             if late_repeats >= REPEATS_BEFORE_ANSWER:
                 self.svc.audit.write("agent.going_round", step=step, repeats=late_repeats)
                 final = "I stopped: I was going over the same searches again."
@@ -1161,18 +1272,24 @@ class Agent:
                 if reply["content"]:
                     messages.append({"role": "assistant", "content": final})
                     answered = True
+                    followed = self._follow_up(ctx, messages, text, final)
+                    if followed is not None:        # the owner wrote while it answered: their next turn, here
+                        text, answered, nudged = followed, False, False
+                        commit(step)
+                        continue
                 break
             # What the model writes beside its tool calls is the task's status line while it works ("Looking at
             # Skyscanner for the 12th"). A line about the machinery stays out ("The browser didn't respond").
             messages.append({"role": "assistant", "content": reply["content"], "tool_calls": reply["tool_calls"]})
             acts += 1
+            commit(step)                    # the reply is kept before any of its calls runs
             line = progress_line(reply["content"], ctx.said)
             if line:
                 ctx.said.append(line)
                 ctx.emit({"type": "note", "text": line})
             step_start = len(messages)
             failed = False
-            for call in reply["tool_calls"]:
+            for pos, call in enumerate(reply["tool_calls"]):
                 function = call.get("function", {})
                 name, arguments = function.get("name", ""), function.get("arguments", "{}")
                 key = call_key(name, arguments)
@@ -1197,6 +1314,8 @@ class Agent:
                         self.svc.audit.write("agent.page_kept", tool=name, step=acts)
                         result = kept
                     else:
+                        if journal is not None:
+                            journal.intent(acts, pos, name)     # kept before it runs: a restart now is known
                         result = await self.registry.invoke(name, arguments, ctx)
                     failed = result.startswith("Error:") or "\nError:" in result[:200]
                     if not failed and not kept:
@@ -1229,6 +1348,8 @@ class Agent:
                             result += HANDOVER_HINT.format(count=stuck)
                     result += await self._site_note(ctx, name, arguments, failed)
                 messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result})
+                if journal is not None:
+                    journal.result(acts, pos, name, result, ctx_state(ctx))
             over = self._size(messages, known) - FIT * room
             if over > 0:
                 self._cut_step(messages, step_start, int(over * NEW_CHARS))
@@ -1239,6 +1360,7 @@ class Agent:
                 messages.append({"role": "user", "content": parts})
                 ctx.images.clear()
             self._transcript(ctx, messages)
+            commit(step)
         else:
             # Out of steps, every budget of them: what the model found so far is still worth an answer.
             final = ctx.interim or "I stopped after reaching the step limit. Tell me how you'd like to continue."

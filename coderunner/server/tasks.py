@@ -12,7 +12,9 @@ import contextlib
 import json
 import secrets
 import time
+import types
 
+from ..agent.journal import RESTARTS_ALLOWED, Journal
 from ..core import paths
 from ..safety.policy import current_run
 from . import titles
@@ -32,6 +34,11 @@ SHOT_APART_S = 20           # the same page is not shown again sooner than this
 MAX_SHOTS = 8               # for one task
 APPROVAL_CHARS = 20000      # of what an approval asks about (the text of a message to send)
 SHOTS_KEPT_DAYS = 14
+# A task the daemon restarted under goes on (agent/journal.py), with one quiet line in its thread.
+RESUMED = "Resumed after a restart"
+GAVE_UP = ("I couldn't finish this: the assistant restarted several times while working on it. Anything said above "
+           "still stands. You can ask again.")
+LAST_MINUTE_S = 60          # a task with a time limit resumed past it still has this long to write its answer
 
 
 def shots_dir():
@@ -163,12 +170,33 @@ class Tasks:
         self._named_recent = False             # the newest older threads queued for names this run
         daemon.svc.audit.listeners.append(self._on_audit)
         daemon.svc.audit.context = _run_ids
-        # A daemon that stopped mid-task left it "running" for ever: its thread says how it ended.
-        for row in self.store.query("SELECT id, conversation FROM tasks WHERE status IN ('running', 'queued')"):
-            reply = "Stopped: the assistant was restarted while this was running."
-            self.store.execute("UPDATE tasks SET status = 'cancelled', reply = ?, finished = ? WHERE id = ?",
-                               (reply, time.time(), row["id"]))
-            bus.publish({"task": row["id"], "conversation": row["conversation"], "type": "cancelled", "reply": reply})
+        self.closing = False                    # the daemon is stopping: its tasks go on when it starts again
+        self._resumable: list[tuple[dict, dict]] = []
+        # A daemon that stopped mid-task left it "running" (or waiting for a place): it goes on from its journal
+        # (resume), unless the owner had stopped it, it has restarted too often, or it kept no journal (the check's,
+        # or one from before journals): then its thread says how it ended.
+        for row in self.store.query("SELECT id, conversation, status FROM tasks WHERE status IN ('running', 'queued') "
+                                    "ORDER BY created"):
+            from ..agent.loop import stopped_reply
+            kept = Journal(self.store, row["id"]).row()
+            if kept is not None and not kept["stopped"] and \
+                    not (row["status"] == "running" and int(kept["restarts"] or 0) >= RESTARTS_ALLOWED):
+                self._resumable.append((row, kept))
+                continue
+            if kept is None:
+                status, reply = "cancelled", "Stopped: the assistant was restarted while this was running."
+            elif kept["stopped"]:
+                found = (kept["state"] or {}).get("ctx") or {}
+                status, reply = "cancelled", stopped_reply(types.SimpleNamespace(found=found.get("found") or [],
+                                                                                 said=found.get("said") or []))
+            else:
+                status, reply = "failed", GAVE_UP
+                daemon.svc.audit.write("task.failed", task=row["id"], error=f"restarted {kept['restarts']} times")
+            Journal(self.store, row["id"]).end()
+            self.store.execute("UPDATE tasks SET status = ?, reply = ?, finished = ? WHERE id = ?",
+                               (status, reply, time.time(), row["id"]))
+            bus.publish({"task": row["id"], "conversation": row["conversation"], "type": status, "reply": reply,
+                         **({"incomplete": True} if status == "failed" else {})})
         for old in shots_dir().glob("*.jpg") if shots_dir().exists() else []:
             if time.time() - old.stat().st_mtime > SHOTS_KEPT_DAYS * 86400:
                 old.unlink(missing_ok=True)
@@ -198,6 +226,27 @@ class Tasks:
         self.store.execute("INSERT INTO tasks(id, conversation, prompt, status, reply, created, finished) "
                            "VALUES (?, ?, ?, ?, '', ?, NULL)",
                            (task_id, conversation, prompt, "queued" if queued else "running", now))
+        emit = self._emitter(task_id, conversation, origin, remote, time_limit, tainted)
+        files = [info for info in map(attached.describe, (attachments or [])[:attached.MAX_PER_TASK]) if info]
+        if emit.journal is not None:
+            # What it was asked with, kept before it starts: a restart from here on does not lose it.
+            emit.journal.begin({"origin": origin, "remote": remote, "time_limit": emit.time_limit, "tainted": tainted,
+                                "routine": routine, "attachments": [info["id"] for info in files], "steers": []})
+        emit({"type": "started", "prompt": prompt, **({"attachments": files} if files else {}),
+              **({"remote": remote} if remote else {}), **({"routine": routine} if routine else {}),
+              **({"time_limit": emit.time_limit} if emit.time_limit else {})})
+        job = (task_id, conversation, prompt, origin, emit, [info["id"] for info in files])
+        if queued:
+            # As many tasks as this computer runs well at once are running: this one starts when one ends.
+            self.waiting.append(job)
+            emit({"type": "queued", "ahead": len(self.waiting) - 1})
+        else:
+            self._launch(job)
+        return self.get(task_id)
+
+    def _emitter(self, task_id: str, conversation: str, origin: str, remote: str = "", time_limit: float = 0,
+                 tainted: bool = False):
+        """The task's event sender, which also carries what the run and the runner share about it."""
         base = {"task": task_id, "conversation": conversation}
 
         def emit(event: dict) -> None:
@@ -217,22 +266,66 @@ class Tasks:
         # The owner's messages sent while it works: all of them, the ones ready for the run (RunContext.inbox, None
         # once it has ended), and the ones it has read.
         emit.steers, emit.inbox, emit.taken = [], [], set()
+        # Its journal (agent/journal.py; none for the check's tasks, which are not resumed: the check that waits
+        # for them is gone after a restart); whether the run goes on from it, how long it had left then (clock),
+        # and whether the daemon is stopping under it.
+        emit.journal = None if conversation.startswith(self.CHECKS) else Journal(self.store, task_id)
+        emit.resuming, emit.clock, emit.shutdown = False, None, False
         self._emits[task_id] = emit
-        files = [info for info in map(attached.describe, (attachments or [])[:attached.MAX_PER_TASK]) if info]
-        emit({"type": "started", "prompt": prompt, **({"attachments": files} if files else {}),
-              **({"remote": remote} if remote else {}), **({"routine": routine} if routine else {}),
-              **({"time_limit": emit.time_limit} if emit.time_limit else {})})
-        job = (task_id, conversation, prompt, origin, emit, [info["id"] for info in files])
-        if queued:
-            # As many tasks as this computer runs well at once are running: this one starts when one ends.
-            self.waiting.append(job)
-            emit({"type": "queued", "ahead": len(self.waiting) - 1})
-        else:
-            self._launch(job)
-        return self.get(task_id)
+        return emit
 
     def limit(self) -> int:
         return limit(self.daemon.svc)
+
+    # ---- after a restart ---------------------------------------------------------
+
+    def resume(self) -> list[str]:
+        """The tasks a restart left unfinished go on, under the same ids, in the order they were asked for: those
+        that were running from their journal, with one line in the thread, then those that were waiting for a
+        place; as many at once as may run. Once per daemon run. Returns their ids."""
+        jobs, self._resumable = self._resumable, []
+        jobs.sort(key=lambda pair: pair[0]["status"] != "running")         # stable: in order within each
+        resumed = []
+        for row, kept in jobs:
+            if row["id"] in self._emits:
+                continue
+            job, state = kept["job"], kept["state"] or {}
+            emit = self._emitter(row["id"], row["conversation"], job.get("origin") or "owner", job.get("remote") or "",
+                                 job.get("time_limit") or 0, bool(job.get("tainted")))
+            emit.steers = [item for item in job.get("steers") or [] if isinstance(item, dict) and item.get("id")]
+            emit.taken = set(state.get("taken") or [])
+            if row["status"] == "running":
+                times = emit.journal.restarted()
+                emit.resuming, emit.clock = bool(state.get("messages")), state.get("clock") or None
+                self.daemon.svc.audit.write("task.resumed", task=row["id"], times=times, step=state.get("step"))
+                emit({"type": "note", "text": RESUMED, "restarted": times})
+            for item in emit.steers:            # what the owner sent that the run had not read yet
+                if item["id"] not in emit.taken:
+                    if item.get("files"):
+                        asyncio.get_running_loop().create_task(self._post(emit, item))
+                    else:
+                        emit.inbox.append({"id": item["id"], "text": item.get("prompt") or ""})
+            task = (row["id"], row["conversation"], self.get(row["id"])["prompt"], emit.origin, emit,
+                    list(job.get("attachments") or []))
+            if len(self.running) < self.limit():
+                self.store.execute("UPDATE tasks SET status = 'running' WHERE id = ?", (row["id"],))
+                self._launch(task)
+            else:
+                self.store.execute("UPDATE tasks SET status = 'queued' WHERE id = ?", (row["id"],))
+                self.waiting.append(task)
+                emit({"type": "queued", "ahead": len(self.waiting) - 1})
+            resumed.append(row["id"])
+        return resumed
+
+    def shutdown(self) -> None:
+        """The daemon is stopping (an update, the owner's restart): its running tasks are stopped where they are
+        and keep their journals, so they go on when it starts again; nothing is said in their threads."""
+        self.closing = True
+        for task_id, task in list(self.running.items()):
+            emit = self._emits.get(task_id)
+            if emit is not None and emit.journal is not None:
+                emit.shutdown = True
+                task.cancel()
 
     # ---- the owner's messages while a task works ------------------------------
 
@@ -252,6 +345,8 @@ class Tasks:
         files = [info for info in map(attached.describe, (attachments or [])[:attached.MAX_PER_TASK]) if info]
         item = {"id": secrets.token_hex(4), "prompt": prompt, "files": [info["id"] for info in files]}
         emit.steers.append(item)
+        if emit.journal is not None:            # kept, so a restart before the run reads it does not lose it
+            emit.journal.update_job(steers=emit.steers)
         emit({"type": "steer", "id": item["id"], "text": prompt, **({"attachments": files} if files else {})})
         if files:
             asyncio.get_running_loop().create_task(self._post(emit, item))
@@ -295,7 +390,7 @@ class Tasks:
         self.running[task_id] = asyncio.create_task(self._run(*job))
 
     def _next(self) -> None:
-        while self.waiting and len(self.running) < self.limit():
+        while self.waiting and len(self.running) < self.limit() and not self.closing:
             job = self.waiting.pop(0)
             self.store.execute("UPDATE tasks SET status = 'running' WHERE id = ? AND status = 'queued'", (job[0],))
             job[4]({"type": "resumed"})
@@ -310,12 +405,17 @@ class Tasks:
         emit.hard = None
         if emit.time_limit:
             from ..agent.loop import HARD_STOP
-            emit.deadline = time.monotonic() + emit.time_limit      # counted from when it runs, as the caller does
+            # Counted from when it runs, as the caller does; after a restart, from the time it had left then (the
+            # time it ran before still counts, the time the daemon was away does not).
+            clock = emit.clock if isinstance(emit.clock, dict) and emit.clock.get("stop") else {}
+            soft = float(clock.get("deadline") or 0.0) if clock else emit.time_limit
+            hard = max(float(clock["stop"]), LAST_MINUTE_S) if clock else HARD_STOP * emit.time_limit
+            emit.deadline = time.monotonic() + soft
             # The limit is soft (the run answers before it and carries on); here it is stopped for good, and
             # answers from what it had found, as a task the owner stops.
-            emit.stop_at = time.monotonic() + HARD_STOP * emit.time_limit
+            emit.stop_at = time.monotonic() + hard
             loop, me = asyncio.get_running_loop(), asyncio.current_task()
-            emit.hard = loop.call_later(HARD_STOP * emit.time_limit, me.cancel)
+            emit.hard = loop.call_later(hard, me.cancel)
 
             def extend(seconds: float) -> None:
                 """Time the task spent waiting for the owner (RunContext.pause): its limit moves on by as much."""
@@ -344,8 +444,9 @@ class Tasks:
                                                      **({"remote": True} if emit.remote else {}),
                                                      **({"tainted": True} if getattr(emit, "tainted", False) else {}))
         except asyncio.CancelledError:
-            # Stopped by the owner or at a caller's time limit: it answers at once with what it had found.
-            status, reply = "cancelled", stopped_reply(getattr(emit, "run", None))
+            # Stopped by the owner or at a caller's time limit: it answers at once with what it had found. The
+            # daemon stopping is not an end: the task goes on from its journal when it starts again.
+            status, reply = (None, "") if emit.shutdown else ("cancelled", stopped_reply(getattr(emit, "run", None)))
         except Exception as exc:        # the app shows the failure instead of waiting for ever
             # Said as a person would say it. What went wrong is in the audit trail for whoever looks.
             self.daemon.svc.audit.write("task.failed", task=task_id, error=f"{type(exc).__name__}: {exc}"[:400])
@@ -357,31 +458,42 @@ class Tasks:
                 emit.hard.cancel()
                 emit.hard = None
             self.running.pop(task_id, None)
-            if status == "done" and emit.shots["since"]:
-                await self._capture(emit, 0, again=True)        # how the page stood when it finished
-            self.slots.pop(task_id, None)
-            turns = getattr(self.daemon.svc, "turns", None)
-            if turns is not None:
-                turns.sizes.pop(conversation, None)
-            await self._fresh_slot(emit.slot)
-            browser = getattr(self.daemon.svc, "browser", None)
-            if browser is not None and hasattr(browser, "tidy"):
-                with contextlib.suppress(Exception):            # its own pages are not left to pile up
-                    await asyncio.wait_for(browser.tidy(scope=conversation), 10)
-            self.store.execute("UPDATE tasks SET status = ?, reply = ?, finished = ? WHERE id = ?",
-                               (status, reply, time.time(), task_id))
-            # An answer that says the task was not done, or a failure: the app can offer it again on Claude.
-            undone = status == "failed" or (status == "done" and getattr(emit, "incomplete", False))
-            emit({"type": status, "reply": reply, **({"incomplete": True} if undone else {}),
-                  **({"remote": emit.remote} if emit.remote else {})})
-            made = kept.produced(outputs)       # a chart, a sheet, a document its code wrote: shown under the answer
-            if made:
-                emit({"type": "files", "files": made})
-            self._end(task_id)
-            self._next()                        # a task that was waiting for a place starts now
-            self._follow_up(emit, status)
-            with contextlib.suppress(Exception):            # a name is an extra: never in the way of a task
-                self._name_later(conversation)
+            if status is None:
+                self.slots.pop(task_id, None)
+                self._emits.pop(task_id, None)
+            else:
+                await self._wrap_up(task_id, conversation, emit, status, reply, outputs)
+
+    async def _wrap_up(self, task_id: str, conversation: str, emit, status: str, reply: str, outputs) -> None:
+        """A task has ended (done, failed or stopped): its row, its last events, and the next task's turn."""
+        from ..files import attached as kept
+        if status == "done" and emit.shots["since"]:
+            await self._capture(emit, 0, again=True)        # how the page stood when it finished
+        self.slots.pop(task_id, None)
+        turns = getattr(self.daemon.svc, "turns", None)
+        if turns is not None:
+            turns.sizes.pop(conversation, None)
+        await self._fresh_slot(emit.slot)
+        browser = getattr(self.daemon.svc, "browser", None)
+        if browser is not None and hasattr(browser, "tidy"):
+            with contextlib.suppress(Exception):            # its own pages are not left to pile up
+                await asyncio.wait_for(browser.tidy(scope=conversation), 10)
+        self.store.execute("UPDATE tasks SET status = ?, reply = ?, finished = ? WHERE id = ?",
+                           (status, reply, time.time(), task_id))
+        if emit.journal is not None:
+            emit.journal.end()
+        # An answer that says the task was not done, or a failure: the app can offer it again on Claude.
+        undone = status == "failed" or (status == "done" and getattr(emit, "incomplete", False))
+        emit({"type": status, "reply": reply, **({"incomplete": True} if undone else {}),
+              **({"remote": emit.remote} if emit.remote else {})})
+        made = kept.produced(outputs)       # a chart, a sheet, a document its code wrote: shown under the answer
+        if made:
+            emit({"type": "files", "files": made})
+        self._end(task_id)
+        self._next()                        # a task that was waiting for a place starts now
+        self._follow_up(emit, status)
+        with contextlib.suppress(Exception):            # a name is an extra: never in the way of a task
+            self._name_later(conversation)
 
     async def _fresh_slot(self, slot) -> None:
         """A task's place in the local runtime holds only the instructions when it starts and when it ends
@@ -513,12 +625,18 @@ class Tasks:
 
     def cancel(self, task_id: str) -> bool:
         task = self.running.get(task_id)
+        emit = self._emits.get(task_id)
+        if emit is not None and emit.journal is not None and (task is not None or
+                                                               any(job[0] == task_id for job in self.waiting)):
+            emit.journal.stop()                 # Stop holds across a restart: it is never resumed
         if task is None:
             job = next((job for job in self.waiting if job[0] == task_id), None)
             if job is None:
                 return False
             self.waiting.remove(job)            # stopped before it started
             job[4].inbox = None
+            if job[4].journal is not None:
+                job[4].journal.end()
             from ..agent.loop import stopped_reply
             reply = stopped_reply(None)
             self.store.execute("UPDATE tasks SET status = 'cancelled', reply = ?, finished = ? WHERE id = ?",
@@ -663,6 +781,10 @@ class Tasks:
             emit = self._asked.pop(record.get("id", ""), None)
         if emit is None or not event.startswith(ACTIVITY):
             return
+        journal = getattr(emit, "journal", None)
+        if journal is not None and event in ("approval.requested", "approval.decided"):
+            # The running call waits for the owner, or not any more: one waiting at a restart is asked again.
+            journal.asking(record.get("id") if event == "approval.requested" else None)
         if event == "approval.requested" and record.get("id"):
             self._asked[record["id"]] = emit
             for old in list(self._asked)[:-200]:

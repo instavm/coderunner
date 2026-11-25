@@ -308,7 +308,7 @@ class TaskView {
         else if (e.event === "approval.decided") closeAsk(e.id, e.status === "approved" ? true : e.status === "denied" ? false : "late");
         else if (e.ok !== false) this.setNow(describeActivity(e));
         break;
-      case "interim": this.showInterim(e.text); break;
+      case "interim": this.showInterim(e.text, e.answer); break;
       case "done": case "failed": case "cancelled": this.finish(e); break;
       case "queued": this.setNow("Waiting its turn"); break;
       case "paused": this.setNow(e.text || "Paused while you have control"); break;
@@ -439,11 +439,12 @@ class TaskView {
 
   // An answer written at the time limit or the step budget while the task carries on: chat messages like the
   // answer, above the line that still says it is working. The final answer, whole, follows as the next ones.
-  showInterim(text) {
+  // whole: the answer to a message before the owner's follow-up, which the task takes next (not a "so far").
+  showInterim(text, whole) {
     if (!text) return;
     const answer = el("div", "answer interim");
     for (const part of answered(text, [], picture)) answer.appendChild(part);
-    answer.appendChild(el("div", "so-far muted small", "So far"));
+    if (!whole) answer.appendChild(el("div", "so-far muted small", "So far"));
     this.say(answer);
     this.interim = {answer, text};
   }
