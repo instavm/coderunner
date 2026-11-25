@@ -67,6 +67,22 @@ class Driver:
         """The command line that runs `command` inside the sandbox, or None without one."""
         return None
 
+    def run_in(self, command: list[str], timeout: float = 30, stdin: bytes | None = None) -> tuple[int | None, str]:
+        """`command` run inside the sandbox: its exit status and output, or None and why it could not be run."""
+        argv = self.exec_argv(command, tty=False)
+        if argv is None:
+            return None, "no sandbox"
+        try:
+            done = subprocess.run(argv, input=stdin or b"", capture_output=True, timeout=timeout)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, str(exc)
+        return done.returncode, (done.stdout + done.stderr).decode(errors="replace")
+
+    def restart_service(self) -> bool:
+        """Restart the platform's container service itself, for a VM that is listed as running but takes no
+        commands. Only where that is ours to do (Apple `container`); False elsewhere."""
+        return False
+
     def logs_argv(self, follow: bool) -> list[str] | None:
         return None
 
@@ -124,6 +140,16 @@ class AppleDriver(Driver):
 
     def stop(self) -> bool:
         return _run(["container", "stop", self.container], timeout=120).returncode == 0
+
+    def restart_service(self) -> bool:
+        # After the Mac's disk filled, `container list` said running while exec, stop and kill all answered "container
+        # is not running"; stopping and starting the service brought the VM back with its disk intact.
+        try:
+            _run(["container", "system", "stop"], timeout=120)
+        except subprocess.SubprocessError:
+            pass
+        return _run(["container", "system", "start", "--disable-kernel-install", "--timeout", "60"],
+                    timeout=90).returncode == 0
 
     def delete(self) -> bool:
         # With the service stopped (after a restart) nothing can be deleted, nor told apart from missing.

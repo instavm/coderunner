@@ -650,6 +650,29 @@ class TabTidyTests(BrokerTestCase):
 class RecoveryTests(BrokerTestCase):
     """A browser that fails once is brought back below the model: nothing of it reaches the task's thread."""
 
+    async def test_the_sandbox_computer_is_brought_back_when_its_browser_cannot_be_reached(self):
+        from unittest import mock
+        from coderunner.browser.cdp import CDPError
+        self.config.set("browser.mode", "computer")
+        real, tries = self.launcher.launch, []
+
+        async def launch(*args):
+            tries.append(1)
+            if len(tries) == 1:
+                raise CDPError("could not reach the sandbox's browser")
+            return await real(*args)
+        self.launcher.launch = launch
+        self.broker.computer = mock.Mock(ensure=mock.AsyncMock(return_value=True))
+        self.assertTrue((await self.broker.start())["ok"])
+        self.broker.computer.ensure.assert_awaited_once_with(desktop=True, timeout=600)
+        self.assertEqual(len(tries), 2)
+        await self.broker.stop()
+        # Not brought back: the task is told the browser did not start, after one try.
+        tries.clear()
+        self.broker.computer.ensure = mock.AsyncMock(return_value=False)
+        self.assertFalse((await self.broker.start())["ok"])
+        self.assertEqual(len(tries), 1)
+
     async def test_a_page_read_that_fails_once_is_done_again_and_the_model_sees_only_the_page(self):
         from coderunner.browser.cdp import CDPError
         await self.broker.open("https://shop.example/")

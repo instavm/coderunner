@@ -340,6 +340,17 @@ remove_builder() {
     container builder delete >/dev/null 2>&1 || true
 }
 
+# The assistant's sandbox comes with its desktop (Xfce, a VNC screen and Chrome) baked into a locally built image,
+# so a re-created VM has it at once; the daemon installs it into a VM without one by itself.
+build_args() {
+    if [ "$ASSISTANT" = "1" ]; then printf '%s\n' --build-arg DESKTOP=1; fi
+}
+
+# The data volume outlives the VM: the desktop Chrome's sign-ins, its Downloads and /workspace are kept there
+# (entrypoint.sh links them), so an image upgrade that creates the VM again loses none of them. Removing the VM
+# (`container delete`, `coderunner sandbox reset`) leaves the volume.
+DATA_VOLUME="coderunner-data"
+
 # ---------------------------------------------------------------- macOS ----
 
 install_sandbox_macos() {
@@ -521,7 +532,7 @@ print(networks[0]["network"] if networks else "default")
         # After an install or upgrade the builder image is downloaded on first use; inside
         # `container build` that download can outlast the API timeout, so start the builder first.
         container builder start >/dev/null 2>&1 || true
-        if ! container build -t "$IMAGE" "$SCRIPT_DIR"; then
+        if ! container build $(build_args) -t "$IMAGE" "$SCRIPT_DIR"; then
             remove_builder
             echo "❌ Image build failed."
             exit 1
@@ -540,14 +551,19 @@ print(networks[0]["network"] if networks else "default")
             IMAGE="coderunner-local:latest"
             check_build_space
             container builder start >/dev/null 2>&1 || true
-            container build -t "$IMAGE" "$SCRIPT_DIR" || { remove_builder; echo "❌ Image build failed."; exit 1; }
+            container build $(build_args) -t "$IMAGE" "$SCRIPT_DIR" || { remove_builder; echo "❌ Image build failed."; exit 1; }
             remove_builder
         fi
     fi
 
     echo "Starting coderunner ($PROFILE profile) with $CPUS CPUs and $MEMORY memory..."
+    container volume inspect "$DATA_VOLUME" &>/dev/null || container volume create "$DATA_VOLUME" >/dev/null \
+        || echo "Warning: could not create the data volume $DATA_VOLUME; the VM's own disk keeps everything."
+    DATA_ARGS=()
+    if container volume inspect "$DATA_VOLUME" &>/dev/null; then DATA_ARGS=(--volume "$DATA_VOLUME:/data"); fi
     if (export_gateway_env "$gateway" && container run \
       --volume "$ASSETS_SRC/skills/user:/app/uploads/skills/user" \
+      ${DATA_ARGS[@]+"${DATA_ARGS[@]}"} \
       --volume "$ASSETS_SRC/outputs:/app/uploads/outputs" \
       ${VOLUME_ARGS[@]+"${VOLUME_ARGS[@]}"} \
       --name coderunner \
@@ -621,7 +637,7 @@ install_sandbox_linux() {
     if [ "$BUILD_IMAGE" = "1" ]; then
         IMAGE="${IMAGE:-coderunner-local:latest}"
         echo "Building the sandbox image $IMAGE from $SCRIPT_DIR (this takes a while)..."
-        docker build -t "$IMAGE" "$SCRIPT_DIR" || { echo "❌ Image build failed."; exit 1; }
+        docker build $(build_args) -t "$IMAGE" "$SCRIPT_DIR" || { echo "❌ Image build failed."; exit 1; }
     else
         IMAGE="${IMAGE:-instavm/coderunner:$SANDBOX_TAG}"
         if ! docker pull "$IMAGE"; then
@@ -631,7 +647,7 @@ install_sandbox_linux() {
             fi
             echo "The $SANDBOX_TAG sandbox image is not published yet; building it from this checkout instead."
             IMAGE="coderunner-local:latest"
-            docker build -t "$IMAGE" "$SCRIPT_DIR" || { echo "❌ Image build failed."; exit 1; }
+            docker build $(build_args) -t "$IMAGE" "$SCRIPT_DIR" || { echo "❌ Image build failed."; exit 1; }
         fi
     fi
     DOCKER_VOLUMES=()
@@ -644,6 +660,7 @@ install_sandbox_linux() {
       --cpus "$CPUS" --memory "$MEMORY" --env CODERUNNER_PROFILE="$PROFILE" \
       --volume "$ASSETS_SRC/skills/user:/app/uploads/skills/user" \
       --volume "$ASSETS_SRC/outputs:/app/uploads/outputs" \
+      --volume "$DATA_VOLUME:/data" \
       ${DOCKER_VOLUMES[@]+"${DOCKER_VOLUMES[@]}"} \
       --env CODERUNNER_API_TOKEN \
       "${GATEWAY_ENV_ARGS[@]}" \

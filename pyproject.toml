@@ -47,4 +47,6 @@ packages = [
 "coderunner.models" = ["catalog.json", "evidence.json", "measured.json", "fixtures/*"]
 "coderunner.browser" = ["extension/*.json", "extension/*.js"]
 "coderunner.files" = ["helper.swift"]
+# The sandbox server and the desktop's installer, for a VM without its desktop (links to the files at the root).
+"coderunner.sandbox" = ["vm/*"]
 "coderunner.voice" = ["apple_speech.swift", "parakeet_speech.swift"]

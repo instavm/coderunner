@@ -1,7 +1,6 @@
-"""Setup from the app: the briefing for this machine and setup itself, and the sandbox's computer, each as a
-background job whose progress the app shows. They run the same manager.plan, manager.setup and
-sandbox.computer.setup as `coderunner setup` and `coderunner browser computer`, so the app and the terminal
-cannot differ."""
+"""Setup from the app: the briefing for this machine and setup itself, as a background job whose progress the app
+shows. It runs the same manager.plan and manager.setup as `coderunner setup`, so the app and the terminal cannot
+differ. (The sandbox's computer needs no setup from the app: sandbox/keeper.py does it by itself.)"""
 
 from __future__ import annotations
 
@@ -120,33 +119,6 @@ class Job:
         with self._lock:
             return {"state": self.state, "lines": self.lines[-SHOWN:], "line_count": len(self.lines),
                     "result": self.result}
-
-
-class ComputerJob(Job):
-    """`coderunner browser computer` from the app: the desktop and Chrome installed in the sandbox VM."""
-
-    def __init__(self, config, audit=None, on_done: Callable[[dict], None] | None = None, run=None):
-        super().__init__()
-        self.config, self.audit, self.on_done, self._run_setup = config, audit, on_done, run
-
-    def public(self) -> dict:
-        return self.progress()
-
-    def start(self) -> bool:
-        return self._begin(self._run)
-
-    def _run(self) -> None:
-        from ..sandbox import computer
-        try:
-            ok = (self._run_setup or computer.setup)(self.config, say=self._say)
-        except Exception as exc:
-            self._say(f"Error: {type(exc).__name__}: {exc}")
-            ok = False
-        self._finish({"ok": bool(ok)})
-        if self.audit is not None:
-            self.audit.write("computer.setup_finished", ok=bool(ok))
-        if ok and self.on_done is not None:
-            self.on_done({"ok": True})
 
 
 CHOICES = 5          # how many fitting models the first screen lets the owner choose between

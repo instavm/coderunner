@@ -841,8 +841,9 @@ new ones open, and a finished task keeps only the page it ended on: after forty 
 fourteen pages in a 2 GB machine, the kernel killed one, and no page would open until Chrome was restarted by
 hand. While the daemon itself is away (a restart, sleep) the app keeps what is on screen, says "Reconnecting…",
 tries again quietly and picks everything up when it is back; the desktop app starts a daemon that died, unless
-the owner stopped it with `coderunner down`, and then offers "Start it". The Computer panel says "Starting"
-while the sandbox comes up and offers a button for one that is stopped. No raw error, exception name or
+the owner stopped it with `coderunner down`, and then offers "Start it". The Computer panel has no buttons to
+start, set up or retry the computer: it says "Getting the computer ready…" while the daemon sees to it, and one
+plain sentence only when that failed several times (or the Mac's disk is nearly full). No raw error, exception name or
 terminal command is shown anywhere in the app. Where it works on a web page, a picture of the page is put in the thread
 after it opens one, when it asks for approval on one, and at the end: at most 8 a task and 20 seconds apart,
 kept 14 days in `assistant/shots` and served on the owner surface at `/api/shots/<name>`.
@@ -885,10 +886,17 @@ own Electron where `npm install` was run in `app/`, and otherwise with Electron 
 the daemon of `CODERUNNER_HOME` and starts it with `coderunner up` when it is not running; the daemon keeps
 running after the app quits. It is not a packaged application yet: it runs from the checkout.
 
-Where the sandbox has no desktop yet, the Computer panel offers "Set up the computer": the same installation
-as `coderunner browser computer` (Xfce, a VNC screen and Chrome inside the VM, a few minutes), with its latest
-line shown; when it is done the daemon starts again with the browser on that computer and the screen connects
-(`GET` and `POST /api/computer/setup`). The app's files are served with `Cache-Control: no-cache`, so a
+The daemon keeps the assistant's computer up by itself (`sandbox/keeper.py`): at start (in the background), when
+the app asks for the screen, and when a task's code or browser finds the VM gone. It starts a stopped VM; installs
+the desktop into a VM without one (Xfce, a VNC screen and Chrome, a few minutes, from the files the package
+carries, then the browser moves there unless it is the owner's own Chrome); starts the assistant's Chrome on the
+screen; and repairs a broken one a step at a time, each audited (`computer.repair`): the desktop session restarted
+inside the VM, else the VM stopped and started, else Apple's container service restarted (at most once an hour)
+for a VM listed as running that takes no commands. A Mac with less than 2 GB free is said to be the cause and
+nothing is tried. Attempts repeat after 5, 15, 45 and 120 seconds, then rest (5 minutes, doubling to an hour);
+the VM and its disk are never deleted. The desktop Chrome's profile, its Downloads and `/workspace` live on the
+`coderunner-data` volume (`/data`), which outlives a VM created again for an image upgrade; `coderunner sandbox
+reset` of a VM from before the volume copies them out first and puts them back into the new one. The app's files are served with `Cache-Control: no-cache`, so a
 browser does not pair an old page with a new script.
 
 Where no model is set up yet, the app opens on a setup screen instead of tasks, with the window to itself (no

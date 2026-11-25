@@ -118,7 +118,7 @@ console.log(JSON.stringify([
         self.assertNotRegex(code, r"is not reachable: \$\{")
         self.assertNotRegex(code, r"`coderunner |coderunner (up|setup|down)\b")
         gateway = (appshell.app_dir().parent / "coderunner" / "server" / "gateway.py").read_text()
-        facing = gateway[gateway.index("async def computer("):gateway.index("async def computer_setup(")]
+        facing = gateway[gateway.index("async def computer("):gateway.index("async def computer_screen(")]
         self.assertNotIn("__name__", facing)
         self.assertNotIn("coderunner up", facing)
         self.assertIn("No model is set up yet.", gateway)

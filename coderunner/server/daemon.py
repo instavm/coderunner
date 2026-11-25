@@ -51,6 +51,7 @@ class Services:
     guard: Guard = field(default_factory=Guard)
     egress: EgressGuard | None = None
     sandbox: SandboxClient | None = None
+    computer: Any = None            # sandbox.keeper.Keeper: keeps the VM and its desktop up by itself
     browser: Any = None
     chrome: Any = None              # browser.extension.ChromeBridge: the owner's browser via the extension
     memory: Any = None
@@ -110,11 +111,9 @@ class Daemon:
         self._stop: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self.restart_requested = False
-        self.sandbox_starting = False
         self.svc = self._build()
-        from .setup import ComputerJob, SetupJob
+        from .setup import SetupJob
         self.setup = SetupJob(self.config, self.svc.audit, on_done=self._after_setup)
-        self.computer_setup = ComputerJob(self.config, self.svc.audit, on_done=self._after_setup)
         from .check import CheckJob
         self.check = CheckJob(self)             # `coderunner check`: the core tasks, done once and checked
 
@@ -123,7 +122,7 @@ class Daemon:
         self._after_setup({})
 
     def _after_setup(self, result: dict) -> None:
-        """Setup from the app chose a model, or gave the sandbox its computer. Everything here was built for the
+        """Setup from the app chose a model. Everything here was built for the
         configuration before it, so the daemon starts again with the new one, a few seconds on, once the app
         has read the outcome. Called from the job's thread."""
         self.restart_requested = True
@@ -141,35 +140,15 @@ class Daemon:
             self.svc.audit.write("model.warm_failed", error=str(exc)[:200])
 
     async def _start_sandbox(self) -> None:
-        """Start the sandbox VM when it is down: after a restart, macOS brings back the daemon (its login service)
-        but not the VM, and run_python and run_shell failed with "the sandbox is not running" until `coderunner
-        up` was run by hand. A sandbox never installed (missing) or without a runtime (unavailable) is left alone."""
-        self.sandbox_starting = True           # the app says "starting" meanwhile, not "not running"
-        try:
-            state = await asyncio.to_thread(self.driver.status)
-            if state in ("missing", "unavailable"):
-                return
-            if state != "running":
-                await asyncio.to_thread(self.driver.start)
-                self.svc.audit.write("sandbox.started", driver=self.driver.name, was=state)
-            for _ in range(30):                 # the VM is up before the server in it answers
-                if await self.svc.sandbox.health():
-                    break
-                await asyncio.sleep(2)
-        except Exception as exc:              # the tools then say the sandbox is not running, as before
-            self.svc.audit.write("sandbox.start_failed", driver=self.driver.name, error=str(exc)[:200])
-            return
-        finally:
-            self.sandbox_starting = False
-        await self._vm_timezone()
-        if self.config.get("browser.mode") == "computer":
-            # The owner sees the computer's screen as soon as the app opens, not only once a task needs it.
-            for _ in range(30):
-                if await self.svc.sandbox.health():
-                    break
-                await asyncio.sleep(2)
-            with contextlib.suppress(Exception):
-                await self.svc.sandbox.desktop(start=True)
+        """Bring up the sandbox VM and its desktop at start, in the background (sandbox/keeper.py): after a restart
+        macOS brings back the daemon (its login service) but not the VM, and the owner should see the computer's
+        screen as soon as the app opens, without a button to press. A sandbox never installed is left alone."""
+        if await self.computer.ensure(desktop=False, timeout=600):
+            await self._vm_timezone()
+
+    def _computer_mode(self) -> None:
+        """The keeper gave the sandbox its desktop and moved the assistant's browser there."""
+        self.svc.browser.restart = self._restart_vm_browser
 
     async def _restart_vm_browser(self) -> None:
         """Stop Chrome on the sandbox's desktop; its relay starts a fresh one on the next connection. Used by
@@ -290,6 +269,9 @@ class Daemon:
 
         if self.config.get("browser.mode") == "computer":
             svc.browser.restart = self._restart_vm_browser      # what the broker falls back to when Chrome is stuck
+        from ..sandbox.keeper import Keeper
+        svc.computer = self.computer = Keeper(self.config, driver, svc.sandbox, audit, on_mode=self._computer_mode)
+        svc.browser.computer = svc.computer                     # a task that needs the screen asks for it
         if claude is not None:
             # A model with room to read gets more of each page at once, and links whole enough to cite: a local
             # 9B model is given 12,000 characters and addresses cut to 60.
