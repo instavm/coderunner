@@ -1418,7 +1418,7 @@ async function loadModels() {
       where.appendChild(el("span", "not-private", "Not private"));
       line.append(el("span", "", modelName(remote.model)), where);
     }
-    else if (elsewhere && models.chat) line.append(el("span", "", `${modelName(models.chat)} · ${elsewhere}`));
+    else if (elsewhere && models.chat) line.append(el("span", "", `${modelName(models.chat)} · your server`));   // where, in the title
     else if (models.chat) line.append(el("span", "", `Local · ${modelName(models.chat)}`));
     line.title = server ? `Your requests, the pages it reads and the files it opens are sent to your model server at ${remote.host}.` :
       elsewhere ? `Your requests, the pages it reads and the files it opens are sent to your model server at ${elsewhere}.` :
