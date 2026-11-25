@@ -1000,6 +1000,7 @@ let rfb = null;
 let control = false;
 let retry = null;
 
+let screenNoteTimer = null;
 let screenWord = "";                // why there is no screen, while there is none
 function setNote(text) { $("screenNote").textContent = text; }
 function setScreenWord(word) { screenWord = word; $("computerState").textContent = word; }
@@ -1035,14 +1036,24 @@ async function connectScreen() {
   rfb.background = "#0d0d0c";
   rfb.viewOnly = !control;
   rfb.focusOnClick = control;
-  rfb.addEventListener("connect", () => { setNote(""); showSwitch(true); refreshNow(); });
+  // A connection that opens but never finishes (no picture, no close) is given up on and made again: without this
+  // the panel could say "Reconnecting" for as long as nothing closed it.
+  const mine = rfb;
+  const watchdog = setTimeout(() => { if (rfb === mine && !mine.connected) mine.disconnect(); }, 12000);
+  rfb.addEventListener("connect", () => {
+    clearTimeout(watchdog); mine.connected = true; clearTimeout(screenNoteTimer);
+    setNote(""); showSwitch(true); refreshNow();
+  });
   rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({password: info.password}));
   rfb.addEventListener("disconnect", () => {
+    clearTimeout(watchdog);
+    if (rfb !== mine) return;
     rfb = null;
     showSwitch(false);
-    setNote("Reconnecting to the screen…");
-    setScreenWord("Reconnecting");
-    retry = setTimeout(connectScreen, 2500);
+    // A drop that is over in a moment is not announced; one that lasts says so.
+    clearTimeout(screenNoteTimer);
+    screenNoteTimer = setTimeout(() => { if (!rfb?.connected) { setNote("Reconnecting to the screen…"); setScreenWord("Reconnecting"); } }, 3000);
+    retry = setTimeout(connectScreen, 1500);
   });
 }
 
