@@ -334,8 +334,29 @@ def browser_tools(svc) -> list[Tool]:
         return {**page, "tab": tab, "navigated": True, "note": f"This page opened in a new tab ({tab}); the browser "
                 "goes on there."}
 
+    def element(ref: Any) -> str:
+        """What element [ref] says on screen ("button Search"), read before the step changes the page."""
+        try:
+            return str(b._label(int(ref), None) or "")
+        except Exception:
+            return ""
+
+    def mark(ctx, action: str, raw: Any, **detail: Any) -> Any:
+        """Each browser step and the address it left the page at, kept in the run (never stored) for the site's
+        recipe (agent.recipes), which keeps typed text only as a named placeholder."""
+        trail = getattr(ctx, "trail", None)
+        if isinstance(trail, list):
+            url = str(raw.get("url") or "") if isinstance(raw, dict) else ""
+            url = url or next((e["url"] for e in reversed(trail) if e.get("url")), "")
+            trail.append({"action": action, "url": url, "ok": isinstance(raw, dict) and raw.get("ok") is not False,
+                          **({"picked": raw["picked"]} if isinstance(raw, dict) and raw.get("picked") else {}),
+                          **detail})
+            del trail[:-200]
+        return raw
+
     async def open_(args, ctx):
-        return _text(await _listed(_result(await b.navigate(args["url"], tainted=ctx.tainted)), ctx))
+        return _text(await _listed(_result(mark(ctx, "open", await b.navigate(args["url"], tainted=ctx.tainted))),
+                                   ctx))
 
     async def snapshot(args, ctx):
         start = str(args.get("start") or "").strip()
@@ -345,16 +366,19 @@ def browser_tools(svc) -> list[Tool]:
         return _text(await _listed(result, ctx))
 
     async def click(args, ctx):
-        return _text(await _listed(_result(await _followed(await b.click(int(args["ref"]), tainted=ctx.tainted), ctx)),
-                                   ctx))
+        name = element(args["ref"])
+        return _text(await _listed(_result(mark(ctx, "click", await _followed(
+            await b.click(int(args["ref"]), tainted=ctx.tainted), ctx), label=name)), ctx))
 
     async def type_(args, ctx):
-        return _text(_result(await _followed(await b.type(
+        name = element(args["ref"])
+        return _text(_result(mark(ctx, "type", await _followed(await b.type(
             int(args["ref"]), args["text"], submit=bool(args.get("submit")), pick=args.get("pick", True) is not False,
-            tainted=ctx.tainted), ctx)))
+            tainted=ctx.tainted), ctx), label=name, text=str(args["text"]), submit=bool(args.get("submit")))))
 
     async def press(args, ctx):
-        return _text(_result(await _followed(await b.press(args["key"], tainted=ctx.tainted), ctx)))
+        return _text(_result(mark(ctx, "press", await _followed(await b.press(args["key"], tainted=ctx.tainted), ctx),
+                                  key=str(args["key"]))))
 
     async def find(args, ctx):
         result = _result(await b.find(args["text"], tainted=ctx.tainted))
@@ -397,7 +421,8 @@ def browser_tools(svc) -> list[Tool]:
         # A search site that answers with a challenge instead of results is left for the next one.
         opened: Any = "Error: the search could not be opened."
         for address in sorted((SEARCH, SEARCH_ELSE), key=lambda a: a != search_first[0]):
-            opened = _result(await b.navigate(address.format(urllib.parse.quote_plus(query)), tainted=ctx.tainted))
+            opened = _result(mark(ctx, "search", await b.navigate(address.format(urllib.parse.quote_plus(query)),
+                                                                   tainted=ctx.tainted)))
             if isinstance(opened, str):
                 continue
             listed = await list_({}, ctx)
@@ -407,13 +432,15 @@ def browser_tools(svc) -> list[Tool]:
         return opened if isinstance(opened, str) else "No results could be read for this search; try other words."
 
     async def select(args, ctx):
-        return _text(_result(await b.select(int(args["ref"]), args["option"], tainted=ctx.tainted)))
+        name = element(args["ref"])
+        return _text(_result(mark(ctx, "select", await b.select(int(args["ref"]), args["option"], tainted=ctx.tainted),
+                                  label=name, option=str(args["option"]))))
 
     async def scroll(args, ctx):
         return _text(_result(await b.scroll(args.get("direction", "down"), tainted=ctx.tainted)))
 
     async def back(args, ctx):
-        return _text(await _listed(_result(await b.back(tainted=ctx.tainted)), ctx))
+        return _text(await _listed(_result(mark(ctx, "back", await b.back(tainted=ctx.tainted))), ctx))
 
     async def batch(args, ctx):
         """Several numbered steps in one call, each checked as its own tool is. It stops at the first error, and
@@ -430,6 +457,7 @@ def browser_tools(svc) -> list[Tool]:
         parts, address = [], ""
         for i, step in enumerate(steps, 1):
             action = str(step.get("action", ""))
+            name = element(step.get("ref"))
             try:
                 if action == "click":
                     raw = await b.click(int(step["ref"]), tainted=ctx.tainted)
@@ -446,7 +474,9 @@ def browser_tools(svc) -> list[Tool]:
             except (KeyError, TypeError, ValueError):
                 parts.append(f"Error: step {i} ({action}) needs a numeric ref")
                 break
-            raw = await _followed(raw, ctx)
+            raw = mark(ctx, action, await _followed(raw, ctx), label=name,
+                       **{key: str(step[key]) for key in ("text", "option", "key") if key in step},
+                       **({"submit": bool(step.get("submit"))} if action == "type" else {}))
             if raw.get("ok") is False:
                 parts.append(f"{label(i, step)} Error: {raw.get('error', 'browser action failed')}"
                              + (f"; steps {i + 1}-{len(steps)} were not taken" if i < len(steps) else ""))
@@ -590,8 +620,8 @@ def memory_tools(svc) -> list[Tool]:
         return f"Forgot {count} memories."
 
     return [
-        Tool("memory_save", "Remember a durable fact or preference the owner told you, or a shortcut you found (an "
-             "address that leads straight to a site's results). Never store secrets.",
+        Tool("memory_save", "Remember a durable fact or preference the owner told you. Never store secrets. (How "
+             "each site was used is kept for you as site notes.)",
              _params({"text": STR, "tags": STR}, ["text"]), save),
         Tool("memory_search", "Search what you remember about the owner.", _params({"query": STR, "limit": INT},
                                                                                   ["query"]), search),
