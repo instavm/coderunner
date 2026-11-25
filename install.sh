@@ -349,6 +349,27 @@ remove_builder() {
     container builder delete >/dev/null 2>&1 || true
 }
 
+# The base images the Dockerfile pulls by digest (its FROM lines), which a build leaves behind untagged.
+base_image_digests() {
+    sed -n 's/^FROM[[:space:]][[:space:]]*[^[:space:]]*@\(sha256:[0-9a-f]\{64\}\).*/\1/p' "$SCRIPT_DIR/Dockerfile"
+}
+
+# After a build: the builder VM, dangling images and the untagged base images go (about 2 GB on the Mac; the next
+# build pulls the bases again). A tagged image, the one just built included, is never removed.
+remove_build_leftovers() {
+    local digest name
+    remove_builder
+    container image prune >/dev/null 2>&1 || true
+    for digest in $(base_image_digests); do
+        while read -r name; do
+            case "$name" in
+                "$IMAGE") ;;
+                *"@$digest") container image delete "$name" >/dev/null 2>&1 || true ;;
+            esac
+        done < <(container image list -q 2>/dev/null)
+    done
+}
+
 # The assistant's sandbox comes with its desktop (Xfce, a VNC screen and Chrome) baked into a locally built image,
 # so a re-created VM has it at once; the daemon installs it into a VM without one by itself.
 build_args() {
@@ -546,7 +567,7 @@ print(networks[0]["network"] if networks else "default")
             echo "❌ Image build failed."
             exit 1
         fi
-        remove_builder
+        remove_build_leftovers
     else
         IMAGE="${IMAGE:-instavm/coderunner:$SANDBOX_TAG}"
         if container image inspect "$IMAGE" &>/dev/null; then
@@ -561,7 +582,7 @@ print(networks[0]["network"] if networks else "default")
             check_build_space
             container builder start >/dev/null 2>&1 || true
             container build $(build_args) -t "$IMAGE" "$SCRIPT_DIR" || { remove_builder; echo "❌ Image build failed."; exit 1; }
-            remove_builder
+            remove_build_leftovers
         fi
     fi
 
@@ -647,6 +668,7 @@ install_sandbox_linux() {
         IMAGE="${IMAGE:-coderunner-local:latest}"
         echo "Building the sandbox image $IMAGE from $SCRIPT_DIR (this takes a while)..."
         docker build $(build_args) -t "$IMAGE" "$SCRIPT_DIR" || { echo "❌ Image build failed."; exit 1; }
+        docker image prune -f >/dev/null 2>&1 || true      # dangling layers from earlier builds; tagged images stay
     else
         IMAGE="${IMAGE:-instavm/coderunner:$SANDBOX_TAG}"
         if ! docker pull "$IMAGE"; then
@@ -657,6 +679,7 @@ install_sandbox_linux() {
             echo "The $SANDBOX_TAG sandbox image is not published yet; building it from this checkout instead."
             IMAGE="coderunner-local:latest"
             docker build $(build_args) -t "$IMAGE" "$SCRIPT_DIR" || { echo "❌ Image build failed."; exit 1; }
+            docker image prune -f >/dev/null 2>&1 || true
         fi
     fi
     DOCKER_VOLUMES=()
