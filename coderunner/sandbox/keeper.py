@@ -44,7 +44,8 @@ PROBE = ("touch /var/tmp/.coderunner-probe && rm -f /var/tmp/.coderunner-probe |
          "&& id -u \"${CODERUNNER_DESKTOP_USER:-box}\" >/dev/null 2>&1; "
          "then echo desktop-installed; else echo desktop-missing; fi")
 # The desktop session, ended so the sandbox server starts a fresh one (Chrome goes with its display).
-END_SESSION = "pkill -x Xvnc; pkill -f xfce4-session; pkill -f 'dbus-launch --exit-with-session'; true"
+# The bracketed letters keep `pkill -f` from matching (and killing) the shell that runs this line.
+END_SESSION = "pkill -x Xvnc; pkill -f '[x]fce4-session'; pkill -f '[d]bus-launch --exit-with-session'; true"
 
 STEPS = ("session", "container", "service")
 FIRST_STEP = {"session": "session", "screen": "session", "unhealthy": "container", "unavailable": "container",
