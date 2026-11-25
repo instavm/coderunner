@@ -843,6 +843,78 @@ def admin_app(svc, daemon) -> Starlette:
         with contextlib.suppress(Exception):
             await websocket.close()
 
+    async def fixes(request: Request):
+        """Problems on this Mac that one administrator command fixes (core/macfix.py), as they are now."""
+        from ..core import macfix
+        return JSONResponse({"fixes": [{"id": fix.id, "title": fix.title} for fix in macfix.detected()]})
+
+    async def run_fix(request: Request):
+        """The owner pressed Fix in the app: macOS asks for their password itself, then the fix is checked. Only
+        the fixed list's ids; the assistant has no way to call this."""
+        from ..core import macfix
+        fix = macfix.find(request.path_params["id"])
+        if fix is None:
+            return JSONResponse({"error": "No such fix."}, status_code=404)
+        return JSONResponse(await macfix.run(fix, audit=svc.audit))
+
+    async def computer_terminal(websocket: WebSocket):
+        """The owner's terminal on the VM (its /v1/terminal PTY), relayed for the app's Terminal tab: bytes both
+        ways, and the app's resize messages as text. Each key the owner sends is marked (svc.terminal), so the
+        assistant's next command waits while they type."""
+        from websockets.asyncio.client import connect
+        await websocket.accept()
+        sandbox = svc.sandbox
+        try:
+            if sandbox is None or not hasattr(sandbox, "terminal_url"):
+                raise ConnectionError("no sandbox")
+            upstream = await connect(sandbox.terminal_url(),
+                                     additional_headers={"Authorization": f"Bearer {sandbox.token}"},
+                                     max_size=None, open_timeout=10, ping_interval=None, proxy=None)
+        except Exception:
+            keeper = getattr(svc, "computer", None)
+            if keeper is not None:
+                keeper.kick(desktop=True)
+            await websocket.close(code=1011, reason="The computer is not ready.")
+            return
+        svc.audit.write("computer.terminal_opened", by=websocket.scope.get("state", {}).get("principal", "?"))
+        typing = getattr(svc, "terminal", None)
+
+        async def up():
+            try:
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        return
+                    if message.get("bytes") is not None:
+                        if typing is not None:
+                            typing.typed()
+                        await upstream.send(message["bytes"])
+                    elif message.get("text") is not None:
+                        await upstream.send(message["text"])
+            except (WebSocketDisconnect, ConnectionError, RuntimeError):
+                return
+            except Exception:              # the VM's side went away
+                return
+
+        async def down():
+            try:
+                async for data in upstream:
+                    if isinstance(data, bytes):
+                        await websocket.send_bytes(data)
+                    else:
+                        await websocket.send_text(data)
+            except Exception:
+                return
+
+        tasks = [asyncio.create_task(up()), asyncio.create_task(down())]
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in tasks:
+            task.cancel()
+        with contextlib.suppress(Exception):
+            await upstream.close()
+        with contextlib.suppress(Exception):
+            await websocket.close()
+
     mcp_all, mcp_search, mcp_lifespan = mcp_apps(svc, invoke_for_client)
     app = Starlette(lifespan=mcp_lifespan, routes=[
         # Routes with ASGI endpoints rather than mounts: a mount redirects /mcp to /mcp/, which MCP clients do
@@ -890,7 +962,10 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/computer", computer, methods=["GET", "POST"]),
         Route("/api/control", control, methods=["GET", "POST"]),
         Route("/api/focus", focus, methods=["POST"]),
+        Route("/api/fixes", fixes, methods=["GET"]),
+        Route("/api/fixes/{id}", run_fix, methods=["POST"]),
         WebSocketRoute("/api/computer/screen", computer_screen),
+        WebSocketRoute("/api/computer/terminal", computer_terminal),
     ])
     return OwnerAuth(app, svc)
 

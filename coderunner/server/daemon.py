@@ -27,6 +27,7 @@ from ..safety.guard import Guard
 from ..core.llm import LLM
 from ..safety.policy import Approval, Policy
 from ..sandbox import SandboxClient, driver_for
+from ..sandbox.owner_terminal import OwnerTerminal
 from ..safety.secrets_store import SecretStore
 from ..core.store import Store
 
@@ -52,6 +53,7 @@ class Services:
     egress: EgressGuard | None = None
     sandbox: SandboxClient | None = None
     computer: Any = None            # sandbox.keeper.Keeper: keeps the VM and its desktop up by itself
+    terminal: Any = field(default_factory=OwnerTerminal)     # the owner typing in the VM's terminal
     browser: Any = None
     chrome: Any = None              # browser.extension.ChromeBridge: the owner's browser via the extension
     memory: Any = None

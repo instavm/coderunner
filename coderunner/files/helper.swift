@@ -1,8 +1,9 @@
 // CodeRunner's native helper for the file index (macOS): text in images with Vision, PDF pages with PDFKit
 // (scanned pages read with Vision), and file events with FSEvents. Output is one JSON object per line.
 //
-//   files-helper ocr                     image paths on stdin, one per line -> {"path", "text"}
-//   files-helper pdf <path> <max> <0|1>  -> {"pages": [...], "total": n}; 1 reads scanned pages with OCR
+//   files-helper ocr                     image paths on stdin, one per line -> {"path", "text"[, "fallback"]}
+//   files-helper pdf <path> <max> <0|1>  -> {"pages": [...], "total": n[, "fallback"]}; 1 reads scans with OCR
+//   ("fallback": true when Vision's accurate model failed and the fast one read the text instead)
 //   files-helper watch <folder>...       -> {"paths": [...]} as files change; exits when stdin closes
 
 import AppKit
@@ -60,7 +61,11 @@ func ocr() {
     while let line = readLine() {
         let path = line.trimmingCharacters(in: .whitespacesAndNewlines)
         if path.isEmpty { continue }
-        autoreleasepool { emit(["path": path, "text": image(at: path).map(recognize) ?? ""]) }
+        autoreleasepool {
+            var line: [String: Any] = ["path": path, "text": image(at: path).map(recognize) ?? ""]
+            if accurateFailed { line["fallback"] = true }      // read with the fast model: the daemon offers a fix
+            emit(line)
+        }
     }
 }
 
@@ -90,7 +95,9 @@ func pdf(_ path: String, maxPages: Int, readScans: Bool) {
             pages.append(text)
         }
     }
-    emit(["pages": pages, "total": document.pageCount])
+    var result: [String: Any] = ["pages": pages, "total": document.pageCount]
+    if accurateFailed { result["fallback"] = true }
+    emit(result)
 }
 
 func watch(_ folders: [String]) {

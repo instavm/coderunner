@@ -143,6 +143,29 @@ console.log(JSON.stringify([
         self.assertIn('c.conversation.startsWith("app:check-") && c.status !== "running"', page)
 
     @unittest.skipIf(shutil.which("node") is None, "node not installed")
+    def test_the_computer_has_a_terminal_tab_with_xterm_kept_here(self):
+        root = appshell.app_dir().parent
+        web = root / "coderunner" / "server" / "web" / "app"
+        page, style, markup = ((web / name).read_text() for name in ("app.js", "app.css", "index.html"))
+        # Two small tabs over the box: the screen and the terminal, nothing else to read.
+        self.assertIn('<button id="viewScreen" class="view on" type="button" role="tab" aria-selected="true">Screen</button>', markup)
+        self.assertIn('<button id="viewTerminal" class="view" type="button" role="tab" aria-selected="false">Terminal</button>', markup)
+        self.assertIn('<div id="term" hidden><div id="termNote" class="term-note">Connecting…</div></div>', markup)
+        # xterm.js from the app's own files, never a CDN, loaded only when the tab opens.
+        for name in ("xterm.js", "addon-fit.js", "xterm.css", "LICENSE.txt"):
+            self.assertTrue((web / "xterm" / name).is_file(), name)
+        self.assertIn("xterm.js v5.5.0", (root / "THIRD_PARTY_NOTICES.md").read_text())
+        self.assertNotRegex(page + markup, r"https?://(cdn|unpkg|cdnjs)")
+        self.assertIn('loadScript("xterm/xterm.js")', page)
+        self.assertIn("/api/computer/terminal", page)
+        # Light or dark with the app: the theme follows the page's setting, then the system's, live.
+        self.assertIn('darkQuery.addEventListener?.("change", applyTermTheme)', page)
+        self.assertIn('attributeFilter: ["data-theme"]', page)
+        self.assertIn('fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12.5', page)
+        self.assertIn("#term { position: absolute; inset: 0; background: var(--surface); }", style)
+        # The tab is remembered where storage works, and the page works where it does not.
+        self.assertRegex(page, r"try \{ localStorage\.setItem\(VIEW_KEY, view\); \} catch")
+
     def test_the_thread_renderer_makes_messages_marks_and_cards_and_never_html(self):
         root = appshell.app_dir().parent
         done = subprocess.run(["node", str(root / "tests" / "js" / "render_test.mjs"),

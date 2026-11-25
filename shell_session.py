@@ -20,6 +20,7 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass
+from typing import Callable
 
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 3600
@@ -90,6 +91,45 @@ def _alive(pid: int) -> bool:
         return True
 
 
+class _Live:
+    """Passes a command's output on as it comes, holding back the last bytes until it is clear they are not the
+    start of the marker that ends the reply (it may arrive split across reads)."""
+
+    def __init__(self, marker: bytes, out: Callable[[bytes], None] | None):
+        self.marker, self.out = marker, out
+        self.pending = bytearray()
+        self.done = out is None
+
+    def _send(self, data: bytes) -> None:
+        if data:
+            try:
+                self.out(data)
+            except Exception:           # a viewer's trouble never stops the command
+                self.done = True
+
+    def add(self, chunk: bytes) -> None:
+        if self.done:
+            return
+        self.pending += chunk
+        end = self.pending.find(self.marker)
+        if end >= 0:
+            out = bytes(self.pending[:end])
+            self._send(out[:-1] if out.endswith(b"\n") else out)     # the marker's own line break
+            self.done = True
+            self.pending.clear()
+            return
+        keep = len(self.marker) + 1
+        if len(self.pending) > keep:
+            self._send(bytes(self.pending[:-keep]))
+            del self.pending[:-keep]
+
+    def flush(self) -> None:
+        if not self.done:
+            self._send(bytes(self.pending))
+        self.done = True
+        self.pending.clear()
+
+
 class Shell:
     def __init__(self, cwd: str, env: dict[str, str] | None = None):
         self.cwd = cwd
@@ -108,7 +148,10 @@ class Shell:
             "bash", "--noprofile", "--norc", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT, cwd=self.cwd, env=self.env, start_new_session=True)
 
-    async def run(self, command: str, timeout: float = DEFAULT_TIMEOUT) -> Result:
+    async def run(self, command: str, timeout: float = DEFAULT_TIMEOUT,
+                  on_output: Callable[[bytes], None] | None = None) -> Result:
+        """on_output, when given, is passed the command's output as it comes (without the marker), e.g. for the
+        owner's terminal to show it live."""
         timeout = max(1.0, min(float(timeout or DEFAULT_TIMEOUT), MAX_TIMEOUT))
         async with self.lock:
             if not self.running:
@@ -122,6 +165,7 @@ class Shell:
             data, omitted, timed_out = bytearray(), 0, False
             deadline = time.monotonic() + timeout
             marker = self.marker.encode()
+            live = _Live(marker, on_output)
             while True:
                 left = deadline - time.monotonic()
                 if left <= 0 and not timed_out:
@@ -141,6 +185,7 @@ class Shell:
                 if not chunk:                   # the shell ended (exit in the command)
                     await proc.wait()
                     break
+                live.add(chunk)
                 data += chunk
                 if len(data) > HEAD + TAIL + 65536:
                     cut = len(data) - HEAD - TAIL
@@ -155,6 +200,7 @@ class Shell:
                     code = int(tail[1]) if len(tail) > 1 and tail[1].lstrip("-").isdigit() else None
                     self.cwd = tail[2] if len(tail) > 2 else self.cwd
                     return Result(output, code, self.cwd, timed_out, omitted)
+            live.flush()
             return Result(bytes(data).decode(errors="replace"), proc.returncode, self.cwd, timed_out, omitted,
                           restarted=True)
 
@@ -177,8 +223,9 @@ class Shells:
             self.shells[session] = Shell(self.home)
         return self.shells[session]
 
-    async def run(self, session: str, command: str, timeout: float = DEFAULT_TIMEOUT) -> Result:
-        return await self.shell(session).run(command, timeout)
+    async def run(self, session: str, command: str, timeout: float = DEFAULT_TIMEOUT,
+                  on_output: Callable[[bytes], None] | None = None) -> Result:
+        return await self.shell(session).run(command, timeout, on_output)
 
     async def reset(self, session: str) -> bool:
         shell = self.shells.pop(session, None)

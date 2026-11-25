@@ -43,10 +43,11 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-"coderunner.server" = ["web/*.html", "web/app/*", "web/app/novnc/*", "web/app/novnc/**/*"]
+"coderunner.server" = ["web/*.html", "web/app/*", "web/app/novnc/*", "web/app/novnc/**/*", "web/app/xterm/*"]
 "coderunner.models" = ["catalog.json", "evidence.json", "measured.json", "fixtures/*"]
 "coderunner.browser" = ["extension/*.json", "extension/*.js"]
 "coderunner.files" = ["helper.swift"]
+"coderunner.core" = ["macfix-check.png"]
 # The sandbox server and the desktop's installer, for a VM without its desktop (links to the files at the root).
 "coderunner.sandbox" = ["vm/*"]
 "coderunner.voice" = ["apple_speech.swift", "parakeet_speech.swift"]

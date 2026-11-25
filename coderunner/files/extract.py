@@ -177,6 +177,26 @@ def passages(text: str) -> list[tuple[int, str]]:
     return found
 
 
+# Whether the helper last read a picture with Vision's fast model because the accurate one failed (after the Mac's
+# disk filled, the accurate model failed on every picture until its compiler service was restarted). The daemon
+# offers the owner a fix for it (core/macfix.py); once fixed, the helpers start again on the accurate model.
+_OCR = {"fallback": False, "generation": 0}
+
+
+def ocr_fell_back() -> bool:
+    return _OCR["fallback"]
+
+
+def ocr_reset() -> None:
+    """After a fix: forget the fallback, and have every running OCR helper start afresh on the accurate model."""
+    _OCR["fallback"] = False
+    _OCR["generation"] += 1
+
+
+def _note_fallback(reply: dict) -> None:
+    _OCR["fallback"] = bool(reply.get("fallback"))
+
+
 class Media:
     """Local conversions: ffmpeg, macOS tools and the native helper."""
 
@@ -188,6 +208,7 @@ class Media:
         self.pdftotext = shutil.which("pdftotext")
         self._helper: str | None | bool = False      # False: not looked for yet
         self._ocr: asyncio.subprocess.Process | None = None
+        self._ocr_generation = _OCR["generation"]
         self._ocr_lock = asyncio.Lock()
 
     async def helper(self) -> str | None:
@@ -218,6 +239,8 @@ class Media:
                                              timeout=600) or b"{}")
             if "error" in out:
                 raise RuntimeError(out["error"])
+            if out.get("fallback"):            # a PDF says so only when a scanned page needed the fast model
+                _OCR["fallback"] = True
             return list(out.get("pages") or [])
         if self.pdftotext:
             text = (await self._run(self.pdftotext, "-layout", "-q", str(path), "-")).decode(errors="replace")
@@ -242,15 +265,20 @@ class Media:
         if not helper:
             return ""
         async with self._ocr_lock:
+            if self._ocr is not None and self._ocr_generation != _OCR["generation"]:
+                await self.close()             # fixed since it started: a new helper tries the accurate model
             if self._ocr is None or self._ocr.returncode is not None:
                 self._ocr = await asyncio.create_subprocess_exec(
                     helper, "ocr", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL)
+                self._ocr_generation = _OCR["generation"]
             try:
                 self._ocr.stdin.write(str(path).replace("\n", " ").encode() + b"\n")
                 await self._ocr.stdin.drain()
                 line = await asyncio.wait_for(self._ocr.stdout.readline(), 60)
-                return json.loads(line or b"{}").get("text", "")
+                reply = json.loads(line or b"{}")
+                _note_fallback(reply)
+                return reply.get("text", "")
             except (asyncio.TimeoutError, ValueError, OSError, BrokenPipeError):
                 self._ocr.kill()
                 self._ocr = None
