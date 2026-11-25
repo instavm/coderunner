@@ -189,7 +189,8 @@ console.log(JSON.stringify([
     def test_the_app_opens_on_this_home_in_a_process_of_its_own(self):
         binary = self.fake_electron(appshell.managed_dir())
         with mock.patch.object(appshell.subprocess, "Popen") as popen, \
-                mock.patch.object(appshell, "installed", return_value=binary):
+                mock.patch.object(appshell, "installed", return_value=binary), \
+                mock.patch.object(appshell, "bundled", side_effect=lambda found, app=None: found):
             appshell.launch()
         argv, options = popen.call_args[0][0], popen.call_args[1]
         self.assertEqual(argv, [binary, str(appshell.app_dir())])
@@ -198,6 +199,42 @@ console.log(JSON.stringify([
         with mock.patch.object(appshell, "app_dir", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "from a checkout"):
                 appshell.launch()
+
+    def test_on_a_mac_the_app_is_named_coderunner_with_its_icon_not_electron(self):
+        import plistlib
+        binary = self.fake_electron(self.home / "dist")
+        contents = pathlib.Path(binary).parents[1]
+        (contents / "Resources").mkdir()
+        (contents / "Info.plist").write_bytes(plistlib.dumps({"CFBundleName": "Electron", "CFBundleIdentifier":
+                                                              "com.github.Electron", "CFBundleExecutable": "Electron"}))
+        real_run, signed = subprocess.run, []
+
+        def run(argv, **kwargs):
+            if argv[0] == "/usr/bin/codesign":
+                signed.append(argv)
+                return subprocess.CompletedProcess(argv, 0, b"", b"")
+            return real_run(argv, **kwargs)
+        with mock.patch.object(appshell.subprocess, "run", run):
+            made = appshell.bundled(binary, appshell.app_dir())
+            again = appshell.bundled(binary, appshell.app_dir())
+        target = appshell.bundle_dir()
+        self.assertEqual(made, str(target / "Contents" / "MacOS" / "Electron"))
+        info = plistlib.loads((target / "Contents" / "Info.plist").read_bytes())
+        self.assertEqual((info["CFBundleName"], info["CFBundleDisplayName"], info["CFBundleIdentifier"],
+                          info["CFBundleIconFile"]), ("CodeRunner", "CodeRunner", "io.instavm.coderunner", "coderunner.icns"))
+        self.assertTrue((target / "Contents" / "Resources" / "coderunner.icns").is_file())
+        self.assertEqual(again, made)
+        self.assertEqual(len(signed), 1)                        # made once, signed again on this Mac once
+        # Signing that fails: the plain Electron is used rather than an app macOS would refuse to start.
+        shutil.rmtree(target)
+
+        def refuse(argv, **kwargs):
+            if argv[0] == "/usr/bin/codesign":
+                raise subprocess.CalledProcessError(1, argv)
+            return real_run(argv, **kwargs)
+        with mock.patch.object(appshell.subprocess, "run", refuse):
+            self.assertEqual(appshell.bundled(binary, appshell.app_dir()), binary)
+        self.assertFalse(target.exists())
 
     def test_a_zip_is_unpacked_with_its_links_and_executable_bits(self):
         import stat

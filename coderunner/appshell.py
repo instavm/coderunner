@@ -121,6 +121,56 @@ def install(progress: Callable[[str], None] | None = None) -> str:
     return str(binary)
 
 
+NAME = "CodeRunner"
+BUNDLE_ID = "io.instavm.coderunner"
+BUNDLE_VERSION = 1           # raise when what is written into the bundle changes
+
+
+def bundle_dir() -> pathlib.Path:
+    return paths.home() / "runtime" / f"{NAME}.app"
+
+
+def bundled(binary: str, app: pathlib.Path | None = None) -> str:
+    """On a Mac, the app as CodeRunner rather than Electron: Electron.app copied (an APFS clone, so it takes
+    next to no disk) with CodeRunner's name, identifier and icon in its Info.plist, signed again on this Mac
+    (changing Info.plist breaks Electron's signature, and macOS will not start an app whose signature is broken).
+    Without it the menu bar, the Dock and the app switcher said "Electron". Made once per Electron version; on any
+    failure the plain Electron binary is used."""
+    import plistlib
+    source = pathlib.Path(binary).resolve().parents[2]          # .../Electron.app/Contents/MacOS/Electron
+    if source.suffix != ".app":
+        return binary
+    target = bundle_dir()
+    icon = (app or app_dir() or pathlib.Path()) / "icon.icns"
+    stamp = f"{ELECTRON}:{BUNDLE_VERSION}:{hashlib.sha256(icon.read_bytes()).hexdigest()[:12] if icon.is_file() else ''}"
+    executable = target / "Contents" / "MacOS" / "Electron"
+    marker = target.with_suffix(".stamp")          # beside it: a file added inside would break its signature
+    if executable.is_file() and marker.is_file() and marker.read_text() == stamp:
+        return str(executable)
+    try:
+        shutil.rmtree(target, ignore_errors=True)
+        marker.unlink(missing_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        copied = subprocess.run(["/bin/cp", "-Rc", str(source), str(target)], capture_output=True)
+        if copied.returncode != 0:                              # not APFS: a plain copy
+            shutil.rmtree(target, ignore_errors=True)
+            subprocess.run(["/bin/cp", "-R", str(source), str(target)], check=True, capture_output=True)
+        info_path = target / "Contents" / "Info.plist"
+        info = plistlib.loads(info_path.read_bytes())
+        info.update({"CFBundleName": NAME, "CFBundleDisplayName": NAME, "CFBundleIdentifier": BUNDLE_ID})
+        if icon.is_file():
+            shutil.copyfile(icon, target / "Contents" / "Resources" / "coderunner.icns")
+            info["CFBundleIconFile"] = "coderunner.icns"
+        info_path.write_bytes(plistlib.dumps(info))
+        subprocess.run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(target)], check=True,
+                       capture_output=True, timeout=300)
+        marker.write_text(stamp)
+        return str(executable)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        shutil.rmtree(target, ignore_errors=True)
+        return binary
+
+
 def launch(progress: Callable[[str], None] | None = None) -> subprocess.Popen:
     """Open the app in its own process; it finds this home's daemon and starts it when it is down."""
     app = app_dir()
@@ -128,6 +178,8 @@ def launch(progress: Callable[[str], None] | None = None) -> subprocess.Popen:
         raise RuntimeError("The app's source (app/) is not beside this copy of CodeRunner: run this from a checkout "
                            "installed with ./install.sh")
     binary = installed(app) or install(progress)
+    if platform.system() == "Darwin":
+        binary = bundled(binary, app)
     paths.ensure_dirs()
     with open(paths.assistant_dir() / "logs" / "app.log", "ab") as log:
         return subprocess.Popen([binary, str(app)], env={**os.environ, "CODERUNNER_HOME": str(paths.home())},
