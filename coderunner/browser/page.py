@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
 import urllib.parse
 from typing import Any
 
@@ -20,12 +21,23 @@ IMAGES = frozenset({"image", "img"})     # their alternative text is read like t
 # inside. The name is read like text, and text inside that only repeats it is skipped.
 NAMED = frozenset({"region", "group", "article", "figure", "status", "alert", "note", "cell", "gridcell",
                    "listitem", "term", "definition", "math", "timer", "log"})
-PAGE_CHARS = 12000          # page text returned at once; browser_find reaches the rest
+# Page text returned at once; the rest is a call away (more=true, start=<text>, browser_find). On a local
+# planner every 1,000 tokens of page text cost about 2 s a step to read: 12,000 characters were 6 s.
+PAGE_CHARS = 7000
 SHOWN_REMOVED = 5           # removed lines listed per change; more are counted
 CHANGES_SHARE = 0.7         # changes longer than this share of the page are sent as the whole page
 SMALL_PAGE = 1500           # below this size a page's changes are always sent as changes
 LINK_CHARS = 60             # link addresses are cut to this
 FOOTERS = frozenset({"contentinfo"})     # a page's footer: shown as one line unless the whole page is asked for
+# Landmarks whose lines render_ax records (marks): the main content, and menus that a long page shows as one line.
+REGIONS = frozenset({"main", "navigation"})
+MENU_KEPT = 400             # a menu shorter than this is shown as it is
+HEAD_SHARE = 0.25           # of a long page's text, at most this share goes to what comes before its main content
+NEAR_CHARS = 1500           # at most, for the lines around the element last used when they fall past the cut
+LATER_CONTROLS = 400        # characters of controls (not links) past the cut, named after it
+MORE = ("browser_snapshot more=true reads on, start=<text> reads from a later line, browser_find searches the whole "
+        "page, browser_list reads a list of results one line per item; scrolling does not change this text")
+ELEMENT = re.compile(r'^\[(\d+)\] (\w+)(?: ("(?:[^"\\]|\\.)*"))?')
 
 
 def ax_value(field: Any) -> Any:
@@ -36,12 +48,123 @@ def squash(text: str) -> str:
     return " ".join(text.split())
 
 
-def cut(text: str, limit: int) -> str:
+def cut(text: str, limit: int, changes: bool = False) -> str:
     if len(text) <= limit:
         return text
-    return text[:limit] + (f"\n… [{len(text) - limit} more characters: browser_snapshot with start=<text on a later "
-                           f"line> reads on from there, browser_find searches all of the page and browser_list reads "
-                           f"a list of results one line per item; scrolling does not change this text]")
+    if changes:
+        return text[:limit] + f"\n… [{len(text) - limit} more characters of changes; browser_snapshot reads the page]"
+    return text[:limit] + f"\n… [{len(text) - limit} more characters: {MORE}]"
+
+
+def _element_name(line: str) -> str:
+    match = ELEMENT.match(line)
+    if not match or not match.group(3):
+        return ""
+    try:
+        return str(json.loads(match.group(3)))
+    except ValueError:
+        return ""
+
+
+def _menu_line(lines: list[str], name: str) -> str:
+    """A long menu as one line: how many links it holds and the first few, so the model knows what is there."""
+    names = [n for n in (_element_name(line) for line in lines) if n]
+    first = ", ".join(n[:30] for n in names[:3]) + (", …" if len(names) > 3 else "")
+    label = f" {json.dumps(name[:40], ensure_ascii=False)}" if name else ""
+    return (f"[menu{label} with {sum(bool(ELEMENT.match(line)) for line in lines)} links and buttons"
+            + (f" ({first})" if first else "") + "; browser_find searches it]")
+
+
+def fit(lines: list[str], limit: int, marks: dict | None = None, near: int | None = None) -> tuple[str, int]:
+    """A page's lines in at most about `limit` characters, the most useful first: long menus as one line each, a
+    short share for what comes before the main content, then the main content, and the lines around line `near`
+    (the element last used) when they would fall past the cut. Returns the text and the index of the line after
+    the last one shown in order, where reading on (more=true) starts.
+
+    Nothing is renumbered or forgotten: an element left out keeps its number, browser_find finds it, and the
+    controls (not links) past the cut are named after it."""
+    text = "\n".join(lines)
+    if len(text) <= limit:
+        return text, len(lines)
+    marks = marks or {}
+    menus: dict[int, tuple[int, str]] = {}
+    for start, end, name in marks.get("navigation", []):
+        size = sum(len(line) + 1 for line in lines[start:end])
+        if size > MENU_KEPT and not (near is not None and start <= near < end) and \
+                end > menus.get(start, (start, ""))[0]:
+            menus[start] = (end, name)
+    # Entries: (first line, line after it, text): a line of the page, or a menu shown as one line.
+    entries: list[tuple[int, int, str]] = []
+    longest = max(limit // 3, 200)          # a paragraph longer than this is cut, so it cannot take all the room
+    i = 0
+    while i < len(lines):
+        if i in menus:
+            end, name = menus[i]
+            entries.append((i, end, _menu_line(lines[i:end], name)))
+            i = end
+        else:
+            line = lines[i]
+            if len(line) > longest:
+                line = line[:longest] + " … [line cut; browser_find reads it whole]"
+            entries.append((i, i + 1, line))
+            i += 1
+    sizes = [len(entry[2]) + 1 for entry in entries]
+    if sum(sizes) <= limit:
+        return "\n".join(entry[2] for entry in entries), len(lines)
+    chosen: set[int] = set()
+
+    def take(first: int, stop: int, room: float) -> tuple[int, int]:
+        used, at = 0, first
+        while at < stop and used + sizes[at] <= room:
+            chosen.add(at)
+            used += sizes[at]
+            at += 1
+        return at, used
+
+    def position(line: int | None) -> int | None:
+        if line is None:
+            return None
+        return next((k for k, entry in enumerate(entries) if entry[0] <= line < entry[1]), None)
+
+    mains = sorted(marks.get("main", []), key=lambda m: m[0] - m[1])      # the largest first
+    main = position(mains[0][0]) if mains and mains[0][1] - mains[0][0] > 0 else None
+    focus = position(near)
+    used = 0
+    if main:
+        _, used = take(0, main, limit * HEAD_SHARE)
+    reserve = min(NEAR_CHARS, limit // 4) if focus is not None else 0
+    end, more = take(main or 0, len(entries), limit - used - reserve)
+    used += more
+    if focus is not None and focus not in chosen:
+        take(max(end, focus - 3), len(entries), limit - used)
+    elif reserve:
+        end, more = take(end, len(entries), limit - used)
+        used += more
+    out: list[str] = []
+    previous = -1
+    for k in sorted(chosen):
+        if k != previous + 1:
+            out.append(f"… [{entries[k][0] - entries[previous + 1][0]} lines left out]")
+        out.append(entries[k][2])
+        previous = k
+    after = [entry for k, entry in enumerate(entries) if k > previous]
+    if after:
+        rest = sum(len(entry[2]) + 1 for entry in after)
+        elements = sum(bool(ELEMENT.match(line)) for line in lines[after[0][0]:])
+        out.append(f"… [{rest} more characters" + (f" with {elements} element{'s' * (elements != 1)}" if elements else "")
+                   + f": {MORE}]")
+        controls, size = [], 0
+        for line in lines[after[0][0]:]:
+            match = ELEMENT.match(line)
+            if match and match.group(2) != "link":
+                item = line.split(" -> ")[0][:100]
+                if size + len(item) > LATER_CONTROLS:
+                    break
+                controls.append(item)
+                size += len(item) + 2
+        if controls:
+            out.append("Controls further down: " + "; ".join(controls))
+    return "\n".join(out), entries[end - 1][1] if end else 0
 
 
 def short_url(url: str, page_url: str) -> str:
@@ -78,7 +201,7 @@ def _element_line(ref: int, role: str, name: str, node: dict, props: dict, page_
 
 
 def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = frozenset(),
-              numbers: dict | None = None, whole: bool = False) -> tuple[str, dict]:
+              numbers: dict | None = None, whole: bool = False, marks: dict | None = None) -> tuple[str, dict]:
     """Compact text for an Accessibility.getFullAXTree result.
 
     Headings become "# name", interactive elements "[N] role "name" ...", images
@@ -93,6 +216,9 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
     number it saw earlier and changes between renderings stay small.
 
     The footer (dozens of links on most sites) is one line unless whole is set.
+
+    marks, when given, is filled with the lines of the main content and of menus: {"main": [(first line, line
+    after it, name)], "navigation": [...]}, which fit() uses to put the main content first.
     """
     numbers = numbers if numbers is not None else {"next": 1, "ids": {}}
     by_id = {node["nodeId"]: node for node in nodes}
@@ -118,6 +244,11 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
     stack: list[tuple[str, Any, str]] = [(root, None, "") for root in reversed(roots)]
     while stack:
         node_id, block, covered = stack.pop()
+        if node_id is None:                 # the end of a landmark (see REGIONS): block is (role, first line, name)
+            flush()
+            if marks is not None:
+                marks.setdefault(block[0], []).append((block[1], len(lines), block[2]))
+            continue
         node = by_id.get(node_id)
         if node is None:
             continue
@@ -171,6 +302,10 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
                 descend(node_id, name)      # the value is already shown; skip editor internals
         elif role in INLINE:
             descend(block, covered)
+        elif role in REGIONS:
+            flush()
+            stack.append((None, (role, len(lines), name), ""))     # popped after everything inside
+            descend(node_id, covered)
         elif role in NAMED and name and not (covered and name in covered):
             if owner[0] is not None:
                 flush()

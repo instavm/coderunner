@@ -46,7 +46,7 @@ from . import launcher as default_launcher
 from .cdp import CDPError, CDPPipe
 from .errors import BrowserError
 from .links import plain_link
-from .page import PAGE_CHARS, ax_value, cut, page_changes, render_ax, short_url, squash
+from .page import PAGE_CHARS, ax_value, cut, fit, page_changes, render_ax, short_url, squash
 from .scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, LIST_JS, OPTIONS_JS, SCROLL_JS, SELECT_ALL_JS,
                       SELECT_OPTION_JS, SETTLE_JS, SLIDER_JS)
 from .urls import is_local_ip, local_problem, page_host, parse_url, same_site
@@ -157,13 +157,25 @@ CHORDS = {
 }
 SLIDER_PRESSES = 200        # arrow keys at most to move a slider drawn by the page's script
 KEYSTROKE_CHARS = 100       # typed key by key up to this length, as a person (and Playwright) does; longer is inserted
-# Before reading the page after an action: how long to wait for it to start changing (typed text often brings
-# suggestions about a second later), then for it to stay still, and at most in all (seconds).
-SETTLE_START = {"type": 1.5, "load": 1.5}
+# Before reading the page after an action, it is read as soon as it is ready (_ready): its document loaded, its
+# text no longer changing for SETTLE_QUIET, and the page's own requests that could bring text (scripts, XHR and
+# fetch of its own frame to its own site, and a new document for it) that were open then ended, again for as long
+# as such requests keep bringing text. Frames in the page and other sites' requests are mostly advertising and
+# measurement, which kept a news page waiting to the limit. Until the text first changes after an action it waits
+# at most SETTLE_START (typed text often brings suggestions about a second later). The limits in all are the fixed
+# waits these signals replaced (seconds).
+SETTLE_START = {"type": 1.5}
 SETTLE_START_DEFAULT = 0.6
 SETTLE_QUIET = 0.3
 SETTLE_MOST = 3.0
 SETTLE_MOST_LOAD = 8.0      # after a navigation: results pages (flights, shops) fill in for several seconds
+# A navigation is done once the document is parsed (DOMContentLoaded); its load event (every picture) is waited
+# for within SETTLE_MOST_LOAD, where it used to have NAV_TIMEOUT before the settling began.
+PARSED = frozenset({"DOMContentLoaded", "load"})
+TEXT_REQUESTS = frozenset({"Document", "Script", "XHR", "Fetch"})   # pictures, fonts and styles bring no text
+TEXT_SAME = 8               # characters of text that may come or go (a clock, a counter) on a page that is still
+LONG_REQUEST = 3.0          # a request open longer than this (a long poll, a hung beacon) is not waited for
+STREAMING = 1.0             # nor one whose answer began this long ago and is still coming (a stream)
 NO_CHANGE = "No visible change on the page."
 SUGGESTION_WAIT = 1.5       # seconds more for suggestions that are fetched as you type
 BLANK_WAIT = 10.0           # a page with no text yet (a bot check, a script-drawn app) gets this long to show some
@@ -263,6 +275,66 @@ def _shown_url(url: str, host: str) -> str:
     return (shown if same else f"{parts.hostname}{shown}")[:200]
 
 
+def site(host: str) -> str:
+    """The site a host belongs to, roughly its registrable domain: api.shop.example and www.shop.example are
+    shop.example, and a.b.co.uk is b.co.uk."""
+    labels = host.lower().rstrip(".").split(".")
+    if host.replace(".", "").isdigit() or ":" in host or len(labels) <= 2:
+        return host.lower()
+    keep = 3 if len(labels[-1]) == 2 and len(labels[-2]) <= 3 else 2
+    return ".".join(labels[-keep:])
+
+
+class Requests:
+    """A tab's open requests that could bring text, from the Network domain's events: a page that still waits
+    for its results is not read yet. Requests that keep starting (analytics, polling) are not waited for: only
+    those open when the page's text has settled (pending), and their ends. Only the page's own frame counts:
+    the text of frames in it is not in the page's."""
+
+    def __init__(self, frame: str = "") -> None:
+        self.frame = frame
+        self.open: dict[str, float] = {}
+        self.answers: dict[str, float] = {}     # when the answer to an open request began to arrive
+
+    def started(self, params: dict) -> None:
+        kind, url = params.get("type"), str((params.get("request") or {}).get("url") or "")
+        if kind not in TEXT_REQUESTS or (self.frame and params.get("frameId") != self.frame):
+            return
+        if kind != "Document":          # a new document for the page counts wherever it comes from
+            host, page = page_host(url), page_host(str(params.get("documentURL") or ""))
+            if not host or host == "about:blank" or not page or site(host) != site(page):
+                return
+        self.open[str(params.get("requestId"))] = time.monotonic()
+
+    def answered(self, params: dict) -> None:
+        request = str(params.get("requestId"))
+        if request in self.open:
+            self.answers.setdefault(request, time.monotonic())
+
+    def ended(self, params: dict) -> None:
+        request = str(params.get("requestId"))
+        self.open.pop(request, None)
+        self.answers.pop(request, None)
+
+    def waited_for(self, request: str, now: float) -> bool:
+        since = self.open.get(request)
+        answer = self.answers.get(request)
+        return since is not None and now - since < LONG_REQUEST and (answer is None or now - answer < STREAMING)
+
+    def pending(self) -> set[str]:
+        now = time.monotonic()
+        for request, since in list(self.open.items()):
+            if now - since > 60:
+                self.open.pop(request, None)          # its end was missed (a tab that swapped process)
+                self.answers.pop(request, None)
+        return {request for request in self.open if self.waited_for(request, now)}
+
+    async def ended_all(self, requests: set[str], deadline: float) -> None:
+        """Wait until these requests have ended, grown long or turned out to be streams, or the deadline."""
+        while time.monotonic() < deadline and any(self.waited_for(r, time.monotonic()) for r in requests):
+            await asyncio.sleep(0.05)
+
+
 # ---- broker ---------------------------------------------------------------
 
 class BrowserBroker:
@@ -310,6 +382,10 @@ class BrowserBroker:
         self._ref_urls: dict[str, str] = {}
         self._numbers: dict[str, dict] = {}       # tab -> element numbers kept across renderings (render_ax)
         self._lines: dict[str, list[str]] = {}    # tab -> the page as the model last saw it, line by line
+        self._marks: dict[str, dict] = {}         # tab -> where the last rendering's main content and menus are
+        self._near: dict[str, int] = {}           # tab -> the element last acted on (backend node), shown first
+        self._more: dict[str, tuple[str, int, str]] = {}   # tab -> (address, line, its text) where reading goes on
+        self._requests: dict[str, Requests] = {}  # session -> its open requests that could bring text
         self._read_urls: dict[str, str] = {}      # tab -> the address of the page as the model last saw it
         self._snapshots: dict[str, str] = {}
         self._shots: dict[str, str] = {}
@@ -391,10 +467,13 @@ class BrowserBroker:
         return await self._run("close_tab", {"tab": tab, "tainted": tainted}, lambda: self._close_tab(tab, tainted))
 
     async def snapshot(self, tab: str | None = None, max_chars: int | None = None, tainted: bool = False,
-                       start: str = "") -> dict:
-        """The page as text; with start, from the first line mentioning it, to read past the cut of a long page."""
-        return await self._run("snapshot", {"tab": tab, "tainted": tainted, "start": str(start)[:100]},
-                               lambda: self._snapshot(tab, max_chars or self.page_chars, tainted, start=str(start or "")))
+                       start: str = "", more: bool = False) -> dict:
+        """The page as text, the main content first; with start, from the first line mentioning it, and with more,
+        from where the page was last cut, to read past the cut of a long page."""
+        return await self._run("snapshot", {"tab": tab, "tainted": tainted, "start": str(start)[:100],
+                                            "more": bool(more)},
+                               lambda: self._snapshot(tab, max_chars or self.page_chars, tainted, start=str(start or ""),
+                                                      more=bool(more)))
 
     async def click(self, ref: int, tab: str | None = None, tainted: bool = False) -> dict:
         return await self._run("click", {"ref": ref, "label": self._label(ref, tab), "tab": tab, "tainted": tainted},
@@ -427,7 +506,7 @@ class BrowserBroker:
         if seen and lines and "content" not in picked:
             changes = page_changes(seen, lines)    # since the model last read the page, the typing included
             if changes is not None:
-                picked["changes"] = cut(changes, self.page_chars) if changes else NO_CHANGE
+                picked["changes"] = cut(changes, self.page_chars, changes=True) if changes else NO_CHANGE
         return picked
 
     async def _suggestion(self, target: str, text: str, tainted: bool) -> tuple[int, str] | None:
@@ -659,7 +738,7 @@ class BrowserBroker:
         """Forget what the model knew of a page someone else changed (the owner): its element numbers and the
         text it last read. Numbers continue, so an old one cannot hit a new element."""
         for table in (self._refs, self._retired, self._ref_urls, self._lines, self._read_urls, self._snapshots,
-                      self._shots):
+                      self._shots, self._near, self._more):
             table.pop(target, None)
         if target in self._numbers:
             self._numbers[target]["ids"] = {}
@@ -809,6 +888,9 @@ class BrowserBroker:
         cdp.on("Target.detachedFromTarget", lambda p, _: self._forget_session(p.get("sessionId")))
         cdp.on("Page.lifecycleEvent", self._on_lifecycle)
         cdp.on("Page.frameNavigated", self._on_navigated)
+        for event in ("Network.requestWillBeSent", "Network.responseReceived", "Network.loadingFinished",
+                      "Network.loadingFailed"):
+            cdp.on(event, self._on_network(event.split(".")[1]))
         cdp.on("Page.javascriptDialogOpening", self._on_dialog)
         cdp.on("Page.javascriptDialogClosed", lambda _, sid: self._dialogs.pop(self._targets.get(sid), None))
         cdp.on("Page.fileChooserOpened", lambda p, sid: self.audit.write(
@@ -849,6 +931,7 @@ class BrowserBroker:
         if target is not None and self._sessions.get(target) == sid:
             del self._sessions[target]
         self._loads.pop(sid or "", None)
+        self._requests.pop(sid or "", None)
 
     def _scope(self) -> str:
         """Whose tabs these are: the task the call is made for (its conversation), or "" outside one."""
@@ -908,7 +991,7 @@ class BrowserBroker:
             return
         self._forget_session(self._sessions.get(target))
         for table in (self._refs, self._retired, self._ref_urls, self._numbers, self._lines, self._read_urls,
-                      self._snapshots, self._shots,
+                      self._snapshots, self._shots, self._marks, self._near, self._more,
                       self._dialogs, self._dismissed, self._blocked,
                       self._committed, self._page_targets, self._spawned, self._new_tabs, self._expected):
             table.pop(target, None)
@@ -969,6 +1052,11 @@ class BrowserBroker:
             # The page behaves as if its window had the focus. Otherwise, whenever the owner works in another
             # window, pop-up widgets ignore clicks: booking.com's destination box opened only with this on.
             await self._send(sid, "Emulation.setFocusEmulationEnabled", {"enabled": True})
+            # Open requests, to tell when a page is ready to read (_ready). No bodies are kept. Where the
+            # domain is not offered (the extension's tab group), readiness goes by the page's text alone.
+            with contextlib.suppress(CDPError):
+                await self._send(sid, "Network.enable", {"maxTotalBufferSize": 0, "maxResourceBufferSize": 0})
+                self._requests[sid] = Requests(target)
             if self._viewport:
                 await self._fix_viewport(sid)
             self._committed.setdefault(target, (await self._info(target)).get("url", ""))
@@ -1152,8 +1240,22 @@ class BrowserBroker:
 
     # ---- events ---------------------------------------------------------------
 
+    def _on_network(self, event: str) -> Callable[[dict, str | None], None]:
+        def handle(params: dict, sid: str | None) -> None:
+            requests = self._requests.get(sid or "")
+            if requests is None:
+                return
+            if event == "requestWillBeSent":
+                requests.started(params)
+            elif event == "responseReceived":
+                requests.answered(params)
+            else:
+                requests.ended(params)
+        return handle
+
     def _on_lifecycle(self, params: dict, sid: str | None) -> None:
-        if params.get("name") == "load" and params.get("frameId") == self._targets.get(sid or ""):
+        # A document counts as loaded once parsed (DOMContentLoaded); _ready waits for what fills it in after.
+        if params.get("name") in PARSED and params.get("frameId") == self._targets.get(sid or ""):
             self._loads.setdefault(sid, collections.deque(maxlen=16)).append(params.get("loaderId"))
 
     async def _on_dialog(self, params: dict, sid: str | None) -> None:
@@ -1198,6 +1300,8 @@ class BrowserBroker:
             self._retired.pop(target, None)         # and so do the numbers it had retired
             self._ref_urls.pop(target, None)
             self._lines.pop(target, None)
+            self._near.pop(target, None)
+            self._more.pop(target, None)
             if target in self._numbers:             # new numbers continue, so an old one cannot hit a new element
                 self._numbers[target]["ids"] = {}
 
@@ -1261,7 +1365,7 @@ class BrowserBroker:
         if loader_id in self._loads.get(sid, ()):
             return True
         event = self._cdp.wait_for_event(
-            "Page.lifecycleEvent", lambda p: p.get("name") == "load" and p.get("loaderId") == loader_id,
+            "Page.lifecycleEvent", lambda p: p.get("name") in PARSED and p.get("loaderId") == loader_id,
             timeout, sid)
         return await event is not None
 
@@ -1425,7 +1529,7 @@ class BrowserBroker:
         return {"ok": True, "closed": str(tab)}
 
     async def _snapshot(self, tab: str | None, max_chars: int, tainted: bool, whole: bool = False,
-                        start: str = "") -> dict:
+                        start: str = "", more: bool = False) -> dict:
         target = await self._target(tab)
         url, host = await self._web_page(target)
         await self._allow("browser.read", host, f"Read {url}", tainted)
@@ -1433,24 +1537,64 @@ class BrowserBroker:
         async with self._acting(target, sid, tainted):
             content = await self._render(target, sid, url, whole)
             result = await self._result(target)
-        if not whole:                   # a search through the whole page is not the page as the model reads it
-            result["changed"] = self._seen(target, result["url"], content)
+        limit = max(100, int(max_chars))
+        if whole:                       # a search through the whole page is not the page as the model reads it
+            result["content"] = cut(content, limit)
+            return result
+        result["changed"] = self._seen(target, result["url"], content)
+        lines = content.split("\n")
+        first = 0
         if start.strip():
-            lines = content.split("\n")
             wanted = start.strip().lower()
             first = next((i for i, line in enumerate(lines) if wanted in line.lower()), None)
             if first is None:
                 raise BrowserError(f"Nothing on this page mentions {start!r}; browser_find searches with fewer words")
-            content = (f"… [{first} lines above left out]\n" if first else "") + "\n".join(lines[first:])
             result["changed"] = True
-        result["content"] = cut(content, max(100, int(max_chars)))
+        elif more:
+            first = self._read_on(target, result["url"], lines)
+            if first >= len(lines):
+                result["content"] = "That is the end of the page: all of it has been shown."
+                return result
+            result["changed"] = True
+        result["content"] = self._fitted(target, result["url"], lines, limit, first)
         return result
+
+    def _fitted(self, target: str, url: str, lines: list[str], limit: int, first: int = 0) -> str:
+        """The page as the model is given it (fit), from line `first`; where reading on starts is kept."""
+        if first:
+            text, end = fit(lines[first:], limit)
+            text, end = f"… [{first} lines above left out]\n{text}", end + first
+        else:
+            text, end = fit(lines, limit, self._marks.get(target), self._near_line(target, lines))
+        self._more[target] = (same_page(url), end, lines[end - 1] if end else "")
+        return text
+
+    def _read_on(self, target: str, url: str, lines: list[str]) -> int:
+        """The line where the page was last cut, found again by its text if lines came or went above it."""
+        address, index, text = self._more.get(target) or ("", 0, "")
+        if address != same_page(url) or not index:
+            return 0
+        if index <= len(lines) and lines[index - 1] == text:
+            return index
+        found = [i + 1 for i, line in enumerate(lines) if line == text]
+        return min(found, key=lambda i: abs(i - index)) if found else min(index, len(lines))
+
+    def _near_line(self, target: str, lines: list[str]) -> int | None:
+        """The line of the element last acted on, on the page as it is now (None after a navigation)."""
+        ref = (self._numbers.get(target) or {}).get("ids", {}).get(self._near.get(target))
+        if ref is None:
+            return None
+        prefix = f"[{ref}] "
+        return next((i for i, line in enumerate(lines) if line.startswith(prefix)), None)
 
     async def _render(self, target: str, sid: str, url: str, whole: bool = False) -> str:
         nodes = (await self._send(sid, "Accessibility.getFullAXTree", timeout=60)).get("nodes", [])
         secret = await self._secret_fields(sid, nodes)
+        marks: dict = {}
         content, refs = render_ax(nodes, url, secret, self._numbers.setdefault(target, {"next": 1, "ids": {}}),
-                                  whole=whole)
+                                  whole=whole, marks=marks)
+        if not whole:
+            self._marks[target] = marks
         self._renumbered(target, refs, url)
         return content
 
@@ -1476,10 +1620,56 @@ class BrowserBroker:
         self._read_urls[target] = url
         return changed
 
+    async def _ready(self, target: str, sid: str, action: str = "", most: float | None = None) -> None:
+        """Wait until the page is ready to read after an action (see SETTLE_START): loaded, its text no longer
+        changing, and the requests open then ended, again while they bring text; or the limit. Returns as soon as
+        it is."""
+        load = action == "load"
+        deadline = time.monotonic() + (most if most is not None else SETTLE_MOST_LOAD if load else SETTLE_MOST)
+        start, began = (0.0, True) if load else (SETTLE_START.get(action, SETTLE_START_DEFAULT), False)
+        text = None                     # the text's length when the requests were last waited for
+        faults = 0
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return
+            try:
+                found = await self._send(sid, "Runtime.callFunctionOn", {
+                    "functionDeclaration": SETTLE_JS, "executionContextId": await self._world(sid, target),
+                    "arguments": [{"value": start * 1000}, {"value": SETTLE_QUIET * 1000}, {"value": left * 1000},
+                                  {"value": began}, {"value": load}],
+                    "awaitPromise": True, "returnByValue": True}, timeout=left + 5)
+            except CDPError:
+                # The document went away: the page moved on to another one (a redirect, a sign-in check), which
+                # is waited for as a navigation is, within the same limit.
+                faults += 1
+                if faults > 3:
+                    return
+                await asyncio.sleep(0.2)
+                start, began, load = 0.0, True, True
+                continue
+            if found.get("exceptionDetails"):
+                await asyncio.sleep(min(left, SETTLE_QUIET))      # the page broke the wait: a short fixed one
+                return
+            state = (found.get("result") or {}).get("value")
+            state = state if isinstance(state, dict) else {}
+            began = began or bool(state.get("changed"))
+            requests = self._requests.get(sid)
+            if state.get("state") == "most" or requests is None:
+                return
+            pending = requests.pending()
+            now = state.get("text")
+            if not pending or (text is not None and isinstance(now, (int, float))
+                               and abs(now - text) <= TEXT_SAME + text * 0.002):
+                return                      # nothing open, or the last requests waited for brought no text
+            text = now if isinstance(now, (int, float)) else None
+            await requests.ended_all(pending, deadline)
+            start = SETTLE_QUIET            # what they bring is drawn within this
+
     async def _observe(self, target: str, sid: str, result: dict, tainted: bool, action: str = "") -> dict:
         """Add the page after an action to its result: only what changed since the model last read it, or the
-        whole page after a navigation or a large change. Saves the model a step (and re-reading the page)
-        after every click. Left out when reading the page would need the owner's approval."""
+        page (fitted, the main content first) after a navigation or a large change. Saves the model a step (and
+        re-reading the page) after every click. Left out when reading the page would need the owner's approval."""
         try:
             url, host = await self._web_page(target)
         except BrowserError:
@@ -1487,13 +1677,7 @@ class BrowserBroker:
         if self.policy.evaluate(Action("browser.read", host, f"Read {url}", tainted=tainted)) is not Decision.ALLOW:
             return result
         before = self._lines.get(target)
-        start = SETTLE_START.get(action, SETTLE_START_DEFAULT)
-        most = SETTLE_MOST_LOAD if action == "load" else SETTLE_MOST
-        with contextlib.suppress(CDPError):
-            await self._send(sid, "Runtime.callFunctionOn", {
-                "functionDeclaration": SETTLE_JS, "executionContextId": await self._world(sid, target),
-                "arguments": [{"value": start * 1000}, {"value": SETTLE_QUIET * 1000}, {"value": most * 1000}],
-                "awaitPromise": True, "returnByValue": True}, timeout=most + 5)
+        await self._ready(target, sid, action)
         if self._screens_only:
             return result
         try:
@@ -1507,6 +1691,9 @@ class BrowserBroker:
                     result.update(url=url, note="The page moved to another site; take a snapshot to read it.")
                     return result
                 content = await self._render(target, sid, url)
+                if content.strip():                 # text has appeared: let it finish drawing before reading
+                    await self._ready(target, sid, "load", most=SETTLE_MOST)
+                    content = await self._render(target, sid, url)
         except (CDPError, BrowserError):
             return result
         info = await self._info(target)
@@ -1515,11 +1702,14 @@ class BrowserBroker:
             result["note"] = "The page shows no text yet; it may still be loading. Take a snapshot in a moment."
             return result
         self._seen(target, url, content)
-        changes = page_changes(before, content.split("\n")) if before is not None else None
+        lines = content.split("\n")
+        changes = page_changes(before, lines) if before is not None else None
+        if changes is not None and len(changes) > self.page_chars and len(content) > self.page_chars:
+            changes = None                  # more changes than fit: the page itself, its main part first, reads better
         if changes is None:
-            result["content"] = cut(content, self.page_chars)
+            result["content"] = self._fitted(target, url, lines, self.page_chars)
         else:
-            result["changes"] = cut(changes, self.page_chars) if changes else NO_CHANGE
+            result["changes"] = cut(changes, self.page_chars, changes=True) if changes else NO_CHANGE
         return result
 
     async def _find(self, text: str, tab: str | None, tainted: bool) -> dict:
@@ -1545,6 +1735,7 @@ class BrowserBroker:
         target = await self._target(tab)
         url, host = await self._web_page(target)
         element = self._ref(target, ref)
+        self._near[target] = element["backend"]
         sid = await self._session(target)
         label = f'{element["role"]} {json.dumps(element["name"], ensure_ascii=False)}'
         summary = f"Choose {json.dumps(option, ensure_ascii=False)} in {label} on {host}"
@@ -1625,6 +1816,7 @@ class BrowserBroker:
         url, host = await self._web_page(target)
         read = self._read_urls.get(target, "")      # the page as the model last saw it
         element = element or self._ref(target, ref)
+        self._near[target] = element.get("backend")
         sid = await self._session(target)
         async with self._acting(target, sid, tainted):
             options = await self._call(sid, await self._object(sid, element["backend"], await self._world(sid, target)),
@@ -1930,7 +2122,7 @@ class BrowserBroker:
         target = await self._target(tab)
         url, host = await self._web_page(target)
         element = self._ref(target, ref)
-        backend = element["backend"]
+        backend = self._near[target] = element["backend"]
         sid = await self._session(target)
         label = f'{element["role"]} {json.dumps(element["name"], ensure_ascii=False)}'
         async with self._acting(target, sid, tainted):

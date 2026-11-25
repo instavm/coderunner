@@ -18,7 +18,7 @@ from coderunner.browser import BrowserBroker, BrowserError
 from coderunner.browser import broker as broker_module
 from coderunner.browser import launcher
 from coderunner.browser.broker import CHALLENGE_JS
-from coderunner.browser.page import page_changes, render_ax
+from coderunner.browser.page import fit, page_changes, render_ax
 from coderunner.browser.scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, OPTIONS_JS, SCROLL_JS, SELECT_OPTION_JS,
                                         SETTLE_JS)
 from coderunner.browser.urls import parse_url
@@ -50,6 +50,7 @@ class FakeBrowser:
         self.on_move = None   # called when the pointer moves, to let tests change the page
         self.scroll = (0, 0)  # how far the page is scrolled (page coordinates of the window's corner)
         self.challenge = False  # a password box or CAPTCHA in view (CHALLENGE_JS)
+        self.lifecycle = ("load",)    # lifecycle events a navigation sends
         self.closed = False
         self._box = None
         self._loader = 0
@@ -102,7 +103,8 @@ class FakeBrowser:
             loader = f"L{self._loader}"
             self.pages[target] = {"url": params["url"], "title": self.titles.get(params["url"], "")}
             self.emit("Page.frameNavigated", {"frame": {"id": target, "url": params["url"], "loaderId": loader}}, sid)
-            self.emit("Page.lifecycleEvent", {"frameId": target, "loaderId": loader, "name": "load"}, sid)
+            for name in self.lifecycle:
+                self.emit("Page.lifecycleEvent", {"frameId": target, "loaderId": loader, "name": name}, sid)
             return {"frameId": target, "loaderId": loader}
         if method == "Accessibility.getFullAXTree":
             return {"nodes": self.ax}
@@ -356,6 +358,58 @@ class RenderTests(unittest.TestCase):
         results = ["# Results"] + [f"[{n}] link \"Flight {n} from Bengaluru to Delhi\" -> /flight/{n}" for n in range(60)]
         self.assertIsNone(page_changes(before, results))          # a new page is sent whole
         self.assertIn("+ [7] option", page_changes(before + results, after + results))   # small news, big page
+
+    def long_page(self):
+        """A page with a long menu, then its main content (a heading and 80 paragraphs), then a button."""
+        nodes = [ax(1, "RootWebArea", "News", children=[2, 3, 4], backend=1),
+                 ax(2, "navigation", "Sections", parent=1, children=list(range(100, 130)), backend=2),
+                 ax(3, "main", parent=1, children=[5] + list(range(200, 280)), backend=3),
+                 ax(5, "heading", "Top story", parent=3, children=[6], backend=5, level=1),
+                 ax(6, "StaticText", "Top story", parent=5),
+                 ax(4, "button", "Load more stories", parent=1, backend=400)]
+        nodes += [ax(100 + k, "link", f"Section {k}", parent=2, backend=1000 + k, url=f"https://news.example/s/{k}")
+                  for k in range(30)]
+        for k in range(80):
+            nodes += [ax(200 + k, "paragraph", parent=3, children=[3000 + k], backend=2000 + k),
+                      ax(3000 + k, "StaticText", f"Paragraph {k} of the story, with enough words to take room.",
+                         parent=200 + k)]
+        return nodes
+
+    def test_landmarks_are_marked(self):
+        marks = {}
+        content, _ = render_ax(self.long_page(), "https://news.example/", marks=marks)
+        lines = content.splitlines()
+        (start, end, name), = marks["navigation"]
+        self.assertEqual((name, lines[start], end - start), ("Sections", '[1] link "Section 0" -> /s/0', 30))
+        (start, end, _), = marks["main"]
+        self.assertEqual((lines[start], lines[end - 1]), ("# Top story", "Paragraph 79 of the story, with enough "
+                                                                         "words to take room."))
+        self.assertEqual(render_ax(self.long_page(), "https://news.example/")[0], content)   # marks change nothing
+
+    def test_a_long_page_is_fitted_main_content_first(self):
+        marks = {}
+        content, _ = render_ax(self.long_page(), "https://news.example/", marks=marks)
+        lines = content.splitlines()
+        self.assertEqual(fit(lines, 100_000, marks), (content, len(lines)))          # a page that fits is as it is
+        text, end = fit(lines, 2000, marks)
+        shown = text.splitlines()
+        # The menu is one line with its first links; the main content follows it at once.
+        self.assertEqual(shown[0], '[menu "Sections" with 30 links and buttons (Section 0, Section 1, Section 2, …); '
+                                   'browser_find searches it]')
+        self.assertEqual(shown[1], "# Top story")
+        self.assertLessEqual(len(text), 2000 + 600)
+        self.assertIn("more characters with 1 element: browser_snapshot more=true reads on", text)
+        self.assertEqual(shown[-1], 'Controls further down: [31] button "Load more stories"')
+        self.assertEqual(lines[end - 1], next(line for line in reversed(shown) if line.startswith("Paragraph")))
+        # The element last used is shown with the lines around it, though it is past the cut.
+        near, _ = fit(lines, 2000, marks, near=len(lines) - 1)
+        self.assertIn('lines left out]\nParagraph 77', near)
+        self.assertTrue(near.endswith('Paragraph 79 of the story, with enough words to take room.\n'
+                                      '[31] button "Load more stories"'), near)
+        self.assertIn("Paragraph 3 of", near)                   # the main content still comes first
+        # With no landmarks the page is read from its top, the menu as it is.
+        plain, _ = fit(lines, 2000)
+        self.assertTrue(plain.startswith('[1] link "Section 0"'))
 
 
 class StubJudge:
@@ -783,7 +837,8 @@ class InteractionPolicyTests(BrokerTestCase):
         browser.ax = SHOP_AX[:-1]
         self.assertTrue((await self.broker.snapshot())["changed"])
         short = await self.broker.snapshot(max_chars=100)
-        self.assertIn("more characters: browser_snapshot with start=", short["content"])
+        self.assertIn("more characters with 2 elements: browser_snapshot more=true reads on", short["content"])
+        self.assertIn('Controls further down: [3] textbox "Password"', short["content"])   # what is left to act on
 
     async def test_click_uses_interact_or_sensitive(self):
         browser, _ = await self.load_shop()
@@ -1042,6 +1097,121 @@ class InteractionPolicyTests(BrokerTestCase):
         self.assertFalse((await self.broker.handoff("2FA code"))["completed"])
         self.config.set("browser.headless", True)
         self.assertIn("headless", (await self.broker.handoff("log in"))["error"])
+
+
+class BrowserToolTextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_changes_say_how_many_and_a_snapshot_reads_on(self):
+        from coderunner.agent.tools import browser_tools
+        asked = []
+
+        class Broker:
+            async def click(self, ref, tainted=False):
+                return {"ok": True, "url": "https://a.example/", "changes": '  [1] button "Go"\n+ Two\n+ Three\n- One'}
+
+            async def snapshot(self, tainted=False, **options):
+                asked.append(options)
+                return {"ok": True, "url": "https://a.example/", "content": "Later lines", "changed": True}
+
+            async def items(self, **options):
+                return {"ok": True, "total": 0}
+        tools = {tool.name: tool for tool in browser_tools(SimpleNamespace(browser=Broker(), vision=False, driver=None))}
+        ctx = SimpleNamespace(tainted=False)
+        clicked = await tools["browser_click"].handler({"ref": 1}, ctx)
+        self.assertIn("Changes on the page (2 added, 1 removed; + added", clicked)
+        self.assertIn("Later lines", await tools["browser_snapshot"].handler({"more": True}, ctx))
+        await tools["browser_snapshot"].handler({"start": "Price", "more": True}, ctx)
+        self.assertEqual(asked, [{"more": True}, {"start": "Price"}])        # start= says where, more is left out
+
+
+class ReadinessTests(BrokerTestCase):
+    browser_config = {"allow": ["shop.example"]}
+    rules = [{"kind": "browser.interact", "target": "shop.example", "decision": "allow"}]
+
+    async def test_a_page_is_read_once_parsed(self):
+        browser, _ = await self.load_shop()
+        browser.lifecycle = ("DOMContentLoaded",)           # its pictures never finish loading
+        began = time.monotonic()
+        opened = await self.broker.navigate("https://shop.example/slow")
+        self.assertTrue(opened["ok"] and opened["loaded"], opened)
+        self.assertLess(time.monotonic() - began, 2)
+        sid = await self.broker._session(self.broker._active)
+        self.assertIn(("Network.enable", sid), [(method, s) for method, _, s in browser.calls])
+
+    async def test_open_requests_are_waited_for_and_long_ones_are_not(self):
+        browser, _ = await self.load_shop()
+        target = self.broker._active
+        sid = await self.broker._session(target)
+
+        async def timed(action=""):
+            began = time.monotonic()
+            await self.broker._ready(target, sid, action)
+            return time.monotonic() - began
+        self.assertLess(await timed(), 0.3)                       # nothing open: read at once
+        def request(rid, kind, url="https://api.shop.example/search", frame=target):
+            browser.emit("Network.requestWillBeSent", {"requestId": rid, "type": kind, "frameId": frame,
+                                                       "request": {"url": url},
+                                                       "documentURL": "https://shop.example/"}, sid)
+        request("r1", "XHR")
+        request("r2", "Image")                                    # brings no text
+        request("ad", "Fetch", "https://ads.example/auction")     # another site's
+        request("frame", "XHR", frame="F2")                       # a frame's in the page
+        request("blob", "Script", "blob:https://shop.example/1")
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.6, browser.emit, "Network.loadingFinished", {"requestId": "r1"}, sid)
+        waited = await timed()
+        self.assertGreater(waited, 0.6)                           # until it ended
+        self.assertLess(waited, broker_module.SETTLE_MOST)
+        self.broker._requests[sid].open["poll"] = time.monotonic() - broker_module.LONG_REQUEST - 1   # a long poll
+        self.assertLess(await timed(), 0.3)
+        request("stream", "Fetch")                                # an answer that keeps coming
+        browser.emit("Network.responseReceived", {"requestId": "stream"}, sid)
+        await asyncio.sleep(0)
+        self.broker._requests[sid].answers["stream"] -= broker_module.STREAMING
+        self.assertLess(await timed(), 0.3)
+        request("r3", "Fetch")                                    # one that never ends
+        await asyncio.sleep(0)
+        with mock.patch.object(broker_module, "SETTLE_MOST", 0.5):
+            self.assertLess(await timed(), 0.8)                   # the limit still holds
+
+    async def test_a_long_page_is_read_on_with_more(self):
+        browser, _ = await self.load_shop()
+        lines = [f"Result {n} with a long description of what it is" for n in range(400)]
+        browser.ax = [ax(1, "RootWebArea", "Results", children=[100 + k for k in range(len(lines))], backend=1)]
+        for k, line in enumerate(lines):
+            browser.ax += [ax(100 + k, "paragraph", parent=1, children=[5000 + k], backend=1000 + k),
+                           ax(5000 + k, "StaticText", line, parent=100 + k)]
+        first = await self.broker.snapshot()
+        self.assertLess(len(first["content"]), self.broker.page_chars + 400)
+        last = first["content"].split("\n")[-2]
+        later = await self.broker.snapshot(more=True)
+        self.assertTrue(later["content"].startswith(f"… [{int(last.split()[1]) + 1} lines above left out]\n"
+                                                    f"Result {int(last.split()[1]) + 1} with"), later["content"][:200])
+        while "more=true reads on" in later["content"]:
+            later = await self.broker.snapshot(more=True)
+        self.assertIn("Result 399 with", later["content"])
+        self.assertIn("end of the page", (await self.broker.snapshot(more=True))["content"])
+
+    async def test_more_changes_than_fit_come_as_the_page(self):
+        browser, _ = await self.load_shop()
+
+        def page(extra):
+            texts = [f"Line {n} that stays as it was on the page" for n in range(100)] + extra
+            nodes = SHOP_AX + [node for n, text in enumerate(texts) for node in (
+                ax(600 + n, "paragraph", parent=2, children=[3000 + n], backend=600 + n),
+                ax(3000 + n, "StaticText", text, parent=600 + n))]
+            nodes[1] = ax(2, "generic", parent=1, children=[3, 4, 5, 8, 9, 10, 11, 12] + [600 + n for n in range(len(texts))],
+                          ignored=True, backend=2)
+            return nodes
+        browser.ax = page([])
+        await self.broker.snapshot()
+        browser.ax = page([f"New line {n} of a filter panel that opened" for n in range(30)])
+        small = await self.broker.click(self.ref("Read more"))
+        self.assertIn("+ New line 29", small["changes"])          # changes that fit come as changes
+        browser.ax = page([f"Another line {n} of a filter panel that opened" for n in range(30)])
+        self.broker.page_chars = 1000
+        large = await self.broker.click(self.ref("Read more"))
+        self.assertNotIn("changes", large)
+        self.assertIn("more=true reads on", large["content"])
 
 
 class OwnerTurnTests(BrokerTestCase):
@@ -1384,7 +1554,7 @@ class DefaultPermissionTests(BrokerTestCase):
                            ax(5000 + k, "StaticText", line, parent=100 + k)]
         whole = await self.broker.snapshot()
         self.assertNotIn("Shree Hari", whole["content"])
-        self.assertIn("start=<text on a later line>", whole["content"])
+        self.assertIn("start=<text> reads from a later line", whole["content"])
         later = await self.broker.snapshot(start="properties found")
         self.assertTrue(later["ok"], later)
         self.assertTrue(later["content"].startswith("… [400 lines above left out]"))
@@ -1619,8 +1789,32 @@ WORDLESS = b"""<title>Boxes</title><style>div.box{position:absolute;width:40px;h
   <div class="box" style="position:static" onclick="document.title='paid'"></div></section>"""
 
 
+# Results fetched after the page is parsed, and after a click, from an answer that takes 1.2 s; meanwhile a
+# carousel moves for ever without changing how much text there is.
+FETCHING = b"""<!doctype html><html><head><title>Fetching</title></head><body>
+<p id="spin">Slide 1</p><button id="go">Search</button><div id="out"></div><div id="late"></div>
+<script>
+let n = 0;
+setInterval(() => { n = (n + 1) % 9; document.getElementById('spin').textContent = 'Slide ' + (n + 1); }, 100);
+const get = (where) => fetch('/slow', {headers: {'X-Where': where}}).then(r => r.text()).then(t => {
+  document.getElementById(where).textContent = t; });
+document.addEventListener('DOMContentLoaded', () => get('late'));
+document.getElementById('go').onclick = () => get('out');
+</script></body></html>"""
+
+
 class _Fixture(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/slow":
+            time.sleep(1.2)
+            body = b"12 trains found, the first at 06:10" if self.headers.get("X-Where") == "late" else \
+                b"3 seats left on the 06:10"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/away":
             self.send_response(302)
             self.send_header("Location", "http://10.255.255.1/admin")
@@ -1629,7 +1823,7 @@ class _Fixture(http.server.BaseHTTPRequestHandler):
         port = str(self.server.server_port).encode()
         body = FIXTURE.replace(b"PORT", port) if self.path == "/" else DRAWN if self.path == "/drawn" else \
             CONTROLS if self.path == "/controls" else LISTING if self.path == "/list" else \
-            WORDLESS if self.path == "/boxes" else \
+            WORDLESS if self.path == "/boxes" else FETCHING if self.path == "/fetching" else \
             b"<title>Next</title><h2>Second page</h2>"
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1728,6 +1922,18 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
             chosen = await self.broker.type_focused("Large")
             self.assertTrue(chosen["ok"], chosen)
             self.assertEqual(await self.page("document.getElementById('pick').value"), "Large")
+
+    async def test_a_page_is_read_when_its_results_are_in_not_when_it_stops_moving(self):
+        began = time.monotonic()
+        opened = await self.broker.navigate(self.base + "/fetching")
+        self.assertTrue(opened["ok"], opened)
+        self.assertIn("12 trains found", opened["content"])         # fetched after the page was parsed
+        self.assertLess(time.monotonic() - began, broker_module.SETTLE_MOST_LOAD)
+        began = time.monotonic()
+        clicked = await self.broker.click(self.refs()["Search"])
+        took = time.monotonic() - began
+        self.assertIn("+ 3 seats left", clicked["changes"])        # what the click fetched, though it took 1.2 s
+        self.assertLess(took, broker_module.SETTLE_MOST)             # the carousel does not hold it to the limit
 
     async def test_a_box_without_words_is_told_by_the_words_around_it_and_one_with_none_is_not_asked(self):
         self.assertTrue((await self.broker.navigate(self.base + "/boxes"))["ok"])
