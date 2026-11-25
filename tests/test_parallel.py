@@ -258,7 +258,7 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
                     {"role": "tool", "content": page(2, 9000)}, {"role": "tool", "content": "short"}]
         removed = Agent._drop_old(messages, 3, pages_only=True)
         self.assertEqual([i for i, _ in removed], [1])
-        self.assertTrue(messages[1]["content"].endswith(loop_module.DROPPED))
+        self.assertTrue(loop_module.shrunk(messages[1]["content"]))
         self.assertEqual(len(messages[2]["content"]), 5000)                  # not a page: kept this time
         self.assertEqual([i for i, _ in Agent._drop_old(messages, 3, pages_only=False)], [2])
         self.assertEqual(messages[4]["content"], "short")
@@ -284,7 +284,7 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
         known = [0, 0]
         before = agent._size(messages, known)
         done = agent._trim(messages, known, 32768, 32768)
-        dropped = [n for n in range(10) if messages[3 + 2 * n]["content"].endswith(loop_module.DROPPED)]
+        dropped = [n for n in range(10) if loop_module.shrunk(messages[3 + 2 * n]["content"])]
         # Every old page first (oldest first), then other long results only as far as the low watermark.
         self.assertEqual(dropped, [0, 1, 2, 3, 4, 6])
         self.assertEqual(done["results"], 6)
@@ -307,8 +307,8 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
         done = agent._trim(messages, [0, 0], 32768, 22000)
         self.assertTrue(done["must"])
         self.assertEqual(done["results"], 2)
-        self.assertTrue(messages[3]["content"].endswith(loop_module.DROPPED))
-        self.assertTrue(messages[5]["content"].endswith(loop_module.DROPPED))
+        self.assertTrue(loop_module.shrunk(messages[3]["content"]))
+        self.assertTrue(loop_module.shrunk(messages[5]["content"]))
         self.assertIn("w" * 30000, messages[7]["content"])     # the latest step's page stays whole
 
     def test_old_medium_results_go_too_when_the_long_ones_do_not_reach_the_low_watermark(self):
@@ -320,8 +320,8 @@ class RoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(done)
         self.assertLessEqual(done["after"], loop_module.LOW_WATER * 32768)
         tools = [m for m in messages if m["role"] == "tool"]
-        self.assertTrue(all(m["content"].endswith(loop_module.DROPPED) for m in tools[:2]))
-        self.assertTrue(any(m["content"].endswith(loop_module.DROPPED) for m in tools[2:42]))
+        self.assertTrue(all(loop_module.shrunk(m["content"]) for m in tools[:2]))
+        self.assertTrue(any(loop_module.shrunk(m["content"]) for m in tools[2:42]))
         self.assertEqual([m["content"] for m in tools[-2:]], ["k" * 800] * 2)     # the latest two steps stay
         # Results too short to shrink are never touched.
         short = self.steps(["s" * 500] * 200)

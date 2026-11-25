@@ -705,7 +705,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(last.get("tool_choice"), "none")
             self.assertFalse(ctx.incomplete)               # it answered; only "couldn't..." in it marks it unfinished
             tools = [m["content"] for m in last["messages"] if m["role"] == "tool"]
-            self.assertEqual(sum("you opened this page at step 4" in t for t in tools), REPEATS_BEFORE_ANSWER)
+            self.assertEqual(sum(t.startswith("You read this page at step 4;") for t in tools), REPEATS_BEFORE_ANSWER)
             await svc.llm.aclose()
 
     async def test_reading_the_same_thing_again_is_noted_and_counts_as_going_round(self):
@@ -741,7 +741,10 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-early"), "price")
             self.assertEqual(reply, "done")
             tools = [m["content"] for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
-            self.assertEqual(["at step 1 already" in t for t in tools], [False, True, True, True])
+            # Opened again: what it said at step 1, not a new load; from the second return on, a nudge too.
+            self.assertEqual([t.startswith("You read this page at step 1;") for t in tools], [False, True, True, True])
+            self.assertEqual(["visit 3 to this page" in tools[2], "visit 4 to this page" in tools[3]], [True, True])
+            self.assertNotIn("visit", tools[1])
             await svc.llm.aclose()
 
     async def test_a_link_that_opens_a_new_tab_is_followed(self):
@@ -1111,16 +1114,16 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             await svc.llm.aclose()
 
     async def test_old_pages_are_dropped_only_near_the_context_limit(self):
-        from coderunner.agent.loop import DROPPED
+        from coderunner.agent.loop import shrunk
         with FakeOpenAI() as fake:
             svc = Svc({"models": {"context": 8192}})        # each page is about 950 tokens
             svc.browser = FakeBrowser("A long page\n" + "[1] link \"More\"\n" * 170)
             svc.llm = LLM(fake.base_url, "test")
             svc.registry = build_registry(svc)
-            fake.script = [tool_call("browser_snapshot", {}, f"c{i}") for i in range(6)] + [
+            fake.script = [tool_call("browser_snapshot", {"fresh": True}, f"c{i}") for i in range(6)] + [
                 {"role": "assistant", "content": "done"}]
             await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="s1"), "read it")
-            seen = [[DROPPED in m["content"] for m in r["messages"] if m["role"] == "tool"] for r in fake.requests]
+            seen = [[shrunk(m["content"]) for m in r["messages"] if m["role"] == "tool"] for r in fake.requests]
             # Pages accumulate untouched (every request extends the last, so the runtime reads only what is
             # new) until the conversation fills 60% of the context; then the old ones go at once, the latest two
             # steps kept. (Text the runtime has not counted yet is taken at 3 characters a token, so here at the

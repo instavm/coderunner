@@ -16,6 +16,7 @@ from ..browser.broker import NO_CHANGE
 from ..core import paths
 from ..core.llm import LLM, LLMError
 from ..safety.policy import current_run
+from .digest import Readings, cut_level, digest, is_cut, let_go, normal_url, request_words
 from .recipes import Recipes, host_of, matches, save_from_run
 from .tools import ToolRegistry, progress_line
 
@@ -89,6 +90,15 @@ SCROLL_HINT = ("\nNote: {count} scrolls in a row. To find something on this page
                "expect in it (a name, \"₹\", \"Price\") is quicker; browser_snapshot start=<text> reads from there.")
 
 
+def parsed(arguments: Any) -> dict:
+    """A call's arguments as a dict ({} when they are not one)."""
+    try:
+        value = json.loads(arguments) if isinstance(arguments, str) else arguments
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def call_key(name: str, arguments: Any) -> tuple[str, str]:
     """The same call however its arguments were spaced or ordered."""
     try:
@@ -105,6 +115,10 @@ def call_key(name: str, arguments: Any) -> tuple[str, str]:
 REPEAT_SEARCH = ("\nNote: you searched for nearly this at step {step}. If it did not give you what you need then, "
                  "it will not now: try another source, or answer with what you have.")
 REPEAT_OPEN = "\nNote: you opened this page at step {step} already."
+# Coming back a second time to a page whose key lines it has: the 27B on the owner's server opened one product page
+# five times and another four, its readings trimmed away. Said on the second return, not only after three late ones.
+REVISITED = ("\nNote: this is visit {times} to this page (first at step {step}). What it says is above: use it and "
+             "move on, or answer with what you have.")
 # The same call giving back the same thing: a 27B read one Wikipedia section with browser_snapshot 78 times,
 # scrolling between, for a score that was in its first reading.
 SAME_RESULT = ("\nNote: this gave back exactly what it gave at step {step}. Reading it again will not change it: use "
@@ -129,11 +143,12 @@ class Repeats:
 
     def __init__(self):
         self.queries: list[tuple[frozenset[str], int]] = []
-        self.pages: dict[str, int] = {}
+        self.pages: dict[str, list[int]] = {}
         self.results: dict[tuple[str, str], tuple[int, int]] = {}
 
-    def check(self, name: str, arguments: Any, step: int) -> str:
-        """A note for a call that repeats an earlier one, or ""."""
+    def check(self, name: str, arguments: Any, step: int, kept: bool = False) -> str:
+        """A note for a call that repeats an earlier one, or "". kept: the call is answered with what the page
+        said before (Readings), which says when it was read."""
         try:
             args = json.loads(arguments) if isinstance(arguments, str) else arguments
         except ValueError:
@@ -147,10 +162,12 @@ class Repeats:
             self.queries.append((words, step))
             return REPEAT_SEARCH.format(step=earlier + 1) if earlier is not None else ""
         if name == "browser_open" and isinstance(args.get("url"), str):
-            url = args["url"].split("#")[0].rstrip("/")
-            if url in self.pages:
-                return REPEAT_OPEN.format(step=self.pages[url] + 1)
-            self.pages[url] = step
+            seen = self.pages.setdefault(normal_url(args["url"]), [])
+            seen.append(step)
+            if len(seen) > 2:
+                return REVISITED.format(times=len(seen), step=seen[0] + 1)
+            if len(seen) == 2 and not kept:
+                return REPEAT_OPEN.format(step=seen[0] + 1)
         return ""
 
     def same(self, name: str, arguments: Any, result: str, step: int) -> str:
@@ -189,6 +206,31 @@ def dropped(text: str) -> str:
     """A result let go: its first line (the untrusted tag of a page) and a note. A result with no line break
     keeps only its start, or the note would make it longer."""
     return text.split("\n", 1)[0][:200] + "\n" + DROPPED
+
+
+def shrunk(text: str) -> bool:
+    return text.endswith(DROPPED) or is_cut(text)
+
+
+def cut_down(text: str, step: int, words: frozenset[str]) -> str:
+    """A result let go, as its key lines (agent.digest), or as before when even those would not be shorter."""
+    short = digest(text, step, words)
+    return short if len(short) < len(text) else dropped(text)
+
+
+def step_numbers(messages: list[dict]) -> list[int]:
+    """For each message, the number of the model's step (its replies with tool calls, from 1) it belongs to."""
+    numbers, count = [], 0
+    for m in messages:
+        count += bool(m.get("tool_calls"))
+        numbers.append(count)
+    return numbers
+
+
+def own_results(messages: list[dict]) -> set[str]:
+    """The ids of calls to the model's own steps (its plan, its findings): their results are never let go."""
+    return {call.get("id", "") for m in messages for call in (m.get("tool_calls") or [])
+            if isinstance(call, dict) and (call.get("function") or {}).get("name") in OWN_STEPS}
 # The closing requests ask for one plain sentence on what is missing, never a part of its own: asked for "one
 # sentence on what is unfinished", a 6-night Mauritius plan ended "What's unfinished: The three hotel options..."
 # under a heading, beside a hotel line that said "placeholder, typically ~₹12,000-₹20,000/night".
@@ -262,12 +304,35 @@ TRIM_AT = 0.6         # old pages are dropped once the conversation fills this s
 # A trim therefore also lets go of old results longer than MEDIUM_RESULT once the long ones are not enough, and
 # one that must but would free less than MIN_MUST_FREED is not made: the latest step's results are cut to fit
 # instead (_cut_step), and a task that is full answers from what it has.
+# A result let go keeps its key lines (agent.digest): ~150 tokens where a page held ~2,000. Together they keep to
+# DIGESTS of the low watermark: beyond it the oldest are cut short, then to their address, so a trim still reaches
+# it. On a 30-step fake task of long product pages at 32K every price survived (2 of 6 with nothing kept), for ~30%
+# more tokens read again after trims (the conversation left after a trim is larger).
 LOW_WATER = 0.35
 MIN_FREED = 0.15
 MIN_MUST_FREED = 0.03
 MEDIUM_RESULT = 600
 KEEP_STEPS = 2
+DIGESTS = 0.4
+SHORT_FIT = 0.6
+# A larger context (the owner's server at -c 131072 or 262144) trims later, at TRIM_AT of it, still in one go; past
+# SCALE_FROM the low watermark grows by LOW_WATER_BEYOND of the rest only, so what a trim leaves to read again stays
+# moderate (26K tokens at 128K, 45K at 256K, not 46K and 92K) and the next trim is still far away.
+SCALE_FROM = 32768
+LOW_WATER_BEYOND = 0.15
+# Past this share of the trim point, once before each trim, the model is asked to say what it has found.
+NEAR_TRIM = 0.8
+SAY_FINDINGS = ("[Reminder, not a new request] Older pages will soon be cut to a few lines. In your next step's say "
+                "field, or with tell_owner, note the facts you have found that you will still need: figures, names "
+                "and links.")
 CHARS_PER_TOKEN = 3.5
+
+
+def low_water(base: float) -> float:
+    """Tokens a trim goes down to, for a conversation with room for `base` tokens."""
+    if base <= SCALE_FROM:
+        return LOW_WATER * base
+    return LOW_WATER * SCALE_FROM + LOW_WATER_BEYOND * (base - SCALE_FROM)
 # The local runtime's context is shared by every slot (the tasks' and the judge's), so a task keeps its
 # conversation within the room the others leave. Overflowing it stopped 4 of 22 real tasks in one run.
 FIT = 0.85            # share of its room a task's conversation may fill before older results go
@@ -561,51 +626,85 @@ class Agent:
             messages[index] = {"role": messages[index]["role"], "content": "[earlier screenshot removed]"}
 
     @staticmethod
-    def _drop_old(messages: list[dict], before: int, pages_only: bool) -> list[tuple[int, int]]:
-        """Every long result before `before` dropped at once (pages only, or everything long): what _trim does
-        when even its deep trim leaves the conversation past FIT of its room. Any edit to earlier messages makes
-        the runtime read the conversation again from the start (hybrid models cannot resume from the middle):
-        with a trim every few pages, booking.com runs spent most of their time re-reading 12,000-20,000 tokens
-        at 60-75 tok/s, four to five minutes each time. Returns (index, characters removed) for each."""
+    def _drop_old(messages: list[dict], before: int, pages_only: bool,
+                  words: frozenset[str] = frozenset()) -> list[tuple[int, int]]:
+        """Every long result before `before` cut to its key lines at once (pages only, or everything long): what
+        _trim does when even its deep trim leaves the conversation past FIT of its room. Any edit to earlier
+        messages makes the runtime read the conversation again from the start (hybrid models cannot resume from
+        the middle): with a trim every few pages, booking.com runs spent most of their time re-reading
+        12,000-20,000 tokens at 60-75 tok/s, four to five minutes each time. Returns (index, characters removed)
+        for each."""
         removed = []
+        numbers, own = step_numbers(messages), own_results(messages)
         for index, m in enumerate(messages[:before]):
             text = m.get("content")
-            if (m.get("role") != "tool" or not isinstance(text, str) or len(text) <= BIG_RESULT
-                    or text.endswith(DROPPED) or (pages_only and not text.startswith(PAGE_PREFIX))):
+            if (m.get("role") != "tool" or not isinstance(text, str) or len(text) <= BIG_RESULT or shrunk(text)
+                    or m.get("tool_call_id") in own or (pages_only and not text.startswith(PAGE_PREFIX))):
                 continue
-            short = dropped(text)
+            short = cut_down(text, numbers[index], words)
             messages[index] = {**m, "content": short}
             removed.append((index, len(text) - len(short)))
         return removed
+
+    @staticmethod
+    def _fit_digests(messages: list[dict], budget: float, removed: list[tuple[int, int]],
+                     words: frozenset[str] = frozenset()) -> None:
+        """The key lines kept of let-go results, together within `budget` characters: beyond it the oldest are
+        cut short (their address, title and a line or two), down to SHORT_FIT of the budget at once, since
+        changing the oldest results makes the runtime read nearly everything again. Changed in the same trim as
+        the rest, so it still happens in one go."""
+        cuts = [i for i, m in enumerate(messages) if m.get("role") == "tool" and cut_level(m.get("content")) in (1, 2)]
+        total = sum(len(messages[i]["content"]) for i in cuts)
+        if total <= budget:
+            return
+        numbers = step_numbers(messages)
+        for level in (1, 2):            # key lines cut short first; only then short ones let go to their address
+            for i in cuts:
+                if total <= SHORT_FIT * budget:
+                    return
+                text = messages[i]["content"]
+                if cut_level(text) != level:
+                    continue
+                short = digest(text, numbers[i], words, short=True) if level == 1 else let_go(text, numbers[i])
+                if len(short) >= len(text):
+                    continue
+                messages[i] = {**messages[i], "content": short}
+                total -= len(text) - len(short)
+                removed.append((i, len(text) - len(short)))
 
     @staticmethod
     def _freed(removed: list[tuple[int, int]], known: list[int]) -> int:
         """Tokens a trim took away: the runtime's count for what it has read, the estimate for what is new."""
         return int(sum(n / (CHARS_PER_TOKEN if i < known[0] else NEW_CHARS) for i, n in removed))
 
-    def _trim(self, messages: list[dict], known: list[int], context: int, room: int) -> dict | None:
-        """Old results let go when the conversation nears its room: pages first, then other long results (shell
-        output, file text), then results longer than MEDIUM_RESULT, oldest first, down to LOW_WATER, never from
-        the latest KEEP_STEPS steps. Nothing is changed when that would free less than MIN_FREED, unless the
-        conversation is past FIT of its room: then it must shrink, from the latest step's results back if need
-        be, unless even that frees less than MIN_MUST_FREED. Returns what it did, for the audit."""
+    def _trim(self, messages: list[dict], known: list[int], context: int, room: int,
+              words: frozenset[str] = frozenset()) -> dict | None:
+        """Old results cut to their key lines (agent.digest) when the conversation nears its room: pages first,
+        then other long results (shell output, file text), then results longer than MEDIUM_RESULT, oldest first,
+        down to the low watermark, never from the latest KEEP_STEPS steps nor the model's own steps (its plan and
+        findings). Nothing is changed when that would free less than MIN_FREED, unless the conversation is past
+        FIT of its room: then it must shrink, from the latest step's results back if need be, unless even that
+        frees less than MIN_MUST_FREED. words: the request's, whose lines a cut page keeps. Returns what it did,
+        for the audit."""
         size = self._size(messages, known)
         if size <= min(TRIM_AT * context, FIT * room):
             return None
         base = min(context, room)
+        low = low_water(base)
         must = size > FIT * room
         steps = [i for i, m in enumerate(messages) if m.get("tool_calls")]
         keep_from = steps[-KEEP_STEPS] if len(steps) >= KEEP_STEPS else 0
+        numbers, own = step_numbers(messages), own_results(messages)
         trial, removed = list(messages), []
         for least, pages_only in ((BIG_RESULT, True), (BIG_RESULT, False), (MEDIUM_RESULT, False)):
             for index, m in enumerate(trial[:keep_from]):
-                if size - self._freed(removed, known) <= LOW_WATER * base:
+                if size - self._freed(removed, known) <= low:
                     break
                 text = m.get("content")
-                if (m.get("role") != "tool" or not isinstance(text, str) or len(text) <= least
-                        or text.endswith(DROPPED) or (pages_only and not text.startswith(PAGE_PREFIX))):
+                if (m.get("role") != "tool" or not isinstance(text, str) or len(text) <= least or shrunk(text)
+                        or m.get("tool_call_id") in own or (pages_only and not text.startswith(PAGE_PREFIX))):
                     continue
-                short = dropped(text)
+                short = cut_down(text, numbers[index], words)
                 if len(short) >= len(text):
                     continue
                 trial[index] = {**m, "content": short}
@@ -613,7 +712,9 @@ class Agent:
         if not must and self._freed(removed, known) < MIN_FREED * base:
             return None
         if must and size - self._freed(removed, known) > FIT * room:
-            removed += self._drop_old(trial, steps[-1] if steps else 0, pages_only=False)
+            removed += self._drop_old(trial, steps[-1] if steps else 0, pages_only=False, words=words)
+        if removed:
+            self._fit_digests(trial, DIGESTS * low * CHARS_PER_TOKEN, removed, words)
         if not removed or (must and self._freed(removed, known) < MIN_MUST_FREED * base):
             return None
         freed = self._freed(removed, known)
@@ -825,6 +926,10 @@ class Agent:
         closing = ""                                # the request for an answer when the steps or the room ran out
         repeats = Repeats()
         late_repeats = 0                            # repeated searches and pages after WRAP_FROM steps
+        words = request_words(text)
+        readings = Readings(words)                  # the pages read, answered again from their key lines
+        acts = 0                                    # the model's replies with tool calls: its steps, from 1
+        warned = False                              # asked to say its findings before the next trim
         # When the run has a deadline: how long before it the run writes an interim answer (0: none, or written
         # already), and how long before its hard stop it writes its final one. Counted from ctx each step, since
         # waiting for the owner moves both on (RunContext.pause).
@@ -844,9 +949,17 @@ class Agent:
                 break
             self._drop_old_images(messages)
             room = self._room(context, ctx.conversation)
-            trimmed = self._trim(messages, known, context, room)
+            trimmed = self._trim(messages, known, context, room, words)
             if trimmed:
                 self.svc.audit.write("agent.trimmed", room=room, step=step, **trimmed)
+                warned = False
+            elif not warned and (NEAR_TRIM * (due := min(TRIM_AT * context, FIT * room))
+                                 < self._size(messages, known) <= due):
+                # Once before each trim, appended: the model says what it will need in its own words, which a
+                # trim never cuts (its calls' say lines and tell_owner), beside the key lines kept of each page.
+                messages.append({"role": "user", "content": SAY_FINDINGS})
+                self.svc.audit.write("agent.trim_near", step=step)
+                warned = True
             if self._size(messages, known) > 0.95 * room:
                 # Full: what it read before the latest step makes way, and it answers from what it has found (a
                 # task that ran 160 steps ended with only "I had to stop here", its findings unsaid).
@@ -945,6 +1058,7 @@ class Agent:
             # What the model writes beside its tool calls is the task's status line while it works ("Looking at
             # Skyscanner for the 12th"). A line about the machinery stays out ("The browser didn't respond").
             messages.append({"role": "assistant", "content": reply["content"], "tool_calls": reply["tool_calls"]})
+            acts += 1
             line = progress_line(reply["content"], ctx.said)
             if line:
                 ctx.said.append(line)
@@ -964,13 +1078,26 @@ class Agent:
                 else:
                     plan_before = [dict(item) for item in ctx.plan]
                     ctx.emit({"type": "tool", "id": call.get("id", ""), "name": name, "arguments": arguments})
-                    again = repeats.check(name, arguments, step)
-                    result = await self.registry.invoke(name, arguments, ctx)
+                    args = parsed(arguments)
+                    kept = readings.kept(name, args, acts)
+                    again = repeats.check(name, arguments, acts - 1, kept=bool(kept))
+                    if kept:
+                        # A page read before in this task and not acted on since: what it said, not a new load.
+                        said = progress_line(str(args.get("say") or ""), ctx.said)
+                        if said:
+                            ctx.said.append(said)
+                            ctx.emit({"type": "note", "text": said})
+                        self.svc.audit.write("agent.page_kept", tool=name, step=acts)
+                        result = kept
+                    else:
+                        result = await self.registry.invoke(name, arguments, ctx)
                     failed = result.startswith("Error:") or "\nError:" in result[:200]
+                    if not failed and not kept:
+                        readings.record(name, args, result, acts)
                     if not failed:
-                        same = repeats.same(name, arguments, result, step)      # recorded either way
+                        same = "" if kept else repeats.same(name, arguments, result, step)  # recorded either way
                         again = again or same
-                        if again:
+                        if again or kept:
                             result += again
                             late_repeats += step >= WRAP_FROM
                     # preview: what the thread may show; result: a longer start of it, for the trace a developer

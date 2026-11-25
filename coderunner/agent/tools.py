@@ -531,16 +531,18 @@ def browser_tools(svc) -> list[Tool]:
 
     tools = [
         Tool("browser_open", "Open a URL in a new tab of the CodeRunner browser window or tab group, which the "
-             "owner can watch. Returns the page as text with numbered elements [N].",
-             _params({"url": STR}, ["url"]), open_, True),
+             "owner can watch. Returns the page as text with numbered elements [N]. A page read before in this task "
+             "comes back as its key lines; fresh=true loads it again.",
+             _params({"url": STR, "fresh": BOOL}, ["url"]), open_, True),
         Tool("browser_search", "Search the web and get the results, one line each with its link. This is how to "
              "find a page: an address written from memory is often not there.",
              _params({"query": STR}, ["query"]), search, True),
         Tool("browser_snapshot", "Read the current page again as text with numbered elements [N], its main content "
              "first. Other browser actions already return what they changed, so use this only when you need the full "
              "page. A long page is cut: more=true reads on from the cut, and start=<text> reads it from the first line "
-             "mentioning that text (a heading, \"properties found\", a result's name).",
-             _params({"start": STR, "more": BOOL}), snapshot, True),
+             "mentioning that text (a heading, \"properties found\", a result's name). fresh=true reads again a page "
+             "read before.",
+             _params({"start": STR, "more": BOOL, "fresh": BOOL}), snapshot, True),
         Tool("browser_batch", "Several steps on the current page in one call, such as every field of a form and then "
              "its search button: steps is a list of {action: click|type|select|press, ref, text, submit, option, "
              "key}. They run in order with the same checks as the single tools; it stops at the first error or when "
