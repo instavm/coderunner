@@ -101,6 +101,37 @@ def cut_point(messages: list[dict], head: int, keep: int) -> int | None:
     return start if start > head else None
 
 
+KEY_HEADER = "[Key lines from pages and results read earlier in this task, as they gave them; for figures and links]"
+KEY_TOKENS = 0.06           # share of the room the key lines may take (oldest go first)
+
+
+def is_key_lines(message: dict) -> bool:
+    return message.get("role") == "user" and str(message.get("content") or "").startswith(KEY_HEADER)
+
+
+def key_lines_message(blocks: list[str], room: float) -> dict | None:
+    """The key lines of the results a summary replaced, verbatim, newest kept when they do not all fit: the model's
+    summary keeps the story, and these keep the figures and links as the pages gave them (on Bonsai the summaries
+    gave two products the same link and a 90 g jar as 100 g)."""
+    budget = int(KEY_TOKENS * room * CHARS_PER_TOKEN)
+    kept: list[str] = []
+    for block in reversed([b for b in blocks if b.strip()]):
+        if sum(len(b) for b in kept) + len(block) > budget:
+            break
+        kept.insert(0, block)
+    if not kept:
+        return None
+    body = "\n".join(kept)
+    return {"role": "user", "content": KEY_HEADER + '\n<untrusted source="earlier pages">\n' + body + "\n</untrusted>"}
+
+
+def key_blocks(message: dict) -> list[str]:
+    """The blocks a key-lines message holds, to be carried into the next one."""
+    text = str(message.get("content") or "")
+    inner = text.split('<untrusted source="earlier pages">\n', 1)[-1].rsplit("\n</untrusted>", 1)[0]
+    return [b for b in inner.split("\n\n") if b.strip()]
+
+
 def is_summary(message: dict) -> bool:
     return message.get("role") == "user" and str(message.get("content") or "").startswith(SUMMARY_HEADER)
 

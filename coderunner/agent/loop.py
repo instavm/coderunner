@@ -749,6 +749,7 @@ class Agent:
         note = ("[What you found earlier, as you told me while working]\n" + said if said else "") + (
             "\n" + PLAN_REMINDER + render_plan(ctx.plan) if ctx.plan else "")
         summary = [m for m in messages[head:] if compaction.is_summary(m)][-1:]     # the latest summary, if any
+        summary += [m for m in messages[head:] if compaction.is_key_lines(m)][-1:]  # and the figures it kept
         kept = messages[:head] + summary + ([{"role": "user", "content": note.strip()}] if note.strip() else [])
         budget = room / 2 - self._size(kept, [0, 0])
         if budget <= 0:
@@ -760,7 +761,7 @@ class Agent:
             tail.insert(0, messages[i])
         while tail and not (tail[0].get("role") == "assistant" and tail[0].get("tool_calls")):
             tail.pop(0)                         # a tool's result goes with the call that asked for it
-        return kept + [m for m in tail if not compaction.is_summary(m)]
+        return kept + [m for m in tail if not (compaction.is_summary(m) or compaction.is_key_lines(m))]
 
     async def _shrink(self, ctx: RunContext, messages: list[dict], known: list[int], context: int, room: int,
                       words: frozenset[str], head: int, step: int, force: str = "") -> dict | None:
@@ -813,7 +814,21 @@ class Agent:
         heard = set(ctx.heard)
         steers = [m for m in messages[head:cut] if m.get("role") == "user" and m.get("content") in heard]
         plan = [{"role": "user", "content": PLAN_REMINDER + render_plan(ctx.plan)}] if ctx.plan else []
-        rebuilt = messages[:head] + [compaction.summary_message(text)] + plan + steers + tail
+        # The summarized results' key lines, carried with those of earlier compactions: figures and links as given.
+        blocks: list[str] = []
+        for m in messages[head:cut]:
+            if compaction.is_key_lines(m):
+                blocks += compaction.key_blocks(m)
+        for i in range(head, cut):
+            m = messages[i]
+            if m.get("role") == "tool" and isinstance(m.get("content"), str) and m.get("tool_call_id") not in own:
+                content = m["content"]
+                line = content if shrunk(content) else cut_down(content, numbers[i], words)
+                if not line.endswith(DROPPED):
+                    blocks.append(line.strip())
+        keys = compaction.key_lines_message(blocks, base)
+        rebuilt = (messages[:head] + [compaction.summary_message(text)] + ([keys] if keys else []) + plan + steers
+                   + tail)
         messages[:] = rebuilt
         known[:] = [len(rebuilt), compaction.tokens_of(rebuilt)]
         record.update(after=known[1], tail=compaction.tokens_of(tail),

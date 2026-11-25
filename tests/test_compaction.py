@@ -224,6 +224,27 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"(summary {number})", earlier[0]["content"])
             self.assertIn("If an earlier summary is above, start from it", request["messages"][-1]["content"])
 
+    async def test_the_summarized_pages_keep_their_key_lines_beside_a_summary_that_forgets(self):
+        # On Bonsai the summaries gave two products the same link and a 90 g jar as 100 g; the pages' own key lines
+        # are kept beside the summary, carried from one compaction to the next within their share of the room.
+        def forgetful(messages, number):
+            return faithful([], number)             # every section there, no figures at all
+        model = Model(16384, [opened(n) for n in range(30)], summary=forgetful)
+        agent, svc = agent_for(model)
+        await agent.run(RunContext(conversation="c-keys"), REQUEST)
+        self.assertGreaterEqual(len(model.summaries()), 2)
+        last = model.steps()[-1]
+        keys = [m for m in last if compaction.is_key_lines(m)]
+        self.assertEqual(len(keys), 1)
+        body = keys[0]["content"]
+        self.assertIn('<untrusted source="earlier pages">', body)
+        self.assertLessEqual(len(body), compaction.KEY_TOKENS * 16384 * compaction.CHARS_PER_TOKEN + 200)
+        kept = set(re.findall(r"₹[\d,]+", body))
+        self.assertGreaterEqual(len(kept), 3)                      # figures the summary dropped are still there
+        summarized_at_first = model.summaries()[0]["messages"]
+        first_prices = set(re.findall(r"₹[\d,]+", " ".join(str(m.get("content")) for m in summarized_at_first)))
+        self.assertTrue(kept & first_prices)                       # some from the first compaction carried forward
+
     async def test_the_request_plan_and_the_owners_words_are_kept_verbatim(self):
         plan = {"content": "", "tool_calls": [{"id": "p", "type": "function", "function": {
             "name": "plan_update", "arguments": json.dumps({"steps": [
