@@ -328,6 +328,10 @@ class CheckJob:
 
         svc.policy.add_listener(approve)
         steps_before = config.get("agent.max_steps", 30)
+        # Site recipes (what worked on a site last time) are off for a check: each run measures a first visit, and
+        # an earlier run's recipes would make a later one look faster than a new owner's first try would be.
+        recipes_before = config.get("agent.site_recipes", True)
+        config.set("agent.site_recipes", False)
         # What its tasks remember (a site's search address saved as a shortcut) is forgotten at the end: a check
         # leaves the owner's memory as it found it, and a later task is not asked about data the check put there.
         remembered = (svc.store.one("SELECT MAX(id) AS id FROM memories") or {}).get("id") or 0
@@ -370,6 +374,7 @@ class CheckJob:
                 svc.policy._listeners.remove(approve)
             config.set("browser.allow", allow_before)
             config.set("agent.max_steps", steps_before)
+            config.set("agent.site_recipes", recipes_before)
             self._drop_routines()
             with contextlib.suppress(Exception):
                 for row in svc.store.query("SELECT id FROM memories WHERE id > ?", (remembered,)):

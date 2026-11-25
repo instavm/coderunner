@@ -75,6 +75,7 @@ class CheckTests(unittest.IsolatedAsyncioTestCase):
 
     async def handle(self, channel, chat_id, text, origin="", events=None, task="", images=None):
         name = chat_id.split("-")[1]
+        self.recipes_on = getattr(self, "recipes_on", []) + [self.svc.config.get("agent.site_recipes", True)]
         self.seen.append((name, origin, [line.split(" (")[0][2:] for line in text.splitlines() if line.startswith("- ")],
                           list(self.svc.config.get("browser.allow"))))
         site = self.site
@@ -117,6 +118,9 @@ class CheckTests(unittest.IsolatedAsyncioTestCase):
         # For the run the test sites could be browsed and the test documents were shared; afterwards neither is.
         self.assertEqual(self.seen[-1][3], ["intranet.example", "127.0.0.1"])
         self.assertEqual(self.svc.config.get("browser.allow"), ["intranet.example"])
+        # Site recipes are off while a check runs (each run is a first visit) and as they were afterwards.
+        self.assertEqual(set(self.recipes_on), {False})
+        self.assertTrue(self.svc.config.get("agent.site_recipes", True))
         self.assertEqual(self.svc.files.removed, self.svc.files.roots)
         self.assertFalse(pathlib.Path(self.svc.files.roots[0]).exists())
         self.assertEqual(self.svc.policy._listeners, [])
