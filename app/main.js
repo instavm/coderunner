@@ -10,7 +10,8 @@
 //   - keeps a menu bar icon (macOS) that says whether tasks run, need the owner or finished unseen, with a small
 //     popover of the latest threads and a quick-ask window on a global shortcut (both pages served by the daemon,
 //     tray.html and ask.html), and tells the owner when a thread they are not looking at finishes or needs them.
-//     Closing the window on a Mac leaves the app in the menu bar; Cmd+Q quits.
+//     Closing the window on a Mac leaves the app in the menu bar; Cmd+Q quits;
+//   - keeps Developer Mode (Help menu, off unless turned on), in which the page offers a thread's trace.
 const {app, BrowserWindow, Menu, Notification, Tray, dialog, globalShortcut, ipcMain, nativeImage, nativeTheme, screen,
        session, shell} = require("electron");
 const {execFile} = require("child_process");
@@ -222,6 +223,9 @@ function buildMenu() {
         const contents = mainWindow?.webContents;
         if (contents) (contents.isLoading() ? contents.once("did-finish-load", () => contents.send("test-this-mac")) : contents.send("test-this-mac"));
       }},
+      {type: "separator"},
+      // Off unless turned on: the open thread then offers "Export trace", a file for the developers.
+      {label: "Developer Mode", type: "checkbox", checked: developerMode(), click: (item) => setDeveloperMode(item.checked)},
     ]},
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -481,6 +485,27 @@ function settings() {
   return saved;
 }
 
+// Developer mode (settings.json developerMode, off unless the owner turns it on in the Help menu): the page shows
+// the open thread's "Export trace". Kept here so the page knows it when it loads, and told to it when it changes.
+let developerThisRun = null;     // what the menu set, when the file could not keep it
+function developerMode() { return developerThisRun ?? settings().developerMode === true; }
+
+function setDeveloperMode(on) {
+  const file = path.join(app.getPath("userData"), "settings.json");
+  developerThisRun = Boolean(on);
+  let saved = {};
+  try { saved = JSON.parse(fs.readFileSync(file, "utf8")) || {}; }
+  catch (error) { saved = error.code === "ENOENT" ? {} : null; }      // not JSON: left as it is
+  if (saved) {
+    try {
+      fs.mkdirSync(path.dirname(file), {recursive: true});
+      fs.writeFileSync(file, JSON.stringify({...saved, developerMode: Boolean(on)}, null, 2) + "\n");
+    } catch { /* for this run only */ }
+  }
+  for (const win of BrowserWindow.getAllWindows())
+    if (!win.isDestroyed() && win.webContents.getURL().startsWith(`${ORIGIN}/app/`)) win.webContents.send("developer-mode", Boolean(on));
+}
+
 // A shortcut another app holds, or one Electron does not know, leaves the quick ask without one.
 function registerQuickAsk() {
   const shortcut = settings().quickAskShortcut;
@@ -554,6 +579,8 @@ app.whenReady().then(() => {
     viewed = String(conversation || "");
     seen(viewed);
   });
+  // Whether developer mode is on, asked by the page as it loads.
+  ipcMain.handle("developer-mode", (event) => fromDaemon(event) && developerMode());
   buildMenu();
   mainWindow = createWindow();
   watchDaemon();

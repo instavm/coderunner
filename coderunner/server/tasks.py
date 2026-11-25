@@ -76,6 +76,12 @@ class EventBus:
         return [{**json.loads(r["data"]), "seq": r["seq"]} for r in rows]
 
 
+def _run_ids() -> dict:
+    """The task an audit record is written in, when it is one of the app's (its trace reads them by it)."""
+    task = getattr(getattr(current_run.get(), "events", None), "task", None)
+    return {"task": task} if isinstance(task, str) and task else {}
+
+
 def limit(svc) -> int:
     """How many tasks run at once: two on a local model (they take turns at it, see Turns), more where the
     model is not on this computer. agent.parallel_tasks sets it."""
@@ -151,6 +157,7 @@ class Tasks:
         self._naming: asyncio.Task | None = None
         self._named_recent = False             # the newest older threads queued for names this run
         daemon.svc.audit.listeners.append(self._on_audit)
+        daemon.svc.audit.context = _run_ids
         # A daemon that stopped mid-task left it "running" for ever: its thread says how it ended.
         for row in self.store.query("SELECT id, conversation FROM tasks WHERE status IN ('running', 'queued')"):
             reply = "Stopped: the assistant was restarted while this was running."
@@ -196,7 +203,8 @@ class Tasks:
         self._emits[task_id] = emit
         files = [info for info in map(attached.describe, (attachments or [])[:attached.MAX_PER_TASK]) if info]
         emit({"type": "started", "prompt": prompt, **({"attachments": files} if files else {}),
-              **({"remote": remote} if remote else {}), **({"routine": routine} if routine else {})})
+              **({"remote": remote} if remote else {}), **({"routine": routine} if routine else {}),
+              **({"time_limit": emit.time_limit} if emit.time_limit else {})})
         job = (task_id, conversation, prompt, origin, emit, [info["id"] for info in files])
         if queued:
             # As many tasks as this computer runs well at once are running: this one starts when one ends.
@@ -213,6 +221,12 @@ class Tasks:
         task_id, emit = job[0], job[4]
         emit.slot = next(n for n in range(64) if n not in self.slots.values())
         self.slots[task_id] = emit.slot
+        # Which model and place it runs on, for its trace (server/trace.py).
+        llm = getattr(self.daemon.svc, "llm", None)
+        with contextlib.suppress(Exception):
+            self.daemon.svc.audit.write("task.running", task=task_id, slot=emit.slot,
+                                        model=emit.remote or str(getattr(llm, "model", "") or
+                                                                 self.daemon.svc.config.get("models.chat") or ""))
         self.running[task_id] = asyncio.create_task(self._run(*job))
 
     def _next(self) -> None:

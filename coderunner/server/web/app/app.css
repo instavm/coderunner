@@ -106,6 +106,13 @@ button.check-row:hover .check-what { color: var(--accent); }
 .pill { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 4px 12px; white-space: nowrap; flex: none; }
 #mainHead { gap: 12px; } #title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pill:hover { border-color: var(--accent); color: var(--accent); }
+/* Developer mode: the thread's "Export trace", and the one line said before its first save. */
+.head-actions { position: relative; display: flex; align-items: center; gap: 4px; }
+#exportTrace[hidden], .trace-ask[hidden] { display: none; }
+.trace-ask { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: 300px; padding: 12px 14px; font-size: 13px; line-height: 1.45;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px rgb(0 0 0 / 14%); -webkit-app-region: no-drag; }
+.trace-ask p { margin: 0 0 12px; }
+.trace-ask-row { display: flex; justify-content: flex-end; gap: 8px; }
 #thread { flex: 1; overflow-y: auto; padding: 22px 0 30px; }
 #thread > * { max-width: 760px; margin-left: auto; margin-right: auto; padding: 0 24px; }
 .empty { padding-top: 12vh !important; }

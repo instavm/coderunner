@@ -833,8 +833,10 @@ class Agent:
                         if again:
                             result += again
                             late_repeats += step >= WRAP_FROM
+                    # preview: what the thread may show; result: a longer start of it, for the trace a developer
+                    # reads (server/trace.py), kept only where it says more than the preview.
                     ctx.emit({"type": "tool_done", "id": call.get("id", ""), "name": name, "ok": not failed,
-                              "preview": result[:300]})
+                              "preview": result[:300], **({"result": result[:2000]} if len(result) > 300 else {})})
                     if ctx.plan != plan_before:
                         ctx.emit({"type": "plan", "steps": ctx.plan})
                     if failed:

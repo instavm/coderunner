@@ -713,6 +713,27 @@ def admin_app(svc, daemon) -> Starlette:
         return JSONResponse({"conversation": name, "tasks": daemon.tasks.tasks(name),
                              "events": daemon.bus.since(0, conversation=name)})
 
+    async def conversation_trace(request: Request):
+        """A thread's trace, scrubbed, as a file to save and send to the developers (server/trace.py): Markdown,
+        ?format=json, or ?format=zip with both. The app offers it in developer mode."""
+        from . import trace
+        name = request.path_params["conversation"]
+        kind = request.query_params.get("format", "md")
+        if kind not in ("md", "json", "zip"):
+            return JSONResponse({"error": "format is md, json or zip"}, status_code=400)
+        now = time.time()
+        found = await asyncio.to_thread(trace.build, svc, svc.store, name, now)
+        if found is None:
+            return JSONResponse({"error": "no such thread"}, status_code=404)
+        file = trace.filename(found, kind, now)
+        headers = {"Content-Disposition": f'attachment; filename="{file}"', "Cache-Control": "no-store",
+                   "X-Content-Type-Options": "nosniff"}
+        if kind == "zip":
+            return Response(trace.to_zip(found), media_type="application/zip", headers=headers)
+        body, media = (trace.to_json(found), "application/json") if kind == "json" else \
+            (trace.to_markdown(found), "text/markdown; charset=utf-8")
+        return Response(body.encode(), media_type=media, headers=headers)
+
     async def events(request: Request):
         """Server-sent events: what every task does, as it happens (after `since`, so a reconnect misses none)."""
         try:
@@ -949,6 +970,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/conversations", conversations, methods=["GET"]),
         Route("/api/tray", tray, methods=["GET"]),
         Route("/api/conversations/{conversation}", conversation, methods=["GET"]),
+        Route("/api/conversations/{conversation}/trace", conversation_trace, methods=["GET"]),
         Route("/api/events", events, methods=["GET"]),
         Route("/api/computer", computer, methods=["GET", "POST"]),
         Route("/api/control", control, methods=["GET", "POST"]),
