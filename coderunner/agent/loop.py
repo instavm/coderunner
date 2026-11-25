@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import re
@@ -416,10 +417,25 @@ class Agent:
 
     def _history(self, conversation: str) -> list[dict]:
         rows = self.svc.store.query(
-            "SELECT role, content FROM messages WHERE conversation = ? ORDER BY id DESC LIMIT ?",
+            "SELECT role, content, created FROM messages WHERE conversation = ? ORDER BY id DESC LIMIT ?",
             (conversation, self.history_turns * 2),
         )
-        return [{"role": r["role"], "content": json.loads(r["content"])} for r in reversed(rows)]
+        turns = [(r["created"] or 0, {"role": r["role"], "content": json.loads(r["content"])}) for r in reversed(rows)]
+        # A request that ended without an answer and left nothing here (an error from the model, or the assistant
+        # restarting under it) is still part of the thread: "try that coffee one again" was answered with "I have
+        # no coffee task on record".
+        said = " ".join(str(t["content"]) for _, t in turns if t["role"] == "user")
+        since = turns[0][0] if len(turns) >= self.history_turns * 2 else 0
+        with contextlib.suppress(Exception):
+            for task in self.svc.store.query(
+                    "SELECT prompt, created FROM tasks WHERE conversation = ? AND status IN ('failed', 'cancelled') "
+                    "AND created >= ? ORDER BY created", (conversation, since)):
+                prompt = (task["prompt"] or "").strip()
+                if prompt and prompt not in said:
+                    turns += [(task["created"], {"role": "user", "content": prompt}),
+                              (task["created"] + 0.001, {"role": "assistant", "content": "(This request did not finish.)"})]
+        turns.sort(key=lambda pair: pair[0])
+        return [turn for _, turn in turns[-self.history_turns * 2:]]
 
     def _remember(self, conversation: str, role: str, content: Any) -> None:
         self.svc.store.execute("INSERT INTO messages(conversation, role, content, created) VALUES (?, ?, ?, ?)",

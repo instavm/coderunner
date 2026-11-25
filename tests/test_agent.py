@@ -88,6 +88,22 @@ class MetaOpeningTests(unittest.TestCase):
 class ThreadTests(unittest.IsolatedAsyncioTestCase):
     """The owner reads a conversation: the answer, what the model tells them on purpose, never its working."""
 
+    async def test_a_request_that_ended_without_an_answer_stays_in_the_thread(self):
+        # The model server failed under "coffee", leaving nothing in the thread's messages; "try that coffee one
+        # again" was then answered with "I have no coffee task on record".
+        with FakeOpenAI() as fake:
+            svc = Svc()
+            svc.sandbox = FakeSandbox()
+            svc.llm = LLM(fake.base_url, "test")
+            svc.registry = build_registry(svc)
+            svc.store.execute("INSERT INTO tasks(id, conversation, prompt, status, reply, created, finished) "
+                              "VALUES ('t1', 't-lost', 'Find the cheapest Davidoff coffee 100g', 'failed', '', 1, 2)")
+            fake.script = [{"role": "assistant", "content": "On it."}]
+            await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-lost"), "try that coffee one again")
+            said = [m.get("content") for m in fake.requests[0]["messages"] if m["role"] in ("user", "assistant")]
+            self.assertTrue(any("Davidoff coffee" in str(c) for c in said), said)
+            self.assertTrue(any("did not finish" in str(c) for c in said), said)
+
     async def test_a_line_in_a_calls_say_field_is_said_in_the_thread_and_not_given_to_the_tool(self):
         with FakeOpenAI() as fake:
             svc = Svc()
