@@ -105,22 +105,38 @@ SELECT_ALL_JS = r"""function() {
 }"""
 # Resolves once the page has stopped changing its content (or did not start), so results include what a
 # click or typed text brings in from the network. Attribute changes are ignored: animations never stop.
-SETTLE_JS = r"""function(start, quiet, most) {
+# Waits until the page's text has stopped changing: its visible text (innerText) keeps its length, give or take a
+# ticking clock, for `quiet` ms with the document parsed (loaded: with its load event fired). Until the text
+# first changes, at most `start` ms (began: it counts as changed from the start, as after a navigation); at most
+# `most` ms in all. Animations and carousels that only move things no longer hold it to the limit, as any DOM
+# change did. The text is measured only after the DOM changed, and less often where measuring is slow.
+SETTLE_JS = r"""function(start, quiet, most, began, loaded) {
   return new Promise(resolve => {
-    const began = performance.now();
-    let last = null;
-    const observer = new MutationObserver(() => { last = performance.now(); });
-    observer.observe(document, {subtree: true, childList: true, characterData: true});
+    const t0 = performance.now();
+    let cost = 0, dirty = false;
+    const measure = () => {
+      const a = performance.now();
+      const n = document.body ? document.body.innerText.length : 0;
+      cost = performance.now() - a;
+      dirty = false;
+      return n;
+    };
+    let anchor = measure(), since = t0, changed = false;
+    const observer = new MutationObserver(() => { dirty = true; });
+    observer.observe(document, {subtree: true, childList: true, characterData: true, attributes: true});
+    const done = (state) => { observer.disconnect(); resolve({state, changed, text: anchor}); };
     const check = () => {
       const now = performance.now();
-      if (now - began >= most || (last === null ? now - began >= start : now - last >= quiet)) {
-        observer.disconnect();
-        resolve(last !== null);
-      } else {
-        setTimeout(check, 50);
-      }
+      const n = dirty ? measure() : anchor;
+      // a change of more than TEXT_SAME (broker.py) characters
+      if (Math.abs(n - anchor) > 8 + anchor * 0.002) { anchor = n; since = now; changed = true; began = true; }
+      if (now - t0 >= most) return done('most');
+      const ready = loaded ? document.readyState === 'complete' : document.readyState !== 'loading';
+      if (began && now - since >= quiet && ready) return done('quiet');
+      if (!began && now - t0 >= start) return done('still');
+      setTimeout(check, Math.max(100, cost * 5));
     };
-    setTimeout(check, 50);
+    setTimeout(check, 100);
   });
 }"""
 # Scrolls whatever scrolls at the middle of the window (a results list, a dialog, or the page) by script:

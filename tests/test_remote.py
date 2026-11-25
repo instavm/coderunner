@@ -271,7 +271,7 @@ class DaemonTests(Home):
         self.assertIs(await away.claude_agent(), away.svc.agent)             # in remote mode, the one already there
         await once.llm.aclose()
         self.assertEqual((away.svc.llm.context, away.svc.llm.tool_output_chars), (150_000, 40_000))
-        self.assertEqual((away.svc.browser.page_chars, page.LINK_CHARS, local.svc.browser.page_chars), (36_000, 200, 12_000))
+        self.assertEqual((away.svc.browser.page_chars, page.LINK_CHARS, local.svc.browser.page_chars), (36_000, 200, page.PAGE_CHARS))
         self.assertNotIn(KEY, json.dumps(shown))
         from coderunner.models import manager
         started = mock.Mock()

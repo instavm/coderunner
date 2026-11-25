@@ -307,7 +307,11 @@ def browser_tools(svc) -> list[Tool]:
         lines = [f"{key}: {item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)}"
                  for key, item in value.items() if key not in hidden]
         if "changes" in value:
-            lines += ["Changes on the page (+ added, - removed, unmarked lines show where):", value["changes"]]
+            marked = value["changes"].split("\n")
+            added = sum(line.startswith("+ ") for line in marked)
+            removed = sum(line.startswith("- ") for line in marked)
+            lines += [f"Changes on the page ({added} added, {removed} removed; + added, - removed, unmarked lines "
+                      "show where):" if added or removed else "Changes on the page:", value["changes"]]
         elif "content" in value:
             lines += ["", value["content"]]
         return "\n".join(lines)
@@ -360,7 +364,9 @@ def browser_tools(svc) -> list[Tool]:
 
     async def snapshot(args, ctx):
         start = str(args.get("start") or "").strip()
-        result = _result(await b.snapshot(tainted=ctx.tainted, **({"start": start} if start else {})))
+        more = bool(args.get("more")) and not start
+        result = _result(await b.snapshot(tainted=ctx.tainted, **({"start": start} if start else {}),
+                                          **({"more": True} if more else {})))
         if isinstance(result, dict) and result.get("changed") is False:
             result["note"] = "Page unchanged since you last saw it."
         return _text(await _listed(result, ctx))
@@ -530,11 +536,11 @@ def browser_tools(svc) -> list[Tool]:
         Tool("browser_search", "Search the web and get the results, one line each with its link. This is how to "
              "find a page: an address written from memory is often not there.",
              _params({"query": STR}, ["query"]), search, True),
-        Tool("browser_snapshot", "Read the whole current page again as text with numbered elements [N]. Other "
-             "browser actions already return what they changed, so use this only when you need the full page. A long "
-             "page is cut: start=<text> reads it from the first line mentioning that text (a heading, \"properties "
-             "found\", a result's name), which is how to see results further down.",
-             _params({"start": STR}), snapshot, True),
+        Tool("browser_snapshot", "Read the current page again as text with numbered elements [N], its main content "
+             "first. Other browser actions already return what they changed, so use this only when you need the full "
+             "page. A long page is cut: more=true reads on from the cut, and start=<text> reads it from the first line "
+             "mentioning that text (a heading, \"properties found\", a result's name).",
+             _params({"start": STR, "more": BOOL}), snapshot, True),
         Tool("browser_batch", "Several steps on the current page in one call, such as every field of a form and then "
              "its search button: steps is a list of {action: click|type|select|press, ref, text, submit, option, "
              "key}. They run in order with the same checks as the single tools; it stops at the first error or when "
@@ -563,8 +569,8 @@ def browser_tools(svc) -> list[Tool]:
         Tool("browser_press", f"Press a key: {', '.join(KEYS)}.", _params({"key": STR}, ["key"]), press, True),
         Tool("browser_scroll", "Scroll the page (or the list in the middle of it) only to make it load more (lists "
              "that grow as you scroll). The page text already includes what is outside the window, up to its cut; "
-             "read past the cut with browser_snapshot start=<text>.", _params({"direction": {"type": "string", "enum": [
-                 "up", "down"]}}), scroll, True),
+             "read past the cut with browser_snapshot more=true or start=<text>.",
+             _params({"direction": {"type": "string", "enum": ["up", "down"]}}), scroll, True),
         Tool("browser_back", "Go back to the previous page.", _params({}), back, True),
         Tool("browser_tabs", "List open tabs.", _params({}), tabs, True),
         Tool("browser_handoff", "Ask the owner to complete a step themselves in the browser window (log in, "
