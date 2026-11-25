@@ -257,6 +257,22 @@ a.att-file:hover { border-color: var(--accent); }
 .control { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; background: rgb(20 20 19 / 82%); border-radius: 999px; padding: 3px; backdrop-filter: blur(8px); }
 .seg { border: 0; background: none; color: #d9d6cd; padding: 4px 12px; border-radius: 999px; font-size: 12.5px; white-space: nowrap; }
 .seg.on { background: #f2f0ea; color: #1d1c1a; }
+/* Screen or Terminal: a small segmented switch over the box, in the family of Watching / Take control. */
+.views { display: flex; width: fit-content; margin: 0 16px 8px; padding: 2px; border-radius: 999px; background: rgb(0 0 0 / 6%); }
+.view { border: 0; background: none; color: var(--muted); padding: 3px 11px; border-radius: 999px; font-size: 12px; white-space: nowrap; }
+.view:not(.on):hover { color: var(--text); }
+.view.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+@media (prefers-color-scheme: dark) { .views { background: rgb(255 255 255 / 7%); } .view.on { background: #3a3936; } }
+/* The terminal fills the same box; unlike the screen (a desktop, always dark) it follows light and dark. */
+#term { position: absolute; inset: 0; background: var(--surface); }
+#term[hidden] { display: none; }
+#term .xterm { height: 100%; padding: 8px 4px 4px 10px; }
+#term .xterm-viewport { background: transparent !important; }
+.term-note { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 13px; pointer-events: none; z-index: 1; }
+.term-note[hidden] { display: none; }
+#screenWrap.terminal { background: var(--surface); border-color: var(--line); border-width: 1px; }
+#screenWrap.terminal #screen { visibility: hidden; }
+#screenWrap.terminal .screen-note, #screenWrap.terminal .control { display: none; }
 .panel-section { padding: 14px 16px 0; }
 .now-section { padding-top: 10px; }
 .now-section:has(#nowLine[hidden]) { display: none; }
@@ -288,6 +304,20 @@ a.att-file:hover { border-color: var(--accent); }
 #shell.expanded .icon-btn .ico { stroke: #ecebe6; }
 #shell.expanded #screenWrap { flex: 1; aspect-ratio: auto; margin: 0 16px 16px; }
 #shell.expanded .panel-section { display: none; }
+#shell.expanded .views { background: #272725; }
+#shell.expanded .view { color: #9b988f; }
+#shell.expanded .view:not(.on):hover { color: #ecebe6; }
+#shell.expanded .view.on { background: #f2f0ea; color: #1d1c1a; }
+/* The big terminal keeps the app's light or dark, its frame with it. */
+#shell.expanded #computer.terminal-on { background: var(--bg); }
+#shell.expanded #computer.terminal-on .panel-head { color: var(--text); }
+#shell.expanded #computer.terminal-on .panel-head .muted { color: var(--muted); }
+#shell.expanded #computer.terminal-on .icon-btn { background: var(--surface-2); color: var(--text); }
+#shell.expanded #computer.terminal-on .icon-btn .ico { stroke: var(--text); }
+#shell.expanded #computer.terminal-on .views { background: rgb(127 127 127 / 14%); }
+#shell.expanded #computer.terminal-on .view { color: var(--muted); }
+#shell.expanded #computer.terminal-on .view.on { background: var(--surface); color: var(--text); }
+#shell.expanded #computer.terminal-on #turnText { color: var(--text); }
 /* While a step is the owner's, the large screen says what it is and has the button that hands it back. */
 .turn { display: none; }
 #shell.expanded .turn:not([hidden]) { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; margin: 0 16px; justify-content: center; }

@@ -15,7 +15,8 @@ from typing import Callable
 
 # The sandbox server and its desktop and browser routes, with what they import, as the VM keeps them.
 FILES = (("desktop.py", "/app/desktop.py"), ("server.py", "/app/server.py"), ("auth.py", "/app/auth.py"),
-         ("shell_session.py", "/app/shell_session.py"), ("entrypoint.sh", "/entrypoint.sh"))
+         ("shell_session.py", "/app/shell_session.py"), ("terminal.py", "/app/terminal.py"),
+         ("entrypoint.sh", "/entrypoint.sh"))
 SCRIPT = "desktop-setup.sh"
 
 

@@ -69,8 +69,13 @@
         <button id="closeComputer" class="icon-btn" title="Hide" aria-label="Hide the assistant's computer"></button>
       </div>
     </div>
+    <div id="views" class="views" role="tablist" aria-label="View">
+      <button id="viewScreen" class="view on" type="button" role="tab" aria-selected="true">Screen</button>
+      <button id="viewTerminal" class="view" type="button" role="tab" aria-selected="false">Terminal</button>
+    </div>
     <div id="screenWrap">
       <div id="screen"></div>
+      <div id="term" hidden><div id="termNote" class="term-note">Connecting…</div></div>
       <div id="screenNote" class="screen-note">Connecting to the screen…</div>
       <div id="control" class="control" hidden>
         <button id="watching" class="seg on" type="button">Watching</button>

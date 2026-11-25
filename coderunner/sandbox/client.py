@@ -19,6 +19,7 @@ class SandboxClient:
     # timeout, which the assistant reported as the sandbox not running.
     def __init__(self, base_url: str, token: str, timeout: float = EXEC_TIMEOUT + 30):
         self.base_url = base_url.rstrip("/")
+        self.token = token
         self._client = httpx.AsyncClient(
             base_url=self.base_url, timeout=timeout, trust_env=False,
             headers={"Authorization": f"Bearer {token}"},
@@ -91,6 +92,10 @@ class SandboxClient:
             data.setdefault("available", response.status_code != 409)
             data.setdefault("running", False)
         return data
+
+    def terminal_url(self) -> str:
+        """The VM's terminal websocket (the owner's PTY); opened with the same credential."""
+        return self.base_url.replace("http://", "ws://", 1).replace("https://", "wss://", 1) + "/v1/terminal"
 
     async def aclose(self) -> None:
         await self._client.aclose()

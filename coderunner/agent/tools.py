@@ -186,11 +186,21 @@ def sandbox_tools(svc) -> list[Tool]:
         except Exception:
             return False
 
+    async def owner_pause(ctx) -> None:
+        """The owner typed in the computer's terminal a moment ago: wait for them to pause (a minute at most),
+        so the command does not land in the middle of what they are doing."""
+        use = getattr(svc, "terminal", None)
+        if use is None or not hasattr(use, "wait_for_pause"):
+            return
+        from ..sandbox.owner_terminal import WAITING
+        await use.wait_for_pause(lambda: ctx.emit({"type": "note", "text": WAITING}))
+
     async def run_python(args, ctx):
         session = args.get("session") or own(ctx)
         args = {**args, "code": in_sandbox(args["code"])}
         if not await approved(f"Run in the sandbox:\n{args['code']}", session, ctx):
             return "Error: the owner did not approve running this code."
+        await owner_pause(ctx)
         for last in (False, True):
             try:
                 await svc.sandbox.start_session(session)
@@ -208,6 +218,7 @@ def sandbox_tools(svc) -> list[Tool]:
         timeout = max(1, min(int(args.get("timeout") or 120), 3600))
         if not await approved(f"Run in the sandbox shell:\n{command}", session, ctx):
             return "Error: the owner did not approve running this command."
+        await owner_pause(ctx)
         for last in (False, True):
             try:
                 result = await svc.sandbox.shell(command, session, timeout, bool(args.get("background")))

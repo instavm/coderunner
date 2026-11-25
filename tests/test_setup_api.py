@@ -458,7 +458,7 @@ class ComputerSetupTests(unittest.TestCase):
         self.checkout, self.vm = self.root / "checkout", self.root / "vm"
         self.checkout.mkdir()
         self.vm.mkdir()
-        for name in ("desktop.py", "server.py", "auth.py", "shell_session.py", "entrypoint.sh"):
+        for name in ("desktop.py", "server.py", "auth.py", "shell_session.py", "terminal.py", "entrypoint.sh"):
             (self.checkout / name).write_text(f"# {name}\n")
         (self.checkout / "desktop-setup.sh").write_text("echo installing xfce\necho\necho Desktop installed\n")
         self.svc = Svc()
@@ -469,7 +469,8 @@ class ComputerSetupTests(unittest.TestCase):
         driver, said = FakeDriver(self.vm), []
         self.assertTrue(computer.setup(self.svc.config, said.append, driver=driver, checkout=self.checkout))
         self.assertEqual(sorted(p.name for p in self.vm.iterdir()),
-                         ["app_auth.py", "app_desktop.py", "app_server.py", "app_shell_session.py", "entrypoint.sh"])
+                         ["app_auth.py", "app_desktop.py", "app_server.py", "app_shell_session.py", "app_terminal.py",
+                          "entrypoint.sh"])
         self.assertEqual((self.vm / "app_server.py").read_text(), "# server.py\n")
         self.assertEqual(said[1:3], ["installing xfce", "Desktop installed"])          # the script's own lines
         self.assertEqual(driver.calls, ["stop", "start"])                               # restarted to pick it up

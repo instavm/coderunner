@@ -1000,7 +1000,8 @@ document.querySelectorAll(".example").forEach((b) => b.onclick = () => { $("inpu
 $("newTask").onclick = () => openConversation(null);
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") { e.preventDefault(); openConversation(null); }
-  if (e.key === "Escape" && $("shell").classList.contains("expanded") && !control) setExpanded(false);
+  // Escape in the terminal is the shell's (vim, less), not the big screen's.
+  if (e.key === "Escape" && $("shell").classList.contains("expanded") && !control && !e.target.closest?.("#term")) setExpanded(false);
 });
 
 // ---- the computer ----------------------------------------------------------------
@@ -1083,6 +1084,128 @@ function setExpanded(on) {
   $("expand").title = on ? "Shrink" : "Expand";
 }
 function showComputer(on) { $("shell").classList.toggle("no-computer", !on); }
+
+// ---- the computer's terminal: a tab beside the screen ------------------------------
+// A shell on the assistant's computer (the VM's own PTY, kept running between visits), with the assistant's commands
+// shown in it, dim, as they run. xterm.js is loaded and the socket opened only when the tab is first opened; the
+// socket comes back quietly by itself, and the server replays what the shell printed meanwhile.
+
+const VIEW_KEY = "coderunner.computerView";
+const termState = {term: null, fit: null, ws: null, wait: 1000, timer: null, loading: null, size: ""};
+let view = "screen";
+
+function setView(next, remember = true) {
+  view = next === "terminal" ? "terminal" : "screen";
+  const terminal = view === "terminal";
+  if (terminal && control) setControl(false);           // the screen is handed back: nothing waits on the owner
+  $("viewScreen").classList.toggle("on", !terminal);
+  $("viewTerminal").classList.toggle("on", terminal);
+  $("viewScreen").setAttribute("aria-selected", String(!terminal));
+  $("viewTerminal").setAttribute("aria-selected", String(terminal));
+  $("screenWrap").classList.toggle("terminal", terminal);
+  $("computer").classList.toggle("terminal-on", terminal);
+  $("term").hidden = !terminal;
+  if (remember) { try { localStorage.setItem(VIEW_KEY, view); } catch { /* private window: not remembered */ } }
+  if (terminal) openTerminal();
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const tag = document.createElement("script");
+    tag.src = src; tag.onload = resolve; tag.onerror = reject;
+    document.head.appendChild(tag);
+  });
+}
+
+function loadXterm() {
+  if (!termState.loading) {
+    const css = document.createElement("link");
+    css.rel = "stylesheet"; css.href = "xterm/xterm.css";
+    document.head.appendChild(css);
+    termState.loading = loadScript("xterm/xterm.js").then(() => loadScript("xterm/addon-fit.js"));
+    termState.loading.catch(() => { termState.loading = null; });
+  }
+  return termState.loading;
+}
+
+// Light or dark like the app: a theme set on the page first, otherwise the system's; the colours are the app's own.
+const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+function isDark() {
+  const set = document.documentElement.dataset.theme;
+  return set === "dark" || (set !== "light" && darkQuery.matches);
+}
+const ANSI = {
+  light: {black: "#1f1e1b", red: "#c0392f", green: "#1f7a45", yellow: "#946200", blue: "#2563eb", magenta: "#9b3fb5", cyan: "#0e7490", white: "#75736d",
+          brightBlack: "#75736d", brightRed: "#d9473c", brightGreen: "#23914f", brightYellow: "#a87000", brightBlue: "#3b74f0", brightMagenta: "#b052cc", brightCyan: "#1590a8", brightWhite: "#1f1e1b"},
+  dark: {black: "#34322f", red: "#ef7d74", green: "#5fcf8d", yellow: "#e0b25a", blue: "#7aa2ff", magenta: "#d38cf0", cyan: "#5cc8dc", white: "#ecebe8",
+         brightBlack: "#9c9a94", brightRed: "#f59a92", brightGreen: "#7fe0a6", brightYellow: "#f0c878", brightBlue: "#9dbbff", brightMagenta: "#e2a9f6", brightCyan: "#82d9e8", brightWhite: "#ffffff"},
+};
+function termTheme() {
+  const css = getComputedStyle(document.documentElement), token = (name) => css.getPropertyValue(name).trim();
+  return {...ANSI[isDark() ? "dark" : "light"], background: token("--surface"), foreground: token("--text"),
+          cursor: token("--accent"), cursorAccent: token("--surface"), selectionBackground: token("--accent-soft")};
+}
+function applyTermTheme() { if (termState.term) termState.term.options.theme = termTheme(); }
+darkQuery.addEventListener?.("change", applyTermTheme);
+new MutationObserver(applyTermTheme).observe(document.documentElement, {attributes: true, attributeFilter: ["data-theme"]});
+
+async function openTerminal() {
+  if (!termState.term) {
+    try { await loadXterm(); } catch { return; }       // tried again the next time the tab opens
+    if (termState.term) return;
+    const term = new window.Terminal({fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12.5, cursorBlink: true,
+                                      scrollback: 5000, allowProposedApi: false, theme: termTheme()});
+    const fit = new window.FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open($("term"));
+    const encoder = new TextEncoder();
+    const send = (bytes) => { if (termState.ws?.readyState === WebSocket.OPEN) termState.ws.send(bytes); };
+    term.onData((text) => send(encoder.encode(text)));
+    term.onBinary((text) => send(Uint8Array.from(text, (c) => c.charCodeAt(0) & 255)));
+    Object.assign(termState, {term, fit});
+    new ResizeObserver(() => fitTerminal()).observe($("term"));
+    connectTerminal();
+  }
+  fitTerminal();
+  if (view === "terminal") termState.term.focus();
+}
+
+function fitTerminal() {
+  const {term, fit, ws} = termState;
+  if (!term || $("term").hidden) return;
+  try { fit.fit(); } catch { return; }
+  const size = `${term.cols}x${term.rows}`;
+  if (ws?.readyState === WebSocket.OPEN && size !== termState.size) {
+    termState.size = size;
+    ws.send(JSON.stringify({type: "resize", cols: term.cols, rows: term.rows}));
+  }
+}
+
+function connectTerminal() {
+  clearTimeout(termState.timer);
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/computer/terminal`);
+  ws.binaryType = "arraybuffer";
+  termState.ws = ws;
+  ws.onopen = () => {
+    termState.wait = 1000;
+    termState.size = "";
+    termState.term.reset();                           // the server replays what the shell printed so far
+    $("termNote").hidden = true;
+    fitTerminal();
+  };
+  ws.onmessage = (event) => termState.term.write(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
+  ws.onclose = () => {
+    if (termState.ws !== ws) return;
+    termState.ws = null;
+    $("termNote").hidden = false;
+    termState.timer = setTimeout(connectTerminal, termState.wait);
+    termState.wait = Math.min(termState.wait * 1.6, 15000);
+  };
+}
+
+$("viewScreen").onclick = () => setView("screen");
+$("viewTerminal").onclick = () => setView("terminal");
+try { if (localStorage.getItem(VIEW_KEY) === "terminal") setView("terminal", false); } catch { /* not remembered */ }
 
 $("watching").onclick = () => setControl(false);
 $("takeControl").onclick = () => setControl(true);

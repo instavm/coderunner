@@ -31,6 +31,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from auth import BearerAuthentication
 import shell_session
+try:                                  # the owner's terminal (terminal.py, copied in beside this file)
+    import terminal
+except ImportError:                   # an older install without it: everything else works as before
+    terminal = None
 # --- CONFIGURATION & SETUP ---
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -744,6 +748,55 @@ async def _execute_on_kernel(kernel_id: str, command: str, ctx: Context) -> str:
         logger.error(error_msg, exc_info=not isinstance(e, websockets.exceptions.WebSocketException))
         raise KernelError(error_msg) from e
 
+# --- THE OWNER'S TERMINAL: the assistant's commands shown in it as they run ---
+
+def _echo(label: str):
+    """The assistant's command as a dim line in the owner's terminal, or None without the terminal."""
+    if terminal is None:
+        return None
+    try:
+        return terminal.TERMINAL.assistant(label)
+    except Exception as exc:          # showing it must never stop the command
+        logger.warning(f"Could not show the command in the terminal: {exc}")
+        return None
+
+
+async def shell_shown(session: str, command: str, timeout: float, background: bool = False):
+    """run_shell for every caller: the command runs in the session's own shell (never the owner's), and the
+    terminal shows it, its output as it streams and a non-zero exit."""
+    echo = _echo(terminal.shell_label(command)) if terminal is not None else None
+    if background:
+        job = await SHELLS.start_job(session, command)
+        if echo is not None:
+            echo.end(note=f"started in the background (job {job.get('job', '')})")
+        return job
+    try:
+        result = await SHELLS.run(session, command, timeout, on_output=echo.output if echo is not None else None)
+    except BaseException:
+        if echo is not None:
+            echo.end(note="stopped")
+        raise
+    if echo is not None:
+        echo.end(result.exit_code, note="stopped after the time limit" if result.timed_out else "")
+    return result
+
+
+async def python_shown(code: str, run) -> str:
+    """run_python for every caller: shown in the terminal as "python" and its first line, its output when it ends."""
+    echo = _echo(terminal.python_label(code)) if terminal is not None else None
+    try:
+        result = await run()
+    except BaseException:
+        if echo is not None:
+            echo.end(note="stopped")
+        raise
+    if echo is not None:
+        failed = isinstance(result, str) and result.startswith("Error:")
+        shown = "" if result == "[Execution successful with no output]" else result
+        echo.end(1 if failed else 0, output=shown, note="failed" if failed else "")
+    return result
+
+
 # --- MCP TOOLS ---
 @mcp.tool()
 async def run_shell(command: str, session_id: Optional[str] = None, timeout: int = shell_session.DEFAULT_TIMEOUT,
@@ -762,8 +815,8 @@ async def run_shell(command: str, session_id: Optional[str] = None, timeout: int
     """
     session = session_id or "main"
     if background:
-        return json.dumps(await SHELLS.start_job(session, command))
-    result = await SHELLS.run(session, command, timeout)
+        return json.dumps(await shell_shown(session, command, timeout, background=True))
+    result = await shell_shown(session, command, timeout)
     return json.dumps(result.__dict__)
 
 
@@ -792,6 +845,10 @@ async def execute_python_code(
         ctx: The MCP Context object, used for reporting progress.
         session_id: Optional named session created by start_python_session.
     """
+    return await python_shown(command, lambda: _execute_python(command, ctx, session_id))
+
+
+async def _execute_python(command: str, ctx: Context, session_id: Optional[str]) -> str:
     try:
         if LITE and not session_id:
             return await run_process(command, None)
@@ -1431,9 +1488,10 @@ async def api_shell(request: Request):
     if not isinstance(command, str) or not command.strip():
         return JSONResponse({"error": "Missing command."}, status_code=400)
     session = str(body.get("session_id") or "main")
+    timeout = float(body.get("timeout") or shell_session.DEFAULT_TIMEOUT)
     if body.get("background"):
-        return JSONResponse(await SHELLS.start_job(session, command))
-    result = await SHELLS.run(session, command, float(body.get("timeout") or shell_session.DEFAULT_TIMEOUT))
+        return JSONResponse(await shell_shown(session, command, timeout, background=True))
+    result = await shell_shown(session, command, timeout)
     return JSONResponse(result.__dict__)
 
 
@@ -1472,6 +1530,8 @@ import desktop  # noqa: E402
 app.add_route("/v1/desktop", desktop.api_desktop, methods=["GET", "POST"])
 from starlette.routing import WebSocketRoute  # noqa: E402
 app.router.routes.append(WebSocketRoute("/v1/browser/cdp", desktop.cdp_socket))
+if terminal is not None:              # the owner's terminal: a PTY as the desktop user, behind the same token
+    app.router.routes.append(WebSocketRoute("/v1/terminal", terminal.terminal_socket))
 
 # Wrap the app last so validation covers every route
 app = HostOriginValidator(BearerAuthentication(app))
