@@ -149,6 +149,7 @@ class Tasks:
         self._emits: dict[str, object] = {}     # task id -> its event sender, while it has not ended
         self._untitled: list[str] = []          # threads whose first task has ended, still to be named by the model
         self._naming: asyncio.Task | None = None
+        self._named_recent = False             # the newest older threads queued for names this run
         daemon.svc.audit.listeners.append(self._on_audit)
         # A daemon that stopped mid-task left it "running" for ever: its thread says how it ended.
         for row in self.store.query("SELECT id, conversation FROM tasks WHERE status IN ('running', 'queued')"):
@@ -323,6 +324,19 @@ class Tasks:
         if self._untitled and self._model_free() and (self._naming is None or self._naming.done()):
             self._naming = asyncio.get_running_loop().create_task(self._name_untitled())
 
+    RECENT_NAMED = 20
+
+    def _name_recent(self, rows: list[dict]) -> None:
+        """Once a run, the newest threads from before names existed are named too, one at a time while the model
+        is free: they are the ones the owner sees first, and each costs one short request."""
+        if self._named_recent or getattr(self.daemon.svc, "llm", None) is None:
+            return
+        self._named_recent = True
+        named = {r["conversation"] for r in self.store.query("SELECT conversation FROM conversation_titles")}
+        for row in reversed([r for r in rows if r["conversation"] not in named
+                             and not r["conversation"].startswith(self.CHECKS)][:self.RECENT_NAMED]):
+            self._name_later(row["conversation"])
+
     def _model_free(self) -> bool:
         """Whether a side question can go to the model now. Anthropic's API takes it any time; a model server
         or a local runtime only when no task is running or waiting for it: on the owner's server a request in
@@ -472,6 +486,9 @@ class Tasks:
         named = {r["conversation"]: r["title"] for r in self.store.query(
             f"SELECT conversation, title FROM conversation_titles WHERE conversation IN ({','.join('?' * len(own))})",
             own)} if own else {}
+        with contextlib.suppress(RuntimeError):        # listed from outside the event loop: nothing queued
+            asyncio.get_running_loop()
+            self._name_recent(rows)
         for row in rows:
             # A short name (titles.py), the whole first request kept as prompt. The check's threads, and those
             # not named yet, are named from the request itself.

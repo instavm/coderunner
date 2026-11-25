@@ -697,6 +697,10 @@ function listen() {
       if (e.type !== "started" && e.conversation !== state.conversation) notify("Task finished", trunc(e.reply, 120));
       loadConversations();
     }
+    if (e.type === "title") {             // a thread got its short name: the list, and the header when it is open
+      loadConversations();
+      if (e.conversation === state.conversation) $("title").textContent = e.title;
+    }
     refreshNow();
   };
   // Back after the assistant restarted (a model switch restarts it in a few seconds, too quickly for the offline

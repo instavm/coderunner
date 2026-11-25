@@ -178,15 +178,23 @@ class Naming(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("slot", claude.asked[0])
         await self.finish("three")
 
-    async def test_the_checks_threads_and_old_threads_are_named_from_the_request(self):
+    async def test_the_checks_threads_are_named_from_the_request_and_recent_old_ones_by_the_model_once(self):
+        self.svc.store.execute("INSERT INTO tasks(id, conversation, prompt, status, reply, created, finished) "
+                               "VALUES ('old', 'app:old', ?, 'done', '', 1, 2)", (HEADPHONES,))
         self.tasks.start("app:check-answer-1", MAURITIUS, "check")
         await self.finish("check-answer-1")
         self.assertEqual(self.svc.llm.asked, [])
-        self.assertEqual(self.listed()["app:check-answer-1"]["title"], "Mauritius and tell me its capital")
-        self.svc.store.execute("INSERT INTO tasks(id, conversation, prompt, status, reply, created, finished) "
-                               "VALUES ('old', 'app:old', ?, 'done', '', 1, 2)", (HEADPHONES,))
-        self.assertEqual(self.listed()["app:old"]["title"], "Which are the three best-reviewed")
-        self.assertEqual(self.svc.llm.asked, [])                # listing never asks the model
+        listed = self.listed()
+        self.assertEqual(listed["app:check-answer-1"]["title"], "Mauritius and tell me its capital")
+        # A thread from before names: the request's words at first, then the model's name, asked once a run.
+        self.assertEqual(listed["app:old"]["title"], "Which are the three best-reviewed")
+        await asyncio.sleep(0.05)
+        self.assertEqual(len(self.svc.llm.asked), 1)
+        self.assertIn("best-reviewed", self.svc.llm.asked[0]["turns"][-1]["content"])
+        self.assertNotEqual(self.listed()["app:old"]["title"], "Which are the three best-reviewed")
+        self.listed()
+        await asyncio.sleep(0.05)
+        self.assertEqual(len(self.svc.llm.asked), 1)            # the check's thread is never sent
 
 
 class Ask(unittest.IsolatedAsyncioTestCase):
