@@ -50,6 +50,7 @@ from .page import PAGE_CHARS, ax_value, cut, fit, page_changes, render_ax, short
 from .scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, LIST_JS, OPTIONS_JS, SCROLL_JS, SELECT_ALL_JS,
                       SELECT_OPTION_JS, SETTLE_JS, SLIDER_JS)
 from .urls import is_local_ip, local_problem, page_host, parse_url, same_site
+from .walls import WALL_JS, classify
 
 
 
@@ -179,6 +180,8 @@ STREAMING = 1.0             # nor one whose answer began this long ago and is st
 NO_CHANGE = "No visible change on the page."
 SUGGESTION_WAIT = 1.5       # seconds more for suggestions that are fetched as you type
 BLANK_WAIT = 10.0           # a page with no text yet (a bot check, a script-drawn app) gets this long to show some
+WALL_WAIT = 8.0             # a bot wall (walls.py) gets this long to let the browser through by itself
+WALL_RECHECK = 1.0
 DENIED_PERMISSIONS = ("geolocation", "notifications", "camera", "microphone", "midi", "clipboard-read",
                       "display-capture", "idle-detection", "window-management", "local-fonts",
                       "local-network-access", "payment-handler", "nfc")
@@ -338,8 +341,11 @@ class Requests:
 # ---- broker ---------------------------------------------------------------
 
 class BrowserBroker:
-    def __init__(self, config, policy, audit, launcher=None, decider=None, chrome=None, sandbox=None):
+    def __init__(self, config, policy, audit, launcher=None, decider=None, chrome=None, sandbox=None,
+                 mode: str | None = None):
         self.config = config
+        self._mode = mode           # "mac": the browser on the owner's Mac a blocked site continues in (switch.py)
+        self.tab_prefix = "m" if mode == "mac" else "t"     # its tabs m1, m2, ...: never taken for the sandbox's
         self.page_chars = PAGE_CHARS            # how much of a page is returned at once (more for a larger model)
         self.restart = None                     # async: start the browser itself again (the sandbox's Chrome)
         self.computer = None                    # sandbox.keeper.Keeper: brings the sandbox's computer back
@@ -407,7 +413,10 @@ class BrowserBroker:
     @property
     def mode(self) -> str:
         """dedicated: a browser with the assistant's own profile; chrome: a tab group in the owner's browser;
-        computer: Chrome on the sandbox VM's own desktop, which the owner watches and can take over."""
+        computer: Chrome on the sandbox VM's own desktop, which the owner watches and can take over; mac: the
+        CodeRunner app's own browser (or a Chrome window of its own) for a site that blocked the sandbox's."""
+        if self._mode:
+            return self._mode
         mode = self.config.get("browser.mode")
         return mode if mode in ("chrome", "computer") else "dedicated"
 
@@ -857,7 +866,7 @@ class BrowserBroker:
             executable = launcher.find_browser(self.config)
             if not executable:
                 raise BrowserError("No Chrome, Brave, Edge or Chromium found. Install one or set browser.executable.")
-            profile = paths.assistant_dir() / "browser-profile"
+            profile = paths.assistant_dir() / ("mac-browser-profile" if self.mode == "mac" else "browser-profile")
             try:
                 try:
                     self._process, self._cdp = await launcher.launch(executable, profile, self.headless)
@@ -1006,7 +1015,7 @@ class BrowserBroker:
     def _tab_id(self, target: str) -> str:
         if target not in self._tab_ids:
             self._tab_counter += 1
-            self._tab_ids[target] = f"t{self._tab_counter}"
+            self._tab_ids[target] = f"{self.tab_prefix}{self._tab_counter}"
             self._tab_targets[self._tab_ids[target]] = target
         return self._tab_ids[target]
 
@@ -1024,7 +1033,7 @@ class BrowserBroker:
         alive = {info["targetId"] for info in pages}
         if tab is not None:
             tab = str(tab)
-            target = self._tab_targets.get(tab if not tab.isdigit() else f"t{tab}")
+            target = self._tab_targets.get(tab if not tab.isdigit() else f"{self.tab_prefix}{tab}")
             if target not in alive:             # not open, or another task's
                 raise BrowserError(f"No open tab {tab}; call tabs to list them")
         elif self._active in alive:
@@ -1150,8 +1159,9 @@ class BrowserBroker:
 
     @contextlib.asynccontextmanager
     async def _acting(self, target: str, sid: str, tainted: bool = False):
-        if self.mode == "computer" and self._fronted != target:
-            # The owner watches the computer's screen: the tab being worked in is the one shown.
+        if self.mode in ("computer", "mac") and self._fronted != target:
+            # The owner watches the computer's screen (or the app's Browser tab): the tab being worked in is the
+            # one shown.
             with contextlib.suppress(CDPError):
                 await self._send(sid, "Page.bringToFront", timeout=5)
                 self._fronted = target
@@ -1683,6 +1693,10 @@ class BrowserBroker:
             return result
         before = self._lines.get(target)
         await self._ready(target, sid, action)
+        if action == "load" or result.get("navigated"):
+            wall = await self._wall_stays(target, sid, host)
+            if wall:
+                result["wall"] = wall
         if self._screens_only:
             return result
         try:
@@ -1716,6 +1730,35 @@ class BrowserBroker:
         else:
             result["changes"] = cut(changes, self.page_chars, changes=True) if changes else NO_CHANGE
         return result
+
+    async def _wall(self, target: str, sid: str) -> str | None:
+        """Which bot wall the page is (walls.py), or None for the site's own page or a page that cannot be read."""
+        try:
+            found = await self._send(sid, "Runtime.evaluate", {
+                "expression": WALL_JS, "contextId": await self._world(sid, target), "returnByValue": True}, timeout=5)
+        except (BrowserError, CDPError):
+            return None
+        return classify((found.get("result") or {}).get("value"))
+
+    async def _wall_stays(self, target: str, sid: str, host: str) -> str | None:
+        """A page that just loaded and is a bot wall: given WALL_WAIT to let itself through (Cloudflare's says it
+        takes a few seconds, then goes on to the site by itself), and the wall it still is after that, or None.
+        Only looked at, never clicked."""
+        wall = first = await self._wall(target, sid)
+        deadline = time.monotonic() + WALL_WAIT
+        while wall and time.monotonic() < deadline:
+            await asyncio.sleep(WALL_RECHECK)
+            with contextlib.suppress(BrowserError, CDPError):
+                if page_host((await self._info(target)).get("url", "")) != host:
+                    wall = None                     # went on to another site: not this wall any more
+                    break
+            wall = await self._wall(target, sid)
+        if wall is None:
+            if first:                               # it let itself through: read the site once it has drawn
+                await self._ready(target, sid, "load", most=SETTLE_MOST)
+            return None
+        self.audit.write("browser.wall", tab=self._tab_ids.get(target), wall=wall, host=host)
+        return wall
 
     async def _find(self, text: str, tab: str | None, tainted: bool) -> dict:
         result = await self._snapshot(tab, FIND_SCAN_CHARS, tainted, whole=True)   # footer included
@@ -2412,7 +2455,8 @@ class BrowserBroker:
         host = page_host(url) or "browser"
         reason = squash(str(reason))[:300] or "please take over"
         action = Action("browser.handoff", host, f"Please finish in the CodeRunner browser: {reason}",
-                        {"url": url, "tab": self._tab_id(target)}, tainted)
+                        {"url": url, "tab": self._tab_id(target), **({"browser": "mac"} if self.mode == "mac" else {})},
+                        tainted)
         if self.policy.evaluate(action) is Decision.DENY:
             raise BrowserError("Handing the browser to the owner is disabled by policy")
         sid = await self._session(target)

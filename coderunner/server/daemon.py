@@ -56,6 +56,7 @@ class Services:
     terminal: Any = field(default_factory=OwnerTerminal)     # the owner typing in the VM's terminal
     browser: Any = None
     chrome: Any = None              # browser.extension.ChromeBridge: the owner's browser via the extension
+    app_browser: Any = None         # browser.app.AppBridge: the CodeRunner app's own browser, on the Mac
     memory: Any = None
     scheduler: Any = None
     voice: Any = None
@@ -313,6 +314,17 @@ class Daemon:
             # 9B model is given 12,000 characters and addresses cut to 60.
             from ..browser import page
             svc.browser.page_chars, page.LINK_CHARS = claude.page_chars, claude.link_chars
+        if self.config.get("browser.mode") == "computer" and sys.platform == "darwin" \
+                and self.config.get("browser.mac_switch", True) is not False:
+            # A site that turns the sandbox's Chrome away may go on in the browser on the Mac, with the owner's OK.
+            from ..browser.app import AppBridge, MacLauncher
+            from ..browser.switch import BrowserSwitch
+            svc.app_browser = AppBridge(audit=audit)
+            mac_launcher = MacLauncher(svc.app_browser)
+            mac = BrowserBroker(self.config, svc.policy, audit, launcher=mac_launcher, decider=decider, mode="mac")
+            mac.page_chars = svc.browser.page_chars
+            svc.browser = BrowserSwitch(svc.browser, mac, svc.policy, audit, launcher=mac_launcher,
+                                        bridge=svc.app_browser, config=self.config)
         from ..agent.memory import Memory
         # Embeddings can come from a different runtime than the chat model, e.g. EmbeddingGemma in
         # Ollama beside a chat model served by llama.cpp.
@@ -533,7 +545,8 @@ class Daemon:
             "pending_approvals": len(svc.policy.pending()),
             "tools": sorted(svc.registry.tools),
             "browser": {"mode": svc.browser.mode, "running": svc.browser.running(),
-                        **({"extension": svc.chrome.status()} if svc.chrome is not None else {})},
+                        **({"extension": svc.chrome.status()} if svc.chrome is not None else {}),
+                        **({"app": svc.app_browser.status()} if svc.app_browser is not None else {})},
         }
 
     # ---- serving -----------------------------------------------------------
@@ -615,6 +628,11 @@ class Daemon:
                 await svc.chrome.start()
             except OSError as exc:
                 svc.audit.write("browser.extension_bridge_failed", error=str(exc))
+        if svc.app_browser is not None:
+            try:
+                await svc.app_browser.start()
+            except OSError as exc:
+                svc.audit.write("browser.app_bridge_failed", error=str(exc))
         for channel in svc.channels.values():
             try:
                 await channel.start()
@@ -649,6 +667,9 @@ class Daemon:
         if svc.chrome is not None:
             with contextlib.suppress(Exception):
                 await svc.chrome.stop()
+        if svc.app_browser is not None:
+            with contextlib.suppress(Exception):
+                await svc.app_browser.stop()
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)

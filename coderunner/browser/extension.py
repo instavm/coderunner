@@ -210,6 +210,8 @@ class ExtensionConnection:
         self.on_close: Callable[[], None] | None = None
         self.version: str | None = None    # the extension's manifest version, once it has said (1.0.2 and later)
         self.on_version: Callable[[str], None] | None = None
+        # Messages of the connection itself, beside the protocol (the app's browser answers a cookie import).
+        self.on_typed: Callable[[dict], None] | None = None
 
     def send(self, message: dict) -> None:
         if self.closed:
@@ -224,6 +226,9 @@ class ExtensionConnection:
                     self.version = str(message.get("version") or "")
                     if self.on_version is not None:
                         self.on_version(self.version)
+                elif isinstance(message, dict) and message.get("type"):
+                    if self.on_typed is not None:
+                        self.on_typed(message)
                 elif isinstance(message, dict) and self.on_message is not None:
                     self.on_message(message)
         except (asyncio.IncompleteReadError, ConnectionError, ValueError):
@@ -243,7 +248,11 @@ class ExtensionConnection:
 
 class ChromeBridge:
     """The unix socket native hosts connect to. One browser at a time: the first one connected
-    keeps the assistant until it disconnects."""
+    keeps the assistant until it disconnects. (app.AppBridge is the same socket for the app's own
+    browser, with its own origin, token and file.)"""
+
+    ORIGIN = ORIGIN             # what the hello must say it comes from
+    NAME = "extension"          # in the audit trail: browser.extension_connected, ...
 
     def __init__(self, path: pathlib.Path | None = None, secret: str | None = None, audit=None):
         self.path = path or socket_path()
@@ -317,9 +326,9 @@ class ChromeBridge:
         except (asyncio.TimeoutError, asyncio.IncompleteReadError, ConnectionError, ValueError):
             writer.close()
             return
-        if not (isinstance(hello, dict) and hello.get("type") == "hello" and hello.get("origin") == ORIGIN
+        if not (isinstance(hello, dict) and hello.get("type") == "hello" and hello.get("origin") == self.ORIGIN
                 and hmac.compare_digest(str(hello.get("token", "")).encode(), self.secret.encode())):
-            self._audit("browser.extension_refused", reason="bad hello")
+            self._audit(f"browser.{self.NAME}_refused", reason="bad hello")
             writer.close()
             return
         if self.connected():
@@ -331,10 +340,10 @@ class ChromeBridge:
         connection = self.connection = ExtensionConnection(reader, writer, pid)
         connection.on_version = lambda version: self._check_version(connection, version)
         self._changed.set()
-        self._audit("browser.extension_connected", host_pid=pid)
+        self._audit(f"browser.{self.NAME}_connected", host_pid=pid)
         await connection.pump()
         self._changed.set()
-        self._audit("browser.extension_disconnected", host_pid=pid)
+        self._audit(f"browser.{self.NAME}_disconnected", host_pid=pid)
 
     def _check_version(self, connection: ExtensionConnection, version: str) -> None:
         """An extension older than this CodeRunner is noted, once per version: the daemon brings its files up to
