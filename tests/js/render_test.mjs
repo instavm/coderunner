@@ -36,6 +36,11 @@ assert.equal(a.href, "https://www.amazon.in/dp/B0X");
 assert.equal(a.textContent, "ASony WH-CH520");                        // the mark's letter, then the name
 assert.equal(a.all((n) => n.className === "site-mark")[0].textContent, "A");
 assert.equal(inline(el("p"), "[x](javascript:alert(1))").all(tag("a")).length, 0);
+// A link in bold is a link, in bold.
+const bold = inline(el("p"), "Headline: **[ICC vows to protect court](https://www3.nhk.or.jp/nhkworld/news/1/)** today");
+assert.equal(bold.all(tag("strong")).length, 1);
+assert.equal(bold.all(tag("strong"))[0].all(tag("a"))[0].href, "https://www3.nhk.or.jp/nhkworld/news/1/");
+assert.ok(!bold.textContent.includes("]("));
 
 // Text from a page stays text: tags are shown as written, never made into elements.
 const hostile = messages('<img src=x onerror=alert(1)> <script>bad()</script> **<b>bold</b>**');

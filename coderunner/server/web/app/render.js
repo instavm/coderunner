@@ -68,7 +68,8 @@ export function inline(node, text) {
   const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\((?:https?:\/\/|file:\/\/|\/|~\/)[^\s)]+\)|\[[^\]]+\]\(<(?:file:\/\/|\/|~\/)[^>]+>\))/g;
   for (const part of String(text).split(pattern)) {
     if (!part) continue;
-    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) node.appendChild(el("strong", "", part.slice(2, -2)));
+    // Bold may wrap a link (**[headline](https://...)**, as a routine's answer gave it): its inside is read too.
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) inline(node.appendChild(el("strong", "")), part.slice(2, -2));
     else if (part.startsWith("`") && part.endsWith("`") && part.length > 2) node.appendChild(el("code", "", part.slice(1, -1)));
     else {
       const m = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
