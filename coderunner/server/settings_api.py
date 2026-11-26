@@ -98,17 +98,21 @@ class BenchJob:
                 res = asyncio.run(eval_pkg.run_stack(cfg, eval_pkg.stack_from_config(cfg), suite="ane",
                                                      progress=self._say, setup_model=False))
             elif kind == "compare":
-                raw_specs = payload.get("stacks") or []
-                specs = [eval_pkg.StackSpec.from_dict(s) for s in raw_specs if isinstance(s, dict)] \
-                    or eval_pkg.default_candidates(cfg)[:3]
-                suite = str(payload.get("suite") or "tier1")
-                if suite not in ("tier1", "tier2", "ane"):
-                    suite = "tier1"
-                pref = str(payload.get("preference") or "balanced")
-                res = asyncio.run(eval_pkg.compare_stacks(
-                    cfg, specs[:4], suite=suite, preference=pref, progress=self._say,
-                    reuse_cached=bool(payload.get("reuse_cached", True)),
-                ))
+                busy_fn = getattr(self.daemon, "_tasks_busy", None)
+                if callable(busy_fn) and busy_fn():
+                    res = {"ok": False, "error": "Wait for running tasks to finish before comparing models."}
+                else:
+                    raw_specs = payload.get("stacks") or []
+                    specs = [eval_pkg.StackSpec.from_dict(s) for s in raw_specs if isinstance(s, dict)] \
+                        or eval_pkg.default_candidates(cfg)[:3]
+                    suite = str(payload.get("suite") or "tier1")
+                    if suite not in ("tier1", "tier2", "ane"):
+                        suite = "tier1"
+                    pref = str(payload.get("preference") or "balanced")
+                    res = asyncio.run(eval_pkg.compare_stacks(
+                        cfg, specs[:4], suite=suite, preference=pref, progress=self._say,
+                        reuse_cached=bool(payload.get("reuse_cached", True)),
+                    ))
             else:
                 res = {"ok": False, "error": f"Unknown benchmark kind {kind!r}"}
         except Exception as exc:

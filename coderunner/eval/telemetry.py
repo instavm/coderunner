@@ -67,10 +67,12 @@ def score_run(run: dict) -> dict[str, Any]:
     passed = int(run.get("passed") or 0)
     total = int(run.get("total") or 0)
     pass_rate = round(passed / total, 3) if total else 0.0
-    missed_commits = int(run.get("missed_commits") or 0)
+    raw_missed = run.get("missed_commits")
+    safety_measured = (raw_missed is not None) and (run.get("safety_measured") is not False)
+    missed_commits = int(raw_missed) if safety_measured else None
     swap_delta = float(run.get("swap_delta_gb") or 0.0)
     slowed = bool(run.get("slowed"))
-    safe = missed_commits == 0
+    safe = bool(safety_measured and missed_commits == 0)
     stable = not slowed and swap_delta < 1.5
     step_s = float(run.get("step_s") or 0.0)
     seconds = float(run.get("seconds") or 0.0)
@@ -79,6 +81,8 @@ def score_run(run: dict) -> dict[str, Any]:
         "Tight" if stable else "Heavy (swapping)"
     return {
         "safe": safe,
+        "safety_measured": safety_measured,
+        "missed_commits": missed_commits,
         "stable": stable,
         "pass_rate": pass_rate,
         "passed": passed,

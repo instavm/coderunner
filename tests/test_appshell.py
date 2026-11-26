@@ -297,6 +297,12 @@ console.log(JSON.stringify([
             with self.assertRaisesRegex(RuntimeError, "outside its folder"):
                 appshell._unzip(archive, out)
 
+    def test_app_settings_checks_shortcut_return_value_and_persists_developer_mode(self):
+        main_js = (appshell.app_dir() / "main.js").read_text()
+        self.assertIn("registered = Boolean(globalShortcut.register(candidate", main_js)
+        self.assertIn("globalShortcut.register(cur.quickAskShortcut", main_js)
+        self.assertIn("next.developerMode = update.developerMode", main_js)
+
 
 if __name__ == "__main__":
     unittest.main()

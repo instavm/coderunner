@@ -90,4 +90,9 @@ const ptCard = pt[0].all((n) => n.className === "md-card")[0];
 assert.equal(ptCard.all((n) => n.className === "md-card-title")[0].textContent, "Buser (semi-leito)");
 assert.equal(ptCard.all((n) => n.className === "md-card-price")[0].textContent, "R$ 124,90");
 assert.equal(ptCard.all((n) => n.className === "md-card-line").length, 2);
+
+// Numeric data columns with non-index headers (Year, ID, etc.) stay visible as the card title instead of being dropped.
+const fin = messages("| Year | Revenue | Costs | Profit |\n|---|---|---|---|\n| 2024 | $10M | $6M | $4M |\n| 2025 | $14M | $8M | $6M |");
+const finCard = fin[0].all((n) => n.className === "md-card")[0];
+assert.equal(finCard.all((n) => n.className === "md-card-title")[0].textContent, "2024");
 console.log("ok");

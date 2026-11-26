@@ -30,6 +30,8 @@ def plain_summary(runs: list[dict], preference: str = "balanced") -> dict:
             "memory_gb": s["memory_gb"],
             "comfort": s["comfort"],
             "safe": s["safe"],
+            "safety_measured": s["safety_measured"],
+            "missed_commits": s["missed_commits"],
             "cache_hit_ratio": s["cache_hit_ratio"],
             "swap_delta_gb": s["swap_delta_gb"],
             "relative_step": speed_rel,

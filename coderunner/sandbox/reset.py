@@ -59,7 +59,9 @@ def recreate(driver, state: str, options: list[str], env: dict, say: Callable[[s
         # workspace on its own disk: they are copied out first and put back into the new one.
         if state == "running":
             say("Copying the browser profile, downloads and workspace out of the sandbox...")
-            computer.carry_out(driver, carried, say)
+            if computer.carry_out(driver, carried, say) is False:
+                say("Could not preserve the browser profile, downloads and workspace; the sandbox was left as it is.")
+                return 1
         if not driver.delete():
             say("❌ The sandbox could not be deleted.")
             return 1

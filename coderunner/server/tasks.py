@@ -97,7 +97,8 @@ def _run_ids() -> dict:
 def limit(svc) -> int:
     """How many tasks run at once: tiered by Apple Silicon unified RAM (1 on 8 GB up to 6 on 256-512 GB),
     two on other local machines, more where the model is remote. agent.parallel_tasks overrides it."""
-    set_by_owner = svc.config.get("agent.parallel_tasks") if hasattr(svc, "config") else None
+    cfg = getattr(svc, "config", None)
+    set_by_owner = cfg.get("agent.parallel_tasks") if cfg is not None else None
     if set_by_owner:
         return max(1, int(set_by_owner))
     away = getattr(svc, "remote", None)
@@ -107,11 +108,8 @@ def limit(svc) -> int:
         return max(1, int(getattr(getattr(svc, "llm", None), "slots", 2) or 2) - 1)
     if away:
         return 4
-    hw = getattr(svc, "hardware", None)
-    if hw is not None and getattr(hw, "gpu", "") == "apple" and getattr(hw, "ram_gb", 0):
-        from ..models import hardware
-        return int(hardware.ram_tier(hw.ram_gb)["parallel_tasks"])
-    return 2
+    from ..models import hardware
+    return hardware.parallel_tasks(cfg, getattr(svc, "hardware", None))
 
 
 class Turns:
@@ -128,6 +126,10 @@ class Turns:
         self._busy = False
         self._order = 0
         self._waiting: list[tuple[int, int, asyncio.Future]] = []
+
+    @property
+    def busy(self) -> bool:
+        return self._busy
 
     @contextlib.asynccontextmanager
     async def turn(self, conversation: str = ""):

@@ -599,21 +599,30 @@ app.whenReady().then(() => {
     if (!fromDaemon(event)) return null;
     const cur = settings();
     if (update && typeof update === "object") {
-      const next = {...cur};
+      const next = {...cur, developerMode: developerMode()};
       if (typeof update.quickAskShortcut === "string") {
-        next.quickAskShortcut = update.quickAskShortcut.trim();
+        const candidate = update.quickAskShortcut.trim();
         if (MAC) {
           globalShortcut.unregisterAll();
-          if (next.quickAskShortcut) {
-            try { globalShortcut.register(next.quickAskShortcut, () => toggleAsk()); }
-            catch { return {ok: false, error: "Shortcut is already in use or invalid", settings: cur}; }
+          if (candidate) {
+            let registered = false;
+            try { registered = Boolean(globalShortcut.register(candidate, () => toggleAsk())); }
+            catch { registered = false; }
+            if (!registered) {
+              if (typeof cur.quickAskShortcut === "string" && cur.quickAskShortcut) {
+                try { globalShortcut.register(cur.quickAskShortcut, () => toggleAsk()); } catch { /* best effort */ }
+              }
+              return {ok: false, error: "Shortcut is already in use or invalid", settings: {...cur, developerMode: developerMode()}};
+            }
           }
         }
+        next.quickAskShortcut = candidate;
       }
-      if (typeof update.developerMode === "boolean") setDeveloperMode(update.developerMode);
+      if (typeof update.developerMode === "boolean") next.developerMode = update.developerMode;
       const file = path.join(app.getPath("userData"), "settings.json");
       try { fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, JSON.stringify(next, null, 2) + "\n"); }
       catch { /* best effort */ }
+      if (typeof update.developerMode === "boolean") setDeveloperMode(update.developerMode);
       return {ok: true, settings: next};
     }
     return {ok: true, settings: {...cur, developerMode: developerMode()}};

@@ -194,26 +194,26 @@ def default_candidates(config, hw: hardware.Hardware | None = None) -> list[Stac
         if estimate_stack_memory(combo, hw, config)["fits"]:
             add(combo)
 
-    # Dual-resident Fast + Deep combo on 64 GB+ Macs (instant MoE + deep planner simultaneously).
+    # Larger single-model comparison on 64 GB+ Macs (fast MoE vs deeper planner head-to-head).
     if tier.get("dual_resident") and len(viable) >= 2:
         presets_by_key = {p["key"]: p["model"] for p in planned.get("presets") or []}
-        fast_id = presets_by_key.get("fast") or viable[0]["id"]
         smart_id = presets_by_key.get("smartest") or viable[1]["id"]
-        if fast_id != smart_id:
-            dual = StackSpec(
-                id=f"{fast_id}+{smart_id}",
-                label=f"{manager.pretty(fast_id)} + {manager.pretty(smart_id)} (Fast + Deep)",
-                planner=fast_id,
-                escalator=smart_id,
-                runtime=viable[0].get("runtime") or "llama.cpp",
-                ctx=int(viable[0].get("ctx") or tier["target_ctx"]),
+        smart_cand = next((c for c in viable if c["id"] == smart_id), viable[1])
+        if smart_cand:
+            deep = StackSpec(
+                id=f"{smart_cand['id']}+fara1.5-9b" if hw.ram_gb >= 96 else smart_cand["id"],
+                label=(f"{manager.pretty(smart_cand['id'])} + {manager.pretty('fara1.5-9b')}"
+                       if hw.ram_gb >= 96 else f"{manager.pretty(smart_cand['id'])} (Deep)"),
+                planner=smart_cand["id"],
+                runtime=smart_cand.get("runtime") or "llama.cpp",
+                ctx=int(smart_cand.get("ctx") or tier["target_ctx"]),
                 driver="fara1.5-9b" if hw.ram_gb >= 96 else "",
                 driver_mode="co_resident" if hw.ram_gb >= 96 else "off",
                 decision="judge-4b",
                 embedding="coreml" if hw.gpu == "apple" else "gpu",
                 sandbox_memory_gb=float(tier.get("sandbox_gb") or 4.0),
             )
-            if estimate_stack_memory(dual, hw, config)["fits"]:
-                add(dual)
+            if estimate_stack_memory(deep, hw, config)["fits"]:
+                add(deep)
 
     return stacks

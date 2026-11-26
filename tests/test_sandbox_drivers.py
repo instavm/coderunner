@@ -203,6 +203,20 @@ class SandboxCommandTests(unittest.TestCase):
             "shutil.disk_usage", {"return_value": collections.namedtuple("u", "total used free")(0, 0, 7e9)}))
         self.assertEqual((code, driver.deleted), (1, False))
 
+        # When carry_out fails (returns False), recreation aborts before deleting the VM so data is never lost.
+        driver = FakeDriver("running")
+        with mock.patch("coderunner.sandbox.computer.carry_out", return_value=False):
+            said = []
+            code = reset.recreate(driver, "running", ["--no-assistant"], {}, say=said.append)
+        self.assertEqual((code, driver.deleted), (1, False))
+        self.assertTrue(any("left as it is" in line for line in said))
+        # When carry_out returns None (nothing to preserve), recreation proceeds normally.
+        driver = FakeDriver("running")
+        with mock.patch("coderunner.sandbox.computer.carry_out", return_value=None), \
+                mock.patch("subprocess.call", return_value=0):
+            code = reset.recreate(driver, "running", ["--no-assistant"], {}, say=lambda _: None)
+        self.assertEqual((code, driver.deleted), (0, True))
+
     def test_settings_are_read_back_from_inspect(self):
         info = [{"configuration": {
             "resources": {"cpus": 4, "memoryInBytes": 2 << 30}, "image": {"reference": "coderunner-local:latest"},

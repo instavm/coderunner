@@ -522,11 +522,12 @@ class LlamaCppRuntime(Runtime):
 
     PORT_OFFSET = 0
 
-    def __init__(self, config=None, port: int | None = None, hub: Hub | None = None):
+    def __init__(self, config=None, port: int | None = None, hub: Hub | None = None, hw: Hardware | None = None):
         super().__init__(config)
         self.port = port = port or server_port(config, self.PORT_OFFSET)
         self.base_url = f"http://127.0.0.1:{port}/v1"
         self.hub = hub
+        self.hw = hw
         self.root = models_dir(config)
         self.state_path = self.root / "llama.cpp.json"
 
@@ -668,10 +669,11 @@ class LlamaCppRuntime(Runtime):
         # shared cache: the step judge gets its own slot instead of evicting the agent's cached conversation.
         # Measured with Qwen3.5-9B on an M3 Pro: with one slot every step after a judge call re-read the
         # whole prompt (6 s growing to 19 s per step); with two, steps read only what was new (3.6 s).
-        # A slot for each task that may run at once (agent.parallel_tasks, two by default) and one for the judge:
+        # A slot for each task that may run at once (hardware-tiered or agent.parallel_tasks) and one for the judge:
         # each task's requests name its slot, so its conversation stays read while the other has the model.
         # The first slot's reading of the instructions is copied to the others through a file (LLM.copy_slot).
-        slots = int((self.config.get("agent.parallel_tasks") if self.config else None) or 2) + 1
+        from . import hardware
+        slots = hardware.parallel_tasks(self.config, self.hw) + 1
         saved = paths.assistant_dir() / "run" / "slots"
         saved.mkdir(parents=True, exist_ok=True)
         for old in saved.glob("*.bin"):     # what another model read is of no use to this one
@@ -957,12 +959,19 @@ class MLXRuntime(OpenAIRuntime):
         self.root = models_dir(config) / "mlx"
         self.env = paths.assistant_dir() / "runtimes" / "mlx"
         self.state_path = self.root / "mlx.json"
-        if not base_url and not (config.get("models.base_url") if config else ""):
-            self.base_url = f"http://127.0.0.1:{self.port}/v1"
+        self._managed_url = f"http://127.0.0.1:{self.port}/v1"
+        explicit = (base_url or (config.get("models.base_url") if config is not None else "") or "").strip().rstrip("/")
+        self._external = bool(explicit and explicit != self._managed_url)
+        if not self._external:
+            self.base_url = self._managed_url
 
     @staticmethod
     def supported() -> bool:
         return sys.platform == "darwin" and platform.machine().lower() in ("arm64", "arm64e")
+
+    def managed(self) -> bool:
+        """True when CodeRunner owns the local mlx-lm server; False for explicitly owner-managed endpoints."""
+        return not self._external
 
     def python(self) -> str | None:
         found, ready = self.env / "bin" / "python", self.env / "installed.txt"
@@ -972,10 +981,10 @@ class MLXRuntime(OpenAIRuntime):
             return None
 
     def can_install(self) -> bool:
-        return self.supported()
+        return self.managed() and self.supported()
 
     def available(self) -> bool:
-        return self.python() is not None or self.running()
+        return (self.python() is not None or self.running()) if self.managed() else self.running()
 
     def _state(self) -> dict:
         try:
@@ -1074,7 +1083,7 @@ class MLXRuntime(OpenAIRuntime):
         _terminate("mlx-server", "python")
 
     def model_id(self, entry: dict) -> str:
-        return f"coderunner-{entry['id']}" if self.python() else super().model_id(entry)
+        return f"coderunner-{entry['id']}" if self.managed() else super().model_id(entry)
 
 
 RUNTIMES: dict[str, type[Runtime]] = {
@@ -1089,9 +1098,10 @@ def choose_runtime(config, hw: Hardware | None = None, name: str | None = None) 
     if name != "auto":
         if name not in RUNTIMES:
             raise ValueError(f"Unknown runtime {name!r}; choose one of {', '.join(RUNTIMES)} or auto")
-        return RUNTIMES[name](config)
+        cls = RUNTIMES[name]
+        return cls(config, hw=hw) if cls in (LlamaCppRuntime, PrismRuntime) else cls(config)
     for cls in (OllamaRuntime, LlamaCppRuntime):
-        runtime = cls(config)
+        runtime = cls(config, hw=hw) if cls is LlamaCppRuntime else cls(config)
         if runtime.available():
             return runtime
     return None

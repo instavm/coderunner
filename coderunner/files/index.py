@@ -43,6 +43,8 @@ PARALLEL_READS = 4          # files converted at once
 NAME_BATCH = 512            # names written without a vector, embedded per pass once the rest is done
 FINGERPRINT = "files.fingerprint"
 PAUSE_CHECK = 60.0
+YIELD_CHECK = 1.5           # short re-check while yielding background indexing to an active LLM turn
+YIELD_REASON = "model turn in progress"
 EVICTION_DELAY = 90.0       # seconds after reading before a downloaded file is given back to iCloud (asked right
                             # after the read, iCloud reports the eviction and keeps the file)
 DOWNLOAD_WAIT = 120.0       # seconds to wait for iCloud to bring a file's bytes
@@ -70,13 +72,14 @@ def priority(found: Found) -> tuple:
 
 class FileIndex:
     def __init__(self, config, store, audit, embedder: Embedder | None = None, media: Media | None = None,
-                 transcriber: Transcriber | None = None):
+                 transcriber: Transcriber | None = None, should_yield=None):
         self.config = config
         self.store = store
         self.audit = audit
         self.embedder = embedder
         self.media = media or Media()
         self.transcriber = transcriber
+        self.should_yield = should_yield
         self.folders = Folders(config)
         self.vectors = VectorIndex(store)
         self.searcher = Searcher(store, self.vectors, embedder)
@@ -379,6 +382,16 @@ class FileIndex:
         done = failed = 0
         try:
             for number in range(len(groups)):
+                if self.should_yield is not None and self.should_yield():
+                    if upcoming is not None:
+                        upcoming.cancel()
+                        with contextlib.suppress(BaseException):
+                            await upcoming
+                    # Put remaining unprocessed items back at the front of the queue for the next pass.
+                    for grp in reversed(groups[number:]):
+                        for item in reversed(grp):
+                            self._queue.appendleft(item)
+                    break
                 files = await upcoming
                 # Read the next group while this one is embedded.
                 upcoming = asyncio.gather(*map(read, groups[number + 1])) if number + 1 < len(groups) else None
@@ -600,17 +613,21 @@ class FileIndex:
                     watch = asyncio.create_task(self.watcher_run(roots)) if roots else None
                     watched = roots
                 self.paused = await power.pause_reason(self.config)
+                if not self.paused and self.should_yield is not None and self.should_yield():
+                    self.paused = YIELD_REASON
                 more = False
                 if roots and not self.paused:
                     try:
                         more = (await self.index_once())["more"]
                     except Exception as exc:  # keep indexing alive across a model restart
                         self.audit.write("files.index_error", error=str(exc)[:300])
-                if more:
+                if more and not (self.should_yield is not None and self.should_yield()):
                     continue
                 self.wake.clear()
                 interval = float(self.config.get("files.scan_interval", 600) or 600)
-                if self.paused or self._waiting or self._downloaded:  # notice the charger, and give files back
+                if self.paused == YIELD_REASON or (more and self.should_yield is not None and self.should_yield()):
+                    interval = YIELD_CHECK
+                elif self.paused or self._waiting or self._downloaded:  # notice the charger, and give files back
                     interval = PAUSE_CHECK
                 elif self.watching:
                     interval *= 6          # events bring changes in; the walk only catches what they miss

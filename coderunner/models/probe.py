@@ -251,6 +251,10 @@ def run(hw: hardware.Hardware | None = None, *, include_cdn: bool = True, force:
                 "date": datetime.date.today().isoformat(), "error": "Tier 0 Metal/ANE probe requires Apple silicon"}
     if progress:
         progress("measuring GPU bandwidth, Metal compute and Neural Engine")
+    if not SOURCE.is_file():
+        return {"ok": False, "supported": False, "version": PROBE_VERSION, "machine": bench.fingerprint(hw),
+                "date": datetime.date.today().isoformat(),
+                "error": "Tier 0 probe source (probe.swift) is missing from this installation; using chip specifications"}
     binary = native.build(SOURCE, HELPER_NAME)
     if not binary:
         return {"ok": False, "supported": False, "version": PROBE_VERSION, "machine": bench.fingerprint(hw),

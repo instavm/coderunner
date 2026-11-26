@@ -116,9 +116,14 @@ class ProbeAndEvalTests(unittest.IsolatedAsyncioTestCase):
     def test_ane_judge_qualification_gate(self):
         good = qualify_ane_judge({
             "max_tokens": 1024, "compile_cold_s": 30.0, "warm_load_s": 0.8, "peak_rss_mb": 1200,
-            "ane_plan_cost_pct": 92.0, "median_ms": 45.0, "missed_commits": 0, "false_alarm_rate": 0.05,
+            "ane_plan_cost_pct": 92.0, "median_ms": 45.0, "missed_commits": 0, "false_alarm_rate": 0.0,
         })
-        self.assertTrue(good["qualified"])
+        self.assertTrue(good["qualified"], good)
+        unmeasured = qualify_ane_judge({
+            "max_tokens": 1024, "compile_cold_s": 30.0, "warm_load_s": 0.8, "peak_rss_mb": 1200,
+            "ane_plan_cost_pct": 92.0, "median_ms": 45.0, "missed_commits": None, "false_alarm_rate": 0.0,
+        })
+        self.assertFalse(unmeasured["qualified"])
         bad = qualify_ane_judge({
             "max_tokens": 96, "compile_cold_s": 120.0, "warm_load_s": 5.0, "peak_rss_mb": 7500,
             "ane_plan_cost_pct": 40.0, "median_ms": 200.0, "missed_commits": 2, "false_alarm_rate": 0.4,
@@ -199,16 +204,213 @@ class ProbeAndEvalTests(unittest.IsolatedAsyncioTestCase):
                     "id": "c3", "type": "function",
                     "function": {"name": "add_numbers", "arguments": json.dumps({"a": 3, "b": 7})},
                 }]}}]})
-            if len(body.get("messages") or []) >= 4:
+            if len(body.get("messages") or []) >= 4 and not body.get("max_tokens") == 8:
                 return httpx.Response(200, json={"choices": [{"message": {"content": "Air India"}}],
                                                  "timings": {"cache_n": 2400, "prompt_n": 100}})
+            if body.get("max_tokens") == 8 and "Evaluate the supplied decision task" in str(body["messages"][0].get("content")):
+                state_text = str(body["messages"][-1].get("content") or "").lower()
+                is_commit = any(w in state_text for w in ("pay", "send email", "transfer", "place order", "delete account", "post reply"))
+                return httpx.Response(200, json={"choices": [{"message": {"content": "B" if is_commit else "A"}}]})
             return httpx.Response(200, json={"choices": [{"message": {"content": "Paris"}}]})
 
         transport = httpx.MockTransport(handler)
         res = await tier1_gate("http://127.0.0.1:8081/v1", "test-model", vision=False, transport=transport)
         self.assertTrue(res["ok"], res)
+        self.assertTrue(res["safety_measured"])
+        self.assertEqual(res["missed_commits"], 0)
+        self.assertEqual(res["false_alarm_rate"], 0.0)
         self.assertAlmostEqual(res["cache_hit_ratio"], 0.96, places=2)
         self.assertTrue(any(c["name"] == "nested_batch_tool" and c["passed"] for c in res["checks"]))
+        self.assertTrue(any(c["name"] == "safety_commit_judge" and c["passed"] for c in res["checks"]))
+
+        # Unmeasured safety must never qualify as safe or win comparisons.
+        from coderunner.eval.telemetry import score_run
+        unmeasured = score_run({"passed": 5, "total": 5, "missed_commits": None, "safety_measured": False})
+        self.assertFalse(unmeasured["safe"])
+        self.assertFalse(unmeasured["safety_measured"])
+        self.assertIsNone(plain_summary([{"stack": {"id": "x"}, "passed": 5, "total": 5, "missed_commits": None}])["winner"])
+
+    def test_pyproject_ships_eval_and_probe_swift_and_preflight_caps_200_stream(self):
+        pyproject = (pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()
+        self.assertIn('"coderunner.eval"', pyproject)
+        self.assertIn('"probe.swift"', pyproject)
+        # Missing probe.swift falls back cleanly without raising FileNotFoundError.
+        with mock.patch.object(probe, "SOURCE", self.home / "missing.swift"), \
+                mock.patch("sys.platform", "darwin"):
+            res = probe.run(hw=_apple(18, "Apple M3 Pro", sandbox=2), force=True)
+            self.assertFalse(res["ok"])
+            self.assertIn("probe.swift", res["error"])
+
+        # Streaming preflight stops after 64 KB even when a server ignores Range and streams 200 OK.
+        read_chunks = 0
+
+        class CountingStream(httpx.SyncByteStream):
+            def __iter__(self):
+                nonlocal read_chunks
+                yield b"GGUF\x03\x00\x00\x00general.architecture\x00qwen35\x00" + (b"\x00" * 16340)
+                read_chunks += 1
+                for _ in range(40):
+                    read_chunks += 1
+                    yield b"\x00" * 16384
+
+        def stream_handler(req: httpx.Request):
+            if req.url.path.endswith(".gguf"):
+                return httpx.Response(200, stream=CountingStream())
+            return httpx.Response(404)
+
+        h = hub_module.Hub(httpx.Client(transport=httpx.MockTransport(stream_handler)), cache_dir=False)
+        res = h.preflight_gguf("org/Big-GGUF", "Big-Q4_K_M.gguf")
+        self.assertTrue(res["magic_ok"])
+        self.assertLessEqual(read_chunks, 6)
+
+    async def test_run_stack_validation_isolation_and_runtime_restore(self):
+        from coderunner.eval import runner
+        from coderunner.models.runtimes import LlamaCppRuntime
+
+        cfg_path = self.home / "owner-config.json"
+        cfg = Config({
+            "models": {"runtime": "llama.cpp", "chat": "coderunner-qwen3.5-9b", "context": 32768,
+                       "base_url": "http://127.0.0.1:8081/v1", "discover": False},
+            "sandbox": {"memory_gb": 2},
+        }, path=cfg_path)
+        cfg.save()
+        original_text = cfg_path.read_text()
+
+        # Unsupported escalator stack is rejected explicitly.
+        hw64 = _apple(64, "Apple M4 Max", sandbox=4)
+        with mock.patch("coderunner.models.manager._hardware", return_value=hw64):
+            rej = await runner.run_stack(cfg, StackSpec(id="dual", label="Dual", planner="qwen3.5-9b",
+                                                        escalator="qwen3.8-27b", embedding="none"), suite="tier1")
+            self.assertFalse(rej["ok"])
+            self.assertIn("escalator", rej["error"].lower())
+
+            # Different context triggers setup on a temporary config and restores snapshotted runtime state.
+            rt = LlamaCppRuntime(cfg, hw=hw64)
+            rt._save({"active": {"id": "qwen3.5-9b", "ctx": 32768}})
+            before_state = rt.state_path.read_bytes()
+
+            def fake_setup(work_cfg, model_id=None, runtime=None, hw=None, progress=None,
+                           embedding=False, decision=False, measure=False, ctx=None, **kw):
+                self.assertNotEqual(work_cfg.path, cfg_path)
+                self.assertEqual(ctx, 65536)
+                work_cfg.set("models.context", ctx)
+                work_cfg.save()
+                LlamaCppRuntime(work_cfg, hw=hw)._save({"active": {"id": model_id, "ctx": ctx}})
+                return {"ok": True, "ctx": ctx}
+
+            with mock.patch("coderunner.models.manager.setup", side_effect=fake_setup) as setup_mock, \
+                    mock.patch("coderunner.models.manager.ensure_running",
+                               return_value=mock.Mock(base_url="http://127.0.0.1:8081/v1", model="coderunner-qwen3.5-9b",
+                                                      vision=False, api_key="")) as ensure_mock, \
+                    mock.patch.object(LlamaCppRuntime, "stop"), \
+                    mock.patch("coderunner.eval.runner.tier1_gate",
+                               return_value={"ok": True, "passed": 5, "total": 5, "checks": [],
+                                             "step_s": 5.0, "safety_measured": True, "missed_commits": 0,
+                                             "false_alarm_rate": 0.0}):
+                res = await runner.run_stack(
+                    cfg, StackSpec(id="q64k", label="Qwen 64K", planner="qwen3.5-9b",
+                                   ctx=65536, decision="self", embedding="none"),
+                    suite="tier1",
+                )
+            self.assertTrue(res["ok"], res)
+            setup_mock.assert_called_once()
+            self.assertEqual(cfg_path.read_text(), original_text)
+            self.assertEqual(rt.state_path.read_bytes(), before_state)
+            self.assertGreaterEqual(ensure_mock.call_count, 2)
+
+    async def test_judge_runtime_recovery_managed_mlx_slots_and_indexer_yield(self):
+        from types import SimpleNamespace
+        from coderunner.files.index import FileIndex
+        from coderunner.models import manager, runtimes
+        from coderunner.safety.decision import DecisionModel
+        from coderunner.server import tasks as server_tasks
+
+        # 1. Shared hardware parallel_tasks matches LlamaCppRuntime -np and server tasks.limit(svc).
+        cfg8 = Config({"sandbox": {"memory_gb": 1}}, path=self.home / "c8.json")
+        hw8 = _apple(8, "Apple M2", sandbox=1)
+        svc8 = SimpleNamespace(config=cfg8, hardware=hw8, remote=None, llm=None)
+        rt8 = runtimes.LlamaCppRuntime(cfg8, hw=hw8)
+        cmd8 = rt8.command({"model": "/m.gguf", "ctx": 16384, "alias": "a"})
+        self.assertEqual(server_tasks.limit(svc8), 1)
+        self.assertEqual(cmd8[cmd8.index("-np") + 1], str(server_tasks.limit(svc8) + 1))
+
+        cfg64 = Config({"sandbox": {"memory_gb": 4}}, path=self.home / "c64.json")
+        hw64 = _apple(64, "Apple M4 Max", sandbox=4)
+        svc64 = SimpleNamespace(config=cfg64, hardware=hw64, remote=None, llm=None)
+        rt64 = runtimes.LlamaCppRuntime(cfg64, hw=hw64)
+        cmd64 = rt64.command({"model": "/m.gguf", "ctx": 65536, "alias": "a"})
+        self.assertEqual(server_tasks.limit(svc64), 3)
+        self.assertEqual(cmd64[cmd64.index("-np") + 1], str(server_tasks.limit(svc64) + 1))
+
+        # 2. Managed MLX vs external owner-managed MLX.
+        managed_cfg = Config({"models": {"runtime": "mlx"}}, path=self.home / "mlx-m.json")
+        ext_cfg = Config({"models": {"runtime": "mlx", "base_url": "http://127.0.0.1:8080/v1"}},
+                         path=self.home / "mlx-e.json")
+        mlx_m = runtimes.MLXRuntime(managed_cfg)
+        mlx_e = runtimes.MLXRuntime(ext_cfg)
+        self.assertTrue(mlx_m.managed())
+        self.assertTrue(manager._is_managed_local(mlx_m))
+        self.assertFalse(mlx_e.managed())
+        self.assertFalse(manager._is_managed_local(mlx_e))
+
+        # 3. Dedicated JudgeRuntime starts in ensure_running() and DecisionModel recovers on ConnectError.
+        jrt = runtimes.JudgeRuntime(cfg64)
+        jrt._save({"active": {"id": "judge-4b", "alias": "coderunner-judge-4b", "model": "/m/j.gguf", "ctx": 4096}})
+        jcfg = Config({
+            "models": {"runtime": "llama.cpp", "chat": "coderunner-qwen3.5-9b",
+                       "base_url": "http://127.0.0.1:8081/v1",
+                       "decision": "coderunner-judge-4b", "decision_api": "chat",
+                       "decision_url": jrt.base_url},
+        }, path=self.home / "jcfg.json")
+        with mock.patch.object(runtimes.LlamaCppRuntime, "running", return_value=True), \
+                mock.patch.object(runtimes.JudgeRuntime, "running", return_value=False), \
+                mock.patch.object(runtimes.JudgeRuntime, "start") as jstart:
+            manager.ensure_running(jcfg)
+            jstart.assert_called_once()
+
+        calls = 0
+
+        def flaky_judge(req: httpx.Request):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise httpx.ConnectError("connection refused", request=req)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "B"}}]})
+
+        dm = DecisionModel(jrt.base_url, "coderunner-judge-4b", api="chat",
+                           transport=httpx.MockTransport(flaky_judge))
+        recovered = []
+
+        async def do_recover():
+            recovered.append(True)
+            return True
+
+        dm.recover = do_recover
+        p = await dm.probability("Pay now", "Commit?", {"safe": "No", "commit": "Yes"}, {"commit"})
+        await dm.aclose()
+        self.assertEqual((p, len(recovered), calls), (1.0, 1, 2))
+
+        # 4. FileIndex honors ModelPool.should_yield_indexing during busy LLM turns.
+        from coderunner.core.audit import AuditLog
+        from coderunner.core.store import Store
+
+        mp = pool.ModelPool(Config({"files": {"yield_during_llm_turn": True}}, path=self.home / "y.json"), hw=hw64)
+        idx = FileIndex(cfg64, Store(self.home / "s.db"), AuditLog(self.home / "a.jsonl"),
+                        should_yield=lambda: mp.should_yield_indexing(llm_busy=True))
+        dummy = SimpleNamespace(path=self.home / "doc.txt", folder=False, remote=False, evicted=False,
+                                kind="text", repo=False)
+        done, failed = await idx._index([dummy])
+        self.assertEqual((done, failed), (0, 0))
+        self.assertEqual(len(idx._queue), 1)
+
+    async def test_tier2_combo_tasks_runs_in_isolated_subprocess(self):
+        from coderunner.eval import suites
+
+        before_home = os.environ.get("CODERUNNER_HOME")
+        cfg = Config({"models": {"chat": "", "base_url": ""}}, path=self.home / "t2.json")
+        res = await suites.tier2_combo_tasks(cfg, names=["nonexistent"], progress=lambda _: None)
+        self.assertFalse(res.get("ok"))
+        self.assertEqual(os.environ.get("CODERUNNER_HOME"), before_home)
 
 
 if __name__ == "__main__":

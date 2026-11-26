@@ -88,8 +88,11 @@ export function inline(node, text) {
 function rowCards(heads, rows) {
   const list = el("div", "md-cards");
   const bare = (s) => String(s).replace(/\*\*|`/g, "");
-  // When column 0 is a bare row index (# / 1, 2, 3), promote column 1 as the card's title.
+  // Promote column 1 as the card's title only when column 0 has an index-like header and numeric values,
+  // so numeric data columns like "Year | Revenue | Costs | Profit" stay visible.
+  const indexHead = /^(?:|#|no\.?|nr\.?|num(?:ber)?|rank|idx|index|pos(?:ition)?|row|s\.?\s*no\.?|sl\.?\s*no\.?)$/i;
   const indexed = heads.length > 1 && rows.length > 0
+    && indexHead.test(bare(heads[0] || "").trim())
     && rows.every((r) => /^#?\d+\.?$/.test(bare(r[0] || "").trim()));
   const titleCol = indexed ? 1 : 0;
   const priced = heads.findIndex((h, n) => n !== titleCol

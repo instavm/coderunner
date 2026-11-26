@@ -36,6 +36,7 @@ packages = [
     "coderunner.channels",
     "coderunner.connectors",
     "coderunner.core",
+    "coderunner.eval",
     "coderunner.files",
     "coderunner.models",
     "coderunner.safety",
@@ -46,7 +47,7 @@ packages = [
 
 [tool.setuptools.package-data]
 "coderunner.server" = ["web/*.html", "web/app/*", "web/app/novnc/*", "web/app/novnc/**/*", "web/app/xterm/*"]
-"coderunner.models" = ["catalog.json", "evidence.json", "measured.json", "fixtures/*"]
+"coderunner.models" = ["catalog.json", "evidence.json", "measured.json", "probe.swift", "fixtures/*"]
 "coderunner.browser" = ["extension/*.json", "extension/*.js"]
 "coderunner.files" = ["helper.swift"]
 # The sandbox server and the desktop's installer, for a VM without its desktop (links to the files at the root).

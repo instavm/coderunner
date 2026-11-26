@@ -127,22 +127,32 @@ class Hub:
         tokenizer_config.json (on the GGUF repo or its base repo) for tool-calling template tokens.
         """
         result: dict = {"ok": True, "magic_ok": None, "has_tool_template": None, "architecture": "", "warnings": []}
+        budget = 65536
         try:
             url = f"{endpoint()}/{repo}/resolve/main/{quote(file)}"
-            resp = self.client.get(url, headers={**self._auth(), "Range": "bytes=0-65535"},
-                                   timeout=httpx.Timeout(10, read=10))
-            if resp.status_code in (200, 206):
-                head = resp.content
-                result["magic_ok"] = head[:4] == b"GGUF"
-                if not result["magic_ok"]:
-                    result["ok"] = False
-                    result["warnings"].append(f"{file} does not start with a valid GGUF header")
-                else:
-                    match = re.search(rb"general\.architecture[^a-z0-9_.-]{1,16}([a-z][a-z0-9_.-]{1,32})", head)
-                    if match:
-                        result["architecture"] = match.group(1).decode("ascii", errors="ignore")
-                    if b"tokenizer.chat_template" in head:
-                        result["has_tool_template"] = (b"tools" in head or b"tool_call" in head)
+            # Stream and cap at `budget` bytes so servers that ignore Range and return 200 never buffer a multi-GB GGUF.
+            with self.client.stream("GET", url, headers={**self._auth(), "Range": f"bytes=0-{budget - 1}"},
+                                    timeout=httpx.Timeout(10, read=10)) as resp:
+                if resp.status_code in (200, 206):
+                    chunks = bytearray()
+                    for chunk in resp.iter_bytes(16384):
+                        need = budget - len(chunks)
+                        if need <= 0:
+                            break
+                        chunks.extend(chunk[:need])
+                        if len(chunks) >= budget:
+                            break
+                    head = bytes(chunks)
+                    result["magic_ok"] = head[:4] == b"GGUF"
+                    if not result["magic_ok"]:
+                        result["ok"] = False
+                        result["warnings"].append(f"{file} does not start with a valid GGUF header")
+                    else:
+                        match = re.search(rb"general\.architecture[^a-z0-9_.-]{1,16}([a-z][a-z0-9_.-]{1,32})", head)
+                        if match:
+                            result["architecture"] = match.group(1).decode("ascii", errors="ignore")
+                        if b"tokenizer.chat_template" in head:
+                            result["has_tool_template"] = (b"tools" in head or b"tool_call" in head)
         except httpx.HTTPError:
             pass
         if result["has_tool_template"] is None:

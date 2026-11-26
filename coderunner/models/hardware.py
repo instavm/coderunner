@@ -150,6 +150,22 @@ def ram_tier(ram_gb: float) -> dict:
     return dict(picked)
 
 
+def parallel_tasks(config=None, hw: Hardware | None = None) -> int:
+    """Shared local task concurrency and server slot capacity policy across scheduling and llama-server.
+
+    Explicit `agent.parallel_tasks` wins; otherwise Apple Silicon tiers scale from 1 (8 GB) to 6 (256-512 GB),
+    defaulting to 2 when neither config nor hardware is provided or on non-Apple hosts.
+    """
+    set_by_owner = config.get("agent.parallel_tasks") if config is not None else None
+    if set_by_owner:
+        return max(1, int(set_by_owner))
+    if hw is None and config is not None:
+        hw = detect(float(config.get("sandbox.memory_gb") or 2))
+    if hw is not None and getattr(hw, "gpu", "") == "apple" and getattr(hw, "ram_gb", 0):
+        return int(ram_tier(hw.ram_gb)["parallel_tasks"])
+    return 2
+
+
 def unified_budget(ram_gb: float, sandbox_gb: float) -> float:
     """Linux unified-memory systems (DGX Spark): no wired-memory cap, but the OS and the sandbox share the pool."""
     return max(0.0, ram_gb - sandbox_gb - 4 - 0.05 * ram_gb)
