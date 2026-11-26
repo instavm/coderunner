@@ -1,202 +1,140 @@
 <div align="center">
 
-[![Start](https://img.shields.io/github/stars/instavm/coderunner?color=yellow&style=flat&label=%E2%AD%90%20stars)](https://github.com/instavm/coderunner/stargazers)
-[![License](http://img.shields.io/:license-Apache%202.0-green.svg?style=flat)](https://github.com/instavm/coderunner/blob/master/LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/instavm/coderunner?color=yellow&style=flat&label=stars)](https://github.com/instavm/coderunner/stargazers)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg?style=flat)](LICENSE)
+
 </div>
 
 # CodeRunner
 
-A private index of your Mac for the agent you already use, and a sandbox for the code it writes.
+A local desktop assistant with its own isolated Linux computer, a built-in Mac browser, and an on-device file search index for your Mac — running on local models, your own model server, or an API key.
 
-You use Claude Code, Codex or Claude Desktop (Cowork). You want it to find and read your own files, mail,
-messages, notes and calendar without uploading your disk, and to run code on what it finds somewhere it
-cannot do damage. CodeRunner indexes the folders and apps you choose on your Mac's Neural Engine, serves the
-search to your agent over MCP under an approval and leak rule, and runs the agent's code in a VM.
+CodeRunner runs tasks inside a VM-isolated Linux sandbox you can watch and take over live, indexes the folders and Mac apps you choose on the Neural Engine without uploading your disk, and exposes both the search index and the sandbox over MCP to Claude Code, Codex, and Claude Desktop.
 
-## Search for your agent
+![CodeRunner desktop workspace showing a web research task, live sandbox screen, and Workspace Companion Deck](docs/images/workspace-overview.png)
 
-### Credentials
+## Quick start
 
-The installer generates the sandbox token in `~/.coderunner/api-token` (or saves
-the `CODERUNNER_API_TOKEN` you exported). Clients send it as
-`Authorization: Bearer <token>`; `cat ~/.coderunner/api-token` prints it. Only
-`GET /health` is public, and a missing or weak token fails closed. The Claude
-Desktop proxy and the examples read the token from that file when the variable
-is not set. See [authentication and network boundaries](AUTHENTICATION.md).
+### Full desktop assistant (macOS 26 on Apple silicon, or Linux with Docker)
 
 ```bash
 git clone https://github.com/instavm/coderunner.git && cd coderunner
-./install.sh --search                                  # embedding model and index only; about 1.5 GB, a few minutes
-coderunner files add ~/Documents                       # and any other folder
-coderunner files sources add mail                      # also messages, notes, calendar
+./install.sh            # add --build to build the sandbox image locally
+coderunner app
+```
+
+No separate model runtime is required. On macOS, setup probes your chip, unified memory, GPU bandwidth, and Neural Engine, fetches `llama.cpp` and Core ML embeddings automatically, verifies free disk space before downloading weights, smoke-tests tool calls and vision, and opens the desktop app.
+
+### On-device search only (for Claude Code, Codex, or Claude Desktop)
+
+```bash
+git clone https://github.com/instavm/coderunner.git && cd coderunner
+./install.sh --search                       # embedding model and index only (~1.5 GB)
+coderunner files add ~/Documents            # share specific folders
+coderunner files sources add mail           # optional: mail, messages, notes, calendar
 claude mcp add coderunner-search -- coderunner mcp --tools search
 ```
 
-Needs an Apple silicon Mac on macOS 15 or later (the embedding model runs on the Neural Engine) or Ollama on
-Linux. Codex: `codex mcp add coderunner-search -- coderunner mcp --tools search`. Claude Desktop, OpenClaw, LM
-Studio and other clients: [ASSISTANT.md](ASSISTANT.md#from-claude-code-codex-cowork-openclaw-and-lm-studio).
-`coderunner find "the lease for the apartment"` searches from the terminal.
+Works on Apple silicon macOS 15+ (embeddings run on the Neural Engine via Core ML) or Linux with Ollama. Codex: `codex mcp add coderunner-search -- coderunner mcp --tools search`. Terminal search: `coderunner find "apartment lease notice period"`.
 
-What your agent gets, through `files_search` and `file_read`:
+## What is in v2
 
-* Documents, notes, code, spreadsheets, slides, photos, screenshots, video and recordings, found by what they
-  are about or by exact codes and names, with the page, line or moment that matched. Folders by name and by
-  what they hold. Measured on a reproducible corpus of personal files: the right file first for 94% of 108
-  questions, in the top ten for 98%, in 19 ms ([VALIDATION.md](VALIDATION.md)).
-* Mail, Messages, Notes and Calendar entries from the apps you added, read from the index.
-* A memory of things you tell it (`memory_save`, `memory_search`).
+### Desktop workspace
+- **Three-lane layout**: task history and search on the left, conversational thread in the center, and the assistant's workspace on the right.
+- **Top-pinned live screen + Workspace Companion Deck**: the sandbox VNC display stays pinned to the top at its native aspect ratio; the companion deck directly below shows the live step-by-step **Activity** timeline (with durations, plan progress, adaptive pivots, and an **Answer now** wrap control), deduplicated **Pages** visited, and thread **Files**.
+- **Terminal & Built-in Mac browser**: switch tabs in the workspace panel to drop into the sandbox VM's PTY (`Terminal`), watch or take over CodeRunner's isolated **Mac browser**, or inspect active models and memory pressure.
+- **Routines, dictation, and attachments**: attach PDFs, receipts, spreadsheets, audio, or video directly in the composer; dictate locally with Parakeet Core ML, Apple Speech, or Qwen3-ASR; schedule recurring routines from chat or Settings.
 
-What stays on your side:
+### Local models, hardware probing & benchmarks
 
-* Nothing leaves the Mac unless your agent sends it. Search results carry your private data and third-party
-  text, so the bridge marks the client as holding them, and sensitive actions it takes afterwards need a fresh
-  approval; sharing that data with a new destination asks once (the leak rule in ASSISTANT.md).
-* Secrets, keys, `.env` files, hidden folders and `~/Library` are never indexed. Files only in iCloud are
-  downloaded to be read when small and given back.
-* One-time codes and sign-in links are redacted from mail before indexing.
-* The stdio bridge holds the admin token: configure it only for clients you run yourself. The HTTP endpoint
-  (`http://127.0.0.1:8224/mcp/search`) answers nothing without it.
+![Models, hardware probe, and benchmark scoreboard in Settings](docs/images/benchmarks-and-mac.png)
 
-## The full assistant
+- **Tiered Apple Silicon planning (8–512 GB unified RAM)**: measures real GPU bandwidth, Metal FP16 throughput, and Core ML Neural Engine TOPS (`Measure hardware` / `coderunner models bench`) instead of relying on spec-sheet guesses.
+- **Built-in Benchmark Lab**: run a 90-second capability & safety gate (tool arguments, nested `browser_batch`, vision, KV cache-hit ratio, and stratified commit-judge accuracy) or multi-domain end-to-end tasks directly from **Settings → Models & Mac**.
+- **Run where you want**: run entirely on your Mac, point at your own OpenAI-compatible model server (e.g. `llama-server` over Tailscale), or switch to Claude with your own Anthropic API key (`coderunner claude on` — clearly marked as non-private whenever active).
+- **Resilient local-model loop**: detects silent dead pages (404s, bot walls, bad redirects) and pivots strategy dynamically, breaks stalled plan loops, escalates compaction cleanly on 32K contexts, groups independent page opens with tab-aware queries, and runs a single append-only verification pass before replying.
 
-`./install.sh` without `--search` also builds the sandbox VM, picks the strongest local model your hardware can
-run (benchmarked on the machine, not guessed), and starts an assistant you can talk to: your own Chrome behind
-approvals, Calendar, Reminders, Notes, Mail drafts and Contacts, voice, scheduled tasks, and Telegram, iMessage
-or Signal to reach it from your phone. Needs macOS 26 on Apple silicon, or Linux with Docker. No model runtime
-needs installing first: on a Mac setup fetches llama.cpp's server and runs embeddings on Core ML (no Ollama), and
-it checks the disk before it downloads a model. `coderunner app` opens the desktop app; where no model is set
-up yet it shows what it found on the computer, the model for each job, the size of the download and the folder
-it goes to (which can be changed), and sets everything up from one button. Files can be attached to a task
-(pictures, videos, recordings, documents) and show in its thread. `coderunner check` does each kind of task
-once on your install and says which worked. `coderunner claude on` uses Claude on Anthropic's API with your
-own key instead of a local model: faster on any computer, and not private (the app says so while it is on).
-[ASSISTANT.md](ASSISTANT.md) has the architecture, the safety model and every command.
+### Browser & safety boundaries
 
-For managed cloud VMs for agents, see [InstaVM](https://instavm.io).
+![Browser settings showing VM browser and CodeRunner's built-in Mac browser](docs/images/settings-browser.png)
 
-## The sandbox
+- **Sandboxed browsing + Built-in Mac browser**: by default the assistant browses inside Chrome in the isolated Linux VM. If a site blocks the VM with a bot check, CodeRunner asks once to continue in its own isolated **Mac browser** tab (separate from your personal browser, with optional single-site cookie import).
+- **Approval policy & commit judge**: reading pages and filling search forms run without interruption; actions that pay, book, send, post, delete, or change settings require explicit approval. Passwords, 2FA codes, and CAPTCHAs are never typed by the model — it pauses and hands the screen over to you.
+- **Untrusted content isolation**: web pages, mail, and sandbox outputs are delimited as untrusted data and taint the run so subsequent sensitive actions or cross-site data sharing require fresh approval.
 
-The sandbox is an isolated VM (Apple `container` on macOS 26, Docker elsewhere) exposed over MCP with a bearer
-token, with explicitly chosen host mounts and network modes. Isolation reduces risk; it does not prevent all
-data loss or exfiltration.
+## Private search for external agents
+
+Agents connected via `coderunner mcp --tools search` get `files_search`, `file_read`, `file_view`, `file_listen`, `memory_search`, and `memory_save`:
+
+- Hybrid semantic + keyword retrieval across documents, PDFs, notes, code, spreadsheets, screenshots (on-device OCR), photos, video frames, and audio. On the reproducible benchmark corpus: **94.4% R@1** and **19 ms** median query latency ([VALIDATION.md](VALIDATION.md)).
+- Secrets, private keys, `.env` files, hidden folders, and `~/Library` are never indexed. One-time codes and sign-in links are redacted from indexed mail.
+- Small iCloud-only files can be downloaded briefly to index and evicted back to iCloud.
+
+## The sandbox VM
+
+Code executes inside an isolated Linux VM (Apple `container` on macOS 26, Docker elsewhere) with an authenticated MCP server and persistent `/workspace` storage.
+
+### Lifecycle
 
 ```bash
-./install.sh            # add --build to build the sandbox image from this checkout
+coderunner sandbox stop        # stop VM; filesystem is preserved
+coderunner sandbox start       # start VM
+coderunner sandbox reset       # recreate VM and filesystem
+coderunner sandbox status      # inspect health and disk usage
+coderunner sandbox logs -f     # stream VM logs
 ```
 
-### Credentials
-
-The installer generates the sandbox API token in `~/.coderunner/api-token`
-(or saves the `CODERUNNER_API_TOKEN` you exported). Clients send it as
-`Authorization: Bearer <token>`; print it with `coderunner token`. Only
-`GET /health` is public, and a missing or weak token fails closed. Images
-published before authentication ignore the token, so the installer refuses them;
-use `./install.sh --build` until an authenticated image is published. See
-[authentication and network boundaries](AUTHENTICATION.md).
-
-### Stop and resume
+### Resource limits, mounts & network modes
 
 ```bash
-coderunner sandbox stop        # stop; the filesystem is kept (Python kernel state is not)
-coderunner sandbox start       # resume (the daemon also starts it at login)
-coderunner sandbox reset       # delete it and its filesystem, then run the installer again
-coderunner sandbox logs -f     # follow its logs; `status` shows whether it is running
-```
-
-### Resource limits and workspace mounts
-
-```bash
-./install.sh --cpus 4 --memory 8g
-./install.sh \
+./install.sh --cpus 4 --memory 8g \
   --mount "$HOME/projects/api:/workspace/api" \
   --mount "$HOME/projects/output:/workspace/output:rw"
+
+./install.sh --network proxy   # only approved hosts via the host egress proxy (blocks LAN/loopback/tailnet)
+./install.sh --network none    # offline sandbox
 ```
 
-`CODERUNNER_CPUS` and `CODERUNNER_MEMORY` work as alternatives. Extra mounts go under `/workspace`, read-only
-unless `:rw`, and default to none. Resource and mount settings are fixed when the sandbox is created; change
-them with `coderunner sandbox reset --cpus 4 --memory 8g --mount ...`, which takes the same options.
+Extra mounts default to read-only unless suffixed with `:rw`. Change resource, mount, or network settings with `coderunner sandbox reset` using the same flags.
 
-### Network modes
+### Connecting MCP clients to the sandbox
 
-```bash
-./install.sh --network proxy   # only hosts you allow or approve, through the host's egress proxy
-./install.sh --network none    # no network at all
-```
-
-By default code in the sandbox has unrestricted network access. In `proxy` mode package registries (PyPI, npm,
-GitHub, Hugging Face) are allowed and every other host becomes an approval request; LAN, loopback and tailnet
-addresses are refused. In both modes the MCP server is at `http://127.0.0.1:8222/mcp`. The setting is fixed
-when the sandbox is created (`coderunner sandbox reset --network ...` changes it). These modes need Apple
-`container` on macOS. `CODERUNNER_NETWORK` also works.
-
-### With Claude Code
-
-Claude Code runs commands on your machine, as you, with permission prompts as the only boundary. Pointing it at
-CodeRunner's tools instead runs the code it writes in the VM: it can only touch the folders you mounted under
-`/workspace`, the network you allowed, and the sandbox's own filesystem, whatever it was told to do. Use the
-sandbox for code that handles untrusted input or that you would not run by hand, and for several agents that
-must not share state (named sessions). It does not protect anything you mount read-write.
-
-### Claude Code inside the sandbox
+The sandbox MCP server listens at `http://coderunner.local:8222/mcp` (`http://127.0.0.1:8222/mcp` in `proxy`/`none` modes and on Linux). Every endpoint except `GET /health` requires `Authorization: Bearer <token>` (`coderunner token` prints the generated token in `~/.coderunner/api-token`).
 
 ```bash
-coderunner sandbox shell
-root@coderunner:/app# npm install -g @anthropic-ai/claude-code
-```
-
-### MCP clients for the sandbox
-
-The sandbox's MCP server is at `http://coderunner.local:8222/mcp` (`http://127.0.0.1:8222/mcp` in `none` and
-`proxy` mode and on Linux). Every client sends `Authorization: Bearer <token>`; `coderunner token` prints it.
-The tools: `execute_python_code` (a persistent Jupyter kernel), `start_python_session`, `list_python_sessions`,
-`stop_python_session` (up to five named kernels, for agents that must not share state), `run_shell` and
-`shell_job`, `navigate_and_get_all_visible_text` (Playwright), and `list_skills`, `get_skill_info`,
-`get_skill_file` (see Skills).
-
-```bash
-# Claude Code: the server directly, or the plugin (it sends the same header)
+# Claude Code
 claude mcp add --transport http coderunner http://coderunner.local:8222/mcp \
   --header "Authorization: Bearer $(coderunner token)"
-claude plugin marketplace add https://github.com/instavm/coderunner-plugin && claude plugin install instavm-coderunner
 ```
 
 ```json
-// Gemini CLI (~/.gemini/settings.json) and OpenCode (~/.config/opencode/opencode.json, under "mcp" with
-// "type": "remote" and "url") take the same URL and header:
-{"mcpServers": {"coderunner": {"httpUrl": "http://coderunner.local:8222/mcp",
-                               "headers": {"Authorization": "Bearer <output of coderunner token>"}}}}
+// Gemini CLI (~/.gemini/settings.json) or OpenCode (~/.config/opencode/opencode.json)
+{
+  "mcpServers": {
+    "coderunner": {
+      "httpUrl": "http://coderunner.local:8222/mcp",
+      "headers": {
+        "Authorization": "Bearer <output of coderunner token>"
+      }
+    }
+  }
+}
 ```
 
-Claude Desktop and Kiro start the stdio proxy in `examples/claude_desktop/mcpproxy.py` with
-`~/.coderunner/venv/bin/python`; it reads the token from `~/.coderunner/api-token`. Copy
-`examples/claude_desktop/claude_desktop_config.example.json`, set the two paths, and add it under Settings,
-Developer in Claude Desktop (`~/.kiro/settings/mcp.json` for Kiro). If the tool shows as "Disabled" although
-the server is listed as running, quit Claude Desktop fully (Cmd-Q) and open it again, check that `command` is the
-venv python the installer printed, and read `~/Library/Logs/Claude/mcp-server-coderunner.log`: the proxy needs
-the sandbox running and the token file. `examples/openai_agents/openai_client.py`
-shows the sandbox from the OpenAI Agents library (`pip install -r examples/requirements.txt`).
-[Coderunner-UI](https://github.com/instavm/coderunner-ui) is an offline chat workspace on top of the sandbox.
-
-### Isolation
-
-Code runs in a container with VM-level isolation; the host and files outside the mounts you chose are out of its reach, and the network modes above decide where it can connect.
-
-From [@apple/container](https://github.com/apple/container/blob/main/docs/technical-overview.md):
->Each container has the isolation properties of a full VM, using a minimal set of core utilities and dynamic libraries to reduce resource utilization and attack surface.
+For Claude Desktop and Kiro, point them at the stdio bridge in `examples/claude_desktop/mcpproxy.py` using `~/.coderunner/venv/bin/python` (see `examples/claude_desktop/claude_desktop_config.example.json`). For managed cloud VMs, see [InstaVM](https://instavm.io).
 
 ### Skills
 
-Skills are folders with a `SKILL.md` and scripts that run inside the sandbox; the MCP tools `list_skills`,
-`get_skill_info` and `get_skill_file` describe them to the agent, which runs their scripts with
-`execute_python_code`. Two ship with every install: `pdf-text-replace` (fillable PDF forms) and
-`image-crop-rotate`. Your own go under `~/.coderunner/assets/skills/user/<name>/` with a `SKILL.md` and a
-`scripts/` folder, and are listed on the next `list_skills`. [SKILLS-README.md](SKILLS-README.md) covers
-running Anthropic's published skills locally.
+Skills live in folders containing a `SKILL.md` and scripts under `~/.coderunner/assets/skills/user/<name>/` and are exposed through `list_skills`, `get_skill_info`, and `get_skill_file`. Two built-in skills ship by default (`pdf-text-replace` and `image-crop-rotate`). See [SKILLS-README.md](SKILLS-README.md).
 
-## Contributing
+## Documentation
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+- [ASSISTANT.md](ASSISTANT.md) — full architecture, safety model, model tiers, and CLI reference
+- [VALIDATION.md](VALIDATION.md) — automated test coverage and measured benchmark runs
+- [AUTHENTICATION.md](AUTHENTICATION.md) — bearer token handling and network boundaries
+- [THREAT_MODEL.md](THREAT_MODEL.md) — sandbox isolation guarantees and limits
+- [CONTRIBUTING.md](CONTRIBUTING.md) — development setup and contribution guidelines
 
 ## License
 
-This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
+Apache 2.0 — see [LICENSE](LICENSE).
