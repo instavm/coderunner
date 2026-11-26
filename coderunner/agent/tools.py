@@ -685,6 +685,9 @@ def schedule_tools(svc) -> list[Tool]:
             f"{row['id']} '{row['name']}' ({row['spec']})" for row in mine) + ". Give the id."
 
     async def create(args, ctx):
+        if str(ctx.origin).startswith("schedule:"):
+            # A run of a routine never makes another routine: it would only repeat the one it is a run of.
+            return "Error: this is a run of a routine that is already set up. Do its task now and answer."
         spec = canonical(args["spec"])          # an unclear spec is said before anyone is asked about it
         summary = f"Set up the routine '{args['name']}' ({spec}) to run:\n{args['prompt']}"
         tainted = steered(ctx)

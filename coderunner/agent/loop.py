@@ -291,6 +291,10 @@ LINKS_MIN_CHARS = 200     # shorter replies (a yes, a routine set up) need no li
 ADD_LINKS = ("Your reply has no links{asked}. Without calling any tools, write the same reply again "
              "with a link to the page each item, figure or next step came from, as [name](https://...), using only "
              "addresses of pages you opened in this task.")
+# A routine's run sees the thread, where the request that set the routine up still reads "every day at 7:40...":
+# the first run on 2026-11-26 set the same routine up again and waited five minutes on an approval nobody saw.
+ROUTINE_RUN = ("This is a scheduled run of a routine that is already set up. Do its task now and answer; do not "
+               "set up, change or remove routines unless the task itself says to.")
 REMIND_EVERY = 6      # steps between plan reminders while the plan stays the same
 # A message the owner sent while the task works: their own words, trusted like the request. The plan and the
 # task's limits stay as they are.
@@ -552,6 +556,8 @@ class Agent:
                 ctx.taint()             # an element's name in a recipe came from a page
                 wrapped, _ = await self.svc.guard.wrap("site_notes", block)
                 memories += "\n" + wrapped
+        if str(ctx.origin).startswith("schedule:"):
+            memories += "\n" + ROUTINE_RUN
         now = datetime.now().astimezone().strftime("%A %Y-%m-%d %H:%M %Z")
         return CONTEXT.format(now=now, memories=memories)
 

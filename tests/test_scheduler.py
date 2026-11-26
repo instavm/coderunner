@@ -528,6 +528,15 @@ class RoutineToolTests(unittest.IsolatedAsyncioTestCase):
     def approvals(self):
         return self.svc.store.query("SELECT kind, status FROM approvals ORDER BY created")
 
+    async def test_a_routine_run_does_its_task_and_never_sets_up_another_routine(self):
+        ctx = self.ctx()
+        ctx.origin = "schedule:1"
+        said = await self.call("schedule_create", {"name": "Tokyo", "spec": "daily 19:40", "prompt": "Tokyo time"}, ctx)
+        self.assertTrue(said.startswith("Error: this is a run of a routine"), said)
+        self.assertEqual((self.svc.scheduler.list(), self.svc.policy.pending()), ([], []))
+        from coderunner.agent.loop import ROUTINE_RUN
+        self.assertIn("already set up", ROUTINE_RUN)
+
     async def test_the_owner_sets_up_and_changes_a_routine_in_their_conversation_without_being_asked(self):
         made = await self.call("schedule_create", {"name": "Deal hunt", "spec": "daily 09:00",
                                                    "prompt": "Find the best deals on amazon.in"}, self.ctx())
