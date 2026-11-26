@@ -221,10 +221,22 @@ class AppBrowser {
       }};
     });
     contents.debugger.on("message", (event, method, params, sessionId) => this.onEvent(tab, method, params, sessionId));
-    contents.debugger.on("detach", () => {
+    contents.debugger.on("detach", (event, reason) => {
       if (tab.session) this.emit("Target.detachedFromTarget", {sessionId: tab.session, targetId: tab.targetId});
       tab.session = null;
-      if (!contents.isDestroyed()) { try { contents.debugger.attach("1.3"); } catch { /* gone */ } }
+      // Never re-attach synchronously (or at all while closing/releasing/target-closed): Chromium can emit
+      // "detach" during teardown before isDestroyed() flips, and synchronous re-attach spins the main thread at 100%.
+      if (tab.closing || tab.releasing || !this.tabs.has(tab.id) || contents.isDestroyed()) return;
+      if (reason === "target closed" || reason === "canceled_by_user" || reason === "replaced_with_devtools") return;
+      const now = Date.now();
+      tab.reattachTimes = (tab.reattachTimes || []).filter((t) => now - t < 5000);
+      if (tab.reattachTimes.length >= 3) return;
+      tab.reattachTimes.push(now);
+      clearTimeout(tab.reattachTimer);
+      tab.reattachTimer = setTimeout(() => {
+        if (tab.closing || !this.tabs.has(tab.id) || contents.isDestroyed() || contents.debugger.isAttached()) return;
+        try { contents.debugger.attach("1.3"); } catch { /* gone */ }
+      }, 150);
     });
     contents.on("destroyed", () => this.forget(tab.id));
   }
@@ -254,7 +266,13 @@ class AppBrowser {
   closeTab(id) {
     const tab = this.tabs.get(id);
     if (!tab) return;
+    tab.closing = true;
+    clearTimeout(tab.reattachTimer);
     const contents = tab.view.webContents;
+    if (!contents.isDestroyed()) {
+      try { contents.debugger.removeAllListeners(); } catch { /* gone */ }
+      try { if (contents.debugger.isAttached()) contents.debugger.detach(); } catch { /* gone */ }
+    }
     this.forget(id);
     try { if (tab.parent && !tab.parent.isDestroyed()) tab.parent.contentView.removeChildView(tab.view); } catch { /* gone */ }
     if (!contents.isDestroyed()) contents.close();
@@ -263,6 +281,8 @@ class AppBrowser {
   forget(id) {
     const tab = this.tabs.get(id);
     if (!tab) return;
+    tab.closing = true;
+    clearTimeout(tab.reattachTimer);
     this.tabs.delete(id);
     this.order = this.order.filter((other) => other !== id);
     for (const [child, owner] of this.children) if (owner === id) this.children.delete(child);
@@ -476,9 +496,16 @@ class AppBrowser {
     tab.session = null;
     for (const [child, owner] of this.children) if (owner === tab.id) this.children.delete(child);
     const contents = tab.view.webContents;
-    if (!contents.isDestroyed()) {
-      try { contents.debugger.detach(); } catch { /* not attached */ }
-      try { contents.debugger.attach("1.3"); } catch { /* gone */ }
+    if (!contents.isDestroyed() && !tab.closing && this.tabs.has(tab.id)) {
+      tab.releasing = true;
+      try {
+        try { if (contents.debugger.isAttached()) contents.debugger.detach(); } catch { /* not attached */ }
+        if (!contents.isDestroyed() && !tab.closing && this.tabs.has(tab.id)) {
+          try { contents.debugger.attach("1.3"); } catch { /* gone */ }
+        }
+      } finally {
+        tab.releasing = false;
+      }
     }
     this.emit("Target.detachedFromTarget", {sessionId, targetId: tab.targetId});
     this.changed();
