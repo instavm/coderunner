@@ -207,13 +207,20 @@ class SetupJob(Job):
         model, hw = planned.get("model"), planned["hardware"]
         # What is free at this moment, beside what fits the machine: said before anything is started.
         now = manager.hardware.available_gb(hw.get("ram_gb") or 0) if model and model.get("runtime") in manager.LOCAL else None
+        swap = manager.hardware.swap_used_gb() if sys.platform == "darwin" else None
         need = float((model or {}).get("need_gb") or 0)
         total = round(sum(item["gb"] or 0 for item in items), 2)
+        presets = [{**p, "name": manager.pretty(p["model"])} for p in (planned.get("presets") or [])]
         summary = {
             "hardware": {"chip": hw.get("chip") or "unknown chip", "ram_gb": round(hw.get("ram_gb") or 0),
                          "gpu": hw.get("gpu"), "budget_gb": round(hw.get("budget_gb") or 0, 1),
                          "unified": bool(hw.get("unified")), "vram_gb": round(hw.get("vram_gb") or 0),
                          "measured": hw.get("measured") or "", "os": "mac" if sys.platform == "darwin" else "linux"},
+            "ane": {"cores": int(hw.get("ane_cores") or 0), "tops": hw.get("ane_tops") or 0,
+                    "verified": hw.get("ane_verified"), "gpu_cores": int(hw.get("gpu_cores") or 0)},
+            "tier": planned.get("tier"),
+            "presets": presets,
+            "wired_limit_hint": planned.get("wired_limit_hint"),
             "speed": model and {"measured": bool(hw.get("measured") or model.get("tasks")),
                                 "read_tok_s": model.get("read_tok_s"), "tok_s": model.get("tok_s"),
                                 "step_s": model.get("step_s"), "bandwidth_gbs": hw.get("bandwidth_gbs"),
@@ -225,13 +232,16 @@ class SetupJob(Job):
             "roles": roles,
             "memory": None if now is None or not need else {
                 "need_gb": round(need, 1), "free_gb": round(now, 1), "short": need + manager.MEMORY_MARGIN_GB > now},
+            "swap_used_gb": swap,
             "alternatives": [{"id": c["id"], "name": manager.pretty(c["id"]), "runtime": c.get("runtime"),
                               "step_s": c.get("step_s")} for c in planned.get("alternatives", [])[:4]],
             # The models the owner can choose between, best first, each with what it would still download.
             "recommended": recommended,
             "choices": [{"id": c["id"], "name": manager.pretty(c["id"]), "step_s": c.get("step_s"),
+                         "vision": c.get("vision"), "need_gb": c.get("need_gb"),
                          "download_gb": self._model_download(c)} for c in ranked] if len(ranked) > 1 else [],
-            "notes": planned.get("notes", []), "downloads": items, "download_gb": total,
+            "notes": [n for n in planned.get("notes", []) if "sudo sysctl" not in n],
+            "downloads": items, "download_gb": total,
             "free_gb": round(free, 1), "room_gb": round(max(room, 0), 1), "floor_gb": floor,
             "after_gb": round(free - total, 1), "disk_gb": round(_disk_gb(models_dir(self.config)), 1),
             "models_dir": str(models_dir(self.config)), "models_dir_short": _short_path(models_dir(self.config)),

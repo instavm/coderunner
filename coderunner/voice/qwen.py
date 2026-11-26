@@ -19,16 +19,8 @@ import wave
 
 from ..core import paths
 from ..core.process import run
+from ..models.runtimes import LLAMA_BUILDS, LLAMA_RELEASE, install_llama_release
 from .common import STT_HINT, Progress, Segment, VoiceUnavailable
-
-# llama.cpp's official build, checked against the SHA-256 GitHub publishes for each asset.
-LLAMA_RELEASE = "b11564"
-LLAMA_BUILDS = {  # (os, arch) -> (asset, sha256)
-    ("darwin", "arm64"): ("macos-arm64", "fa7897448562888373f1c4d393dc860da78873e0fbc230fd17312e0e972af844"),
-    ("darwin", "x86_64"): ("macos-x64", "64489d9ef02d7b0fc40dce0fc26b9286f52d514e96ea60a8b7c50af6ad425a39"),
-    ("linux", "x86_64"): ("ubuntu-x64", "349c1499f28d93da836ba8c60160c2e77545f6cf30b4a038a0cf040ff0a949ef"),
-    ("linux", "aarch64"): ("ubuntu-arm64", "92a42da53d621c1650465b73bf4fcdcdb90e656aa9997d2590a6206b27619932"),
-}
 # Open ASR Leaderboard (09-10-2026), average English WER: 1.7B 5.75, 0.6B 6.60. Files: (name, sha256).
 MODELS = {
     "qwen3-asr-1.7b": {"repo": "ggml-org/Qwen3-ASR-1.7B-GGUF", "files": (
@@ -116,33 +108,10 @@ class QwenASR:
         build = self.build_for_host()
         if build is None:
             raise VoiceUnavailable("llama.cpp publishes no build for this platform")
-        import tarfile
-
-        import httpx
-        asset, sha256 = build
-        name = f"llama-{LLAMA_RELEASE}-bin-{asset}.tar.gz"
-        url = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_RELEASE}/{name}"
-        target = self.llama_dir()
-        target.mkdir(parents=True, exist_ok=True)
-        archive = target / name
-        if progress:
-            progress(f"downloading {name}")
-        digest = hashlib.sha256()
-        with httpx.stream("GET", url, follow_redirects=True, timeout=httpx.Timeout(30, read=300)) as response:
-            response.raise_for_status()
-            with open(archive, "wb") as handle:
-                for chunk in response.iter_bytes(1 << 20):
-                    digest.update(chunk)
-                    handle.write(chunk)
-        if digest.hexdigest() != sha256:
-            archive.unlink()
-            raise RuntimeError(f"{name} does not match its published checksum")
-        with tarfile.open(archive) as tar:
-            tar.extractall(target, filter="data")     # refuses absolute paths, links out, devices
-        archive.unlink()
+        install_llama_release(progress, release=LLAMA_RELEASE, build=build, target=self.llama_dir())
         cli = self.cli()
         if not cli:
-            raise RuntimeError(f"{name} has no llama-mtmd-cli")
+            raise RuntimeError(f"llama-{LLAMA_RELEASE} has no llama-mtmd-cli")
         return cli
 
     def download(self, progress: Progress | None = None, hub=None) -> list[pathlib.Path]:

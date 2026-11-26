@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import pathlib
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -31,11 +34,12 @@ from .hub import Hub, HubError, RateLimited, endpoint
 
 PUBLISHERS = ("Qwen", "google", "deepseek-ai", "zai-org", "mistralai", "microsoft", "nvidia", "ibm-granite",
               "openai", "prism-ml", "XiaomiMiMo", "moonshotai", "MiniMaxAI", "tencent", "LGAI-EXAONE", "allenai",
-              "Hcompany", "stepfun-ai", "inclusionAI", "CohereLabs", "meta-llama", "LiquidAI")
-GGUF_PUBLISHERS = ("unsloth", "bartowski", "ggml-org", "lmstudio-community")
+              "Hcompany", "stepfun-ai", "inclusionAI", "CohereLabs", "meta-llama", "LiquidAI",
+              "thinkingmachines", "ornith-ai")
+GGUF_PUBLISHERS = ("unsloth", "bartowski", "ggml-org", "lmstudio-community", "mradermacher", "ubergarm")
 CHAT_PIPELINES = {"text-generation", "image-text-to-text", "any-to-any"}
 NOT_CHAT = re.compile(r"(?i)(?:^|[-_])(base|embed\w*|rerank\w*|guard|reward|tts|asr|ocr|speech|vae|diffusion|"
-                      r"image-\d|draft|eagle|mtp|dspark|probe|singprobe|fp8|bf16|awq|gptq|int4|int8|nvfp4)(?:$|[-_])")
+                      r"image-\d|draft|eagle|mtp|dspark|probe|singprobe|bf16|awq|gptq|int4|int8)(?:$|[-_])")
 # Specialist models (OCR, screen-driving agents, robotics...) are not general assistants: setup's smoke
 # test would reject them, but only after a multi-gigabyte download, so they are left out up front.
 SPECIALIST = re.compile(r"(?i)(ocr|parsing|gui[-_ ]?(agent|owl)|computer.?use|ui.?agent|ui-mate|fara\d|robot|"
@@ -45,20 +49,19 @@ SPECIALIST = re.compile(r"(?i)(ocr|parsing|gui[-_ ]?(agent|owl)|computer.?use|ui
 AUXILIARY = re.compile(r"(?i)(mmproj|mtp|draft|eagle|dflash|vision|encoder|audio|tokenizer|projector)")
 # Bits per weight of common GGUF quantizations; higher keeps more of the model's quality.
 QUANT_BITS = {"BF16": 16, "F16": 16, "Q8_0": 8.5, "Q6_K": 6.6, "Q5_K_M": 5.7, "UD-Q5_K_XL": 5.9, "Q5_K_S": 5.5,
-              "UD-Q4_K_XL": 4.9, "Q4_K_M": 4.8, "Q4_K_S": 4.6, "MXFP4": 4.25, "IQ4_NL": 4.5, "IQ4_XS": 4.3,
+              "UD-Q4_K_XL": 4.9, "Q4_K_M": 4.8, "Q4_K_S": 4.6, "MXFP4": 4.25, "NVFP4": 4.5, "IQ4_NL": 4.5, "IQ4_XS": 4.3,
               "UD-Q3_K_XL": 3.9, "Q3_K_M": 3.9, "Q3_K_L": 4.1, "Q3_K_S": 3.5, "IQ3_M": 3.7, "IQ3_XXS": 3.1,
               "UD-Q2_K_XL": 2.9, "Q2_K": 2.6, "IQ2_M": 2.7, "IQ2_XXS": 2.1, "UD-IQ1_S": 1.8, "IQ1_S": 1.6}
-QUANT = re.compile(r"(?i)(?:^|[-_./])((?:UD-)?(?:IQ\d_(?:XXS|XS|NL|S|M)|Q\d_K(?:_(?:XL|S|M|L))?|Q\d_\d|BF16|F16|MXFP4))"
+QUANT = re.compile(r"(?i)(?:^|[-_./])((?:UD-)?(?:IQ\d_(?:XXS|XS|NL|S|M)|Q\d_K(?:_(?:XL|S|M|L))?|Q\d_\d|BF16|F16|MXFP4|NVFP4))"
                    r"(?=[-_.](?:\d{5}-of|gguf)|\.gguf|/)")
 # Families whose chat template and tool calls Ollama handles; others (DeepSeek V4, GLM-5.x, MiMo, Step,
 # Ling...) need llama-server --jinja or MLX, where tool calls go through the model's own template.
-OLLAMA_FAMILIES = ("qwen", "gemma", "granite", "llama", "mistral", "phi", "gpt_oss", "olmo", "lfm", "exaone")
+OLLAMA_FAMILIES = ("qwen", "gemma", "granite", "llama", "mistral", "phi", "gpt_oss", "olmo", "lfm", "exaone", "inkling")
 # Known breakages per machine: (model family or repo fragment, test on the hardware, reason).
 KNOWN_BROKEN = (
     ("deepseek_v4", lambda hw: hw.gpu == "nvidia" and hw.unified and hw.compute_cap >= 12,
      "llama.cpp corrupts copied strings, tool arguments included, on GB10 (llama.cpp issue 28132)"),
     ("Qwen3.8-Flash-Next", lambda hw: "Thor" in hw.chip, "broken on Jetson Thor / SM110 (llama.cpp issue 27763)"),
-    ("DeepSeek-V4.1", lambda hw: True, "no llama.cpp support yet (llama.cpp pull request 28696)"),
 )
 MIN_BITS = 2.0            # below this quality collapses
 MIN_PARAMS_B = 4.0        # smaller models got tool arguments wrong in testing (fit.MIN_CHAT_PARAMS_B)
@@ -86,7 +89,18 @@ def arch_from_config(config: dict) -> dict:
     text = config.get("text_config") or config.get("llm_config") or config
     layers = int(text.get("num_hidden_layers") or 0)
     kinds = text.get("layer_types") or []
-    if kinds:
+    if text.get("kv_source_layer_ids"):                # DeepSeek-V4.1 compressed KV sharing across source layers
+        full = len(text["kv_source_layer_ids"])
+        sliding = 0
+    elif text.get("local_layer_ids"):                  # Inkling-2 style local SWA + global full-attention layers
+        local = set(text["local_layer_ids"])
+        loop = text.get("loop_config") or {}
+        extra_loops = max(0, int(loop.get("num_loops") or 1) - 1)
+        loop_ids = set(range(int(loop.get("start_layer") or 0), int(loop.get("end_layer") or 0)))
+        sliding = len(local) + extra_loops * len(local & loop_ids)
+        full_base = max(0, layers - len(local))
+        full = full_base + extra_loops * len(loop_ids - local)
+    elif kinds:
         full = sum(1 for kind in kinds if "full" in str(kind) or kind == "attention")
         sliding = sum(1 for kind in kinds if "sliding" in str(kind))
         linear = sum(1 for kind in kinds if "linear" in str(kind) or "mamba" in str(kind) or "ssm" in str(kind))
@@ -104,9 +118,9 @@ def arch_from_config(config: dict) -> dict:
     if text.get("kv_lora_rank"):                       # DeepSeek-style compressed attention (MLA)
         width = int(text["kv_lora_rank"]) + int(text.get("qk_rope_head_dim") or 64)
         arch.update(kv_heads=1, head_dim=max(1, width // 2))   # K and V share one latent; kv_gib counts both
-    if sliding and text.get("sliding_window"):
+    if sliding and (text.get("sliding_window") or text.get("local_attention_window")):
         arch.update(full_attn_layers=full, swa_layers=sliding, swa_kv_heads=kv_heads, swa_head_dim=head_dim,
-                    swa_window=int(text["sliding_window"]))
+                    swa_window=int(text.get("sliding_window") or text.get("local_attention_window")))
     return arch
 
 
@@ -258,6 +272,14 @@ class Discovery:
         except HubError:
             return None
         total = ((info.get("safetensors") or {}).get("total") or 0) / 1e9
+        if not total:
+            # GGUF-only repos (e.g. ternary checkpoints without safetensors) often declare parameter count in GGUF
+            # metadata or their name ("27B", "9B").
+            gguf_meta = info.get("gguf") or {}
+            total = float(gguf_meta.get("total") or 0) / 1e9
+            if not total:
+                matched = re.search(r"(?i)(?:^|[-_])(\d+(?:\.\d+)?)B(?:$|[-_])", repo.split("/", 1)[-1])
+                total = float(matched.group(1)) if matched else 0.0
         if total < MIN_PARAMS_B or not isinstance(config, dict):
             return None                       # too small to drive the assistant reliably
         license_info = self.hub.resolve_license(repo)
@@ -295,7 +317,8 @@ class Discovery:
             except HubError as exc:
                 return exc
 
-        models = []
+        models: list[dict] = []
+        self.partial: list[dict] = models
         with ThreadPoolExecutor(WORKERS) as pool:
             rows = []
             for publisher, found in zip(publishers, pool.map(listed, publishers)):
@@ -387,6 +410,13 @@ def usable(model: dict) -> bool:
     return not (NOT_CHAT.search(name) or SPECIALIST.search(name)) and model.get("params_b", 0) >= MIN_PARAMS_B
 
 
+def _write_atomic(path: pathlib.Path, data: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(data, indent=1))
+    os.replace(tmp, path)
+
+
 def cached(progress: Callable[[str], None] | None = None, refresh: bool = False, hub: Hub | None = None,
            guess_mlx: bool = False) -> list[dict]:
     path = paths.assistant_dir() / "models" / "discovered.json"
@@ -395,12 +425,26 @@ def cached(progress: Callable[[str], None] | None = None, refresh: bool = False,
             return [m for m in json.loads(path.read_text()) if usable(m)]
         except (OSError, json.JSONDecodeError):
             pass
+    runner = Discovery(hub, progress=progress, guess_mlx=guess_mlx)
     try:
-        models = Discovery(hub, progress=progress, guess_mlx=guess_mlx).run()
-    except Exception as exc:          # offline or rate-limited: the catalog still works
+        models = runner.run()
+    except Exception as exc:          # offline or rate-limited: keep any partial progress or cached copy
         if progress:
             progress(f"model discovery unavailable: {exc}")
+        if getattr(runner, "partial", None):
+            existing = []
+            if path.exists():
+                try:
+                    existing = [m for m in json.loads(path.read_text()) if usable(m)]
+                except (OSError, json.JSONDecodeError):
+                    existing = []
+            merged = {m["repo"]: m for m in existing}
+            for m in runner.partial:
+                if usable(m):
+                    merged[m["repo"]] = m
+            if merged:
+                _write_atomic(path, list(merged.values()))
+                return list(merged.values())
         return [m for m in json.loads(path.read_text()) if usable(m)] if path.exists() else []
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(models, indent=1))
+    _write_atomic(path, models)
     return models

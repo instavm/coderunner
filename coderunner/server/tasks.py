@@ -95,9 +95,10 @@ def _run_ids() -> dict:
 
 
 def limit(svc) -> int:
-    """How many tasks run at once: two on a local model (they take turns at it, see Turns), more where the
-    model is not on this computer. agent.parallel_tasks sets it."""
-    set_by_owner = svc.config.get("agent.parallel_tasks") if hasattr(svc, "config") else None
+    """How many tasks run at once: tiered by Apple Silicon unified RAM (1 on 8 GB up to 6 on 256-512 GB),
+    two on other local machines, more where the model is remote. agent.parallel_tasks overrides it."""
+    cfg = getattr(svc, "config", None)
+    set_by_owner = cfg.get("agent.parallel_tasks") if cfg is not None else None
     if set_by_owner:
         return max(1, int(set_by_owner))
     away = getattr(svc, "remote", None)
@@ -105,7 +106,10 @@ def limit(svc) -> int:
         # The owner's own server: a task in each of its slots but the last, which the step judge keeps (with two
         # slots, one task at a time; start it with -np 3 for two).
         return max(1, int(getattr(getattr(svc, "llm", None), "slots", 2) or 2) - 1)
-    return 4 if away else 2
+    if away:
+        return 4
+    from ..models import hardware
+    return hardware.parallel_tasks(cfg, getattr(svc, "hardware", None))
 
 
 class Turns:
@@ -122,6 +126,10 @@ class Turns:
         self._busy = False
         self._order = 0
         self._waiting: list[tuple[int, int, asyncio.Future]] = []
+
+    @property
+    def busy(self) -> bool:
+        return self._busy
 
     @contextlib.asynccontextmanager
     async def turn(self, conversation: str = ""):
@@ -484,8 +492,17 @@ class Tasks:
             emit.journal.end()
         # An answer that says the task was not done, or a failure: the app can offer it again on Claude.
         undone = status == "failed" or (status == "done" and getattr(emit, "incomplete", False))
+        run_ctx = getattr(emit, "run", None)
+        cfg = getattr(self.daemon, "config", None) or getattr(getattr(self.daemon, "svc", None), "config", None)
+        rem = getattr(getattr(self.daemon, "svc", None), "remote", None) or {}
+        model_id = emit.remote or (rem.get("model") if isinstance(rem, dict) else "") or (cfg.get("models.chat") if cfg else "") or ""
+        steps = int(getattr(run_ctx, "steps", 0) or 0)
+        slowed = bool(getattr(run_ctx, "slowed", False))
         emit({"type": status, "reply": reply, **({"incomplete": True} if undone else {}),
-              **({"remote": emit.remote} if emit.remote else {})})
+              **({"remote": emit.remote} if emit.remote else {}),
+              **({"model": model_id} if model_id else {}),
+              **({"steps": steps} if steps else {}),
+              **({"slowed": True} if slowed else {})})
         made = kept.produced(outputs)       # a chart, a sheet, a document its code wrote: shown under the answer
         if made:
             emit({"type": "files", "files": made})
@@ -645,6 +662,38 @@ class Tasks:
             self._end(task_id)
             return True
         task.cancel()
+        return True
+
+    def wrap(self, task_id: str) -> bool:
+        """Ask a running task to finish on its next turn with what it has found so far."""
+        if task_id not in self.running:
+            return False
+        emit = self._emits.get(task_id)
+        run_ctx = getattr(emit, "run", None) if emit is not None else None
+        if run_ctx is None:
+            return False
+        run_ctx.wrap_now = True
+        return True
+
+    def rename_conversation(self, conversation: str, title: str) -> bool:
+        clean = " ".join((title or "").split())[:120]
+        if not clean or not self.store.one("SELECT 1 AS x FROM tasks WHERE conversation = ? LIMIT 1", (conversation,)):
+            return False
+        self.store.execute("INSERT OR REPLACE INTO conversation_titles(conversation, title, source, created) VALUES (?, ?, 'owner', ?)",
+                           (conversation, clean, time.time()))
+        return True
+
+    def delete_conversation(self, conversation: str) -> bool:
+        if any(getattr(self._emits.get(tid), "conversation", "") == conversation for tid in self.running):
+            return False
+        if any(job[1] == conversation for job in self.waiting):
+            return False
+        found = self.store.one("SELECT 1 AS x FROM tasks WHERE conversation = ? LIMIT 1", (conversation,))
+        if not found:
+            return False
+        for table in ("tasks", "task_events", "conversation_titles"):
+            with contextlib.suppress(Exception):
+                self.store.execute(f"DELETE FROM {table} WHERE conversation = ?", (conversation,))
         return True
 
     def wait(self, task_id: str) -> asyncio.Future:

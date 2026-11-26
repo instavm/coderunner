@@ -16,7 +16,8 @@ from .hardware import READ_PER_BANDWIDTH, GiB, Hardware, cpu_budget
 GB = 1e9 / GiB                  # decimal GB (artifact sizes) -> GiB (budgets)
 OVERHEAD_GIB = 1.0              # runtime buffers (0.5) + compute graph (0.5)
 GOOD = 0.85
-CONTEXTS = (32768, 16384, 8192)
+MAX_GOOD_MARGIN_GIB = 10.0      # cap headroom reserve on 128-512 GB Macs so 70+ GiB is not wasted
+CONTEXTS = (262144, 131072, 65536, 32768, 16384, 8192)
 MIN_CHAT_PARAMS_B = 4.0         # smaller models produced wrong tool arguments in testing
 MIN_TOK_S = 8.0                 # generation speed below which a model is called slow
 MIN_AGENT_CTX = 16384           # smaller contexts rank below larger ones
@@ -51,13 +52,24 @@ def kv_gib(entry: dict, ctx: int) -> float:
     return (full + swa) / GiB
 
 
+def _overhead_gib(weights_gb: float, ctx: int) -> float:
+    """Runtime + Metal compute-graph scratch: 1.0 GiB for <=40 GB builds, scaling gently for giant MoEs."""
+    extra = (0.012 * (weights_gb - 40.0) if weights_gb > 40.0 else 0.0) + (0.25 * (ctx / 65536) if ctx > 32768 else 0.0)
+    return OVERHEAD_GIB + extra
+
+
+def _good_ceiling(budget_gb: float) -> float:
+    return max(0.0, budget_gb - min((1.0 - GOOD) * budget_gb, MAX_GOOD_MARGIN_GIB))
+
+
 def estimate(entry: dict, hw: Hardware, ctx: int = 32768, runtime: str | None = None) -> dict:
     art = catalog.artifact(entry, runtime) or {}
     weights = art.get("size_gb", 0.0)
     mmproj = art.get("mmproj_gb", 0.0) if catalog.has_vision(entry, runtime) else 0.0
-    kv = kv_gib(entry, ctx) * art.get("kv_bytes", 2) / 2     # some runtimes keep the cache at 8 bits
-    need = (weights + mmproj) * GB + kv + OVERHEAD_GIB
-    fit = "good" if need <= GOOD * hw.budget_gb else "tight" if need <= hw.budget_gb else "no"
+    kv_bytes = art.get("kv_bytes", 1 if (runtime == "llama.cpp" and ctx >= 65536) else 2)
+    kv = kv_gib(entry, ctx) * kv_bytes / 2
+    need = (weights + mmproj) * GB + kv + _overhead_gib(weights, ctx)
+    fit = "good" if need <= _good_ceiling(hw.budget_gb) else "tight" if need <= hw.budget_gb else "no"
     params = max(float(entry.get("params_b") or 0), 1e-6)
     active = float(entry.get("active_params_b") or params)
     active_gb = weights * active / params
@@ -73,7 +85,7 @@ def estimate(entry: dict, hw: Hardware, ctx: int = 32768, runtime: str | None = 
         ram_need = 0.9 * weights * GB
         ram_budget = cpu_budget(hw.ram_gb)
         if gpu_need <= hw.budget_gb and ram_need <= ram_budget:
-            fit = "good" if gpu_need <= GOOD * hw.budget_gb and ram_need <= GOOD * ram_budget else "tight"
+            fit = "good" if gpu_need <= _good_ceiling(hw.budget_gb) and ram_need <= _good_ceiling(ram_budget) else "tight"
             dense, experts = 0.1 * weights, max(active_gb - 0.1 * weights, 0.5 * active_gb)
             tok_s = 0.55 / (dense / hw.bandwidth_gbs + experts / hw.ram_bandwidth_gbs) * hw.gen_factor
             read_tok_s /= 2          # experts are copied to the GPU for each batch of prompt tokens
@@ -152,14 +164,48 @@ def candidate(entry: dict, hw: Hardware, config, role: str = "chat", runtime: st
         ok = False
         reasons.insert(0, f"below {MIN_CHAT_PARAMS_B:.0f}B parameters")
     ability = None
+    axes = {}
+    prior = None
     if role == "chat":
         art = catalog.artifact(entry, runtime) or {}
         bits = art.get("bits") or (8 * art["size_gb"] / entry["params_b"] if art.get("size_gb") else None)
         ability = evidence.ability(entry, bits)
+        axes = evidence.axes(entry, bits)
+        if ability is None:
+            prior = evidence.prior_ability(entry, bits)
         reasons.append("no published benchmark scores" if ability is None else f"benchmark ability {ability:+.2f}")
     return {"id": entry["id"], "family": entry["family"], "rank": entry["rank"], "params_b": entry["params_b"],
             "runtime": runtime, "vision": vision, **est, "budget_s": float(config.get("models.step_budget_s") or STEP_BUDGET_S), "license": decision, "license_reason": why,
-            "license_link": link, "ok": ok, "ability": ability, "reasons": reasons}
+            "license_link": link, "ok": ok, "ability": ability, "prior": prior, "axes": axes, "reasons": reasons}
+
+
+def presets(hw: Hardware, ranked: list[dict]) -> list[dict]:
+    """Plain-English Fast / Balanced / Smartest presets selected from viable ranked candidates."""
+    viable = [c for c in ranked if c.get("ok")]
+    if not viable:
+        return []
+    balanced = viable[0]
+    top_ability = balanced.get("ability") if balanced.get("ability") is not None else 0.0
+    # Prefer a fast model close in ability to Balanced (within 0.25, then 0.55) so large Macs choose a fast
+    # capable MoE (e.g. Inkling-2-Mini) over an older small model, while 16-18 GB Macs still offer 9B for Fast.
+    good_ctx = [c for c in viable if c.get("ctx", 0) >= MIN_AGENT_CTX and c.get("fit") == "good"]
+    faster = [c for c in good_ctx if c.get("step_s", math.inf) < balanced.get("step_s", math.inf) - 1.0]
+    fast_pool = ([c for c in faster if c.get("ability") is None or c["ability"] >= top_ability - 0.25]
+                 or [c for c in faster if c.get("ability") is None or c["ability"] >= top_ability - 0.55]
+                 or good_ctx or viable)
+    fast = min(fast_pool, key=lambda c: (round(c.get("step_s", math.inf)), -utility(c)), default=balanced)
+    # Smartest allows slower steps and prioritizes highest published capability.
+    smartest = max((c for c in viable if c.get("step_s", math.inf) <= MAX_STEP_S),
+                   key=lambda c: (c.get("ability") if c.get("ability") is not None else UNKNOWN_ABILITY,
+                                  -c.get("step_s", math.inf)), default=balanced)
+    return [
+        {"key": "fast", "label": "Fast", "summary": "Quickest replies, leaves extra memory for your other apps",
+         "model": fast["id"], "step_s": fast.get("step_s"), "need_gb": fast.get("need_gb"), "vision": fast.get("vision")},
+        {"key": "balanced", "label": "Balanced", "summary": "Recommended balance of accuracy and speed for this Mac",
+         "model": balanced["id"], "step_s": balanced.get("step_s"), "need_gb": balanced.get("need_gb"), "vision": balanced.get("vision")},
+        {"key": "smartest", "label": "Smartest", "summary": "Highest accuracy for complex tasks; steps may take longer",
+         "model": smartest["id"], "step_s": smartest.get("step_s"), "need_gb": smartest.get("need_gb"), "vision": smartest.get("vision")},
+    ]
 
 
 def utility(c: dict) -> float:

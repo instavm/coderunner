@@ -1,6 +1,6 @@
 {
  "source": "Hugging Face evaluation results (.eval_results) for official benchmark datasets",
- "fetched": "2026-10-11",
+ "fetched": "2026-11-26",
  "scores": {
   "Qwen/Qwen3.5-122B-A10B": {
    "Idavidrein/gpqa:diamond": 85.72,
@@ -23,6 +23,7 @@
    "Idavidrein/gpqa:diamond": 87.8,
    "TIGER-Lab/MMLU-Pro:mmlu_pro": 86.2,
    "harborframework/terminal-bench-2.0:terminalbench_2": 59.3,
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 63.4,
    "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 53.5,
    "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 77.2,
    "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 71.3,
@@ -48,13 +49,31 @@
   "Qwen/Qwen3.8-27B": {
    "Idavidrein/gpqa:diamond": 89.2,
    "harborframework/terminal-bench-2.1:terminalbench_2_1": 73,
-   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 61.7
+   "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 61.7,
+   "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 77.8
   },
   "Qwen/Qwen3.8-Flash-Next": {
    "Idavidrein/gpqa:diamond": 91.7,
    "hkust-nlp/Toolathlon:toolathlon_verified": 73.5,
    "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 62.5,
-   "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 81
+   "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 81,
+   "deep-swe:deep_swe": 58.7
+  },
+  "thinkingmachines/Inkling-2-Mini": {
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 71.6,
+   "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 79.2,
+   "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 73.7
+  },
+  "thinkingmachines/Inkling-2-Small": {
+   "Idavidrein/gpqa:diamond": 93.0,
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 81.3,
+   "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 81.2,
+   "deep-swe:deep_swe": 72.1
+  },
+  "ornith-ai/Ornith-1.5-122B": {
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 81.2,
+   "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved": 84.5,
+   "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 76.4
   },
   "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B": {
    "harborframework/terminal-bench-2.1:terminalbench_2_1": 37.1,
@@ -64,11 +83,13 @@
   },
   "XiaomiMiMo/MiMo-V2.6-Flash-RL": {
    "harborframework/terminal-bench-2.1:terminalbench_2_1": 87.6,
-   "hkust-nlp/Toolathlon:toolathlon_verified": 73.6
+   "hkust-nlp/Toolathlon:toolathlon_verified": 73.6,
+   "deep-swe:deep_swe": 67.9
   },
   "XiaomiMiMo/MiMo-V2.6-Pro-RL": {
    "harborframework/terminal-bench-2.1:terminalbench_2_1": 89.9,
-   "hkust-nlp/Toolathlon:toolathlon_verified": 76.9
+   "hkust-nlp/Toolathlon:toolathlon_verified": 76.9,
+   "deep-swe:deep_swe": 71.9
   },
   "deepseek-ai/DeepSeek-V4-Flash-0731": {
    "harborframework/terminal-bench-2.1:terminalbench_2_1": 82.7,
@@ -77,6 +98,17 @@
   "deepseek-ai/DeepSeek-V4-Pro-0813": {
    "harborframework/terminal-bench-2.1:terminalbench_2_1": 87.9,
    "hkust-nlp/Toolathlon:toolathlon_verified": 74.1
+  },
+  "deepseek-ai/DeepSeek-V4.1-Flash-1017": {
+   "Idavidrein/gpqa:diamond": 90.9,
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 90.6,
+   "harborframework/terminal-bench:terminalbench_4": 42.3,
+   "deep-swe:deep_swe": 77.0,
+   "MathArena/aime_2026:MathArena/aime_2026": 100.0
+  },
+  "MiniMaxAI/MiniMax-M3.1-Flash": {
+   "harborframework/terminal-bench:terminalbench_4": 38.1,
+   "deep-swe:deep_swe": 73.7
   },
   "google/gemma-4-26B-A4B-it": {
    "Idavidrein/gpqa:diamond": 82.3,
@@ -137,6 +169,10 @@
    "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro": 65.7,
    "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved": 82.9
   },
+  "tencent/Hy4-flash": {
+   "MMMU/MMMU_Pro:mmmu_pro_vision": 75.8,
+   "deep-swe:deep_swe": 64.6
+  },
   "zai-org/GLM-5.2": {
    "Idavidrein/gpqa:diamond": 91.2,
    "harborframework/terminal-bench-2.1:terminalbench_2_1": 81.85,
@@ -147,7 +183,8 @@
    "hkust-nlp/Toolathlon:toolathlon_verified": 73
   },
   "zai-org/GLM-5.3-Flash": {
-   "harborframework/terminal-bench-2.1:terminalbench_2_1": 84.3
+   "harborframework/terminal-bench-2.1:terminalbench_2_1": 84.3,
+   "deep-swe:deep_swe": 63.4
   }
  }
 }

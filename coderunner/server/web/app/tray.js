@@ -146,6 +146,7 @@ $("trayAsk").onsubmit = async (event) => {
 };
 
 $("openApp").onclick = () => (shell.openApp ? shell.openApp() : location.assign("/app/"));
+$("openSettings").onclick = () => (shell.openSettings ? shell.openSettings("models") : location.assign("/app/"));
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") shell.hidePanel?.(); });
 shell.onShown?.(() => { refresh(); $("trayInput").focus(); });
 // Put away: the screen's connection closes with it.

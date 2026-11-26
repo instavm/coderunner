@@ -2,6 +2,7 @@
 // and the sandbox computer's screen, which the owner can watch or take over.
 import RFB from "./novnc/core/rfb.js";
 import {el, richText, inline, markdown, answer as answered, itemCards} from "./render.js";
+import {createSettings} from "./settings.js";
 
 const $ = (id) => document.getElementById(id);
 // In the desktop app on a Mac the window's own buttons sit over the page's top-left corner.
@@ -275,16 +276,42 @@ class TaskView {
   showAttached(files) {
     if (!Array.isArray(files) || !files.length || this.attached) return;
     this.attached = el("div", "attached");
+    this.threadFiles = [...(this.threadFiles || []), ...files.map((f) => ({name: f.name, url: `/api/uploads/${encodeURIComponent(f.id)}`}))];
     for (const file of files) this.attached.appendChild(attachedFile(file));
     this.root.insertBefore(this.attached, this.bubble);
+    refreshThreadFiles();
   }
 
   // What the task made (a chart, a sheet, a document its code wrote), under its answer.
   showProduced(files) {
     if (!Array.isArray(files) || !files.length || this.produced) return;
     this.produced = el("div", "produced");
+    this.threadFiles = [...(this.threadFiles || []), ...files.map((f) => ({name: f.name, url: `/api/outputs/${encodeURIComponent(f.name)}`}))];
     for (const file of files) this.produced.appendChild(attachedFile(file));
-    this.flow.insertBefore(this.produced, this.flow.querySelector(".took"));
+    this.flow.insertBefore(this.produced, this.flow.querySelector(".took-row, .took"));
+    refreshThreadFiles();
+  }
+
+  showCheckpoint(reason) {
+    if (this.checkpoint || this.status !== "running") return;
+    const card = el("div", "checkpoint");
+    const msg = el("span", "", reason || "This is taking longer than usual.");
+    const actions = el("div", "checkpoint-actions");
+    const wrapBtn = el("button", "btn primary", "Answer with what you have");
+    wrapBtn.type = "button";
+    wrapBtn.onclick = async () => {
+      wrapBtn.disabled = true; wrapBtn.textContent = "Wrapping up…";
+      await api(`/api/tasks/${this.id}/wrap`, {method: "POST", body: "{}"}).catch(() => {});
+    };
+    const ctrlBtn = el("button", "btn", "Take control");
+    ctrlBtn.type = "button";
+    ctrlBtn.onclick = () => { showComputer(true); setView("screen", false); setControl(true); };
+    const keepBtn = el("button", "linkish small", "Keep going");
+    keepBtn.type = "button";
+    keepBtn.onclick = () => { card.remove(); this.checkpointDismissed = true; };
+    actions.append(wrapBtn, ctrlBtn, keepBtn);
+    card.append(msg, actions);
+    this.checkpoint = this.say(card);
   }
 
   apply(e) {
@@ -300,6 +327,14 @@ class TaskView {
       // What it says as it works is the line saying what it is doing now, not a message: the owner reads the
       // question, the plan and the answer, not every page it opened on the way.
       case "note": this.setNow(trunc(String(e.text || "").split(/(?<=[.!?])\s/)[0], 90)); break;
+      case "shot":
+        if (e.name) this.lastShot = {name: e.name, url: e.url || ""};
+        break;
+      case "slowdown":
+        this.showCheckpoint(e.swap_used_gb >= 1.5
+          ? `Slowed down (${e.gen_tok_s} tok/s — Mac memory is tight with ${e.swap_used_gb} GB swap).`
+          : `Slowed down (${e.gen_tok_s} tok/s).`);
+        break;
       case "items":             // shown as they come; the answer places them with its words
         this.shown = [...(this.shown || []), ...(e.items || [])];
         this.items?.remove();
@@ -427,8 +462,8 @@ class TaskView {
       const take = el("button", "btn primary", "Take control");
       const done = el("button", "btn", "I'm done");
       const finish = () => { setControl(false); setExpanded(false); decide(true); };
-      // One button leads: taking the screen first, handing it back after.
-      take.onclick = () => { showComputer(true); setControl(true); setExpanded(true); take.remove(); done.classList.add("primary"); };
+      // One button leads: taking the screen first, handing it back after (always switching off Terminal).
+      take.onclick = () => { showComputer(true); setView("screen", false); setControl(true); setExpanded(true); take.remove(); done.classList.add("primary"); };
       done.onclick = finish;
       const skip = el("button", "btn danger", "Skip");
       skip.onclick = () => decide(false);
@@ -501,6 +536,8 @@ class TaskView {
     this.finished = e.ts;
     this.now?.row.remove();
     this.now = null;
+    this.checkpoint?.remove();
+    this.checkpoint = null;
     // The answer is a few chat messages, not a document in a box.
     const answer = el("div", "answer" + (e.type === "failed" ? " failed" : ""));
     for (const part of answered(e.reply || "", this.shown, picture)) answer.appendChild(part);
@@ -509,29 +546,51 @@ class TaskView {
     if (same) this.interim.answer.querySelector(".so-far")?.remove();
     else { this.items?.remove(); this.flow.appendChild(answer); }
     this.answer = same ? this.interim.answer : answer;
-    const took = clock((this.finished || Date.now() / 1000) - this.started);
-    this.flow.appendChild(el("div", "took muted small", e.type === "cancelled" ? `Stopped after ${took}` :
-                             e.type === "failed" ? `Failed after ${took}` : `Done in ${took}`));
-    // The model on this computer said it did not get there: one button tries the same task on Claude. Only
-    // under the thread's latest answer, so it does not stay above the retry once that has run.
-    $("thread").querySelectorAll(".retry").forEach((row) => row.remove());
-    if (e.incomplete && !e.remote && !state.remoteOn && this.prompt) this.flow.appendChild(retryOnClaude(this.prompt));
+    const elapsed = (this.finished || Date.now() / 1000) - this.started;
+    const took = clock(elapsed);
+    const metaParts = [e.type === "cancelled" ? `Stopped after ${took}` : e.type === "failed" ? `Failed after ${took}` : `Done in ${took}`];
+    if (e.model) metaParts.push(modelName(e.model));
+    const stepCount = e.steps || this.steps;
+    if (stepCount > 0) metaParts.push(`${stepCount} ${stepCount === 1 ? "step" : "steps"}`);
+    if (e.slowed) metaParts.push("memory was tight");
+    const tookRow = el("div", "took-row");
+    tookRow.appendChild(el("div", "took muted small", metaParts.join(" · ")));
+    if (e.reply) {
+      const copy = el("button", "copy-btn", "Copy");
+      copy.type = "button";
+      copy.onclick = () => { navigator.clipboard?.writeText(String(e.reply || "")); copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1400); };
+      tookRow.appendChild(copy);
+    }
+    this.flow.appendChild(tookRow);
+    // Local-first recovery when a run failed, stopped, or was incomplete (only under the latest answer).
+    $("thread").querySelectorAll(".retry, .recovery-card").forEach((row) => row.remove());
+    if ((e.incomplete || e.type === "failed" || e.type === "cancelled") && this.prompt) {
+      this.flow.appendChild(recoveryCard(this.prompt, e));
+    }
     state.running.delete(this.id);
     refreshNow();
   }
 
   tick() {
-    if (this.now) this.now.time.textContent = clock(Date.now() / 1000 - this.started);
+    if (!this.now) return;
+    const elapsed = Date.now() / 1000 - this.started;
+    this.now.time.textContent = (this.steps ? `Step ${this.steps} · ` : "") + clock(elapsed);
+    if (elapsed >= 180 && !this.checkpoint && !this.checkpointDismissed) {
+      this.showCheckpoint(`Still working (${clock(elapsed)}${this.steps ? `, ${this.steps} steps` : ""}).`);
+    }
   }
 }
 
 const CLOCK = "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18 M12 7v5l3 2";
 const ROUTINE_DONE = {created: "Created routine", updated: "Updated routine", removed: "Removed routine"};
 
-// A routine set up, changed or removed: one small line in the thread, a result like the answer.
+// A routine set up, changed or removed: clickable to view or pause it in Settings -> Routines.
 function routineLine(e) {
-  return el("div", "routine-line muted small",
-            [ROUTINE_DONE[e.action] || "Routine", e.name, e.spec].filter(Boolean).join(" · "));
+  const line = el("div", "routine-line clickable muted small",
+                  [ROUTINE_DONE[e.action] || "Routine", e.name, e.spec].filter(Boolean).join(" · "));
+  line.title = "Open Routines in Settings";
+  line.onclick = () => settingsUI.open("routines");
+  return line;
 }
 
 function closeAsk(id, allowed) {
@@ -551,9 +610,79 @@ function closeAsk(id, allowed) {
 
 // ---- conversations ----------------------------------------------------------
 
+let convCache = [];
+function drawConversations(list) {
+  const q = ($("convSearch")?.value || "").trim().toLowerCase();
+  const nav = $("conversations");
+  nav.replaceChildren();
+  let group = "";
+  for (const c of list) {
+    // The check's own tasks are on the Check screen; here only the one running now, or the one being read.
+    if (c.conversation.startsWith("app:check-") && c.status !== "running" && c.conversation !== state.conversation) continue;
+    const title = c.title || "Attached files";
+    if (q && !title.toLowerCase().includes(q) && !String(c.prompt || "").toLowerCase().includes(q)) continue;
+    const wrap = el("div", "conv-row");
+    const button = el("button", "conv" + (c.conversation === state.conversation ? " on" : ""));
+    const t = el("div", "t");
+    const waiting = [...state.approvals.values()].some((a) => a.conversation === c.conversation &&
+                                                       !a.card.classList.contains("closed"));
+    const status = waiting || c.waiting ? "waiting" : c.status;
+    const day = dayGroup(c.updated);
+    if (day !== group) { nav.appendChild(el("div", "conv-group", day)); group = day; }
+    const label = el("span", "label", trunc(title, 60));
+    t.append(label);
+    if (["running", "waiting", "queued", "failed"].includes(status)) t.append(el("span", "dot " + status));
+    button.title = (status === "running" ? "Working… " : status === "waiting" ? "Needs you. " : status === "queued" ? "Queued. " :
+                    status === "failed" ? "Failed. " : "") + (c.prompt || title);
+    button.append(t);
+    if (status === "waiting") button.append(el("div", "s", "Needs you"));
+    button.onclick = () => openConversation(c.conversation, title);
+    wrap.appendChild(button);
+    if (!["running", "queued"].includes(c.status)) {
+      const acts = el("span", "conv-actions");
+      const ren = el("button", "conv-act");
+      ren.type = "button"; ren.title = "Rename"; ren.setAttribute("aria-label", "Rename task");
+      ren.appendChild(icon("M4 20h4l10.5-10.5a2 2 0 0 0-4-4L4 16v4z"));
+      ren.onclick = async (ev) => {
+        ev.stopPropagation();
+        const next = prompt("Rename task:", title);
+        if (!next || !next.trim()) return;
+        await api(`/api/conversations/${encodeURIComponent(c.conversation)}`, {method: "PATCH", body: JSON.stringify({title: next.trim()})})
+          .catch((e) => notice(e.message));
+        loadConversations();
+      };
+      const del = el("button", "conv-act danger");
+      del.type = "button"; del.title = "Delete"; del.setAttribute("aria-label", "Delete task");
+      del.appendChild(icon("M6 6l12 12 M18 6L6 18"));
+      del.onclick = async (ev) => {
+        ev.stopPropagation();
+        await api(`/api/conversations/${encodeURIComponent(c.conversation)}`, {method: "DELETE"}).catch((e) => notice(e.message));
+        if (state.conversation === c.conversation) openConversation(null);
+        else loadConversations();
+      };
+      acts.append(ren, del);
+      wrap.appendChild(acts);
+    }
+    nav.appendChild(wrap);
+  }
+}
+
+function updateApprovalBar(list) {
+  const bar = $("approvalBar");
+  if (!bar) return;
+  const need = list.find((c) => c.waiting && c.conversation !== state.conversation);
+  if (!need) { bar.hidden = true; bar.replaceChildren(); return; }
+  bar.hidden = false;
+  const go = el("button", "linkish", "Open");
+  go.type = "button";
+  go.onclick = () => openConversation(need.conversation, need.title || "Task");
+  bar.replaceChildren(el("span", "", `“${trunc(need.title || "Another task", 48)}” needs your approval.`), go);
+}
+
 async function loadConversations() {
   const list = await api("/api/conversations").catch(() => null);
   if (!list) return;
+  convCache = list;
   // What is running comes from the list too: a task started before this window opened (or while it was
   // reconnecting) sends no "started" here, and the computer panel said "Idle" while it worked.
   const now = new Map(list.filter((c) => c.task && ["running", "queued"].includes(c.status))
@@ -562,29 +691,66 @@ async function loadConversations() {
   state.running.clear();
   for (const [id, info] of now) state.running.set(id, info);
   state.othersWaiting = list.some((c) => c.waiting && c.conversation !== state.conversation);
+  updateApprovalBar(list);
   refreshNow();
-  const nav = $("conversations");
-  nav.replaceChildren();
-  let group = "";
-  for (const c of list) {
-    // The check's own tasks are on the Check screen; here only the one running now, or the one being read.
-    if (c.conversation.startsWith("app:check-") && c.status !== "running" && c.conversation !== state.conversation) continue;
-    const button = el("button", "conv" + (c.conversation === state.conversation ? " on" : ""));
-    const t = el("div", "t");
-    const waiting = [...state.approvals.values()].some((a) => a.conversation === c.conversation &&
-                                                       !a.card.classList.contains("closed"));
-    const status = waiting || c.waiting ? "waiting" : c.status;
-    const day = dayGroup(c.updated);
-    if (day !== group) { nav.appendChild(el("div", "conv-group", day)); group = day; }
-    const label = el("span", "label", trunc(c.title || "Attached files", 60));
-    t.append(label);
-    if (["running", "waiting", "queued", "failed"].includes(status)) t.append(el("span", "dot " + status));
-    button.title = (status === "running" ? "Working… " : status === "waiting" ? "Needs you. " : status === "queued" ? "Queued. " :
-                    status === "failed" ? "Failed. " : "") + (c.prompt || c.title || "");
-    button.append(t);
-    if (status === "waiting") button.append(el("div", "s", "Needs you"));
-    button.onclick = () => openConversation(c.conversation, c.title || "Attached files");
-    nav.appendChild(button);
+  drawConversations(list);
+}
+$("convSearch")?.addEventListener("input", () => drawConversations(convCache));
+
+function refreshThreadFiles() {
+  const btn = $("threadFilesBtn"), pop = $("threadFilesPop");
+  if (!btn || !pop) return;
+  const all = [];
+  for (const v of state.views.values()) if (v.threadFiles) all.push(...v.threadFiles);
+  btn.hidden = !all.length;
+  if (!all.length) { pop.hidden = true; pop.replaceChildren(); return; }
+  btn.textContent = `Files (${all.length})`;
+  pop.replaceChildren(...all.map((f) => {
+    const a = el("a", "", f.name);
+    a.href = f.url; a.target = "_blank"; a.rel = "noopener";
+    return a;
+  }));
+}
+$("threadFilesBtn")?.addEventListener("click", () => { $("threadFilesPop").hidden = !$("threadFilesPop").hidden; });
+
+function updateScreenScope(focusInfo) {
+  const fb = $("shotFallback"), ctx = $("screenContext");
+  if (!fb || !ctx) return;
+  const openRunning = [...state.running.values()].some((r) => r.conversation === state.conversation);
+  let lastShot = null;
+  for (const v of state.views.values()) if (v.lastShot) lastShot = v.lastShot;
+  if (openRunning || !state.conversation || focusInfo?.shown) {
+    fb.hidden = true; fb.replaceChildren();
+    ctx.hidden = true; ctx.replaceChildren();
+    const host = focusInfo?.current_url ? focusInfo.current_url.replace(/^https?:\/\//, "").split("/")[0] : "";
+    if ($("viewScreenLabel")) $("viewScreenLabel").textContent = host || "Screen";
+    if ($("addressText")) $("addressText").textContent = focusInfo?.current_url
+      ? trunc(focusInfo.current_url.replace(/^https?:\/\//, ""), 44) : "Assistant's computer";
+    if ($("addressAction")) $("addressAction").hidden = true;
+    return;
+  }
+  if (lastShot) {
+    const img = el("img");
+    img.src = picture(lastShot.name);
+    img.alt = "Last page from this task";
+    fb.replaceChildren(img);
+    fb.hidden = false;
+    ctx.hidden = true; ctx.replaceChildren();
+    const shotHost = lastShot.url ? lastShot.url.replace(/^https?:\/\//, "").split("/")[0] : "";
+    if ($("viewScreenLabel")) $("viewScreenLabel").textContent = shotHost || "Screen";
+    if ($("addressText")) $("addressText").textContent = shotHost ? `${shotHost} · last page` : "Last page from this task";
+    if ($("addressAction")) {
+      $("addressAction").textContent = "Live";
+      $("addressAction").hidden = false;
+      $("addressAction").onclick = () => { fb.hidden = true; $("addressAction").hidden = true; $("addressText").textContent = "Assistant's computer"; };
+    }
+  } else {
+    fb.hidden = true; fb.replaceChildren();
+    ctx.hidden = true; ctx.replaceChildren();
+    if ($("viewScreenLabel")) $("viewScreenLabel").textContent = "Screen";
+    if ($("addressText")) $("addressText").textContent = focusInfo?.current_url
+      ? trunc(focusInfo.current_url.replace(/^https?:\/\//, ""), 38) : "Assistant's computer";
+    if ($("addressAction")) $("addressAction").hidden = true;
   }
 }
 
@@ -612,11 +778,12 @@ async function openConversation(id, title, again) {
   showTraceButton();
   window.coderunnerShell?.threadOpen?.(id || "");       // the desktop app does not tell the owner about this one
   // The task being read comes to the front on the assistant's computer and goes first at the model.
-  api("/api/focus", {method: "POST", body: JSON.stringify({conversation: id || ""})}).catch(() => {});
+  const focusPromise = api("/api/focus", {method: "POST", body: JSON.stringify({conversation: id || ""})}).catch(() => null);
   state.views.clear();
+  refreshThreadFiles();
   $("thread").replaceChildren();
   $("title").textContent = id ? trunc(title || "Task", 90) : "New task";
-  if (!id) { state.loading = null; $("thread").appendChild(emptyState); loadConversations(); $("input").focus(); return; }
+  if (!id) { state.loading = null; $("thread").appendChild(emptyState); refreshStarters(); updateScreenScope(null); loadConversations(); $("input").focus(); return; }
   // Live events for this thread that arrive while it is read are held, then applied after what was read:
   // drawn as they came, a task just started would be drawn twice.
   const loading = state.loading = {id, events: []};
@@ -629,6 +796,8 @@ async function openConversation(id, title, again) {
   for (const e of data.events) state.views.get(e.task)?.apply(e);
   const read = Math.max(0, ...data.events.map((e) => e.seq || 0));
   for (const e of loading.events) if ((e.seq || 0) > read) showEvent(e);
+  refreshThreadFiles();
+  updateScreenScope(await focusPromise);
   loadConversations();
   scrollDown();
 }
@@ -990,7 +1159,12 @@ $("composer").onsubmit = async (event) => {
   } catch (err) { notice(err.message); }
   finally { refreshComposer(); }
 };
-function grow() { const i = $("input"); i.style.height = "auto"; i.style.height = Math.min(i.scrollHeight, 200) + "px"; }
+function grow() {
+  const i = $("input");
+  i.style.height = "auto";
+  i.style.height = Math.min(i.scrollHeight, 200) + "px";
+  $("send")?.classList.toggle("ready", Boolean(i.value.trim() || (typeof pending !== "undefined" && pending.length)));
+}
 $("input").addEventListener("input", grow);
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("composer").requestSubmit(); }
@@ -1174,7 +1348,7 @@ async function connectScreen() {
 // Taking control is only offered while the screen is connected: with no screen there is nothing to take, and the
 // tasks would wait for an owner who cannot see them.
 function showSwitch(connected) {
-  $("control").hidden = !connected;
+  $("control").hidden = !connected || view !== "screen";
   if (!connected && control) setControl(false);
 }
 function setControl(on) {
@@ -1229,25 +1403,35 @@ let view = "screen";
 const shellBrowser = window.coderunnerShell?.browser || null;
 
 function setView(next, remember = true) {
-  view = next === "terminal" ? "terminal" : next === "browser" && shellBrowser ? "browser" : "screen";
-  const terminal = view === "terminal", browsing = view === "browser";
-  if (view !== "screen" && control) setControl(false);   // the screen is handed back: nothing waits on the owner
-  for (const [id, name] of [["viewScreen", "screen"], ["viewTerminal", "terminal"], ["viewBrowser", "browser"]]) {
-    $(id).classList.toggle("on", view === name);
-    $(id).setAttribute("aria-selected", String(view === name));
+  view = next === "terminal" ? "terminal"
+    : next === "browser" && shellBrowser ? "browser"
+    : next === "mac" ? "mac"
+    : "screen";
+  const terminal = view === "terminal", browsing = view === "browser", mac = view === "mac", screen = view === "screen";
+  if (!screen && control) setControl(false);   // the screen is handed back: nothing waits on the owner
+  for (const [id, name] of [["viewScreen", "screen"], ["viewTerminal", "terminal"], ["viewBrowser", "browser"], ["viewMac", "mac"]]) {
+    $(id)?.classList.toggle("on", view === name);
+    $(id)?.setAttribute("aria-selected", String(view === name));
   }
   $("screenWrap").classList.toggle("terminal", terminal);
   $("screenWrap").classList.toggle("browsing", browsing);
-  $("computer").classList.toggle("terminal-on", terminal || browsing);   // light or dark like the app, not the desktop
+  $("screenWrap").classList.toggle("mac-on", mac);
+  $("computer").classList.toggle("terminal-on", terminal || browsing || mac);   // light or dark like the app, not the desktop
   $("term").hidden = !terminal;
-  $("browser").hidden = !browsing;
-  // Screen and terminal are the sandbox VM's; the browser is CodeRunner's own, on this Mac: the head says whose.
-  $("panelTitle").textContent = browsing ? "Browser on this Mac" : "Assistant's computer";
-  $("computerState").hidden = browsing;
-  $("macState").hidden = !browsing;
-  if (remember) { try { localStorage.setItem(VIEW_KEY, view); } catch { /* private window: not remembered */ } }
+  if ($("browser")) $("browser").hidden = !browsing;
+  if ($("macPane")) $("macPane").hidden = !mac;
+  // Screen and terminal are the sandbox VM's; Mac browser has its own inline bar directly below the 44px tab strip.
+  if ($("panelTitle")) $("panelTitle").textContent = browsing ? "Browser on this Mac" : "Assistant's computer";
+  if ($("panelBar")) $("panelBar").hidden = !screen;
+  if ($("computerState")) $("computerState").hidden = browsing;
+  if ($("computerDot")) $("computerDot").hidden = browsing;
+  if ($("addressPill")) $("addressPill").hidden = browsing;
+  if ($("control")) $("control").hidden = !screen || !Boolean(rfb?.connected);
+  if ($("macState")) $("macState").hidden = !browsing;
+  if (remember && !mac) { try { localStorage.setItem(VIEW_KEY, view); } catch { /* private window: not remembered */ } }
   setPanelWidth();
   if (terminal) openTerminal();
+  if (mac) refreshMacPane();
   placeBrowser();
 }
 
@@ -1414,7 +1598,9 @@ function setNow(text) { state.nowText = text; refreshNow(); }
 function refreshNow() {
   const busy = state.running.size > 0;
   // Without a screen the word is why (getting ready, unavailable, disk full), not "Connecting" every few seconds.
-  $("computerState").textContent = control ? "You're in control" : rfb ? (busy ? "Working" : "Idle") : screenWord || (busy ? "Working" : "Connecting");
+  $("computerState").textContent = control ? "In control" : rfb ? (busy ? "Working" : "Idle") : screenWord || (busy ? "Working" : "Connecting");
+  const cdot = $("computerDot");
+  if (cdot) cdot.className = "status-dot" + (control ? " control" : busy ? " busy" : rfb ? " live" : "");
   // The line speaks for the open task while it runs; otherwise for the others (its last words went stale).
   const open = [...state.running.values()].some((r) => r.conversation === state.conversation);
   $("input").placeholder = open && state.conversation ? "Add to this task…" : "Describe a task…";
@@ -1436,7 +1622,8 @@ function modelName(id) {
   if (claude) return `Claude ${claude[1][0].toUpperCase()}${claude[1].slice(1)} ${claude[2]}${claude[3] ? "." + claude[3] : ""}`;
   const base = String(id).split("/").pop().split(":")[0].replace(/^coderunner-/, "").replace(/^hf-/, "");
   if (MODEL_NAMES[base]) return MODEL_NAMES[base];
-  return base.split("-").filter(Boolean).map((word) => /^[ae]?\d+(\.\d+)?[bm]$/i.test(word) ? word.toUpperCase() :
+  return base.replace(/([a-z])(\d)/gi, "$1 $2").split(/[-\s]+/).filter(Boolean).map((word) =>
+    /^[ae]?\d+(\.\d+)?[bm]$/i.test(word) ? word.toUpperCase() :
     /^\d+bit$/.test(word) ? word.replace("bit", "-bit") : word[0].toUpperCase() + word.slice(1)).join(" ");
 }
 const VOICES = {apple: "Apple's on-device speech", parakeet: "Parakeet", "parakeet-coreml": "Parakeet Ultra", "qwen3-asr": "Qwen3 ASR", whisper: "Whisper"};
@@ -1484,17 +1671,25 @@ async function loadModels() {
     for (const [k, v] of rows) if (v) dl.append(el("dt", "", k), el("dd", "", v));
     const line = $("modelsLine");
     line.replaceChildren();
-    if (server) line.append(el("span", "", `${modelName(remote.model)} · your server`));
-    else if (remote) {
-      const where = el("span", "where", "Anthropic");
-      where.appendChild(el("span", "not-private", "Not private"));
-      line.append(el("span", "", modelName(remote.model)), where);
+    const leadWrap = el("span", "side-models-lead");
+    const kind = server || elsewhere ? "server" : remote ? "remote" : "local";
+    const avatar = el("span", `side-avatar ${kind}`);
+    avatar.appendChild(el("i", "side-avatar-dot"));
+    const shortName = server ? modelName(remote.model) : remote ? modelName(remote.model) : modelName(models.chat) || "Local";
+    const whereText = server || elsewhere ? "Your server" : remote ? "Claude API" : "On this Mac";
+    const textCol = el("span", "side-models-text");
+    textCol.append(el("span", "side-models-name", shortName), el("span", "side-models-sub", whereText));
+    leadWrap.append(avatar, textCol);
+    if (remote && !server) leadWrap.appendChild(el("span", "not-private", "Cloud"));
+    const chev = el("span", "side-chevron");
+    chev.appendChild(icon("M7 10l5 5l5-5"));
+    line.append(leadWrap, chev);
+    line.title = (server ? `Requests go to your server at ${remote.host}. ` :
+      elsewhere ? `Requests go to your server at ${elsewhere}. ` :
+      remote ? "Requests go to Anthropic (not private). " : "Local on this computer. ") + "Click for Models and Settings.";
+    if ($("quickModelBtn")) {
+      $("quickModelBtn").replaceChildren(el("span", "", shortName), icon("M7 10l5 5l5-5"));
     }
-    else if (elsewhere && models.chat) line.append(el("span", "", `${modelName(models.chat)} · your server`));   // where, in the title
-    else if (models.chat) line.append(el("span", "", `Local · ${modelName(models.chat)}`));
-    line.title = server ? `Your requests, the pages it reads and the files it opens are sent to your model server at ${remote.host}.` :
-      elsewhere ? `Your requests, the pages it reads and the files it opens are sent to your model server at ${elsewhere}.` :
-      remote ? "Your requests, the pages it reads and the files it opens are sent to Anthropic." : "";
     const lead = document.querySelector("#empty p");
     if (lead) lead.textContent = server || elsewhere ?
       "Planned by your own model server, and carried out on a private Linux machine with its own browser that you can watch and take over." :
@@ -1532,11 +1727,37 @@ async function loadRemote() {
   box.appendChild(offer);
 }
 
+// Local-first recovery when a run stopped, failed, or was incomplete: local retry and model switch first,
+// then Claude clearly marked as not private.
+function recoveryCard(prompt, e) {
+  const card = el("div", "recovery-card");
+  const why = e.slowed ? "This run slowed down while memory was tight." :
+    e.type === "failed" ? "Something interrupted this run." :
+    e.type === "cancelled" ? "Stopped before finishing." : "This task may be incomplete.";
+  const actions = el("div", "recovery-actions");
+  const again = el("button", "btn", "Try again");
+  again.type = "button";
+  again.onclick = async () => {
+    again.disabled = true;
+    try {
+      await api("/api/tasks", {method: "POST", body: JSON.stringify({message: prompt, conversation: state.conversation})});
+      card.remove();
+    } catch (err) { again.disabled = false; notice(err.message); }
+  };
+  const switchBtn = el("button", "linkish small", "Switch model…");
+  switchBtn.type = "button";
+  switchBtn.onclick = () => settingsUI.open("models");
+  actions.append(again, switchBtn);
+  if (e.incomplete && !e.remote && !state.remoteOn) actions.appendChild(retryOnClaude(prompt));
+  card.append(el("span", "muted", why), actions);
+  return card;
+}
+
 // Under an answer that says the task was not done: the same task once more on Claude, said plainly to be not
 // private. Without a kept key, the key is asked for in place (kept only; remote mode stays off).
 function retryOnClaude(prompt) {
   const row = el("div", "retry"), go = el("button", "btn", "Try with Claude");
-  row.append(go, el("span", "muted small", "Sends this task to Anthropic. Not private."));
+  row.append(go, el("span", "muted small", "Not private · sends to Anthropic"));
   const send = async () => {
     go.disabled = true;
     try {
@@ -1686,11 +1907,26 @@ const SEND_ICON = "M12 19V5 M6 11l6-6l6 6";
 const SCREEN_ICON = "M4 5h16v14H4z M15 5v14";
 const SIDEBAR_ICON = "M4 5h16v14H4z M9 5v14";
 const TRACE_ICON = "M12 4v11 M7 10l5 5l5-5 M5 20h14";
-// The glyph buttons in the page drawn as line icons, one set throughout.
-for (const [id, d] of [["newTask", PLUS_ICON], ["expand", EXPAND_ICON], ["closeComputer", CLOSE_ICON], ["send", SEND_ICON],
-                       ["toggleComputer", SCREEN_ICON], ["toggleSidebar", SIDEBAR_ICON], ["newTaskHead", PLUS_ICON],
-                       ["exportTrace", TRACE_ICON]])
+const NAV_ICONS = {
+  plus: "M12 5v14 M5 12h14",
+  search: "M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14 M20 20l-3.8-3.8",
+  files: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  routines: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18 M12 7v5l3 2",
+  customize: "M4 6h16 M4 12h16 M4 18h16 M9 4v4 M15 10v4 M11 16v4",
+  globe: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18 M3 12h18 M12 3a14 14 0 0 1 0 18 M12 3a14 14 0 0 0 0 18",
+  monitor: "M3 5h18v12H3z M8 21h8 M12 17v4",
+  term: "M5 8l4 4-4 4 M12 16h7",
+  chip: "M9 3v2M15 3v2M9 19v2M15 19v2M3 9h2M3 15h2M19 9h2M19 15h2 M7 7h10v10H7z",
+  chevRight: "M9 6l6 6l-6 6",
+};
+for (const [id, d] of [["expand", EXPAND_ICON], ["closeComputer", CLOSE_ICON], ["send", SEND_ICON],
+                       ["toggleComputer", SCREEN_ICON], ["toggleSidebar", SIDEBAR_ICON], ["collapseSidebar", SIDEBAR_ICON],
+                       ["newTaskHead", PLUS_ICON], ["exportTrace", TRACE_ICON]])
   document.getElementById(id)?.replaceChildren(icon(d));
+for (const slot of document.querySelectorAll("[data-ico]")) {
+  const d = NAV_ICONS[slot.dataset.ico];
+  if (d) slot.replaceChildren(icon(d));
+}
 
 // A small line icon, drawn with strokes on a 24 by 24 grid.
 function icon(d) {
@@ -1773,13 +2009,24 @@ function renderPlan(plan, problem) {
   };
   tile(hw.chip, "Chip");
   tile(`${hw.ram_gb} GB`, "Memory", hw.budget_gb ? `${hw.budget_gb} GB of it can go to models` : "");
-  tile(hw.gpu === "apple" ? "Apple GPU" : hw.gpu === "none" ? "None" : `${hw.gpu === "nvidia" ? "NVIDIA" : "AMD"} ${hw.vram_gb} GB`, "Graphics",
-       hw.gpu === "apple" ? "Apple GPU and Neural Engine, sharing the memory" : hw.gpu === "none" ? "Models will run on the processor, slowly" : "");
+  const ane = plan.ane || {};
+  tile(hw.gpu === "apple" ? (ane.cores ? `GPU + ${ane.cores}-core ANE` : "Apple GPU & ANE") :
+       hw.gpu === "none" ? "None" : `${hw.gpu === "nvidia" ? "NVIDIA" : "AMD"} ${hw.vram_gb} GB`, "Graphics",
+       hw.gpu === "apple" ? "Apple GPU and Neural Engine, sharing unified memory" : hw.gpu === "none" ? "Models will run on the processor, slowly" : "");
   if (speed) tile(`~${Math.round(speed.step_s)} s`, speed.measured ? "Per step, measured" : "Per step, estimated",
                   "How long each step of a task takes here");
   card.appendChild(tiles);
   if (!plan.model) {
-    card.append(el("p", "setup-error", plan.notes.join(" ") || "No model fits this computer."), setupButton("Try again", showPlan));
+    const msg = hw.ram_gb && hw.ram_gb <= 8
+      ? `With ${hw.ram_gb} GB of memory and current apps open, a local model is too tight right now. You can connect your own model server or use Claude with your API key.`
+      : "No local model fits the available memory right now. Close a few apps to retry, or connect your own server or Claude.";
+    card.appendChild(el("p", "setup-error", msg));
+    const row = el("div", "row");
+    row.append(setupButton("Try again", showPlan), setupButton("Use your own server", () => renderServerSetup(plan)));
+    const claudeBtn = el("button", "linkish setup-other", "Use an Anthropic key instead");
+    claudeBtn.type = "button";
+    claudeBtn.onclick = () => renderRemoteSetup(plan);
+    card.append(row, claudeBtn);
     return;
   }
 
@@ -1788,6 +2035,19 @@ function renderPlan(plan, problem) {
     try { renderPlan(await api("/api/setup", {method: "POST", body: JSON.stringify({model: plan.model.id, ...extra})})); }
     catch (err) { renderPlan(plan, err.message); }
   };
+  // Plain-English Fast / Balanced / Smartest presets (zero jargon)
+  if ((plan.presets || []).length > 1) {
+    const pGrid = el("div", "preset-grid");
+    for (const p of plan.presets) {
+      const btn = el("button", "preset-card" + (p.model === plan.model.id ? " on" : ""));
+      btn.type = "button";
+      btn.append(el("div", "preset-head", p.label), el("div", "preset-model", p.name || modelName(p.model)),
+                 el("div", "preset-meta muted small", `~${Math.round(p.step_s || 0)} s/step · ${p.vision ? "Vision" : "Text only"}`));
+      btn.onclick = () => { if (p.model !== plan.model.id) replan({action: "plan", model: p.model}); };
+      pGrid.appendChild(btn);
+    }
+    card.appendChild(pGrid);
+  }
   card.appendChild(el("div", "setup-label", own ? `Your choice for ${here}` : `Recommended for ${here}`));
   const roles = el("div", "roles");
   for (const role of plan.roles || []) {
@@ -1878,10 +2138,125 @@ function renderPlan(plan, problem) {
   why.append(el("summary", "", "How these were chosen"), list);
   why.addEventListener("toggle", () => { if (why.open) why.scrollIntoView({behavior: gently(), block: "end"}); });
   card.appendChild(why);
+  const otherRow = el("div", "row");
+  const srv = el("button", "linkish setup-other", "Connect your own model server");
+  srv.type = "button";
+  srv.onclick = () => renderServerSetup(plan);
   const other = el("button", "linkish setup-other", "Use an Anthropic key instead");
   other.type = "button";
   other.onclick = () => renderRemoteSetup(plan);
-  card.appendChild(other);
+  otherRow.append(srv, other);
+  card.appendChild(otherRow);
+}
+
+// Connect an OpenAI-compatible server on another machine (e.g. llama-server on a GPU box over Tailscale).
+function renderServerSetup(plan, problem) {
+  const here = plan.hardware.os === "mac" ? "this Mac" : "this computer";
+  const card = setupCard("Connect your own server", "Runs planning on your server; file search and voice stay on this computer.");
+  const form = el("form", "set-group");
+  const urlIn = el("input", "set-input"); urlIn.placeholder = "http://100.64.0.5:8080/v1"; urlIn.style.maxWidth = "100%";
+  const modIn = el("input", "set-input"); modIn.placeholder = "Model name (e.g. bonsai2.5-27b)"; modIn.style.maxWidth = "100%";
+  const keyIn = el("input", "set-input"); keyIn.type = "password"; keyIn.placeholder = "API key (optional)"; keyIn.style.maxWidth = "100%";
+  form.append(urlIn, modIn, keyIn);
+  card.appendChild(form);
+  if (problem) card.appendChild(el("p", "setup-error", problem));
+  const go = setupButton("Connect and start", async () => {
+    if (!urlIn.value.trim() || !modIn.value.trim()) { go.disabled = false; return; }
+    try {
+      await api("/api/remote", {method: "POST", body: JSON.stringify({
+        action: "server", base_url: urlIn.value.trim(), model: modIn.value.trim(), key: keyIn.value.trim(),
+      })});
+    } catch (err) { renderServerSetup(plan, err.message); return; }
+    go.textContent = "Starting…";
+    whenDaemonReturns(() => location.reload());
+  });
+  const back = el("button", "linkish setup-other", `Run a model on ${here} instead`);
+  back.type = "button";
+  back.onclick = () => renderPlan(plan);
+  card.append(go, back);
+}
+
+// Moment 3 of progressive onboarding: optional 1-screen folder & macOS app opt-in (1-click skip).
+async function renderReachStep() {
+  const [cfgData, connData] = await Promise.all([
+    api("/api/settings").catch(() => ({})),
+    api("/api/connectors").catch(() => ({connectors: []})),
+  ]);
+  const card = setupCard("What can CodeRunner reach?", "Choose folders or apps to search locally. Everything stays on this Mac; you can change this anytime in Settings.");
+  const chosenFolders = new Set();
+  const chosenApps = new Set();
+  const sugs = (cfgData.suggestions || []).filter((s) => !s.added);
+  if (sugs.length) {
+    const list = el("div", "set-list");
+    for (const s of sugs) {
+      const r = el("label", "set-row");
+      const cb = el("input"); cb.type = "checkbox";
+      cb.onchange = () => { if (cb.checked) chosenFolders.add(s.path); else chosenFolders.delete(s.path); };
+      r.append(el("span", "set-row-label", s.name), cb);
+      list.appendChild(r);
+    }
+    card.append(el("div", "setup-label", "Folders"), list);
+  }
+  const safeApps = (connData.connectors || []).filter((c) => ["calendar", "reminders", "notes", "mail", "contacts"].includes(c.name) && !c.enabled);
+  if (safeApps.length) {
+    const list = el("div", "set-list");
+    for (const c of safeApps) {
+      const r = el("label", "set-row");
+      const cb = el("input"); cb.type = "checkbox";
+      cb.onchange = () => { if (cb.checked) chosenApps.add(c.name); else chosenApps.delete(c.name); };
+      r.append(el("span", "set-row-label", c.label), cb);
+      list.appendChild(r);
+    }
+    card.append(el("div", "setup-label", "Mac apps (optional)"), list);
+  }
+  const finish = async (apply) => {
+    if (apply) {
+      for (const path of chosenFolders) await api("/api/files", {method: "POST", body: JSON.stringify({add: path})}).catch(() => {});
+      for (const name of chosenApps) await api("/api/connectors", {method: "POST", body: JSON.stringify({action: "toggle", name, enabled: true})}).catch(() => {});
+    }
+    await api("/api/settings", {method: "PATCH", body: JSON.stringify({"owner.onboarded": true})}).catch(() => {});
+    location.reload();
+  };
+  const go = setupButton("Start using CodeRunner", () => finish(true));
+  const skip = el("button", "linkish setup-other", "Skip for now");
+  skip.type = "button";
+  skip.onclick = () => finish(false);
+  card.append(go, skip);
+}
+
+async function refreshStarters() {
+  const list = $("starterList"), hint = $("starterHint");
+  if (!list || !hint) return;
+  const [files, status] = await Promise.all([api("/api/files").catch(() => null), api("/api/status").catch(() => null)]);
+  const hasFiles = Boolean(files && Array.isArray(files.roots) && files.roots.length);
+  const starters = [
+    ["search", "Compare three highly rated noise-cancelling headphones under $250 with prices and links"],
+    ["files", hasFiles
+      ? "Search my shared folders for my most recent contract or receipt and summarise the key dates"
+      : "Drop a receipt, PDF or spreadsheet here and ask me to pull out the numbers"],
+    ["routines", "Check tomorrow's weather forecast and suggest what to pack"],
+  ];
+  list.replaceChildren();
+  for (const [icoKey, text] of starters) {
+    const b = el("button", "example");
+    b.type = "button";
+    const ic = el("span", "example-ico");
+    ic.appendChild(icon(NAV_ICONS[icoKey] || NAV_ICONS.search));
+    b.append(ic, el("span", "example-txt", text));
+    b.onclick = () => { $("input").value = text; $("input").dispatchEvent(new Event("input")); $("input").focus(); };
+    list.appendChild(b);
+  }
+  hint.replaceChildren();
+  if (!hasFiles) {
+    const link = el("button", "ghost-pill", "");
+    link.type = "button";
+    link.append(icon(NAV_ICONS.files), el("span", "", "Share a folder to search files"));
+    link.onclick = () => settingsUI.open("files");
+    hint.append(link);
+  }
+  if (status && status.model && status.model.vision === false) {
+    hint.append(el("span", "", (hint.childNodes.length ? " · " : "") + "Current model reads text only."));
+  }
 }
 
 // The other way to start: Claude on Anthropic's API with the owner's key. Nothing to download, and not private,
@@ -2233,6 +2608,12 @@ async function watchSetup() {
     setupTimer = setTimeout(watchSetup, 1500);
     return;
   }
+  // After first-run local setup completes, offer the 1-screen optional folder & Mac apps reach step once.
+  const cfg = await api("/api/settings").catch(() => null);
+  if (cfg && cfg.settings && !cfg.settings["owner.onboarded"]) {
+    await renderReachStep();
+    return;
+  }
   location.reload();              // set up, and the daemon that answers now was started with the model
 }
 
@@ -2264,7 +2645,7 @@ function placeBrowser() {
   if (!shellBrowser) return;
   const r = $("bView").getBoundingClientRect();
   const shown = view === "browser" && !$("shell").classList.contains("no-computer") && !document.hidden &&
-    !document.querySelector(".lightbox") && !browserState.covered && r.width > 0 && r.height > 0;
+    !document.querySelector(".lightbox, .set-backdrop") && !browserState.covered && r.width > 0 && r.height > 0;
   const placed = `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)},${shown}`;
   if (placed === browserState.placed) return;
   browserState.placed = placed;
@@ -2302,6 +2683,11 @@ function drawBrowser(next) {
   add.onclick = () => { shellBrowser.act({action: "new"}); $("bUrl").focus(); };
   row.appendChild(add);
   const active = tabs.find((tab) => tab.active);
+  $("browser").classList.toggle("single-tab", tabs.length <= 1);
+  if ($("viewBrowserLabel")) {
+    const label = active && active.url !== "about:blank" ? (active.title || hostOf(active.url) || "Mac browser") : "Mac browser";
+    $("viewBrowserLabel").textContent = label;
+  }
   if (document.activeElement !== $("bUrl")) $("bUrl").value = active && active.url !== "about:blank" ? active.url : "";
   $("bBack").disabled = !browserState.canBack;
   $("bForward").disabled = !browserState.canForward;
@@ -2314,8 +2700,9 @@ function startBrowser() {
   if (!shellBrowser) return;
   $("viewBrowser").hidden = false;
   $("viewsGap").hidden = false;
-  for (const [id, d] of [["bBack", BACK_ICON], ["bForward", FORWARD_ICON], ["bReload", RELOAD_ICON], ["bMore", MORE_ICON]])
-    $(id).replaceChildren(icon(d));
+  for (const [id, d] of [["bBack", BACK_ICON], ["bForward", FORWARD_ICON], ["bReload", RELOAD_ICON], ["bNewInline", PLUS_ICON], ["bMore", MORE_ICON]])
+    $(id)?.replaceChildren(icon(d));
+  if ($("bNewInline")) $("bNewInline").onclick = () => { shellBrowser.act({action: "new"}); $("bUrl").focus(); };
   $("bMore").onclick = () => ($("bMenu").hidden ? openBrowserMenu() : closeBrowserMenu());
   document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !$("bMenu").hidden) closeBrowserMenu(); });
   document.addEventListener("pointerdown", (event) => {
@@ -2517,6 +2904,142 @@ function expandComputer() {
   setView("screen", false);
   setExpanded(true);
 }
+async function refreshMacPane() {
+  const box = $("macSummary");
+  if (!box) return;
+  const data = await api("/api/models").catch(() => null);
+  if (!data) return;
+  const hw = data.hardware || {}, mem = data.live_memory || data.memory || {}, probe = data.probe;
+  box.replaceChildren();
+
+  const card = el("div", "hw-card");
+  const head = el("div", "hw-head");
+  const chip = el("div", "hw-chip", hw.chip || "This Mac");
+  const ramGb = Number(hw.ram_gb || 0);
+  const badge = el("span", "hw-badge", ramGb ? `${ramGb} GB Unified` : "Local");
+  head.append(chip, badge);
+  card.appendChild(head);
+
+  const freeGb = mem.free_gb != null ? Number(mem.free_gb) : null;
+  const budgetGb = hw.budget_gb != null && Number(hw.budget_gb) > 0 ? Number(hw.budget_gb) : null;
+  if (ramGb > 0) {
+    const usedGb = freeGb != null ? Math.max(0, ramGb - freeGb) : (budgetGb ? Math.max(0, ramGb - budgetGb) : ramGb * 0.4);
+    const usedPct = Math.min(100, Math.max(4, Math.round((usedGb / ramGb) * 100)));
+    const bar = el("div", "hw-bar");
+    const fill = el("span", "hw-bar-fill");
+    fill.style.width = `${usedPct}%`;
+    bar.appendChild(fill);
+    card.appendChild(bar);
+    const memMeta = el("div", "hw-mem-meta");
+    const leftTxt = freeGb != null ? `${freeGb.toFixed(1)} GB available` : budgetGb ? `${budgetGb.toFixed(1)} GB model budget` : `${ramGb} GB unified`;
+    const swapGb = Number(mem.swap_used_gb || 0);
+    const rightTxt = swapGb >= 0.1 ? `${swapGb.toFixed(1)} GB swap` : "No swap pressure";
+    memMeta.append(el("span", "", leftTxt), el("span", "muted", rightTxt));
+    card.appendChild(memMeta);
+  }
+
+  const stats = el("div", "hw-stats");
+  const addStat = (label, val, sub) => {
+    const cell = el("div", "hw-stat");
+    cell.append(el("div", "hw-stat-k", label), el("div", "hw-stat-v", val));
+    if (sub) cell.appendChild(el("div", "hw-stat-s", sub));
+    stats.appendChild(cell);
+  };
+  const bw = Math.round((probe && probe.ok && probe.bandwidth_gbs) || hw.bandwidth_gbs || 0);
+  addStat("Bandwidth", bw ? `${bw} GB/s` : "—", probe && probe.ok && probe.gpu_fp16_tflops ? `${probe.gpu_fp16_tflops} TFLOPS` : "Measured");
+  const aneCores = (probe && probe.ane_cores) || hw.ane_cores || 0;
+  const aneTops = (probe && probe.ane_fp16_tops) || hw.ane_tops || 0;
+  addStat("Neural Engine", aneCores ? `${aneCores}-core` : "Apple ANE", aneTops ? `${aneTops} TOPS FP16` : "Active");
+  const tier = data.tier || {};
+  addStat("Context", tier.target_ctx ? `${Math.round(tier.target_ctx / 1024)}K` : "32K", tier.parallel_tasks ? `${tier.parallel_tasks} parallel slots` : "");
+  card.appendChild(stats);
+  box.appendChild(card);
+}
+
+async function openQuickModelMenu() {
+  const pop = $("quickModelPop");
+  if (!pop) return;
+  if (!pop.hidden) { pop.hidden = true; return; }
+  pop.replaceChildren(el("div", "muted small", "Loading…"));
+  pop.hidden = false;
+  const data = await api("/api/models").catch(() => null);
+  if (!data) { pop.hidden = true; return; }
+  const curId = (data.active_stack || {}).planner || "";
+  pop.replaceChildren();
+  for (const p of ((data.plan && data.plan.presets) || [])) {
+    const b = el("button", "quick-opt" + (p.model === curId ? " on" : ""));
+    b.type = "button";
+    b.append(el("span", "", `${p.label} · ${modelName(p.model)}`), el("span", "muted small", `~${Math.round(p.step_s || 0)}s`));
+    b.onclick = async () => {
+      pop.hidden = true;
+      if (p.model === curId) return;
+      await api("/api/models", {method: "POST", body: JSON.stringify({action: "switch", model: p.model})}).catch((e) => notice(e.message));
+      checkSetup(); loadModels();
+    };
+    pop.appendChild(b);
+  }
+  pop.appendChild(el("div", "quick-sep"));
+  const more = el("button", "quick-opt", "Models, servers & benchmarks…");
+  more.type = "button";
+  more.onclick = () => { pop.hidden = true; settingsUI.open("models"); };
+  pop.appendChild(more);
+}
+
+const THINK_MODES = ["auto", "on", "off"];
+const THINK_LABELS = {auto: "Auto", on: "Thinking on", off: "Fast (no thinking)"};
+let curThinking = "auto";
+async function loadThinkingLabel() {
+  const cfg = await api("/api/settings").catch(() => null);
+  if (cfg?.settings && $("quickThinkBtn")) {
+    curThinking = String(cfg.settings["agent.thinking"] || "auto");
+    $("quickThinkBtn").textContent = THINK_LABELS[curThinking] || "Auto";
+  }
+}
+$("quickThinkBtn")?.addEventListener("click", async () => {
+  curThinking = THINK_MODES[(THINK_MODES.indexOf(curThinking) + 1) % THINK_MODES.length];
+  $("quickThinkBtn").textContent = THINK_LABELS[curThinking];
+  await api("/api/settings", {method: "PATCH", body: JSON.stringify({"agent.thinking": curThinking})}).catch(() => {});
+});
+$("quickModelBtn")?.addEventListener("click", (e) => { e.stopPropagation(); openQuickModelMenu(); });
+document.addEventListener("click", (e) => {
+  const pop = $("quickModelPop");
+  if (pop && !pop.hidden && !pop.contains(e.target) && e.target !== $("quickModelBtn")) pop.hidden = true;
+});
+
+$("collapseSidebar")?.addEventListener("click", () => showSidebar(false));
+$("navSearch")?.addEventListener("click", () => {
+  const wrap = $("sideSearchWrap");
+  if (!wrap) return;
+  wrap.hidden = !wrap.hidden;
+  if (!wrap.hidden) $("convSearch")?.focus();
+  else if ($("convSearch")) { $("convSearch").value = ""; drawConversations(convCache); }
+});
+$("navFiles")?.addEventListener("click", () => settingsUI.open("files"));
+$("navRoutines")?.addEventListener("click", () => settingsUI.open("routines"));
+$("navCustomize")?.addEventListener("click", () => settingsUI.open("models"));
+$("viewMac")?.addEventListener("click", () => setView("mac"));
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    if ($("shell").classList.contains("no-sidebar")) showSidebar(true);
+    if ($("sideSearchWrap")) $("sideSearchWrap").hidden = false;
+    $("convSearch")?.focus();
+  }
+});
+loadThinkingLabel();
+
+const settingsUI = createSettings({
+  api,
+  modelName,
+  notice,
+  onRestart: () => whenDaemonReturns(() => location.reload()),
+  onRunCheck: () => showCheck(),
+  onReloadModels: () => { checkSetup(); loadModels(); },
+});
+$("modelsLine")?.addEventListener("click", () => settingsUI.open("models"));
+$("panelModelsBtn")?.addEventListener("click", () => settingsUI.open("models"));
+window.coderunnerShell?.onOpenSettings?.((sec) => settingsUI.open(sec || "models"));
+
 window.addEventListener("hashchange", () => openById(threadInAddress()));
 window.coderunnerShell?.onShowThread?.((id) => openById(id));
 window.coderunnerShell?.onShowComputer?.(() => expandComputer());

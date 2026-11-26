@@ -18,7 +18,17 @@ from typing import Callable
 from ..core.llm import LLM
 from . import bench, catalog, fit, hardware, licenses, smoketest
 from .hub import Hub, HubError
-from .runtimes import LlamaCppRuntime, OllamaRuntime, PrismRuntime, Runtime, choose_runtime, install_hint, models_dir
+from .runtimes import (
+    JudgeRuntime,
+    LlamaCppRuntime,
+    MLXRuntime,
+    OllamaRuntime,
+    PrismRuntime,
+    Runtime,
+    choose_runtime,
+    install_hint,
+    models_dir,
+)
 
 MAX_FALLBACKS = 2
 WORTH_A_NOTE = 0.2          # utility gain (fit.utility) worth suggesting a change to the machine
@@ -26,6 +36,11 @@ SLOWER_THAN_ESTIMATED = 1.5     # measured step time / estimate past which setup
 MIN_FREE_GB = 5.0           # disk kept free by downloads unless files.min_free_gb says otherwise
 MEMORY_MARGIN_GB = 1.0      # memory left free beside a model that loads: with 8.8 GB free, a 9.7 GB model swapped
 LOCAL = ("ollama", "llama.cpp", "prism")
+
+
+def _is_managed_local(rt: Runtime | None) -> bool:
+    """True when CodeRunner owns the runtime process and local model lifecycle (including managed MLX)."""
+    return rt is not None and (rt.name in LOCAL or (isinstance(rt, MLXRuntime) and rt.managed()))
 
 
 def _pinned(config) -> str | None:
@@ -46,7 +61,7 @@ def _main_runtime(config, hw, runtime: str | Runtime | None) -> Runtime | None:
     if runtime is not None:
         return _runtime(config, hw, runtime)
     if _chat_on_llama(hw):
-        return LlamaCppRuntime(config)
+        return LlamaCppRuntime(config, hw=hw)
     found = choose_runtime(config, hw, "auto") or choose_runtime(config, hw)
     if found is None:
         own = OllamaRuntime(config)
@@ -71,7 +86,14 @@ def _own_ollama(rt: Runtime, hw, progress: Callable[[str], None]) -> str | None:
 
 
 NAMES = {"embeddinggemma-2": "EmbeddingGemma 2", "embeddinggemma-300m": "EmbeddingGemma 300M", "tev1-4b": "tev1 4B",
-         "gpt-oss-20b": "gpt-oss 20B", "gpt-oss-120b": "gpt-oss 120B", "qwen3-embedding-0.6b": "Qwen3 Embedding 0.6B"}
+         "judge-4b": "Safety Judge 4B", "gpt-oss-20b": "gpt-oss 20B", "gpt-oss-120b": "gpt-oss 120B",
+         "qwen3-embedding-0.6b": "Qwen3 Embedding 0.6B", "bonsai-2.5-27b": "Bonsai 2.5 27B",
+         "bonsai-2.5-27b-compact": "Bonsai 2.5 27B Compact", "bonsai-2-9b": "Bonsai 2 9B", "bonsai-2-4b": "Bonsai 2 4B",
+         "inkling-2-mini": "Inkling 2 Mini", "inkling-2-small": "Inkling 2 Small",
+         "ornith-1.5-122b": "Ornith 1.5 122B", "mimo-v2.6-flash-rl": "MiMo V2.6 Flash",
+         "mimo-v2.6-distill-9b": "MiMo V2.6 Distill 9B", "glm-5.3-flash": "GLM 5.3 Flash",
+         "deepseek-v4.1-flash-1017": "DeepSeek V4.1 Flash", "qwen3.8-flash-next": "Qwen3.8 Flash Next",
+         "qwen3.8-27b-q6": "Qwen3.8 27B Q6", "holo4-35b-a3b": "Holo 4 35B", "mage-vl-cowork": "Mage VL Cowork"}
 
 
 def pretty(model_id: str) -> str:
@@ -134,7 +156,7 @@ def _download_gb(entry: dict, cand: dict, rt: Runtime) -> float:
 
 # Decimal GB of the runtime archives setup may fetch (the pinned releases' own sizes).
 RUNTIME_GB = {"ollama-darwin.tgz": 0.17, "ollama-linux-amd64.tar.zst": 1.44, "ollama-linux-arm64.tar.zst": 1.56,
-              "llama.cpp": 0.03, "prism": 0.01, "coreml": 0.12}
+              "llama.cpp": 0.03, "prism": 0.01, "coreml": 0.12, "mlx": 0.25}
 
 
 def downloads(config, planned: dict, hw: hardware.Hardware | None = None) -> list[dict]:
@@ -149,9 +171,13 @@ def downloads(config, planned: dict, hw: hardware.Hardware | None = None) -> lis
     uses_ollama = name == "ollama" or planned.get("embedding") or planned.get("decision")
     if uses_ollama and (ollama.binary() is None or ollama.outdated()) and ollama.can_install():
         found.append({"what": f"Ollama {ollama.RELEASE}", "gb": RUNTIME_GB.get(ollama.build()[0])})
-    local = {"ollama": ollama, "llama.cpp": LlamaCppRuntime(config), "prism": PrismRuntime(config, hw=hw)}
+    mlx = MLXRuntime(config)
+    local = {"ollama": ollama, "llama.cpp": LlamaCppRuntime(config, hw=hw), "prism": PrismRuntime(config, hw=hw),
+             **({"mlx": mlx} if mlx.managed() else {})}
     if name in ("llama.cpp", "prism") and local[name].binary() is None:
         found.append({"what": "llama.cpp" if name == "llama.cpp" else "Prism's llama.cpp build", "gb": RUNTIME_GB[name]})
+    elif name == "mlx" and mlx.managed() and mlx.python() is None:
+        found.append({"what": "MLX runtime (mlx-lm)", "gb": RUNTIME_GB["mlx"]})
     for role, key in (("assistant model", "model"), ("embedding model (Ollama)", "embedding"),
                       ("decision model", "decision")):
         cand = planned.get(key)
@@ -159,7 +185,7 @@ def downloads(config, planned: dict, hw: hardware.Hardware | None = None) -> lis
             continue
         rt = local.get(cand.get("runtime") or "ollama", ollama)
         try:
-            entry = catalog.get(cand["id"])
+            entry = catalog.lookup(cand["id"], hw=hw, config=config, runtime=rt.name)
         except KeyError:
             found.append({"what": f"{role}: {cand['id']}", "gb": None})
             continue
@@ -216,7 +242,7 @@ def _llama(config, rt: Runtime | None, hw=None) -> Runtime | None:
     and, on Apple silicon, for chat models (setup installs llama.cpp's official build)."""
     if rt is None or rt.name != "ollama":
         return None
-    llama = LlamaCppRuntime(config)
+    llama = LlamaCppRuntime(config, hw=hw)
     return llama if llama.available() or _chat_on_llama(hw) else None
 
 
@@ -229,8 +255,11 @@ def _discovered(config, hw, rt: Runtime | None, progress: Callable[[str], None] 
     known = {(e.get("license") or {}).get("base_repo", "").lower() for e in catalog.models()}
     entries = []
     for model in discover.cached(progress):
-        if model["repo"].lower() in known:
-            continue                        # curated entry with measured factors wins
+        repo_low = model["repo"].lower()
+        # Curated entries carry measured speed factors; on large unified-memory Macs (>= 80 GiB budget),
+        # still allow discovered higher-precision builds (Q6_K/Q8_0) of cataloged repos.
+        if repo_low in known and hw.budget_gb < 80:
+            continue
         entry, on = None, rt.name
         if rt.name == "ollama" and llama is not None and _chat_on_llama(hw):
             entry, on = discover.best_build(model, hw, config, "llama.cpp"), "llama.cpp"
@@ -238,6 +267,10 @@ def _discovered(config, hw, rt: Runtime | None, progress: Callable[[str], None] 
             entry, on = discover.best_build(model, hw, config, rt.name), rt.name
         if entry is None and rt.name == "ollama":
             entry, on = discover.best_build(model, hw, config, "llama.cpp"), "llama.cpp"
+        if entry and repo_low in known:
+            art = catalog.artifact(entry, on) or {}
+            if float(art.get("bits") or 0) < 6.0:
+                continue
         if entry:
             entry["runtime"] = on
             # Worth installing llama.cpp for, where Ollama is the main runtime and llama.cpp is not beside it.
@@ -306,11 +339,8 @@ def _ranked(hw, config, rt: Runtime | None, prism: Runtime | None, extra: list[d
     return sorted((c for c in found if c["ok"]), key=fit._order) + [c for c in found if not c["ok"]]
 
 
-def _entry(model_id: str, extra: list[dict]) -> dict:
-    for entry in extra:
-        if entry["id"] == model_id:
-            return entry
-    return catalog.get(model_id)
+def _entry(model_id: str, extra: list[dict], hw=None, config=None, runtime: str | None = None) -> dict:
+    return catalog.lookup(model_id, extra, hw=hw, config=config, runtime=runtime)
 
 
 @dataclasses.dataclass
@@ -324,6 +354,8 @@ class Endpoint:
 
 def _hardware(config, hw: hardware.Hardware | None) -> hardware.Hardware:
     hw = hw or hardware.detect(float(config.get("sandbox.memory_gb") or 1))
+    from . import probe
+    hw = probe.apply(hw, probe.load(hw))          # cached Tier 0 GPU/ANE probe (no-op if not run yet)
     if not hw.measured:
         hw = bench.apply(hw, bench.load(hw))      # speeds measured on this machine replace spec-sheet ones
     peers = [node for node in (config.get("models.cluster") or []) if node.get("host")]
@@ -386,7 +418,7 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
         room = _room_gb(config)[0]
         chosen_on = prism if chosen.get("runtime") == "prism" and prism is not None else \
             llama if chosen.get("runtime") == "llama.cpp" and llama is not None else rt
-        local = chosen_on is not None and chosen_on.name in LOCAL       # an endpoint the owner runs has its model
+        local = _is_managed_local(chosen_on)       # an endpoint the owner runs has its model
         entry = _entry(chosen["id"], extra) if local else None
         need = _download_gb(entry, chosen, chosen_on) if local and not chosen_on.installed(entry) else 0.0
         if need > room:
@@ -398,18 +430,25 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
                      "models.base_url at a bigger machine with models.runtime set to openai.")
     elif chosen["license"] == "ask":
         notes.append(f"{chosen['id']}: {chosen['license_reason']}")
+    wired_hint = None
     if chosen and hw.gpu == "apple" and hw.ram_gb >= 48:
-        # macOS lets the GPU wire about 75% of memory; on big Macs the limit can be raised until restart.
-        limit = hw.ram_gb - 8
-        raised = dataclasses.replace(hw, gpu_limit_gb=limit,
-                                     budget_gb=hardware.apple_budget(hw.ram_gb, limit, hw.sandbox_memory_gb))
-        bigger = _discovered(config, raised, rt, llama=llama) if runtime is None else []    # builds that now fit
-        better = max((c for c in _ranked(raised, config, rt, prism, bigger, llama)
-                      if c["ok"] and c["step_s"] <= fit.MAX_STEP_S and c["ctx"] >= fit.MIN_AGENT_CTX
-                      and fit.utility(c) > fit.utility(chosen) + WORTH_A_NOTE), key=fit.utility, default=None)
-        if better:
-            notes.append(f"Raising the GPU memory limit allows {better['id']} ({better['need_gb']:.0f} GB): "
-                         f"sudo sysctl iogpu.wired_limit_mb={int(limit * 1024)} (until restart)")
+        # macOS lets the GPU wire about 75% of memory; on 48-512 GB Macs raising it unlocks bigger models.
+        limit = hardware.safe_wired_limit_gb(hw.ram_gb, hw.sandbox_memory_gb)
+        if hw.gpu_limit_gb < limit - 1.0:
+            raised = dataclasses.replace(hw, gpu_limit_gb=limit,
+                                         budget_gb=hardware.apple_budget(hw.ram_gb, limit, hw.sandbox_memory_gb))
+            bigger = _discovered(config, raised, rt, llama=llama) if runtime is None else []    # builds that now fit
+            better = max((c for c in _ranked(raised, config, rt, prism, bigger, llama)
+                          if c["ok"] and c["step_s"] <= fit.MAX_STEP_S and c["ctx"] >= fit.MIN_AGENT_CTX
+                          and fit.utility(c) > fit.utility(chosen) + WORTH_A_NOTE), key=fit.utility, default=None)
+            if better:
+                limit_mb = int(limit * 1024)
+                cmd = f"sudo sysctl iogpu.wired_limit_mb={limit_mb}"
+                wired_hint = {"limit_gb": round(limit, 1), "limit_mb": limit_mb, "command": cmd,
+                              "model": better["id"], "model_name": pretty(better["id"]),
+                              "need_gb": round(float(better["need_gb"]), 1)}
+                notes.append(f"Raising the GPU memory limit allows {better['id']} ({better['need_gb']:.0f} GB): "
+                             f"{cmd} (until restart)")
     unserved = [c for c in candidates if c.get("missing_runtime")]
     if runtime is None and llama is None and rt is not None and rt.name == "ollama":
         # Mixture-of-experts models with their experts in system RAM, which only llama.cpp does.
@@ -428,20 +467,24 @@ def plan(config, hw: hardware.Hardware | None = None, runtime: str | Runtime | N
         chosen_rt = llama
     ollama = art == "ollama" or (chosen_rt is not rt and OllamaRuntime(config).available())
     embedder = next(iter(fit.recommend(hw, config, "embedding", "ollama")), None) if ollama else None
-    judge = decision_pick(hw, config, chosen["need_gb"] + (embedder or {}).get("need_gb", 0.0)) \
-        if ollama and chosen else None
+    judge_rt = "ollama" if ollama else ("llama.cpp" if chosen_rt and chosen_rt.name in ("llama.cpp", "prism") else None)
+    judge = decision_pick(hw, config, chosen["need_gb"] + (embedder or {}).get("need_gb", 0.0), runtime=judge_rt) \
+        if judge_rt and chosen else None
+    driver = driver_pick(hw, config, chosen["need_gb"] + (embedder or {}).get("need_gb", 0.0)) if chosen else None
     return {
         "hardware": hw.to_dict(),
+        "tier": hardware.ram_tier(hw.ram_gb) if hw.gpu == "apple" and hw.ram_gb else None,
         "runtime": chosen_rt.describe() if chosen_rt else None,
         "model": chosen,
+        "presets": fit.presets(hw, viable),
         "alternatives": viable[1:6],
         "rejected": [c for c in candidates if not c["ok"]],
         "license": ({"decision": chosen["license"], "reason": chosen["license_reason"],
                      "link": chosen["license_link"]} if chosen else None),
-        # Embeddings and the decision model come from Ollama, also when another runtime serves the chat model.
         "embedding": embedder,
-        # None: no decision model fits beside the chat model, which then judges browser steps itself.
         "decision": judge,
+        "driver": driver,
+        "wired_limit_hint": wired_hint,
         "notes": notes,
     }
 
@@ -537,10 +580,14 @@ def setup_coreml_embedding(config, hw: hardware.Hardware | None = None, progress
         rt.start()
         progress("preparing the embedding model for the Neural Engine (once, about a minute)")
         _run_async((warm or coreml.warm)(rt.base_url, rt.model_id(entry)))
-        if wanted == "auto" and media and record is None:
-            progress("timing embeddings on the Neural Engine against the GPU")
-            record = coreml.save(hw, _run_async((measure or coreml.compare)(rt.base_url, rt.model_id(entry),
-                                                                               media_url, media)))
+        if wanted == "auto" and record is None:
+            if media:
+                progress("timing embeddings on the Neural Engine against the GPU")
+                record = coreml.save(hw, _run_async((measure or coreml.compare)(rt.base_url, rt.model_id(entry),
+                                                                                   media_url, media)))
+            elif measure is None:
+                progress("timing embeddings on the Neural Engine")
+                record = coreml.save(hw, _run_async(coreml.benchmark_local(rt.base_url, rt.model_id(entry))))
         pick, why = coreml.choice(record) if wanted == "auto" and record else \
             ("coreml", "set by models.embedding_runtime" if wanted == "coreml" else "no GPU build to compare with")
     except Exception as exc:
@@ -619,7 +666,7 @@ def _memory_short(cand: dict, hw, rt: Runtime) -> tuple[float, float] | None:
     it fits with a margin, when a server elsewhere runs it, or when free memory cannot be read. Loading Bonsai 2
     27B (9.7 GB) on an 18 GB Mac took swap from 2.2 to 5.9 GB in 25 seconds with 6 GB free, and by 1.6 GB in
     seconds with 8.8 GB free; the plan had said it fits the machine."""
-    if rt.name not in LOCAL:
+    if not _is_managed_local(rt):
         return None
     free = hardware.available_gb(getattr(hw, "ram_gb", 0) or 0)
     need = float(cand.get("need_gb") or 0)
@@ -633,10 +680,10 @@ def _free_gpu(config, keep: Runtime) -> None:
     Mac twice. Ollama keeps its other models (embeddings); a llama.cpp server of another runtime stops (its own
     runtime restarts it with the new model)."""
     before, chat = config.get("models.runtime") or "", config.get("models.chat") or ""
-    if before not in LOCAL or not chat:
+    if not before or not chat:
         return
     old = choose_runtime(config, name=before)
-    if old is None or not old.running():
+    if not _is_managed_local(old) or not old.running():
         return
     if old.name == "ollama":
         old.unload(chat)
@@ -656,7 +703,7 @@ def _stopped(first: str, why: str, entry: dict | None = None, need: float = 0.0,
 def setup(config, model_id: str | None = None, runtime: str | Runtime | None = None, accept_license: bool = False,
           progress: Callable[[str], None] = print, hw: hardware.Hardware | None = None, embedding: bool = True,
           smoke=smoketest.run, hub: Hub | None = None, measure=None, decision: bool = True,
-          other_downloads: bool = True, insist: bool = True) -> dict:
+          other_downloads: bool = True, insist: bool = True, ctx: int | None = None) -> dict:
     """measure times the model once it passes the smoke test (default bench.measure; False skips it);
     decision also sets up a decision model to judge browser steps when memory allows. With other_downloads
     off (the app: its first screen showed one model and its size), a model that does not work out is not
@@ -670,9 +717,9 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
     error = _own_ollama(rt, hw, progress)
     if error:
         return {"ok": False, "error": error}
-    if not rt.available() and not (isinstance(rt, LlamaCppRuntime) and rt.can_install()):   # pull fetches llama.cpp
+    if not rt.available() and not (isinstance(rt, (LlamaCppRuntime, MLXRuntime)) and rt.can_install()):
         return {"ok": False, "error": f"{rt.name} is not available. {install_hint(hw, rt.name)}"}
-    if rt.name not in LOCAL:
+    if not _is_managed_local(rt):
         return _external(config, rt, model_id, progress, smoke)
     if _cpu_note(hw):
         progress("warning: " + _cpu_note(hw))
@@ -696,6 +743,9 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
         if on == "llama.cpp" and rt.name != "llama.cpp" and llama is None:
             return {"ok": False, "error": f"{model_id} needs llama.cpp. {install_hint(hw, 'llama.cpp')}"}
         cand = fit.candidate(entry, hw, config, "chat", on)
+        if ctx is not None and int(ctx) > 0:
+            est = fit.estimate(entry, hw, ctx=int(ctx), runtime=on)
+            cand = {**cand, "ctx": int(ctx), "need_gb": est["need_gb"]}
         if cand["fit"] == "no":
             progress(f"warning: {model_id} {cand['reasons'][0]}; trying anyway because it was requested")
         queue = [cand]  # an explicit choice is never silently replaced
@@ -802,8 +852,14 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
                         "error": f"Not enough memory free: {pretty(entry['id'])} needs {need:.1f} GB and {free:.1f} GB "
                                  "is free. Close some apps and try again"
                                  + (f", or use {pretty(smaller)} (--model {smaller})." if smaller else ".")}
-            model = rt.prepare(entry, cand["ctx"], offload=True) if cand.get("offload") else \
-                rt.prepare(entry, cand["ctx"])
+            if isinstance(rt, LlamaCppRuntime) and not isinstance(rt, PrismRuntime):
+                use_no_mmap = bool(hw.gpu == "apple" and hw.ram_gb >= 64 and cand.get("fit") == "good")
+                use_kv_q8 = bool(cand.get("ctx", 0) >= 65536 or cand.get("fit") == "tight")
+                model = rt.prepare(entry, cand["ctx"], offload=bool(cand.get("offload")),
+                                   kv_q8=use_kv_q8, no_mmap=use_no_mmap)
+            else:
+                model = rt.prepare(entry, cand["ctx"], offload=True) if cand.get("offload") else \
+                    rt.prepare(entry, cand["ctx"])
             progress(f"loading {entry['id']} into memory")
             try:
                 rt.start()
@@ -923,10 +979,12 @@ def _embedding_need(config, hw) -> float:
     return 0.0
 
 
-def decision_pick(hw: hardware.Hardware, config, used_gb: float) -> dict | None:
-    """The most accurate decision model that fits well beside the models already using `used_gb`."""
+def decision_pick(hw: hardware.Hardware, config, used_gb: float, runtime: str | None = "ollama") -> dict | None:
+    """The most accurate decision model that fits well beside the models already using `used_gb`.
+    Uses Ollama systemone models when Ollama is active, or a dedicated llama.cpp GGUF judge on 24 GB+ Macs."""
     left = dataclasses.replace(hw, budget_gb=max(0.0, hw.budget_gb - used_gb))
-    return next((c for c in fit.recommend(left, config, "decision", "ollama")
+    rt_name = runtime or "ollama"
+    return next((c for c in fit.recommend(left, config, "decision", rt_name)
                  if c["fit"] == "good" and c["license"] == "allow"), None)
 
 
@@ -934,54 +992,75 @@ def _setup_decision(config, rt: Runtime | None, chat_rt: Runtime, hw, used_gb: f
     """A dedicated decision model judges browser steps when memory allows; otherwise the chat model does."""
     for key in ("models.decision", "models.decision_api", "models.decision_url"):
         config.set(key, "")
-    if rt is None or rt.name != "ollama":
+    if rt is None or rt.name not in ("ollama", "llama.cpp", "prism"):
         return
-    pick = decision_pick(hw, config, used_gb)
+    judge_rt_name = "ollama" if rt.name == "ollama" else "llama.cpp"
+    pick = decision_pick(hw, config, used_gb, runtime=judge_rt_name)
     if pick is None:
         progress("no decision model fits beside the chat model; the chat model judges browser steps")
         return
     entry = catalog.get(pick["id"])
-    tag = entry["artifacts"]["ollama"]["tag"]
+    if judge_rt_name == "ollama":
+        tag = entry["artifacts"]["ollama"]["tag"]
+        try:
+            if not rt.installed(entry):
+                short = _no_room(config, _download_gb(entry, pick, rt))
+                if short:
+                    raise RuntimeError(short)
+                rt.pull(entry, progress)
+            from ..safety.decision import COMMIT_CRITERIA, COMMIT_QUESTION, DecisionModel
+
+            async def probe():
+                model = DecisionModel(rt.base_url, tag, api="systemone", timeout=120)
+                try:
+                    return await model.probability('Site: example.com\nAction: click link "Next page"',
+                                                   COMMIT_QUESTION, COMMIT_CRITERIA, {"commit", "unclear"})
+                finally:
+                    await model.aclose()
+            _run_async(probe())
+        except Exception as exc:
+            progress(f"decision model {tag} unavailable ({exc}); the chat model judges browser steps")
+            return
+        config.set("models.decision", tag)
+        config.set("models.decision_api", "systemone")
+        config.set("models.decision_url", rt.base_url if rt is not chat_rt else "")
+        config.set("models.decision_threshold", entry["decision"]["threshold"])
+        progress(f"decision model: {tag} ({entry['decision']['measured']})")
+        return
+    # Dedicated llama.cpp GGUF safety judge on Apple Silicon (24 GB+ Macs) without requiring Ollama.
+    from .runtimes import JudgeRuntime
+    jrt = JudgeRuntime(config)
     try:
-        if not rt.installed(entry):
-            short = _no_room(config, _download_gb(entry, pick, rt))
+        if not jrt.installed(entry):
+            short = _no_room(config, _download_gb(entry, pick, jrt))
             if short:
                 raise RuntimeError(short)
-            rt.pull(entry, progress)
-        from ..safety.decision import COMMIT_CRITERIA, COMMIT_QUESTION, DecisionModel
-
-        async def probe():
-            model = DecisionModel(rt.base_url, tag, api="systemone", timeout=120)
-            try:
-                return await model.probability('Site: example.com\nAction: click link "Next page"',
-                                               COMMIT_QUESTION, COMMIT_CRITERIA, {"commit", "unclear"})
-            finally:
-                await model.aclose()
-        _run_async(probe())
+            jrt.pull(entry, progress)
+        alias = jrt.prepare(entry, 4096)
+        jrt.start()
+        config.set("models.decision", alias)
+        config.set("models.decision_api", "chat")
+        config.set("models.decision_url", jrt.base_url)
+        config.set("models.decision_threshold", entry["decision"]["threshold"])
+        progress(f"decision model: {entry['id']} on llama.cpp ({entry['decision']['measured']})")
     except Exception as exc:
-        progress(f"decision model {tag} unavailable ({exc}); the chat model judges browser steps")
-        return
-    config.set("models.decision", tag)
-    config.set("models.decision_api", "systemone")
-    config.set("models.decision_url", rt.base_url if rt is not chat_rt else "")
-    config.set("models.decision_threshold", entry["decision"]["threshold"])
-    progress(f"decision model: {tag} ({entry['decision']['measured']})")
+        progress(f"decision model {entry['id']} unavailable ({exc}); the chat model judges browser steps")
 
 
 DRIVER_CTX = 16384     # a driver keeps its last three screenshots (about 1,300 tokens each) and its steps
 
 
 def _chat_need(config, hw) -> float | None:
-    """Memory the assistant's configured model needs; None when it is not a catalog model."""
+    """Memory the assistant's configured model needs (curated or discovered HF model)."""
     alias = config.get("models.chat") or ""
-    model_id = alias.removeprefix("coderunner-")
+    model_id = alias.split(":")[0].removeprefix("coderunner-")
+    runtime = config.get("models.runtime") or None
+    rt_arg = None if runtime in ("auto", "openai") else runtime
     try:
-        entry = catalog.get(model_id)
+        entry = catalog.lookup(model_id, hw=hw, config=config, runtime=rt_arg)
     except KeyError:
         return None
-    runtime = config.get("models.runtime") or None
-    return fit.estimate(entry, hw, ctx=int(config.get("models.context") or 32768),
-                        runtime=None if runtime in ("auto", "openai") else runtime)["need_gb"]
+    return fit.estimate(entry, hw, ctx=int(config.get("models.context") or 32768), runtime=rt_arg)["need_gb"]
 
 
 def driver_pick(hw: hardware.Hardware, config, used_gb: float | None) -> dict | None:
@@ -1052,7 +1131,11 @@ def bench_here(config, model: str | None = None, measure=None, hw: hardware.Hard
     measured = _run_async((measure or bench.measure)(ep.base_url, model, api_key=ep.api_key))
     runtime = config.get("models.runtime") or ""
     entry_id = model.split(":")[0].removeprefix("coderunner-")
-    entry = next((e for e in catalog.models() if e["id"] == entry_id), None)
+    try:
+        entry = catalog.lookup(entry_id, hw=hw, config=config,
+                               runtime=runtime if runtime in catalog.ARTIFACT else None)
+    except KeyError:
+        entry = None
     cal = None
     if entry is not None:
         cal = bench.calibration(hw, entry, runtime if runtime in catalog.ARTIFACT else None, measured,
@@ -1082,7 +1165,7 @@ def bench_candidates(config, count: int = 2, progress: Callable[[str], None] = p
     downloaded, runs = [], []
     for cand in queue:
         rt = choose_runtime(config, hw, cand.get("runtime") or "auto")
-        entry = _entry(cand["id"], [])
+        entry = _entry(cand["id"], [], hw=hw, config=config, runtime=cand.get("runtime"))
         fresh = rt is not None and not rt.installed(entry)
         progress(f"== {cand['id']}")
         for attempt in (1, 2):
@@ -1134,11 +1217,25 @@ def endpoint(config) -> Endpoint:
 def restart(config) -> bool:
     """Restart the configured local runtime (it crashed or cannot compute); False for external endpoints."""
     rt = choose_runtime(config)
-    if not (rt and rt.name in LOCAL and rt.base_url.rstrip("/") == endpoint(config).base_url):
+    if not (_is_managed_local(rt) and rt.base_url.rstrip("/") == endpoint(config).base_url):
         return False
     rt.stop()
     rt.start()
     return rt.running()
+
+
+def restart_decision(config) -> bool:
+    """Restart a managed local dedicated JudgeRuntime after a crash or reboot; False for shared/external judges."""
+    if not config.get("models.decision"):
+        return False
+    jrt = JudgeRuntime(config)
+    if (config.get("models.decision_url") or "").rstrip("/") != jrt.base_url.rstrip("/"):
+        return False
+    if not (jrt._state().get("active") or {}).get("model"):
+        return False
+    jrt.stop()
+    jrt.start()
+    return jrt.running()
 
 
 def restart_embedding(config) -> bool:
@@ -1162,13 +1259,25 @@ def ensure_running(config) -> Endpoint:
     ep = endpoint(config)
     from . import remote
     # In remote mode the planner is not on this computer: its local model stays set up but is not loaded.
-    ours = rt is not None and rt.name in LOCAL and rt.base_url.rstrip("/") == ep.base_url
-    if ours and remote.active(config) is not None:
+    remote_on = remote.active(config) is not None
+    ours = _is_managed_local(rt) and rt.base_url.rstrip("/") == ep.base_url
+    if ours and remote_on:
         # Its memory goes back to the owner's apps: the model was still held (6.7 GB) after the switch.
         if rt.running() and config.get("models.chat"):
             rt.unload(config.get("models.chat")) if rt.name == "ollama" else rt.stop()
     elif ours and not rt.running():
         rt.start()
+    if config.get("models.decision"):
+        jrt = JudgeRuntime(config)
+        if (config.get("models.decision_url") or "").rstrip("/") == jrt.base_url.rstrip("/"):
+            if remote_on:
+                if jrt.running():
+                    jrt.stop()
+            elif not jrt.running() and (jrt._state().get("active") or {}).get("model"):
+                try:
+                    jrt.start()
+                except Exception:
+                    pass
     from .coreml import CoreMLRuntime
     embedder = CoreMLRuntime(config)
     if (config.get("models.embedding_url") or "").rstrip("/") == embedder.base_url and not embedder.running():

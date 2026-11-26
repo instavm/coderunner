@@ -45,13 +45,14 @@ class AppShellTests(unittest.TestCase):
         self.assertIn('preload: path.join(__dirname, "preload.js")', main)
         self.assertIn("contextIsolation: true, nodeIntegration: false, sandbox: true", main)
         # The Browser tab's: where the browser goes, the owner's buttons, what it shows (main window only).
-        asks = ["pick-folder", "start-assistant", "open-thread", "open-app", "open-computer", "hide-panel", "task-started",
+        asks = ["pick-folder", "start-assistant", "show-in-finder", "open-system-settings", "app-settings",
+                "open-thread", "open-app", "open-computer", "open-settings", "hide-panel", "task-started",
                 "thread-open", "developer-mode", "browser-view", "browser-act", "browser-state"]
         self.assertEqual(re.findall(r'ipcMain\.(?:handle|on)\("([\w-]+)"', main), asks)
         self.assertEqual(re.findall(r'ipcRenderer\.(?:invoke|send)\("([\w-]+)"', preload), asks)
         # What the shell says to the pages: which thread to open, that a panel was shown, developer mode turned on or off.
         self.assertEqual(re.findall(r'ipcRenderer\.on\("([\w-]+)"', preload),
-                         ["show-thread", "show-computer", "panel-shown", "test-this-mac", "developer-mode",
+                         ["show-thread", "show-computer", "open-settings", "panel-shown", "test-this-mac", "developer-mode",
                           "browser-state", "browser-front"])
         self.assertIn('ipcMain.handle("developer-mode", (event) => fromDaemon(event) && developerMode());', main)
         asks.remove("developer-mode")
@@ -64,8 +65,10 @@ class AppShellTests(unittest.TestCase):
         self.assertEqual(re.findall(r'exposeInMainWorld\("(\w+)"', preload), ["coderunnerShell"])
         self.assertIn("if (asker !== ORIGIN) return null;", main)        # only the daemon's own page is answered
         self.assertIn("return asker === ORIGIN ? startDaemon() : false;", main)
-        # The menu bar's asks are heard only from the daemon's own pages, too.
-        for ask in asks[2:]:
+        # Every IPC handler and message is strictly origin-gated to the daemon's own pages.
+        for ask in ("show-in-finder", "open-system-settings", "app-settings"):
+            self.assertRegex(main, r'ipcMain\.handle\("%s", \(event[^)]*\) => \{\s*if \([^)]*fromDaemon\(event\)' % ask)
+        for ask in ("open-thread", "open-app", "open-computer", "open-settings", "hide-panel", "task-started", "thread-open"):
             self.assertRegex(main, r'ipcMain\.on\("%s", \(event[^)]*\) => \{\s*(?:if \(fromDaemon\(event\)|const win = .*\n\s+if '
                                    r'\(fromDaemon\(event\)|if \(!fromDaemon\(event\))' % ask)
 
@@ -166,9 +169,11 @@ console.log(JSON.stringify([
         root = appshell.app_dir().parent
         web = root / "coderunner" / "server" / "web" / "app"
         page, style, markup = ((web / name).read_text() for name in ("app.js", "app.css", "index.html"))
-        # Two small tabs over the box: the screen and the terminal, nothing else to read.
-        self.assertIn('<button id="viewScreen" class="view on" type="button" role="tab" aria-selected="true">Screen</button>', markup)
-        self.assertIn('<button id="viewTerminal" class="view" type="button" role="tab" aria-selected="false">Terminal</button>', markup)
+        # Composed tabs in the workspace header: sandbox screen, terminal, Mac browser, and system overview.
+        self.assertIn('<button id="viewScreen" class="ctab on" type="button" role="tab" aria-selected="true" title="Sandbox screen">', markup)
+        self.assertIn('<button id="viewTerminal" class="ctab" type="button" role="tab" aria-selected="false" title="Sandbox terminal">', markup)
+        self.assertIn('<button id="viewBrowser" class="ctab" type="button" role="tab" aria-selected="false" hidden', markup)
+        self.assertIn('<button id="viewMac" class="ctab ctab-icon" type="button" role="tab" aria-selected="false" title="System and models"', markup)
         self.assertIn('<div id="term" hidden><div id="termNote" class="term-note">Connecting…</div></div>', markup)
         # xterm.js from the app's own files, never a CDN, loaded only when the tab opens.
         for name in ("xterm.js", "addon-fit.js", "xterm.css", "LICENSE.txt"):
@@ -300,6 +305,14 @@ console.log(JSON.stringify([
         with mock.patch.object(appshell.platform, "system", return_value="Linux"):
             with self.assertRaisesRegex(RuntimeError, "outside its folder"):
                 appshell._unzip(archive, out)
+
+    def test_app_settings_checks_shortcut_return_value_and_persists_developer_mode(self):
+        main_js = (appshell.app_dir() / "main.js").read_text()
+        self.assertIn("registered = Boolean(globalShortcut.register(candidate", main_js)
+        self.assertIn("globalShortcut.register(cur.quickAskShortcut", main_js)
+        self.assertIn("next.developerMode = update.developerMode", main_js)
+        settings_js = (appshell.app_dir().parent / "coderunner" / "server" / "web" / "app" / "settings.js").read_text()
+        self.assertIn("if (Array.isArray(control)) {", settings_js)
 
 
 if __name__ == "__main__":

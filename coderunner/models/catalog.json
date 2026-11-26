@@ -1,8 +1,246 @@
 {
   "schema": 1,
-  "updated": "2026-10-11",
+  "updated": "2026-11-26",
   "notes": "rank: 1 is best. Sizes are decimal GB of the artifact (weights; mmproj = vision projector). arch numbers describe KV-cache layers: full-attention layers grow with context, swa_* layers are capped at swa_window tokens; Qwen3.5-family linear-attention layers keep a small fixed state and are not listed. Chat models are ordered by ability from published benchmark scores (evidence.py); rank only breaks ties and orders other roles. evidence points at the repo whose scores apply (build: true when they were measured on this exact build).",
   "models": [
+    {
+      "id": "deepseek-v4.1-flash-1017",
+      "family": "deepseek41",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 0.4,
+      "params_b": 763.2,
+      "active_params_b": 16.0,
+      "arch": {
+        "full_attn_layers": 4,
+        "kv_heads": 1,
+        "head_dim": 224
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "mit",
+        "base_repo": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+        "link": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "ggml-org/DeepSeek-V4.1-Flash-1017-GGUF",
+          "quant": "Q2_K",
+          "file": "DeepSeek-V4.1-Flash-1017-Q2_K-00001-of-00008.gguf",
+          "size_gb": 334.82,
+          "mmproj_gb": 0.52,
+          "bits": 2.9
+        }
+      },
+      "notes": "Frontier sparse MoE for 512 GB Macs (8B active prefill, 16B decode, compact KV); needs llama.cpp b12776+.",
+      "verified": "2026-11-26"
+    },
+    {
+      "id": "inkling-2-small",
+      "family": "inkling2",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 0.5,
+      "params_b": 594.1,
+      "active_params_b": 17.0,
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 8,
+        "head_dim": 128,
+        "swa_layers": 40,
+        "swa_kv_heads": 8,
+        "swa_head_dim": 128,
+        "swa_window": 1024
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "thinkingmachines/Inkling-2-Small",
+        "link": "https://huggingface.co/thinkingmachines/Inkling-2-Small",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "unsloth/Inkling-2-Small-GGUF",
+          "quant": "UD-Q4_K_XL",
+          "file": "UD-Q4_K_XL/Inkling-2-Small-UD-Q4_K_XL-00001-of-00008.gguf",
+          "size_gb": 354.15,
+          "mmproj_gb": 0.66,
+          "bits": 4.9
+        },
+        "mlx": {
+          "repo": "mlx-community/Inkling-2-Small-4bit",
+          "size_gb": 380.79,
+          "bits": 4.5
+        }
+      },
+      "notes": "Frontier native 4-bit MoE for 512 GB Macs; leads BrowseComp and DeepSearchQA; needs llama.cpp b12776+.",
+      "verified": "2026-11-26"
+    },
+    {
+      "id": "mimo-v2.6-flash-rl",
+      "family": "mimo2",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 0.6,
+      "params_b": 310.0,
+      "active_params_b": 15.0,
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 4,
+        "head_dim": 192,
+        "swa_layers": 40,
+        "swa_kv_heads": 8,
+        "swa_head_dim": 192,
+        "swa_window": 128
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "mit",
+        "base_repo": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
+        "link": "https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "ggml-org/MiMo-V2.6-Flash-RL-GGUF",
+          "quant": "MXFP4",
+          "file": "MiMo-V2.6-Flash-RL-MXFP4-00001-of-00004.gguf",
+          "size_gb": 167.37,
+          "mmproj_gb": 1.56,
+          "bits": 4.25
+        },
+        "mlx": {
+          "repo": "mlx-community/MiMo-V2.6-Flash-RL-mxfp4-q8",
+          "size_gb": 167.26,
+          "bits": 4.25
+        }
+      },
+      "notes": "Native MXFP4 310B/15B MoE for 192-256 GB Macs; strong OSWorld and agentic coding.",
+      "verified": "2026-11-26"
+    },
+    {
+      "id": "glm-5.3-flash",
+      "family": "glm5-next",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 0.7,
+      "params_b": 321.3,
+      "active_params_b": 18.0,
+      "arch": {
+        "full_attn_layers": 11,
+        "kv_heads": 1,
+        "head_dim": 288
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "mit",
+        "base_repo": "zai-org/GLM-5.3-Flash",
+        "link": "https://huggingface.co/zai-org/GLM-5.3-Flash",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "unsloth/GLM-5.3-Flash-GGUF",
+          "quant": "UD-IQ4_XS",
+          "file": "UD-IQ4_XS/GLM-5.3-Flash-UD-IQ4_XS-00001-of-00004.gguf",
+          "size_gb": 156.82,
+          "mmproj_gb": 1.16,
+          "bits": 4.3
+        },
+        "mlx": {
+          "repo": "mlx-community/GLM-5.3-Flash-4bit",
+          "size_gb": 203.99,
+          "bits": 4.5
+        }
+      },
+      "notes": "Hybrid MLA MoE for 192-256 GB Macs.",
+      "verified": "2026-11-26"
+    },
+    {
+      "id": "qwen3.8-flash-next",
+      "family": "qwen4exp",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 0.8,
+      "params_b": 180.0,
+      "active_params_b": 6.0,
+      "arch": {
+        "full_attn_layers": 12,
+        "kv_heads": 2,
+        "head_dim": 256
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "qwen-community-1.0",
+        "base_repo": "Qwen/Qwen3.8-Flash-Next",
+        "link": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+          "quant": "UD-IQ4_XS",
+          "file": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+          "size_gb": 93.67,
+          "mmproj_gb": 0.62,
+          "bits": 4.3
+        }
+      },
+      "notes": "Fast 6B-active MoE for 128-192 GB Macs; requires accepting Qwen Community License.",
+      "verified": "2026-11-26"
+    },
+    {
+      "id": "ornith-1.5-122b",
+      "family": "qwen3.5",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 0.9,
+      "params_b": 125.1,
+      "active_params_b": 10.0,
+      "arch": {
+        "full_attn_layers": 12,
+        "kv_heads": 2,
+        "head_dim": 256
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "mit",
+        "base_repo": "ornith-ai/Ornith-1.5-122B",
+        "link": "https://huggingface.co/ornith-ai/Ornith-1.5-122B",
+        "commercial": true
+      },
+      "artifacts": {
+        "ollama": {
+          "tag": "hf.co/unsloth/Ornith-1.5-122B-GGUF:UD-Q4_K_XL",
+          "size_gb": 79.71,
+          "mmproj_gb": 0.91
+        },
+        "gguf": {
+          "repo": "unsloth/Ornith-1.5-122B-GGUF",
+          "quant": "UD-Q4_K_XL",
+          "file": "UD-Q4_K_XL/Ornith-1.5-122B-UD-Q4_K_XL-00001-of-00002.gguf",
+          "size_gb": 79.71,
+          "mmproj_gb": 0.91,
+          "bits": 4.9
+        }
+      },
+      "notes": "MIT MoE for 96-128 GB Macs; supersedes Qwen3.5-122B-A10B on coding and terminal tasks.",
+      "verified": "2026-11-26"
+    },
     {
       "id": "qwen3.5-122b-a10b",
       "family": "qwen3.5",
@@ -47,6 +285,55 @@
       "verified": "2026-10-10"
     },
     {
+      "id": "inkling-2-mini",
+      "family": "inkling2_loop",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 1.8,
+      "params_b": 26.4,
+      "active_params_b": 5.4,
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 8,
+        "head_dim": 128,
+        "swa_layers": 40,
+        "swa_kv_heads": 8,
+        "swa_head_dim": 128,
+        "swa_window": 1024
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "thinkingmachines/Inkling-2-Mini",
+        "link": "https://huggingface.co/thinkingmachines/Inkling-2-Mini",
+        "commercial": true
+      },
+      "artifacts": {
+        "ollama": {
+          "tag": "inkling-2-mini",
+          "size_gb": 17.63,
+          "mmproj_gb": 0.35
+        },
+        "gguf": {
+          "repo": "ggml-org/Inkling-2-Mini-GGUF",
+          "quant": "IQ4_NL",
+          "file": "Inkling-2-Mini-IQ4_NL.gguf",
+          "size_gb": 17.63,
+          "mmproj_gb": 0.35,
+          "bits": 4.5
+        },
+        "mlx": {
+          "repo": "mlx-community/Inkling-2-Mini-4bit",
+          "size_gb": 17.31,
+          "bits": 4.5
+        }
+      },
+      "notes": "Fast looped MoE (5.4B active) for 32-64 GB Macs; leads BrowseComp and SWE-bench at ~5s/step; needs llama.cpp b12776+.",
+      "verified": "2026-11-26"
+    },
+    {
       "id": "qwen3.8-27b",
       "family": "qwen3.8",
       "roles": [
@@ -78,7 +365,7 @@
           "repo": "ggml-org/Qwen3.8-27B-GGUF",
           "quant": "Q4_K_M",
           "file": "Qwen3.8-27B-Q4_K_M.gguf",
-          "size_gb": 18.97,
+          "size_gb": 19.4,
           "mmproj_gb": 0.63
         },
         "mlx": {
@@ -86,8 +373,172 @@
           "size_gb": 16.05
         }
       },
-      "notes": "best computer use; dense, so slower than the MoE models",
-      "verified": "2026-10-10"
+      "notes": "best dense computer use and coding; slower than MoE models",
+      "verified": "2026-11-26"
+    },
+    {
+      "id": "qwen3.8-27b-q6",
+      "family": "qwen3.8",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 2.1,
+      "params_b": 27.8,
+      "active_params_b": 27.8,
+      "arch": {
+        "full_attn_layers": 16,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "Qwen/Qwen3.8-27B",
+        "link": "https://huggingface.co/Qwen/Qwen3.8-27B",
+        "commercial": true
+      },
+      "artifacts": {
+        "ollama": {
+          "tag": "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q6_K",
+          "size_gb": 21.98,
+          "mmproj_gb": 0.63
+        },
+        "gguf": {
+          "repo": "unsloth/Qwen3.8-27B-GGUF",
+          "quant": "UD-Q6_K",
+          "file": "Qwen3.8-27B-UD-Q6_K.gguf",
+          "size_gb": 21.98,
+          "mmproj_gb": 0.63,
+          "bits": 6.6
+        },
+        "mlx": {
+          "repo": "mlx-community/Qwen3.8-27B-6bit",
+          "size_gb": 22.78,
+          "bits": 6.5
+        }
+      },
+      "notes": "High-precision 6-bit Qwen3.8-27B for 48-64 GB Macs.",
+      "verified": "2026-11-26"
+    },
+    {
+      "id": "bonsai-2.5-27b",
+      "family": "qwen3.8",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 2.2,
+      "params_b": 27.36,
+      "active_params_b": 27.36,
+      "arch": {
+        "full_attn_layers": 16,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "prism-ml/Ternary-Bonsai-2.5-27B-GGUF",
+        "link": "https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "prism-ml/Ternary-Bonsai-2.5-27B-GGUF",
+          "quant": "Q2_0",
+          "file": "Ternary-Bonsai-2.5-27B-Q2_0.gguf",
+          "sha256": "84496171ca79d4d33fb45612a2afd8303ec494baf916281023b7dc9cb3b3b9fa",
+          "bytes": 7673194848,
+          "size_gb": 7.67,
+          "mmproj": "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf",
+          "mmproj_sha256": "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903",
+          "mmproj_gb": 0.63,
+          "kv_bytes": 1,
+          "server_args": [
+            "--reasoning-effort",
+            "medium",
+            "-ctk",
+            "q8_0",
+            "-ctv",
+            "q8_0",
+            "-ngl",
+            "99",
+            "--load-mode",
+            "none"
+          ],
+          "tok_s_factor": 1.07,
+          "read_factor": 0.87
+        },
+        "prism": {
+          "repo": "prism-ml/Ternary-Bonsai-2.5-27B-GGUF",
+          "file": "Ternary-Bonsai-2.5-27B-PQ2_0.gguf",
+          "sha256": "103a11c94324029d8bae3f8152f30bba414730064cfb77438f8589db72e1aa85",
+          "size_gb": 7.25,
+          "mmproj": "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf",
+          "mmproj_sha256": "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903",
+          "mmproj_gb": 0.63,
+          "kv_bytes": 1,
+          "tok_s_factor": 1.15,
+          "read_factor": 0.9
+        },
+        "mlx": {
+          "repo": "prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit",
+          "size_gb": 8.6,
+          "bits": 2.0
+        }
+      },
+      "notes": "Agentic ternary Qwen3.8-27B (99.4% FP16 tool calling, 90% agentic coding in 7.67 GB); Q2_0 runs on stock llama.cpp b11556+.",
+      "verified": "2026-11-26",
+      "evidence": {
+        "repo": "Qwen/Qwen3.8-27B",
+        "retained": 0.985,
+        "source": "https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF"
+      }
+    },
+    {
+      "id": "bonsai-2.5-27b-compact",
+      "family": "qwen3.8",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 2.3,
+      "params_b": 27.36,
+      "active_params_b": 27.36,
+      "arch": {
+        "full_attn_layers": 16,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "prism-ml/Ternary-Bonsai-2.5-27B-GGUF",
+        "link": "https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF",
+        "commercial": true
+      },
+      "artifacts": {
+        "prism": {
+          "repo": "prism-ml/Ternary-Bonsai-2.5-27B-GGUF",
+          "file": "Ternary-Bonsai-2.5-27B-PTQ1_0.gguf",
+          "sha256": "929560ec9d37cf3cadd4b00cc87b51c570082a628dd830b4692dc0b2ed18dbbe",
+          "size_gb": 5.99,
+          "mmproj": "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf",
+          "mmproj_sha256": "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903",
+          "mmproj_gb": 0.63,
+          "kv_bytes": 1,
+          "tok_s_factor": 0.72,
+          "read_factor": 0.8
+        }
+      },
+      "notes": "Bonsai 2.5 27B in dense PTQ1_0 packing (5.99 GB) for 16 GB Macs and 12 GB GPUs; uses Prism's llama.cpp build.",
+      "verified": "2026-11-26",
+      "evidence": {
+        "repo": "Qwen/Qwen3.8-27B",
+        "retained": 0.985,
+        "source": "https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF"
+      }
     },
     {
       "id": "bonsai-2-27b",
@@ -480,6 +931,144 @@
       "verified": "2026-10-10"
     },
     {
+      "id": "mimo-v2.6-distill-9b",
+      "family": "qwen3.5",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 7.2,
+      "params_b": 9.65,
+      "active_params_b": 9.65,
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "mit",
+        "base_repo": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B",
+        "link": "https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B",
+        "commercial": true
+      },
+      "artifacts": {
+        "ollama": {
+          "tag": "hf.co/ggml-org/MiMo-V2.6-Distill-Qwen-9B-GGUF:Q4_K_M",
+          "size_gb": 5.84,
+          "mmproj_gb": 0.92
+        },
+        "gguf": {
+          "repo": "ggml-org/MiMo-V2.6-Distill-Qwen-9B-GGUF",
+          "quant": "Q4_K_M",
+          "file": "MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf",
+          "size_gb": 5.84,
+          "mmproj_gb": 0.92
+        }
+      },
+      "notes": "Strong agentic 9B distilled from MiMo-V2.6 for 16 GB Macs.",
+      "verified": "2026-11-26"
+    },
+    {
+      "id": "bonsai-2-9b",
+      "family": "qwen3.5",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 7.5,
+      "params_b": 9.65,
+      "active_params_b": 9.65,
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "prism-ml/Ternary-Bonsai-2-9B-gguf",
+        "link": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-9B-gguf",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "prism-ml/Ternary-Bonsai-2-9B-gguf",
+          "quant": "Q2_0",
+          "file": "Ternary-Bonsai-2-9B-Q2_0.gguf",
+          "size_gb": 2.56,
+          "mmproj_gb": 0.62,
+          "kv_bytes": 1,
+          "bits": 2.0,
+          "server_args": [
+            "-ctk",
+            "q8_0",
+            "-ctv",
+            "q8_0",
+            "-ngl",
+            "99"
+          ]
+        },
+        "mlx": {
+          "repo": "prism-ml/Ternary-Bonsai-2-9B-mlx-2bit",
+          "size_gb": 3.46,
+          "bits": 2.0
+        }
+      },
+      "notes": "Ternary Qwen3.5-9B (2.56 GB) for 8 GB and tight 16 GB Macs; runs on stock llama.cpp b11556+.",
+      "verified": "2026-11-26",
+      "evidence": {
+        "repo": "Qwen/Qwen3.5-9B"
+      }
+    },
+    {
+      "id": "bonsai-2-4b",
+      "family": "qwen3.5",
+      "roles": [
+        "chat",
+        "vision"
+      ],
+      "rank": 9.2,
+      "params_b": 4.66,
+      "active_params_b": 4.66,
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "prism-ml/Ternary-Bonsai-2-4B-gguf",
+        "link": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-4B-gguf",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "prism-ml/Ternary-Bonsai-2-4B-gguf",
+          "quant": "Q2_0",
+          "file": "Ternary-Bonsai-2-4B-Q2_0.gguf",
+          "size_gb": 1.21,
+          "mmproj_gb": 0.37,
+          "kv_bytes": 1,
+          "bits": 2.0,
+          "server_args": [
+            "-ctk",
+            "q8_0",
+            "-ctv",
+            "q8_0",
+            "-ngl",
+            "99"
+          ]
+        }
+      },
+      "notes": "Ultra-compact ternary Qwen3.5-4B (1.21 GB) for 8 GB Macs even with an always-on sandbox VM.",
+      "verified": "2026-11-26",
+      "evidence": {
+        "repo": "Qwen/Qwen3.5-4B"
+      }
+    },
+    {
       "id": "gpt-oss-20b",
       "family": "gpt-oss",
       "roles": [
@@ -758,6 +1347,46 @@
       },
       "notes": "Together AI's decision model (Qwen3.5-4B fine-tune) through Ollama's decision API (/v1/systemone, MLX runner on Apple). Measured against: laya missed 7 commits with 21 false asks; tev1 0.8B asked on 35 of 39 safe steps; Qwen3.5-9B judging itself missed 1 (an injected label) with 3 false asks.",
       "verified": "2026-10-12"
+    },
+    {
+      "id": "judge-4b",
+      "family": "qwen3.5",
+      "roles": [
+        "decision"
+      ],
+      "rank": 2,
+      "params_b": 4.66,
+      "active_params_b": 4.66,
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
+      "ctx_max": 32768,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "Qwen/Qwen3.5-4B",
+        "link": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/LICENSE",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "unsloth/Qwen3.5-4B-GGUF",
+          "quant": "Q4_K_M",
+          "file": "Qwen3.5-4B-Q4_K_M.gguf",
+          "size_gb": 2.74,
+          "mmproj_gb": 0,
+          "vision": false
+        }
+      },
+      "decision": {
+        "threshold": 0.7,
+        "measured": "Dedicated 4B GGUF commit judge + prompt-injection guard on llama.cpp (keeps main model's KV cache untouched)",
+        "missed": 0,
+        "false_asks": 4
+      },
+      "notes": "Dedicated text-only 4B judge/guard served on llama.cpp on Apple Silicon Macs (24 GB+) without requiring Ollama.",
+      "verified": "2026-11-26"
     },
     {
       "id": "qwen3-embedding-0.6b",
@@ -1067,6 +1696,81 @@
       "arch": {
         "full_attn_layers": 6,
         "kv_heads": 2,
+        "head_dim": 256
+      }
+    },
+    {
+      "id": "holo4-35b-a3b",
+      "family": "holo4",
+      "roles": [
+        "driver",
+        "vision"
+      ],
+      "rank": 0.4,
+      "params_b": 35.95,
+      "active_params_b": 3.0,
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "Hcompany/Holo4-35B-A3B",
+        "link": "https://huggingface.co/Hcompany/Holo4-35B-A3B",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "Hcompany/Holo4-35B-A3B-GGUF",
+          "quant": "Q4_K_M",
+          "file": "Holo4-35B-A3B-Q4_K_M.gguf",
+          "size_gb": 21.3,
+          "mmproj_gb": 0.9
+        }
+      },
+      "driver": {
+        "format": "holo"
+      },
+      "notes": "H Company's fast 35B/3B-active MoE computer-use driver for 48 GB+ Macs.",
+      "verified": "2026-11-26",
+      "arch": {
+        "full_attn_layers": 10,
+        "kv_heads": 2,
+        "head_dim": 256
+      }
+    },
+    {
+      "id": "mage-vl-cowork",
+      "family": "fara1.5",
+      "roles": [
+        "driver",
+        "vision"
+      ],
+      "rank": 1.1,
+      "params_b": 4.7,
+      "active_params_b": 4.7,
+      "ctx_max": 262144,
+      "license": {
+        "spdx": "apache-2.0",
+        "base_repo": "microsoft/Mage-VL-Cowork",
+        "link": "https://huggingface.co/microsoft/Mage-VL-Cowork",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "ggml-org/Mage-VL-Cowork-GGUF",
+          "quant": "Q4_K_M",
+          "file": "Mage-VL-Cowork-Q4_K_M.gguf",
+          "size_gb": 2.72,
+          "mmproj_gb": 0.35
+        }
+      },
+      "driver": {
+        "format": "fara1.5",
+        "osworld": 66.0
+      },
+      "notes": "Compact 4.7B hybrid GUI and terminal agent (66.0% OSWorld-Verified) for 16-24 GB Macs.",
+      "verified": "2026-11-26",
+      "arch": {
+        "full_attn_layers": 8,
+        "kv_heads": 4,
         "head_dim": 256
       }
     }

@@ -161,6 +161,26 @@ async def warm(url: str, model: str) -> None:
         await embedder.aclose()
 
 
+async def benchmark_local(coreml_url: str, coreml_model: str, count: int = SAMPLE) -> dict:
+    """Measure Core ML Neural Engine embedding throughput standalone (text passages, urgent query latency,
+    plus image/audio when fixtures exist) without requiring Ollama."""
+    from ..files.embed import Embedder
+    sample = passages(count)
+    embedder = Embedder(coreml_url, coreml_model, keep_alive="5m")
+    try:
+        await embedder.embed(sample[:8])
+        began = time.perf_counter()
+        await embedder.embed(sample)
+        text_rate = len(sample) / max(time.perf_counter() - began, 1e-6)
+        q_start = time.perf_counter()
+        await embedder.embed(["find the latest lease notice period"])
+        query_ms = (time.perf_counter() - q_start) * 1000.0
+    finally:
+        await embedder.aclose()
+    return {"coreml_per_s": round(text_rate, 1), "query_ms": round(query_ms, 1), "passages": len(sample),
+            "standalone": True}
+
+
 async def compare(coreml_url: str, coreml_model: str, gpu_url: str, gpu_model: str, count: int = SAMPLE) -> dict:
     """Time the Core ML build against the GPU build on the same passages, after one untimed pass each (the first
     Core ML pass compiles for the Neural Engine), and check their vectors agree."""
@@ -182,7 +202,10 @@ async def compare(coreml_url: str, coreml_model: str, gpu_url: str, gpu_model: s
 
 
 def choice(measured: dict) -> tuple[str, str]:
-    """("coreml" | "gpu", why) from a comparison."""
+    """("coreml" | "gpu", why) from a comparison or standalone Core ML measurement."""
+    if measured.get("standalone"):
+        return "coreml", (f"{measured['coreml_per_s']:.0f} passages/s on the Neural Engine "
+                          f"({measured.get('query_ms', 0):.0f} ms query; GPU stays free for the assistant)")
     if measured["cosine"] < PARITY:
         return "gpu", f"the Core ML vectors differ from the GPU build's (cosine {measured['cosine']:.3f})"
     if measured["coreml_per_s"] < measured["gpu_per_s"] * (1 - TOLERANCE):

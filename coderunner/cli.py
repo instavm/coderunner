@@ -618,6 +618,26 @@ def cmd_models(args, config: Config) -> int:
         from .models import smoketest
         endpoint = manager.endpoint(config)
         _print(asyncio.run(smoketest.run(endpoint.base_url, endpoint.model, vision=endpoint.vision)))
+    elif args.action == "bench" and args.probe:
+        from . import eval as eval_pkg
+        result = eval_pkg.run_tier0(config, force=True, include_cdn=True, progress=print)
+        _print(result)
+        return 0 if result.get("ok") else 1
+    elif args.action == "bench" and args.compare is not None:
+        import asyncio
+        from . import eval as eval_pkg
+        specs = eval_pkg.default_candidates(config)
+        if args.compare and args.compare != ["auto"]:
+            wanted = set(args.compare)
+            specs = [s for s in specs if s.id in wanted or s.planner in wanted] or [
+                eval_pkg.StackSpec.from_dict({"planner": name}) for name in args.compare
+            ]
+        result = asyncio.run(eval_pkg.compare_stacks(config, specs[:4], suite=args.suite, progress=print))
+        if result.get("markdown"):
+            print(result["markdown"], end="")
+        else:
+            _print(result)
+        return 0 if result.get("ok") else 1
     elif args.action == "bench" and args.embedding:
         from .models import coreml
         used = manager.setup_coreml_embedding(config, progress=print, remeasure=True)
@@ -1030,6 +1050,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--visible", action="store_true", help="bench --tasks: show the browser window")
     p.add_argument("--embedding", action="store_true",
                    help="bench: time text embeddings on the Neural Engine (Core ML) against the GPU and use the faster")
+    p.add_argument("--probe", action="store_true",
+                   help="bench: measure bare-metal GPU bandwidth, FP16 compute, Neural Engine TOPS and GPU+ANE isolation")
+    p.add_argument("--compare", nargs="*", metavar="STACK",
+                   help="bench: compare single models or multi-model combinations side by side")
+    p.add_argument("--suite", default="tier1", choices=["tier1", "tier2", "ane"],
+                   help="bench --compare: suite to run (tier1 90s gate, tier2 multi-domain tasks, or ane)")
     p.add_argument("--candidates", type=int, default=0,
                    help="bench --tasks: also measure the best N candidates not measured on this machine yet, "
                         "one at a time, keep the best and delete the others' downloads")

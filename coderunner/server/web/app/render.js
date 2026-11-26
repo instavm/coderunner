@@ -87,16 +87,24 @@ export function inline(node, text) {
 // is compared as its title, its price beside it, the rest as labelled lines.
 function rowCards(heads, rows) {
   const list = el("div", "md-cards");
-  const priced = heads.findIndex((h, n) => n > 0 && /price|cost|fare|total|rate|amount|₹|\$/i.test(h));
   const bare = (s) => String(s).replace(/\*\*|`/g, "");
+  // Promote column 1 as the card's title only when column 0 has an index-like header and numeric values,
+  // so numeric data columns like "Year | Revenue | Costs | Profit" stay visible.
+  const indexHead = /^(?:|#|no\.?|nr\.?|num(?:ber)?|rank|idx|index|pos(?:ition)?|row|s\.?\s*no\.?|sl\.?\s*no\.?)$/i;
+  const indexed = heads.length > 1 && rows.length > 0
+    && indexHead.test(bare(heads[0] || "").trim())
+    && rows.every((r) => /^#?\d+\.?$/.test(bare(r[0] || "").trim()));
+  const titleCol = indexed ? 1 : 0;
+  const priced = heads.findIndex((h, n) => n !== titleCol
+    && /price|cost|fare|total|rate|amount|pre[çc]o|precio|prix|preis|tarifa|valor|₹|\$|r\$|€|£|¥/i.test(bare(h)));
   for (const row of rows) {
     const card = el("div", "md-card"), top = el("div", "md-card-top");
-    inline(top.appendChild(el("div", "md-card-title")), bare(row[0] || ""));
-    const beside = priced > 0 && bare(row[priced] || "").trim().length <= 28 && bare(row[priced] || "").trim();
+    inline(top.appendChild(el("div", "md-card-title")), bare(row[titleCol] || ""));
+    const beside = priced >= 0 && bare(row[priced] || "").trim().length <= 28 && bare(row[priced] || "").trim();
     if (beside) inline(top.appendChild(el("div", "md-card-price")), bare(row[priced]));
     card.appendChild(top);
     row.forEach((cell, n) => {
-      if (n === 0 || !String(cell).trim() || (n === priced && beside)) return;
+      if (n === titleCol || (indexed && n === 0) || !String(cell).trim() || (n === priced && beside)) return;
       const line = el("div", "md-card-line");
       line.appendChild(el("span", "md-card-label", bare(heads[n] || "")));
       inline(line.appendChild(el("span", "md-card-value")), cell);

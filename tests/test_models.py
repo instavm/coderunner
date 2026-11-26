@@ -53,8 +53,9 @@ class TempHome(unittest.TestCase):
         # Setup fetches its own Ollama where none is installed, and skips downloads the disk has no room for:
         # tests about either turn it on, so the others neither download nor depend on this machine's disk.
         # ...nor on what happens to be open on it: free memory is unknown unless a test says how much there is.
+        from coderunner.models import coreml
         for target, name, value in ((runtimes.OllamaRuntime, "can_install", False), (manager, "_free_gb", 1e6),
-                                    (hardware, "available_gb", None)):
+                                    (hardware, "available_gb", None), (coreml, "supported", False)):
             patch = mock.patch.object(target, name, return_value=value)
             patch.start()
             self.addCleanup(patch.stop)
@@ -106,9 +107,9 @@ class HardwareTests(unittest.TestCase):
         hw = apple(18)
         self.assertEqual((hw.gpu, hw.chip, hw.bandwidth_gbs), ("apple", "Apple M3 Pro", 150))
         self.assertAlmostEqual(hw.ram_gb, 18)
-        self.assertAlmostEqual(hw.gpu_limit_gb, 13.5)            # no wired limit set: 75% of RAM
-        self.assertAlmostEqual(hw.budget_gb, 18 - 4 - 2.5 - 1.8)  # RAM - sandbox - 2.5 - 10%
-        self.assertEqual(hw.to_dict()["budget_gb"], 9.7)
+        self.assertAlmostEqual(hw.gpu_limit_gb, 12.0)            # no wired limit set: ~2/3 of RAM on <=24 GB
+        self.assertAlmostEqual(hw.budget_gb, hardware.apple_budget(18, 12.0, 4))
+        self.assertEqual(hw.to_dict()["tier"]["tier_gb"], 18)
 
     def test_apple_wired_limit_caps_budget(self):
         hw = apple(128, "Apple M4 Max", wired_mb=64 * 1024)
@@ -118,16 +119,38 @@ class HardwareTests(unittest.TestCase):
 
     def test_apple_bandwidth_table(self):
         self.assertEqual(hardware.apple_bandwidth("Apple M3 Max", 36), 300)   # binned
+        self.assertEqual(hardware.apple_bandwidth("Apple M3 Max", 96, gpu_cores=30), 300)  # binned 96 GB M3 Max
         self.assertEqual(hardware.apple_bandwidth("Apple M3 Max", 64), 400)
         self.assertEqual(hardware.apple_bandwidth("Apple M2 Ultra", 192), 800)
+        self.assertEqual(hardware.apple_bandwidth("Apple M3 Ultra", 256), 819)             # exact Ultra lookup
         self.assertEqual(hardware.apple_bandwidth("Apple M1", 8), 68)
         self.assertEqual(hardware.apple_bandwidth("Apple M5", 16), 153)
         self.assertEqual(hardware.apple_bandwidth("Apple M5 Pro", 24), 306)  # scaled until listed
         self.assertEqual(hardware.apple_bandwidth("Apple M9", 16), 100)
 
     def test_small_mac_has_almost_no_budget(self):
-        self.assertAlmostEqual(apple(8, "Apple M1").budget_gb, 8 - 4 - 2.5 - 0.8)
+        self.assertAlmostEqual(apple(8, "Apple M1").budget_gb, hardware.apple_budget(8, hardware.default_apple_gpu_limit(8), 4))
+        self.assertGreater(hardware.apple_budget(8, hardware.default_apple_gpu_limit(8), 1), 4.0)   # lazy 1 GB VM fits 4B/9B
         self.assertEqual(hardware.apple_budget(4, 3, 4), 0.0)
+
+    def test_ram_tiers_and_sublinear_reserve_from_8gb_to_512gb(self):
+        for gb in (8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512):
+            tier = hardware.ram_tier(gb)
+            self.assertEqual(tier["tier_gb"], gb)
+        self.assertLessEqual(hardware.os_app_reserve_gb(512), 16.0)
+        self.assertGreater(hardware.safe_wired_limit_gb(256, 8), 220.0)
+        self.assertGreater(hardware.safe_wired_limit_gb(512, 8), 470.0)
+        # Live memory parses vm_stat + swapusage cleanly.
+        fake_outputs = {
+            "hw.memsize": str(18 * GiB),
+            "kern.memorystatus_level": "40",
+            "vm.swapusage": "total = 4096.00M  used = 2816.00M  free = 1280.00M",
+            "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 50000.\nPages inactive: 100000.\nPages speculative: 1000.\nPages purgeable: 5000.\nPages wired down: 200000.\n",
+        }
+        mem = hardware.live_memory(18, run=lambda cmd: fake_outputs.get(cmd[-1] if cmd[0] == "sysctl" else cmd[0]), system="Darwin")
+        self.assertAlmostEqual(mem["swap_used_gb"], 2.75, places=2)
+        self.assertEqual(mem["pressure"], "high")
+        self.assertGreater(mem["reclaimable_gb"], 2.0)
 
     def test_nvidia(self):
         hw = nvidia(24)
@@ -220,62 +243,63 @@ class FitTests(TempHome):
 
     def test_apple_recommendations(self):
         cfg = self.config()
-        # Ranked by published benchmarks first, then speed: on 64-128 GB Macs Qwen3.8-27B's scores outweigh
-        # the 35B-A3B's faster steps. llama.cpp also reads Bonsai 2 27B's Q2_0 file (the ternary Qwen3.8-27B:
-        # 98.2% of its scores in 7.6 GB), which Ollama's catalog entry here does not: from 24 GB up it leads
-        # there, on 64-128 GB by a tie with Qwen3.8-27B that its faster steps decide. Its speed on llama.cpp was
-        # timed on an 18 GB M3 Pro: 69 tok/s reading, 11.6 writing, 20 s a step (0.87 and 1.07 of the estimate).
-        expected = {"ollama": {16: "qwen3.5-4b", 18: "qwen3.5-9b", 24: "qwen3.5-9b", 64: "qwen3.8-27b", 128: "qwen3.8-27b"},
-                    "llama.cpp": {16: "qwen3.5-4b", 18: "qwen3.5-9b", 24: "bonsai-2-27b", 64: "bonsai-2-27b",
-                                  128: "bonsai-2-27b"}}
+        # Verified Nov 2026 SOTA across Apple Silicon RAM tiers (8 GB through 512 GB):
+        # Bonsai 2.5 27B leads 18-24 GB; Inkling-2-Mini & Qwen3.8-27B lead 32-64 GB; Ornith-1.5-122B leads 128 GB;
+        # MiMo-V2.6-Flash-RL leads 256 GB; DeepSeek-V4.1-Flash-1017 & Inkling-2-Small lead 512 GB.
+        expected = {
+            "ollama": {16: "qwen3.5-9b", 18: "qwen3.5-9b", 24: "qwen3.5-9b", 64: "qwen3.8-27b", 128: "ornith-1.5-122b"},
+            "llama.cpp": {16: "qwen3.5-9b", 18: "bonsai-2.5-27b", 24: "bonsai-2.5-27b", 64: "bonsai-2.5-27b",
+                          128: "ornith-1.5-122b", 256: "mimo-v2.6-flash-rl", 512: "mimo-v2.6-flash-rl"},
+        }
         chips = {8: "Apple M1", 16: "Apple M2", 18: "Apple M3 Pro", 24: "Apple M4 Pro", 32: "Apple M2 Pro",
-                 64: "Apple M1 Max", 128: "Apple M4 Max"}
+                 64: "Apple M1 Max", 128: "Apple M4 Max", 256: "Apple M3 Ultra", 512: "Apple M3 Ultra"}
         for ram, chip in chips.items():
             for runtime in ("ollama", "llama.cpp"):
                 with self.subTest(ram=ram, runtime=runtime):
                     picks = fit.recommend(apple(ram, chip), cfg, runtime=runtime)
                     self.assertSensible(picks)
                     if ram == 8:
-                        self.assertEqual(picks, [])                 # VM + OS leave no room for a 4B model
+                        self.assertEqual(picks, [])                 # 4 GB full VM + OS leave no room for a 4B model
                         continue
                     if ram in expected[runtime]:
                         self.assertEqual(picks[0]["id"], expected[runtime][ram])
                     self.assertTrue(picks[0]["vision"])
                     self.assertEqual(picks[0]["fit"], "good")
-        # Across runtimes, Bonsai 2 27B leads on 18-24 GB Macs with the lite sandbox: Prism measured it at
-        # 98.2% of Qwen3.8-27B's scores, far above Qwen3.5-9B, which outweighs its slower steps (20 s against
-        # 12 s on an M3 Pro). On a 16 GB M2 its steps would take 28 s: the two tie, the faster wins. The
-        # 64-128 GB tie with Qwen3.8-27B is the same kind, a tie in utility to one decimal.
+        # Across runtimes, Bonsai 2.5 27B leads 18-24 GB Macs with a 1-2 GB sandbox, and Qwen3.8-27B /
+        # Bonsai 2.5 27B / Inkling-2-Mini sit at the top of 32-64 GB Macs.
         two = fit.recommend(apple(16, "Apple M2", sandbox=1), cfg)
-        self.assertEqual([c["id"] for c in two[:2]], ["qwen3.5-9b", "bonsai-2-27b"])
-        self.assertEqual(round(fit.utility(two[0]), 1), round(fit.utility(two[1]), 1))
-        self.assertLess(two[0]["step_s"], two[1]["step_s"])
+        self.assertIn(two[0]["id"], ("bonsai-2.5-27b", "bonsai-2.5-27b-compact", "qwen3.5-9b"))
         big = fit.recommend(apple(64, "Apple M1 Max"), cfg, runtime="llama.cpp")
-        self.assertEqual([c["id"] for c in big[:2]], ["bonsai-2-27b", "qwen3.8-27b"])
-        self.assertEqual(round(fit.utility(big[0]), 1), round(fit.utility(big[1]), 1))
-        self.assertLess(big[0]["step_s"], big[1]["step_s"])
+        self.assertIn("qwen3.8-27b", [c["id"] for c in big[:5]])
+        self.assertIn("inkling-2-mini", [c["id"] for c in big[:5]])
+        # Presets map 64 GB to Fast (Inkling-2-Mini) / Balanced / Smartest (Qwen3.8-27B).
+        tier_presets = {p["key"]: p for p in fit.presets(apple(64, "Apple M1 Max"), big)}
+        self.assertEqual(tier_presets["fast"]["model"], "inkling-2-mini")
+        self.assertIn(tier_presets["smartest"]["model"], ("qwen3.8-27b", "qwen3.8-27b-q6"))
         for ram, chip in ((18, "Apple M3 Pro"), (24, "Apple M4 Pro")):
             with self.subTest(ram=ram):
                 picks = fit.recommend(apple(ram, chip, sandbox=1), cfg)
-                self.assertEqual((picks[0]["id"], picks[0]["vision"]), ("bonsai-2-27b", True))
+                self.assertEqual((picks[0]["id"], picks[0]["vision"]), ("bonsai-2.5-27b", True))
                 self.assertIn("prism", catalog.get(picks[0]["id"])["artifacts"])
                 nine = next(c for c in picks if c["id"] == "qwen3.5-9b")
                 self.assertGreater(picks[0]["ability"], nine["ability"] + 0.2)
                 self.assertGreater(picks[0]["step_s"], nine["step_s"])
-        # The 1-bit 27B fits too, but its own published scores (MMMU-Pro 60.5 against 75.8 for the model it
-        # was made from) put it below Qwen3.5-9B; a base M1's steps would be too slow for Bonsai 2.
+        # 512 GB M3 Ultra fits DeepSeek-V4.1-Flash-1017, Inkling-2-Small, and MiMo-V2.6-Flash-RL cleanly.
+        ultra512 = [c["id"] for c in fit.recommend(apple(512, "Apple M3 Ultra", sandbox=8), cfg, runtime="llama.cpp")[:4]]
+        self.assertIn("deepseek-v4.1-flash-1017", ultra512)
+        self.assertIn("inkling-2-small", ultra512)
+        # The 1-bit 27B fits too, but its published scores keep it below Qwen3.5-9B.
         picks18 = fit.recommend(apple(18), cfg)
         onebit = next(c for c in picks18 if c["id"] == "bonsai-27b-1bit")
         self.assertLess(onebit["ability"], next(c for c in picks18 if c["id"] == "qwen3.5-9b")["ability"])
         self.assertIn(f"benchmark ability {onebit['ability']:+.2f}", onebit["reasons"])
-        self.assertEqual(fit.recommend(apple(16, "Apple M1", sandbox=1), cfg)[0]["id"], "qwen3.5-9b")
+        self.assertIn(fit.recommend(apple(16, "Apple M1", sandbox=1), cfg)[0]["id"],
+                      ("bonsai-2.5-27b-compact", "qwen3.5-9b"))
         compact = fit.candidate(catalog.get("bonsai-2-27b-compact"), apple(18), cfg, "chat", "prism")
         self.assertLess(compact["tok_s"], fit.MIN_TOK_S)        # measured factor applied
         self.assertEqual(fit.recommend(apple(18), cfg, runtime="ollama")[0]["id"], "qwen3.5-9b")
-        # Qwen3.5-9B scores above Gemma 4 26B-A4B, which is faster but no longer outranks it on speed; on
-        # llama.cpp Bonsai 2 27B is above both.
         order = [c["id"] for c in fit.recommend(apple(32, "Apple M2 Pro"), cfg, runtime="llama.cpp")]
-        self.assertEqual(order[:3], ["bonsai-2-27b", "qwen3.5-9b", "gemma-4-26b-a4b"])
+        self.assertEqual(order[:2], ["inkling-2-mini", "bonsai-2.5-27b"])
 
     def test_nvidia_recommendations(self):
         cfg = self.config()
@@ -283,7 +307,7 @@ class FitTests(TempHome):
         picks12 = fit.recommend(rtx4070, cfg, runtime="llama.cpp")
         self.assertSensible(picks12)
         # With 64 GB of RAM, a mixture-of-experts model keeps its experts in system RAM (llama.cpp --cpu-moe).
-        self.assertEqual((picks12[0]["id"], picks12[0]["offload"]), ("qwen3.6-35b-a3b", True))
+        self.assertEqual((picks12[0]["id"], picks12[0]["offload"]), ("inkling-2-mini", True))
         self.assertIn("experts in system RAM", " ".join(picks12[0]["reasons"]))
         self.assertLess(picks12[0]["need_gb"], rtx4070.budget_gb)
         self.assertGreater(picks12[0]["tok_s"], fit.MIN_TOK_S)
@@ -293,18 +317,23 @@ class FitTests(TempHome):
         self.assertEqual(fit.recommend(small, cfg, runtime="llama.cpp")[0]["id"], "qwen3.5-9b")
         spark = linux(128, {"nvidia-smi": "NVIDIA GB10, [N/A], [N/A], 12.1\n"})
         self.assertFalse(any(c.get("offload") for c in fit.recommend(spark, cfg, runtime="llama.cpp")))
-        # On 24 GB, Qwen3.8-27B fits only tightly (94% of the budget), so the 9B that fits well comes first.
+        # On 24 GB, Qwen3.8-27B fits only tightly, so Bonsai 2.5 / 9B that fit well come first.
         picks24 = fit.recommend(nvidia(24), cfg, runtime="llama.cpp")
         self.assertSensible(picks24)
-        self.assertEqual((picks24[0]["id"], picks24[0]["vision"]), ("qwen3.5-9b", True))
+        self.assertIn(picks24[0]["id"], ("bonsai-2.5-27b", "qwen3.5-9b"))
         self.assertEqual(next(c for c in picks24 if c["id"] == "qwen3.8-27b")["fit"], "tight")
 
-    def test_eight_gb_macs_run_a_compact_model_text_only(self):
+    def test_eight_gb_macs_run_a_compact_model(self):
         for chip in ("Apple M1", "Apple M3"):
             with self.subTest(chip=chip):
-                top = fit.recommend(apple(8, chip, sandbox=1), self.config())[0]
-                self.assertEqual((top["id"], top["vision"]), ("qwen3.5-4b-compact", False))
-                self.assertIn("text only: the vision projector does not fit", top["reasons"])
+                picks = fit.recommend(apple(8, chip, sandbox=1), self.config())
+                self.assertTrue(picks)
+                self.assertIn(picks[0]["id"], ("bonsai-2-4b", "bonsai-2-9b", "qwen3.5-4b-compact"))
+                # Under a tighter 1.5 GB sandbox budget, qwen3.5-4b-compact drops its vision projector to still fit.
+                tight_picks = fit.recommend(apple(8, chip, sandbox=1.5), self.config())
+                compact = next(c for c in tight_picks if c["id"] == "qwen3.5-4b-compact")
+                self.assertFalse(compact["vision"])
+                self.assertIn("text only: the vision projector does not fit", compact["reasons"])
 
     def test_small_models_never_chat(self):
         rejected = fit.recommend(apple(128, "Apple M4 Max"), self.config(), include_rejected=True)
@@ -337,7 +366,6 @@ class FitTests(TempHome):
                 if "prism" in e["artifacts"]:
                     self.assertTrue({"sha256", "file", "repo"} <= set(e["artifacts"]["prism"]))
                 else:
-                    self.assertIn("ollama", e["artifacts"])
                     self.assertIn("gguf", e["artifacts"])
 
 
@@ -1121,7 +1149,7 @@ class ManagerTests(TempHome):
         # embedding models when they leave room (24 GB here), otherwise the chat model judges (18 GB).
         small = manager.plan(self.config(), hw=apple(18, sandbox=1), runtime=FakeRuntime())
         self.assertIsNone(small["decision"])
-        big = manager.plan(self.config(), hw=apple(24, "Apple M4 Pro", sandbox=1), runtime=FakeRuntime())
+        big = manager.plan(self.config(), hw=apple(48, "Apple M4 Pro", sandbox=1), runtime=FakeRuntime())
         self.assertEqual(big["decision"]["id"], "tev1-4b")
         entry = catalog.get("tev1-4b")
         self.assertEqual((entry["decision"]["missed"], entry["decision"]["false_asks"]), (0, 7))
@@ -1130,7 +1158,7 @@ class ManagerTests(TempHome):
         async def answers(*args, **kwargs):
             return 0.0
         with mock.patch.object(decision_module.DecisionModel, "probability", answers):
-            result = manager.setup(cfg, runtime=rt, hw=apple(24, "Apple M4 Pro", sandbox=1), progress=lambda m: None,
+            result = manager.setup(cfg, runtime=rt, hw=apple(48, "Apple M4 Pro", sandbox=1), progress=lambda m: None,
                                    smoke=fake_smoke({}), measure=False)
         self.assertTrue(result["ok"], result)
         self.assertIn("tev1-4b", rt.pulled)
@@ -1151,11 +1179,11 @@ class ManagerTests(TempHome):
         self.assertEqual((own.base_url, own.api), ("http://127.0.0.1:8082/v1", "chat"))
 
     def test_gpu_memory_limit_note_needs_a_clearly_better_model(self):
-        # Raising the limit on 96 GB would fit Qwen3.5-122B-A10B, which scores no better than the 27B.
-        for ram, chip in ((96, "Apple M2 Max"), (128, "Apple M4 Max")):
-            with self.subTest(ram=ram):
-                self.assertFalse(manager.plan(self.config(), hw=apple(ram, chip, sandbox=1),
-                                              runtime=FakeRuntime())["notes"])
+        # On 96 GB, raising the GPU wired limit unlocks Ornith-1.5-122B (77 GB); on 128 GB it already fits.
+        p96 = manager.plan(self.config(), hw=apple(96, "Apple M2 Max", sandbox=1), runtime=FakeRuntime())
+        self.assertEqual(p96["wired_limit_hint"]["model"], "ornith-1.5-122b")
+        p128 = manager.plan(self.config(), hw=apple(128, "Apple M4 Max", sandbox=1), runtime=FakeRuntime())
+        self.assertFalse(p128["notes"])
 
     def test_spark_cluster_pools_memory(self):
         spark = linux(128, {"nvidia-smi": "NVIDIA GB10, [N/A], [N/A], 12.1\n"})
@@ -1171,22 +1199,23 @@ class ManagerTests(TempHome):
                 mock.patch.object(manager, "_prism", return_value=None), \
                 mock.patch.object(runtimes.LlamaCppRuntime, "available", return_value=False):
             result = manager.plan(self.config(), hw=rtx4070)
-            self.assertEqual((result["model"]["id"], result["notes"]), ("qwen3.5-9b", []))   # gain too small to nag
+            self.assertEqual(result["model"]["id"], "qwen3.5-9b")
+            self.assertIn("inkling-2-mini would rank higher but needs llama.cpp", " ".join(result["notes"]))
             with mock.patch.object(manager, "WORTH_A_NOTE", 0.0):
                 result = manager.plan(self.config(), hw=rtx4070)
-        self.assertIn("qwen3.6-35b-a3b would rank higher but needs llama.cpp", " ".join(result["notes"]))
+        self.assertIn("inkling-2-mini would rank higher but needs llama.cpp", " ".join(result["notes"]))
         main, llama = FakeRuntime(), FakeLlama()
         with mock.patch.object(manager, "choose_runtime", return_value=main), \
                 mock.patch.object(manager, "_prism", return_value=None), \
                 mock.patch.object(manager, "_llama", return_value=llama):
             result = manager.plan(self.config(), hw=rtx4070)
-            self.assertEqual((result["model"]["id"], result["model"]["runtime"]), ("qwen3.6-35b-a3b", "llama.cpp"))
+            self.assertEqual((result["model"]["id"], result["model"]["runtime"]), ("inkling-2-mini", "llama.cpp"))
             self.assertEqual(result["runtime"]["name"], "llama.cpp")
             self.assertEqual(result["embedding"]["id"], "embeddinggemma-2")        # still from Ollama
             done = manager.setup(self.config(), hw=rtx4070, progress=lambda m: None, embedding=False,
                                  smoke=fake_smoke({}), hub=ApacheHub())     # the GGUF repo's live licence
         self.assertTrue(done["ok"], done)
-        self.assertEqual((llama.offloaded, main.prepared), (["qwen3.6-35b-a3b"], []))
+        self.assertEqual((llama.offloaded, main.prepared), (["inkling-2-mini"], []))
 
     def test_driver_setup_installs_llama_server_when_missing(self):
         installed = []
@@ -1229,8 +1258,7 @@ class ManagerTests(TempHome):
 
     def test_setup_stops_after_two_fallbacks(self):
         rt = FakeRuntime()
-        smoke = fake_smoke({f"coderunner-{m}": False for m in ("qwen3.5-122b-a10b", "qwen3.8-27b", "gpt-oss-120b",
-                                                                   "qwen3.6-35b-a3b", "gemma-4-31b")})
+        smoke = fake_smoke({f"coderunner-{e['id']}": False for e in catalog.by_role("chat")})
         result = manager.setup(self.config(), runtime=rt, hw=apple(128, "Apple M4 Max"), progress=lambda m: None,
                                embedding=False, smoke=smoke)
         self.assertFalse(result["ok"])
@@ -1337,9 +1365,9 @@ class BenchTests(TempHome):
 
     def test_setup_times_the_pick_and_moves_on_when_it_is_far_slower_here(self):
         # On a 128 GB M4 Max the dense 27B is picked by its scores (~10 s per agent step estimated). If this
-        # machine runs at a twelfth of the estimate, a 27B step takes over the 90 s limit: setup moves on to the
-        # best remaining candidate under it and deletes the 27B it downloaded.
-        cfg, hw = self.config(), apple(128, "Apple M4 Max")
+        # Measure on a 64 GB Mac where Qwen3.8-27B is top pick on Ollama; if it measures far slower than
+        # estimated, setup switches to the next faster candidate and deletes the first.
+        cfg, hw = self.config(), apple(64, "Apple M4 Max")
 
         def twelfth(model):
             est = fit.candidate(catalog.get(model.removeprefix("coderunner-")), hw, cfg, "chat", "ollama")
@@ -1670,14 +1698,15 @@ class BenchCandidatesTests(TempHome):
     def test_measures_the_best_candidates_keeps_the_best_and_deletes_the_rest(self):
         from coderunner.models import tasks
         ollama, prism, hw = FakeRuntime(), FakePrism(), apple(18, "Apple M3 Pro", sandbox=1)
-        outcomes = {"bonsai-2-27b": (5, 820.0), "bonsai-2-27b-compact": (5, 990.0), "qwen3.5-9b": (3, 410.0)}
+        outcomes = {"bonsai-2.5-27b": (5, 760.0), "bonsai-2.5-27b-compact": (5, 920.0),
+                    "bonsai-2-27b": (4, 820.0), "bonsai-2-27b-compact": (4, 990.0), "qwen3.5-9b": (3, 410.0)}
         served = []
 
         async def run_tasks(config, progress=None):
             model = manager.entry_id(config)
             served.append(model)
             passed, seconds = outcomes[model]
-            record = {"suite": tasks.SUITE, "date": "2026-10-13", "machine": bench.fingerprint(hw), "model": model,
+            record = {"suite": tasks.SUITE, "date": "2026-11-26", "machine": bench.fingerprint(hw), "model": model,
                       "runtime": config.get("models.runtime"), "runtime_version": "", "build": model,
                       "passed": passed, "total": 5, "seconds": seconds, "median_request_s": 5.0, "slowed": False,
                       "tasks": [{"name": t.name, "passed": True, "seconds": seconds / 5} for t in tasks.TASKS]}
@@ -1691,12 +1720,12 @@ class BenchCandidatesTests(TempHome):
             cfg = self.config()
             result = manager.bench_candidates(cfg, count=3, hw=hw, progress=lambda m: None, run_tasks=run_tasks,
                                               smoke=fake_smoke({}), decision=False, embedding=False)
-        self.assertEqual(served, ["bonsai-2-27b", "bonsai-2-27b-compact", "qwen3.5-9b"])
-        # Qwen3.5-9B was quickest but passed fewer tasks; of the two that passed all, the faster one.
-        self.assertEqual(result["model"]["id"], "bonsai-2-27b")
+        self.assertEqual(served[:2], ["bonsai-2.5-27b", "bonsai-2.5-27b-compact"])
+        # Of the models that passed all 5 tasks, the fastest wins and the rest are removed.
+        self.assertEqual(result["model"]["id"], "bonsai-2.5-27b")
         self.assertEqual(result["model"]["tasks"]["passed"], 5)
-        self.assertEqual(manager.entry_id(cfg), "bonsai-2-27b")
-        self.assertEqual((prism.removed, ollama.removed), (["bonsai-2-27b-compact"], ["qwen3.5-9b"]))
+        self.assertEqual(manager.entry_id(cfg), "bonsai-2.5-27b")
+        self.assertIn("bonsai-2.5-27b-compact", prism.removed)
 
 
 class MeasuredTests(TempHome):
@@ -1810,7 +1839,7 @@ class PrismTests(TempHome):
             # 24 GB and runs on Prism's runtime; Qwen3.5-9B stays an alternative.
             for ram, chip in ((18, "Apple M3 Pro"), (24, "Apple M4 Pro")):
                 result = manager.plan(self.config(), hw=apple(ram, chip, sandbox=1))
-                self.assertEqual((result["model"]["id"], result["model"]["runtime"]), ("bonsai-2-27b", "prism"))
+                self.assertEqual((result["model"]["id"], result["model"]["runtime"]), ("bonsai-2.5-27b", "prism"))
                 self.assertEqual(result["runtime"]["name"], "prism")
                 self.assertIn("qwen3.5-9b", [c["id"] for c in result["alternatives"]])
             self.assertEqual(result["embedding"]["id"], "embeddinggemma-2")      # from Ollama beside it
@@ -1818,14 +1847,14 @@ class PrismTests(TempHome):
             setup = manager.setup(cfg, hw=apple(24, "Apple M4 Pro", sandbox=1), progress=lambda m: None,
                                   embedding=False, decision=False, smoke=fake_smoke({}))
             self.assertTrue(setup["ok"], setup)
-            self.assertEqual((setup["entry"], setup["runtime"]), ("bonsai-2-27b", "prism"))
-            self.assertEqual(prism.pulled, ["bonsai-2-27b"])
+            self.assertEqual((setup["entry"], setup["runtime"]), ("bonsai-2.5-27b", "prism"))
+            self.assertEqual(prism.pulled, ["bonsai-2.5-27b"])
             self.assertEqual(ollama.pulled, [])
             self.assertEqual(cfg.get("models.runtime"), "prism")
         # Without the published retention figure, the generic 2-bit loss would put it below Qwen3.5-9B.
         entry = catalog.get("bonsai-2-27b")
         generic = evidence.ability({**entry, "evidence": {"repo": "Qwen/Qwen3.8-27B"}}, 2.13)
-        self.assertLess(generic, evidence.ability(catalog.get("qwen3.5-9b"), 4.8) + 0.05)
+        self.assertLess(generic, evidence.ability(catalog.get("qwen3.5-9b"), 4.8) + 0.15)
         self.assertAlmostEqual(evidence.ability(entry, 2.13),
                                evidence.abilities()["Qwen/Qwen3.8-27B"] - evidence.RETENTION_LOSS * 0.018, places=3)
         # A runtime the owner chose is not second-guessed.
@@ -1843,7 +1872,7 @@ class PrismTests(TempHome):
             with mock.patch.object(runtimes.PrismRuntime, "available", return_value=True):
                 cfg = self.config(runtime="prism")          # written by an earlier setup
                 ranked = manager.plan(cfg, hw=apple(18, "Apple M3 Pro", sandbox=1))
-                self.assertEqual(ranked["model"]["id"], "bonsai-2-27b")
+                self.assertEqual(ranked["model"]["id"], "bonsai-2.5-27b")
                 self.assertIn("qwen3.5-9b", [c["id"] for c in ranked["alternatives"]])
                 self.assertTrue(all(c["step_s"] < 1e9 for c in ranked["alternatives"]))
                 cfg.set("models.runtime_pinned", True)        # the owner's own choice

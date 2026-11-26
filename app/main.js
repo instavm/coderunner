@@ -64,8 +64,8 @@ const escapeHtml = (text) => String(text).replace(/[&<>"]/g, (c) => ({"&": "&amp
 // with the system.
 function waitingPage(title, message) {
   const html = `<!doctype html><meta charset="utf-8"><title>CodeRunner</title><style>
-  :root { color-scheme: light dark; --bg: #f6f6f7; --text: #17181c; --muted: #696c76; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #101114; --text: #e9eaee; --muted: #9093a0; } }
+  :root { color-scheme: light dark; --bg: #faf9f7; --text: #1f1e1b; --muted: #75736d; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1a1918; --text: #ecebe8; --muted: #9c9a94; } }
   body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; display: grid; place-items: center;
     height: 100vh; margin: 0; background: var(--bg); color: var(--text); -webkit-app-region: drag; }
   div { max-width: 460px; padding: 0 24px; text-align: center; }
@@ -151,7 +151,7 @@ let appBrowser = null;          // browser.js: the Browser tab's tabs and the da
 function createWindow(open = "") {
   const win = new BrowserWindow({
     width: 1152, height: 720, minWidth: 760, minHeight: 520, title: "CodeRunner", show: false,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? "#101114" : "#f6f6f7",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#1a1918" : "#faf9f7",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     trafficLightPosition: {x: 16, y: 14},
     webPreferences: PAGE_PREFERENCES,
@@ -217,9 +217,29 @@ function showMain(conversation = "", computer = false) {
   hidePanels();
 }
 
+function sendToMain(channel, payload) {
+  showMain();
+  const contents = mainWindow?.webContents;
+  if (!contents) return;
+  const fire = () => (payload === undefined ? contents.send(channel) : contents.send(channel, payload));
+  if (contents.isLoading()) contents.once("did-finish-load", fire);
+  else fire();
+}
+
 function buildMenu() {
+  const appSubmenu = [
+    {role: "about"},
+    {type: "separator"},
+    {label: "Settings…", accelerator: "CmdOrCtrl+,", click: () => sendToMain("open-settings", "")},
+    {type: "separator"},
+    {role: "services"},
+    {type: "separator"},
+    {role: "hide"}, {role: "hideOthers"}, {role: "unhide"},
+    {type: "separator"},
+    {role: "quit"},
+  ];
   const template = [
-    ...(process.platform === "darwin" ? [{role: "appMenu"}] : []),
+    ...(process.platform === "darwin" ? [{label: app.name, submenu: appSubmenu}] : []),
     {label: "File", submenu: [
       {label: "New Task", accelerator: "CmdOrCtrl+N",
        click: () => {
@@ -227,6 +247,7 @@ function buildMenu() {
          showMain();
          if (open) mainWindow.webContents.executeJavaScript("document.getElementById('newTask')?.click()");
        }},
+      ...(process.platform !== "darwin" ? [{label: "Settings…", accelerator: "CmdOrCtrl+,", click: () => sendToMain("open-settings", "")}] : []),
       {type: "separator"}, process.platform === "darwin" ? {role: "close"} : {role: "quit"},
     ]},
     {role: "editMenu"},
@@ -234,11 +255,7 @@ function buildMenu() {
                                {role: "resetZoom"}, {role: "zoomIn"}, {role: "zoomOut"}, {role: "togglefullscreen"}]},
     {role: "windowMenu"},
     {role: "help", submenu: [
-      {label: "Test this Mac", click: () => {           // in the main window, never the menu bar's panels
-        showMain();
-        const contents = mainWindow?.webContents;
-        if (contents) (contents.isLoading() ? contents.once("did-finish-load", () => contents.send("test-this-mac")) : contents.send("test-this-mac"));
-      }},
+      {label: "Test this Mac", click: () => sendToMain("test-this-mac")},
       {type: "separator"},
       // Off unless turned on: the open thread then offers "Export trace", a file for the developers.
       {label: "Developer Mode", type: "checkbox", checked: developerMode(), click: (item) => setDeveloperMode(item.checked)},
@@ -368,6 +385,7 @@ function trayMenu() {
   return Menu.buildFromTemplate([
     {label: "Open CodeRunner", click: () => showMain()},
     {label: "Quick Ask", click: () => toggleAsk()},
+    {label: "Settings…", click: () => sendToMain("open-settings", "")},
     {type: "separator"},
     {label: "Quit CodeRunner", role: "quit"},
   ]);
@@ -567,12 +585,16 @@ app.whenReady().then(() => {
     (permission === "notifications" || (permission === "media" && (!details?.mediaType || details.mediaType === "audio"))));
   // The one thing the page asks of the shell: a folder picked by the owner (where to keep the models). Only the
   // daemon's own page may ask.
-  ipcMain.handle("pick-folder", async (event, start) => {
+  const fromDaemon = (event) => { try { return new URL(event.senderFrame.url).origin === ORIGIN; } catch { return false; } };
+  ipcMain.handle("pick-folder", async (event, startOrOpts) => {
     let asker = "";
     try { asker = new URL(event.senderFrame.url).origin; } catch { /* no frame, or no address: refused */ }
     if (asker !== ORIGIN) return null;
+    const opts = typeof startOrOpts === "object" && startOrOpts ? startOrOpts : {start: startOrOpts};
     const picked = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
-      title: "Where to keep the models", buttonLabel: "Keep them here", defaultPath: start || undefined,
+      title: typeof opts.title === "string" && opts.title ? opts.title : "Choose a folder",
+      buttonLabel: typeof opts.buttonLabel === "string" && opts.buttonLabel ? opts.buttonLabel : "Choose",
+      defaultPath: typeof opts.start === "string" && opts.start ? opts.start : undefined,
       properties: ["openDirectory", "createDirectory"],
     });
     return picked.canceled ? null : picked.filePaths[0];
@@ -583,12 +605,54 @@ app.whenReady().then(() => {
     try { asker = new URL(event.senderFrame.url).origin; } catch { /* refused */ }
     return asker === ORIGIN ? startDaemon() : false;
   });
+  ipcMain.handle("show-in-finder", (event, target) => {
+    if (!fromDaemon(event) || typeof target !== "string" || !target) return false;
+    try { shell.showItemInFolder(target); return true; } catch { return false; }
+  });
+  const ALLOWED_PANES = new Set(["Privacy_Automation", "Privacy_AllFiles", "Privacy_Microphone", "Privacy_Notifications"]);
+  ipcMain.handle("open-system-settings", (event, pane) => {
+    if (!MAC || !fromDaemon(event) || !ALLOWED_PANES.has(String(pane || ""))) return false;
+    shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
+    return true;
+  });
+  ipcMain.handle("app-settings", (event, update) => {
+    if (!fromDaemon(event)) return null;
+    const cur = settings();
+    if (update && typeof update === "object") {
+      const next = {...cur, developerMode: developerMode()};
+      if (typeof update.quickAskShortcut === "string") {
+        const candidate = update.quickAskShortcut.trim();
+        if (MAC) {
+          globalShortcut.unregisterAll();
+          if (candidate) {
+            let registered = false;
+            try { registered = Boolean(globalShortcut.register(candidate, () => toggleAsk())); }
+            catch { registered = false; }
+            if (!registered) {
+              if (typeof cur.quickAskShortcut === "string" && cur.quickAskShortcut) {
+                try { globalShortcut.register(cur.quickAskShortcut, () => toggleAsk()); } catch { /* best effort */ }
+              }
+              return {ok: false, error: "Shortcut is already in use or invalid", settings: {...cur, developerMode: developerMode()}};
+            }
+          }
+        }
+        next.quickAskShortcut = candidate;
+      }
+      if (typeof update.developerMode === "boolean") next.developerMode = update.developerMode;
+      const file = path.join(app.getPath("userData"), "settings.json");
+      try { fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, JSON.stringify(next, null, 2) + "\n"); }
+      catch { /* best effort */ }
+      if (typeof update.developerMode === "boolean") setDeveloperMode(update.developerMode);
+      return {ok: true, settings: next};
+    }
+    return {ok: true, settings: {...cur, developerMode: developerMode()}};
+  });
   // The popover's and the quick ask's: open a thread, or the app; put the panel away; a task was started (the
   // icon looks again at once). The main page's: which thread it shows. Only the daemon's own pages are heard.
-  const fromDaemon = (event) => { try { return new URL(event.senderFrame.url).origin === ORIGIN; } catch { return false; } };
   ipcMain.on("open-thread", (event, conversation) => { if (fromDaemon(event)) showMain(String(conversation || "")); });
   ipcMain.on("open-app", (event) => { if (fromDaemon(event)) showMain(); });
   ipcMain.on("open-computer", (event) => { if (fromDaemon(event)) showMain("", true); });
+  ipcMain.on("open-settings", (event, section) => { if (fromDaemon(event)) sendToMain("open-settings", typeof section === "string" ? section : ""); });
   ipcMain.on("hide-panel", (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (fromDaemon(event) && win && win !== mainWindow) win.hide();

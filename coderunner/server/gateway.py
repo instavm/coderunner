@@ -508,7 +508,16 @@ def admin_app(svc, daemon) -> Starlette:
         return JSONResponse(svc.scheduler.list())
 
     async def delete_schedule(request: Request):
-        return JSONResponse({"removed": svc.scheduler.remove(int(request.path_params["id"]))})
+        sid = int(request.path_params["id"])
+        if request.method == "PATCH":
+            body = await request.json()
+            if "enabled" in body and hasattr(svc.scheduler, "set_enabled"):
+                return JSONResponse({"ok": bool(svc.scheduler.set_enabled(sid, bool(body["enabled"])))})
+            if hasattr(svc.scheduler, "update"):
+                return JSONResponse({"ok": bool(svc.scheduler.update(sid, name=body.get("name"),
+                                                                     spec=body.get("spec"), prompt=body.get("prompt")))})
+            return JSONResponse({"error": "schedule update not supported"}, status_code=400)
+        return JSONResponse({"removed": svc.scheduler.remove(sid)})
 
     async def pair_start(request: Request):
         code = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(8))
@@ -748,6 +757,13 @@ def admin_app(svc, daemon) -> Starlette:
 
     async def conversation(request: Request):
         name = request.path_params["conversation"]
+        if request.method == "DELETE":
+            ok = daemon.tasks.delete_conversation(name)
+            return JSONResponse({"ok": ok}, status_code=200 if ok else 409)
+        if request.method == "PATCH":
+            body = await request.json()
+            ok = daemon.tasks.rename_conversation(name, str(body.get("title") or ""))
+            return JSONResponse({"ok": ok}, status_code=200 if ok else 400)
         return JSONResponse({"conversation": name, "tasks": daemon.tasks.tasks(name),
                              "events": daemon.bus.since(0, conversation=name)})
 
@@ -810,10 +826,15 @@ def admin_app(svc, daemon) -> Starlette:
         conversation = str(body.get("conversation") or "")
         if getattr(svc, "turns", None) is not None:
             svc.turns.focus = conversation
-        shown = False
-        if conversation and getattr(svc, "browser", None) is not None and hasattr(svc.browser, "focus"):
-            shown = await svc.browser.focus(conversation)
-        return JSONResponse({"conversation": conversation, "shown": bool(shown)})
+        info: dict = {"shown": False}
+        browser = getattr(svc, "browser", None)
+        if conversation and browser is not None:
+            import inspect
+            if inspect.iscoroutinefunction(getattr(browser, "focus_info", None)):
+                info = await browser.focus_info(conversation)
+            elif hasattr(browser, "focus"):
+                info = {"shown": bool(await browser.focus(conversation))}
+        return JSONResponse({"conversation": conversation, **info})
 
     async def control(request: Request):
         """The owner took the screen in the app ("Take control") or handed it back ("Watching", "I'm done"). While
@@ -967,6 +988,7 @@ def admin_app(svc, daemon) -> Starlette:
         with contextlib.suppress(Exception):
             await websocket.close()
 
+    from .settings_api import settings_routes
     mcp_all, mcp_search, mcp_lifespan = mcp_apps(svc, invoke_for_client)
     app = Starlette(lifespan=mcp_lifespan, routes=[
         # Routes with ASGI endpoints rather than mounts: a mount redirects /mcp to /mcp/, which MCP clients do
@@ -995,7 +1017,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/schedules", schedules, methods=["GET", "POST"]),
         Route("/api/files", files, methods=["GET", "POST"]),
         Route("/api/files/open", open_file, methods=["POST"]),
-        Route("/api/schedules/{id:int}", delete_schedule, methods=["DELETE"]),
+        Route("/api/schedules/{id:int}", delete_schedule, methods=["DELETE", "PATCH"]),
         Route("/api/pair", pair_start, methods=["POST"]),
         Route("/api/devices", devices, methods=["GET"]),
         Route("/api/devices/{id}", remove_device, methods=["DELETE"]),
@@ -1012,12 +1034,13 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/outputs/{name}", output_file, methods=["GET"]),
         Route("/api/conversations", conversations, methods=["GET"]),
         Route("/api/tray", tray, methods=["GET"]),
-        Route("/api/conversations/{conversation}", conversation, methods=["GET"]),
+        Route("/api/conversations/{conversation}", conversation, methods=["GET", "PATCH", "DELETE"]),
         Route("/api/conversations/{conversation}/trace", conversation_trace, methods=["GET"]),
         Route("/api/events", events, methods=["GET"]),
         Route("/api/computer", computer, methods=["GET", "POST"]),
         Route("/api/control", control, methods=["GET", "POST"]),
         Route("/api/focus", focus, methods=["POST"]),
+        *settings_routes(svc, daemon),
         WebSocketRoute("/api/computer/screen", computer_screen),
         WebSocketRoute("/api/computer/terminal", computer_terminal),
     ])

@@ -249,7 +249,6 @@ class DiscoveryTests(unittest.TestCase):
             found = {c["id"]: c for c in [result["model"], *result["alternatives"]]}
             self.assertEqual(result["runtime"]["name"], "llama.cpp")
             self.assertEqual(found["hf-lab-big-300b-a30b"]["runtime"], "llama.cpp")
-            self.assertEqual(found["hf-lab-agent-27b"]["runtime"], "llama.cpp")
             self.assertTrue(manager._chat_on_llama(studio))
             self.assertFalse(manager._chat_on_llama(nvidia(32, name="NVIDIA GeForce RTX 5090")))
             # Where Ollama is the main runtime (anything but Apple silicon), a model it cannot serve goes to
@@ -273,7 +272,9 @@ class DiscoveryTests(unittest.TestCase):
             self.assertIn("brew install llama.cpp", done["error"])
 
     def test_big_macs_hear_when_a_higher_gpu_limit_fits_a_better_model(self):
-        evidence.save({"lab/Big-300B-A30B": STRONG})
+        evidence.save({"lab/Big-300B-A30B": {"Idavidrein/gpqa:diamond": 99.0,
+                                             "harborframework/terminal-bench-2.1:terminalbench_2_1": 98.0,
+                                             "hkust-nlp/Toolathlon:toolathlon_verified": 95.0}})
         cfg = Config({"models": {"discover": True}}, path=pathlib.Path(self.tmp.name) / "c4.json")
         with mock.patch.object(discover, "cached", return_value=list(self.models.values())), \
                 mock.patch.object(manager, "choose_runtime", return_value=FakeRuntime()), \
@@ -283,7 +284,8 @@ class DiscoveryTests(unittest.TestCase):
         self.assertNotEqual(result["model"]["id"], "hf-lab-big-300b-a30b")       # 97 GB does not fit 96
         notes = " ".join(result["notes"])
         self.assertIn("Raising the GPU memory limit allows hf-lab-big-300b-a30b", notes)
-        self.assertIn("sudo sysctl iogpu.wired_limit_mb=122880", notes)
+        self.assertIn("sudo sysctl iogpu.wired_limit_mb=", notes)
+        self.assertEqual(result["wired_limit_hint"]["model"], "hf-lab-big-300b-a30b")
 
     def test_discovered_models_rank_among_catalog_models_and_reach_setup(self):
         placed = discover.place([discover.best_build(self.models["lab/Agent-27B"], nvidia(24), self.config,

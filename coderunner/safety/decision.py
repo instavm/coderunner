@@ -132,6 +132,8 @@ class DecisionModel:
         # prepare starts it, and the judge it stands in for answers when it cannot.
         self.prepare: Callable[[], Awaitable[None]] | None = None
         self.fallback: "DecisionModel | None" = None
+        # Recovery callback for a managed dedicated local judge (e.g. JudgeRuntime crash/reboot recovery).
+        self.recover: Callable[[], Awaitable[bool]] | None = None
         self._prepared = False
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.AsyncClient(timeout=timeout, headers=headers, trust_env=False, transport=transport)
@@ -145,7 +147,7 @@ class DecisionModel:
         """
         chat = config.get("models.chat") or ""
         model = model or config.get("models.decision") or ("" if dedicated_only else chat)
-        # A dedicated decision model is served by Ollama, also when another runtime serves the chat model.
+        # A dedicated decision model is served by Ollama or JudgeRuntime, also when another runtime serves chat.
         dedicated = config.get("models.decision_url") or "" if model != chat else ""
         base_url = dedicated or base_url or config.get("models.base_url") or ""
         if not model or not base_url:
@@ -158,7 +160,12 @@ class DecisionModel:
         """Probability that the answer is one of the positive criteria keys. examples: (state, key) pairs a chat
         model is shown answered first (a decision model has its own training for this and is not shown them)."""
         if self.fallback is None:
-            return await self._probability(state, question, criteria, positive, examples)
+            try:
+                return await self._probability(state, question, criteria, positive, examples)
+            except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError):
+                if self.recover is not None and await self.recover():
+                    return await self._probability(state, question, criteria, positive, examples)
+                raise
         try:
             if self.prepare is not None and not self._prepared:
                 await self.prepare()

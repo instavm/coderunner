@@ -101,8 +101,13 @@ def cases(vision: bool) -> list[tuple[str, list[dict], list[dict] | None, object
     return out
 
 
-async def run(base_url: str, model: str, vision: bool = False, api_key: str = "", timeout: float = 300) -> dict:
+async def run(base_url: str, model: str, vision: bool = False, api_key: str = "", timeout: float = 300,
+              transport=None) -> dict:
     llm = LLM(base_url, model, api_key=api_key, timeout=timeout)
+    if transport is not None:
+        import httpx
+        await llm._client.aclose()
+        llm._client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout, trust_env=False, transport=transport)
     checks, tokens, seconds = [], 0, 0.0
     try:
         for name, messages, tools, verify in cases(vision):

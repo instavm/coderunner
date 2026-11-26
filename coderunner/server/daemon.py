@@ -67,6 +67,8 @@ class Services:
     turns: Any = None               # server.tasks.Turns: one model turn at a time between running tasks
     agent: Agent | None = None
     driver: Any = None              # agent.driver.Driver: a screenshot-driven model for browser tasks
+    hardware: Any = None            # detected Hardware profile (used for tiered slots and memory policies)
+    pool: Any = None                # models.pool.ModelPool: role routing and indexing-yield policy
 
 
 class _Server(uvicorn.Server):
@@ -143,9 +145,18 @@ class Daemon:
             self.svc.audit.write("model.warm_failed", error=str(exc)[:200])
 
     async def _start_sandbox(self) -> None:
-        """Bring up the sandbox VM and its desktop at start, in the background (sandbox/keeper.py): after a restart
-        macOS brings back the daemon (its login service) but not the VM, and the owner should see the computer's
-        screen as soon as the app opens, without a button to press. A sandbox never installed is left alone."""
+        """Bring up the sandbox VM at start unless on-demand VM policy is active (<= 18 GB Macs keep the
+        VM asleep until code or computer tools need it, preserving ~2 GB for macOS and local models)."""
+        mode = self.config.get("sandbox.on_demand", "auto")
+        on_demand = mode is True or str(mode).lower() == "true"
+        if str(mode).lower() == "auto":
+            from ..models import hardware
+            hw = hardware.detect(float(self.config.get("sandbox.memory_gb") or 2))
+            on_demand = (hw.gpu == "apple" and 0 < hw.ram_gb <= 10.0
+                         and (self.config.get("browser.mode") or "dedicated") != "computer")
+        if on_demand:
+            self.svc.audit.write("sandbox.on_demand", reason="deferred until first code or computer step")
+            return
         if await self.computer.ensure(desktop=False, timeout=600):
             await self._vm_timezone()
 
@@ -227,6 +238,19 @@ class Daemon:
                 self.svc.audit.write("model.restart_failed", error=str(exc)[:300])
                 return False
 
+    async def _restart_decision(self) -> bool:
+        """Restart a crashed or stopped dedicated local JudgeRuntime (one restart at a time)."""
+        lock = self._locks.setdefault("decision", asyncio.Lock())
+        async with lock:
+            from ..models import manager
+            try:
+                restarted = await asyncio.to_thread(manager.restart_decision, self.config)
+                self.svc.audit.write("decision.restart", ok=restarted)
+                return restarted
+            except Exception as exc:
+                self.svc.audit.write("decision.restart_failed", error=str(exc)[:300])
+                return False
+
     # ---- construction ----------------------------------------------------
 
     def _build(self) -> Services:
@@ -237,13 +261,16 @@ class Daemon:
                        api_token=paths.api_token, admin_token=paths.admin_token)
         svc.egress = EgressGuard(self.config, svc.policy, audit)
 
-        from ..models import manager, remote
+        from ..models import manager, pool as model_pool, remote, runtimes as model_runtimes
+        svc.hardware = manager._hardware(self.config, None)
+        svc.pool = model_pool.ModelPool(self.config, hw=svc.hardware)
         endpoint = manager.endpoint(self.config)
         svc.embedding_model = endpoint.embedding_model or ""
         from ..safety.decision import ActionCheck, DecisionModel
         runtime = {"base_url": endpoint.base_url, "api_key": endpoint.api_key}
         svc.remote = remote.active(self.config)
         claude = remote.client(self.config) if svc.remote else None
+        judge_url = model_runtimes.JudgeRuntime(self.config).base_url.rstrip("/")
         if claude is not None:
             # Remote mode: Claude, or the owner's own model server, plans, sees, judges browser steps and screens
             # untrusted text. File search and voice keep their local models; the local chat model is left set
@@ -295,9 +322,15 @@ class Daemon:
                 audit.write("browser.extension_update_failed", error=str(exc)[:200])
         decider = ActionCheck(judge, audit=audit) if judge is not None else \
             ActionCheck.from_config(self.config, audit, **runtime)
-        if decider is not None and claude is None and decider.model.base_url == svc.llm.base_url.rstrip("/"):
-            from .tasks import limit
-            decider.model.slot = limit(svc)     # the slot after the tasks' (runtimes.py starts one more)
+        if decider is not None and claude is None:
+            if decider.model.base_url == svc.llm.base_url.rstrip("/"):
+                from .tasks import limit
+                decider.model.slot = limit(svc)     # the slot after the tasks' (runtimes.py starts one more)
+            elif decider.model.base_url == judge_url:
+                decider.model.recover = self._restart_decision
+        guard_model = getattr(svc.guard, "model", None)
+        if guard_model is not None and claude is None and guard_model.base_url == judge_url:
+            guard_model.recover = self._restart_decision
         svc.browser = BrowserBroker(self.config, svc.policy, audit, decider=decider, chrome=svc.chrome,
                                     sandbox=(url, paths.api_token()))
 
@@ -351,7 +384,11 @@ class Daemon:
             if file_model and ollama else None
         if file_embedder is not None and embed_llm is not svc.llm:
             file_embedder.recover = self._restart_embedding
-        svc.files = FileIndex(self.config, store, audit, file_embedder)
+        svc.files = FileIndex(
+            self.config, store, audit, file_embedder,
+            should_yield=lambda: bool(svc.pool and svc.pool.should_yield_indexing(
+                llm_busy=bool(getattr(svc.turns, "busy", False)))),
+        )
 
         from ..agent.scheduler import Scheduler
         svc.scheduler = Scheduler(store, audit, self._run_schedule, self._deliver_schedule,

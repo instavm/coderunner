@@ -10,64 +10,106 @@
 <div id="shell">
   <aside id="sidebar">
     <div class="side-head">
-      <div class="brand"><span class="logo" aria-hidden="true"></span>CodeRunner <span class="brand-by">by InstaVM</span></div>
-      <button id="newTask" class="icon-btn" title="New task (⌘N)" aria-label="New task"></button>
+      <div class="brand"><span class="logo" aria-hidden="true"></span><span class="brand-name">CodeRunner</span></div>
+      <div class="side-head-actions">
+        <button id="collapseSidebar" class="icon-btn" title="Hide sidebar" aria-label="Hide sidebar"></button>
+      </div>
     </div>
+
+    <div class="side-nav" aria-label="Navigation">
+      <button id="newTask" class="nav-item" type="button" title="New task (⌘N)"><span class="nav-ico" data-ico="plus"></span><span class="nav-label">New</span><kbd class="nav-kbd">⌘N</kbd></button>
+      <button id="navSearch" class="nav-item" type="button" title="Search tasks (⌘K)"><span class="nav-ico" data-ico="search"></span><span class="nav-label">Search</span><kbd class="nav-kbd">⌘K</kbd></button>
+      <button id="navFiles" class="nav-item" type="button"><span class="nav-ico" data-ico="files"></span><span class="nav-label">Files</span></button>
+      <button id="navRoutines" class="nav-item" type="button"><span class="nav-ico" data-ico="routines"></span><span class="nav-label">Routines</span></button>
+      <button id="navCustomize" class="nav-item" type="button" title="Settings (⌘,)"><span class="nav-ico" data-ico="customize"></span><span class="nav-label">Customize</span><kbd class="nav-kbd">⌘,</kbd></button>
+    </div>
+
+    <div id="sideSearchWrap" class="side-search" hidden>
+      <input id="convSearch" type="search" placeholder="Search tasks…" aria-label="Search tasks" autocomplete="off">
+    </div>
+
+    <div class="side-divider"></div>
     <nav id="conversations" aria-label="Tasks"></nav>
+
     <div class="side-foot">
-      <div id="modelsLine" class="muted small"></div>
+      <button id="modelsLine" class="side-models" type="button" title="Models and settings (⌘,)"></button>
     </div>
   </aside>
 
   <main id="main">
     <header id="mainHead">
       <div class="head-lead">
-        <button id="toggleSidebar" class="icon-btn" title="Tasks" aria-label="Show or hide the task list"></button>
+        <button id="toggleSidebar" class="icon-btn" title="Show sidebar" aria-label="Show sidebar"></button>
         <button id="newTaskHead" class="icon-btn" title="New task (⌘N)" aria-label="New task"></button>
         <div id="title" class="title">New task</div>
       </div>
       <div class="head-actions">
+        <button id="threadFilesBtn" class="pill-btn" type="button" hidden>Files</button>
+        <div id="threadFilesPop" class="trace-ask files-pop" role="dialog" aria-label="Files in this thread" hidden></div>
         <button id="exportTrace" class="icon-btn" title="Export trace" aria-label="Export trace" hidden></button>
         <div id="traceAsk" class="trace-ask" role="dialog" aria-label="Export trace" hidden>
           <p>This file has what the assistant saw and did in this thread, with keys and contact details removed. Check it before sending.</p>
           <div class="trace-ask-row"><button id="traceCancel" class="btn" type="button">Cancel</button><button id="traceSave" class="btn primary" type="button">Save</button></div>
         </div>
-        <button id="toggleComputer" class="icon-btn" title="Assistant's computer" aria-label="Show or hide the assistant's computer"></button>
+        <button id="toggleComputer" class="icon-btn" title="Show or hide workspace" aria-label="Show or hide the assistant's computer"></button>
       </div>
     </header>
     <div id="offline" class="offline" role="status" hidden><span class="offline-dot"></span><span id="offlineText">Reconnecting…</span></div>
+    <div id="approvalBar" class="approval-bar" role="status" hidden></div>
     <section id="thread" aria-live="polite">
       <div id="empty" class="empty">
+        <div class="empty-mark" aria-hidden="true"><span data-ico="term"></span></div>
         <h1>What should I get done?</h1>
-        <p class="muted">Tasks run on your own computer: local models, and a private Linux machine with its own browser that you can watch and take over.</p>
-        <div class="examples">
-          <button class="example">Find the cheapest Pixel 8 on Amazon.in and Flipkart and compare sellers</button>
-          <button class="example">Search my files for the latest rental agreement and summarise the notice period</button>
-          <button class="example">Check tomorrow's weather in Bengaluru and suggest what to wear</button>
+        <p class="muted">Runs locally on your Mac with shared folders and a private browser you can watch or take over.</p>
+        <div id="starterList" class="examples">
+          <button class="example" type="button"><span class="example-ico" data-ico="search"></span><span class="example-txt">Compare three highly rated noise-cancelling headphones under $250 with prices and links</span></button>
+          <button class="example" type="button"><span class="example-ico" data-ico="files"></span><span class="example-txt">Drop a receipt, PDF or spreadsheet here to extract figures</span></button>
+          <button class="example" type="button"><span class="example-ico" data-ico="routines"></span><span class="example-txt">Check tomorrow's weather forecast and suggest what to pack</span></button>
         </div>
+        <div id="starterHint" class="empty-hint muted small"></div>
       </div>
     </section>
     <div id="notice" class="notice" role="alert" hidden></div>
-    <form id="composer" autocomplete="off">
-      <div id="attachments" class="attachments" hidden></div>
-      <div class="composer-row">
-        <button id="attach" class="attach" type="button" title="Attach files" aria-label="Attach files"></button>
-        <button id="mic" class="attach mic" type="button" hidden title="Dictate. macOS dictation also works here: Edit, Start Dictation."
-                aria-label="Dictate"></button>
+    <div class="composer-shell">
+      <div id="quickModelPop" class="quick-pop" role="menu" hidden></div>
+      <form id="composer" autocomplete="off">
+        <div id="attachments" class="attachments" hidden></div>
         <textarea id="input" rows="1" placeholder="Describe a task…" aria-label="Task"></textarea>
-        <span id="micState" class="mic-state" role="status" hidden><span class="mic-level"><i id="micLevel"></i></span><span id="micTime">0:00</span></span>
-        <button id="send" class="send" type="submit" aria-label="Start task"></button>
-      </div>
-      <input id="filePick" type="file" multiple hidden>
-    </form>
+        <div class="composer-bar">
+          <div class="composer-tools">
+            <button id="attach" class="attach" type="button" title="Attach files" aria-label="Attach files"></button>
+            <button id="mic" class="attach mic" type="button" hidden title="Dictate. macOS dictation also works here: Edit, Start Dictation."
+                    aria-label="Dictate"></button>
+            <span id="micState" class="mic-state" role="status" hidden><span class="mic-level"><i id="micLevel"></i></span><span id="micTime">0:00</span></span>
+          </div>
+          <div class="composer-right">
+            <button id="quickModelBtn" class="meta-btn" type="button" title="Switch model">Local</button>
+            <button id="quickThinkBtn" class="meta-btn" type="button" title="Thinking mode">Auto</button>
+            <button id="send" class="send" type="submit" aria-label="Start task"></button>
+          </div>
+        </div>
+        <input id="filePick" type="file" multiple hidden>
+      </form>
+    </div>
   </main>
 
   <aside id="computer" aria-label="Assistant's computer">
     <div class="panel-head">
-      <div>
-        <div id="panelTitle" class="panel-title">Assistant's computer</div>
-        <div id="computerState" class="muted small">Starting…</div>
-        <div id="macState" class="muted small" hidden>Its own profile, apart from your browser</div>
+      <div id="views" class="composed-tabs" role="tablist" aria-label="Workspace">
+        <button id="viewScreen" class="ctab on" type="button" role="tab" aria-selected="true" title="Sandbox screen">
+          <span class="ctab-ico" data-ico="monitor"></span><span id="viewScreenLabel" class="ctab-label">Screen</span>
+        </button>
+        <button id="viewTerminal" class="ctab" type="button" role="tab" aria-selected="false" title="Sandbox terminal">
+          <span class="ctab-ico" data-ico="term"></span><span class="ctab-label">Terminal</span>
+        </button>
+        <span id="viewsGap" class="views-gap" aria-hidden="true" hidden></span>
+        <button id="viewBrowser" class="ctab" type="button" role="tab" aria-selected="false" hidden
+                title="Browser on this Mac — its own profile, apart from your browser">
+          <span class="ctab-ico" data-ico="globe"></span><span id="viewBrowserLabel" class="ctab-label">Mac browser</span>
+        </button>
+        <button id="viewMac" class="ctab ctab-icon" type="button" role="tab" aria-selected="false" title="System and models" aria-label="System and models">
+          <span class="ctab-ico" data-ico="chip"></span>
+        </button>
       </div>
       <div id="turn" class="turn" hidden>
         <span id="turnText"></span>
@@ -78,43 +120,64 @@
         <button id="closeComputer" class="icon-btn" title="Hide" aria-label="Hide the assistant's computer"></button>
       </div>
     </div>
-    <div id="views" class="views" role="tablist" aria-label="View">
-      <button id="viewScreen" class="view on" type="button" role="tab" aria-selected="true">Screen</button>
-      <button id="viewTerminal" class="view" type="button" role="tab" aria-selected="false">Terminal</button>
-      <span id="viewsGap" class="views-gap" aria-hidden="true" hidden></span>
-      <button id="viewBrowser" class="view" type="button" role="tab" aria-selected="false" hidden
-              title="CodeRunner's own browser, on this Mac">Mac browser</button>
+
+    <div id="panelBar" class="panel-bar">
+      <div class="addr-status">
+        <span id="computerDot" class="status-dot"></span>
+        <span id="panelTitle" class="sr-only">Assistant's computer</span>
+        <span id="computerState" class="muted small">Starting…</span>
+        <span id="macState" class="sr-only" hidden>Its own profile, apart from your browser</span>
+      </div>
+      <div id="addressPill" class="addr-pill">
+        <span id="addressText" class="addr-text">Assistant's computer</span>
+        <button id="addressAction" class="linkish small" type="button" hidden></button>
+      </div>
+      <div id="control" class="control" hidden>
+        <button id="watching" class="seg on" type="button">Watch</button>
+        <button id="takeControl" class="seg" type="button">Control</button>
+      </div>
     </div>
+
+    <div id="screenContext" class="screen-context muted small" hidden></div>
+
     <div id="screenWrap">
       <div id="screen"></div>
+      <div id="shotFallback" class="shot-fallback" hidden></div>
       <div id="term" hidden><div id="termNote" class="term-note">Connecting…</div></div>
-      <div id="browser" hidden>
+      <div id="browser" class="single-tab" hidden>
         <div id="bTabs" class="b-tabs" role="tablist" aria-label="Pages"></div>
         <form id="bBar" class="b-bar" autocomplete="off">
           <button id="bBack" class="b-btn" type="button" aria-label="Back" title="Back"></button>
           <button id="bForward" class="b-btn" type="button" aria-label="Forward" title="Forward"></button>
           <button id="bReload" class="b-btn" type="button" aria-label="Reload" title="Reload"></button>
           <input id="bUrl" type="text" spellcheck="false" placeholder="Search or enter address" aria-label="Address">
+          <button id="bNewInline" class="b-btn b-new-inline" type="button" aria-label="New tab" title="New tab"></button>
           <button id="bMore" class="b-btn" type="button" aria-label="More" title="More" aria-haspopup="menu" aria-expanded="false"></button>
         </form>
         <div id="bView" class="b-view"><div id="bNote" class="term-note">Pages open here on your Mac</div></div>
         <div id="bMenu" class="b-menu" role="menu" hidden></div>
       </div>
-      <div id="screenNote" class="screen-note">Connecting to the screen…</div>
-      <div id="control" class="control" hidden>
-        <button id="watching" class="seg on" type="button">Watching</button>
-        <button id="takeControl" class="seg" type="button">Take control</button>
+      <div id="macPane" class="mac-pane" hidden>
+        <div id="macSummary" class="mac-summary"></div>
+        <div class="mac-section">
+          <div class="mac-section-label">Active stack</div>
+          <div class="mac-pane-card">
+            <dl id="models" class="models"></dl>
+            <div id="remoteBox" class="remote-box"></div>
+            <div id="macBox" class="mac-box"></div>
+          </div>
+        </div>
+        <button id="panelModelsBtn" class="mac-action-row" type="button">
+          <span>Models, servers &amp; benchmarks</span>
+          <span class="mac-action-chev" data-ico="chevRight"></span>
+        </button>
       </div>
+      <div id="screenNote" class="screen-note">Connecting to the screen…</div>
     </div>
-    <div class="panel-section now-section">
-      <div id="nowLine" class="muted small">Idle</div>
+
+    <div class="panel-foot now-section">
+      <div id="nowLine" class="muted small" hidden>Idle</div>
     </div>
-    <details class="panel-section models-fold">
-      <summary>Models and privacy</summary>
-      <dl id="models" class="models"></dl>
-      <div id="remoteBox" class="remote-box"></div>
-      <div id="macBox" class="mac-box"></div>
-    </details>
   </aside>
 </div>
 <script type="module" src="app.js"></script>
