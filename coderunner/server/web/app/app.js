@@ -501,7 +501,10 @@ function closeAsk(id, allowed) {
   const entry = state.approvals.get(id);
   state.pending.delete(id);
   if ($("turn").dataset.ask === id) $("turn").hidden = true;
-  if (!entry || entry.card.classList.contains("closed")) return;
+  // A thread read again closes an old card as "Answered" before its decision is replayed; the decision, when it
+  // comes, says how it ended ("Not answered in time" read as "Answered" after a reload).
+  if (!entry || (entry.card.classList.contains("closed") && (allowed === null || entry.final))) return;
+  entry.final = allowed !== null;
   entry.card.classList.add("closed");
   // A turn on the computer that ended (the page moved on, or Skip): the screen goes back to the task.
   if (entry.handoff && control) setControl(false);
