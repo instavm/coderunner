@@ -178,5 +178,95 @@ class AutoContinueAndApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("candidates", rane.json())
 
 
+class BrowserIdentityTests(unittest.IsolatedAsyncioTestCase):
+    def test_chrome_identity_and_headers_match_running_version(self):
+        import pathlib
+        from coderunner.browser import identity, launcher
+        import desktop
+
+        full, major = identity.parse_chrome_version("Chrome/158.0.8127.88")
+        self.assertEqual((full, major), ("158.0.8127.88", "158"))
+        full_hl, major_hl = identity.parse_chrome_version("HeadlessChrome/142.0.7444.10")
+        self.assertEqual((full_hl, major_hl), ("142.0.7444.10", "142"))
+
+        ident = identity.chrome_identity("Chrome/158.0.8127.88")
+        self.assertIn("Macintosh; Intel Mac OS X 10_15_7", ident["userAgent"])
+        self.assertIn("Chrome/158.0.0.0", ident["userAgent"])
+        self.assertNotIn("Linux", ident["userAgent"])
+        self.assertNotIn("Headless", ident["userAgent"])
+        self.assertEqual(ident["platform"], "MacIntel")
+        meta = ident["userAgentMetadata"]
+        self.assertEqual(meta["platform"], "macOS")
+        self.assertEqual(meta["fullVersion"], "158.0.8127.88")
+        self.assertFalse(meta["mobile"])
+        self.assertTrue(any(b["brand"] == "Google Chrome" and b["version"] == "158" for b in meta["brands"]))
+
+        hdrs = identity.chrome_headers("Chrome/158.0.8127.88")
+        self.assertEqual(hdrs["Sec-CH-UA-Platform"], '"macOS"')
+        self.assertEqual(hdrs["Sec-CH-UA-Mobile"], "?0")
+        self.assertIn('"Google Chrome";v="158"', hdrs["Sec-CH-UA"])
+        self.assertEqual(hdrs["Sec-Fetch-Mode"], "navigate")
+
+        argv = desktop.chrome_argv(pathlib.Path("/home/box/.config/coderunner-chrome"))
+        self.assertIn("--lang=en-US", argv)
+        self.assertIn("--disable-blink-features=AutomationControlled", argv)
+        self.assertIn("--disable-background-timer-throttling", argv)
+        self.assertTrue(any(a.startswith("--user-agent=Mozilla/5.0 (Macintosh;") for a in argv))
+
+        local_args = launcher.browser_args(pathlib.Path("/tmp/p"), headless=True)
+        self.assertIn("--disable-blink-features=AutomationControlled", local_args)
+        self.assertIn("--lang=en-US", local_args)
+        self.assertIn("--disable-background-timer-throttling", local_args)
+
+    async def test_broker_applies_chrome_identity_only_for_sandbox_and_headless(self):
+        from test_browser import FakeLauncher
+        from coderunner.browser.broker import BrowserBroker
+        from coderunner.safety.policy import Policy
+
+        class VersionedLauncher(FakeLauncher):
+            async def launch(self, executable, profile_dir, headless):
+                proc, cdp = await super().launch(executable, profile_dir, headless)
+                orig = self.browser.handle
+
+                def handle(method, params, sid):
+                    if method == "Browser.getVersion":
+                        return {"product": "Chrome/158.0.8127.88", "userAgent": "Mozilla/5.0 (X11; Linux aarch64) Chrome/158.0.0.0"}
+                    return orig(method, params, sid)
+
+                self.browser.handle = handle
+                return proc, cdp
+
+        def make_broker(mode: str, headless: bool = False):
+            svc = Svc()
+            svc.config.set("browser.mode", mode)
+            svc.config.set("browser.headless", headless)
+            launcher = VersionedLauncher()
+            return BrowserBroker(svc.config, svc.policy, svc.audit, launcher=launcher), launcher
+
+        # 1. Sandbox VM browser (mode="computer"): gets full Chrome identity + stealth init script
+        b_vm, l_vm = make_broker("computer")
+        await b_vm.start()
+        await b_vm.tabs()
+        sid = await b_vm._session("P1")
+        self.assertTrue(sid)
+        ua_calls = l_vm.browser.sent("Emulation.setUserAgentOverride")
+        self.assertEqual(len(ua_calls), 1)
+        self.assertIn("Chrome/158.0.0.0", ua_calls[0]["userAgent"])
+        self.assertEqual(ua_calls[0]["platform"], "MacIntel")
+        self.assertEqual(ua_calls[0]["userAgentMetadata"]["platform"], "macOS")
+        self.assertEqual(len(l_vm.browser.sent("Emulation.setLocaleOverride")), 1)
+        self.assertEqual(len(l_vm.browser.sent("Page.addScriptToEvaluateOnNewDocument")), 1)
+        await b_vm.stop()
+
+        # 2. Built-in Mac browser (mode="mac"): stays untouched (no UA override / stealth injection)
+        b_mac, l_mac = make_broker("mac")
+        await b_mac.start()
+        await b_mac.tabs()
+        await b_mac._session("P1")
+        self.assertEqual(l_mac.browser.sent("Emulation.setUserAgentOverride"), [])
+        self.assertEqual(l_mac.browser.sent("Page.addScriptToEvaluateOnNewDocument"), [])
+        await b_mac.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

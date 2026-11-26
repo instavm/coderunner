@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from ..browser.identity import chrome_headers, desktop_user_agent
 from ..browser.urls import local_problem, page_host, parse_url
 from ..browser.walls import classify, probe_from_html
 from ..safety.policy import _matches
@@ -25,10 +26,7 @@ MAX_URLS = 4
 FETCH_TIMEOUT = 12.0
 MAX_BYTES = 1_500_000
 DEFAULT_CHARS = 3500
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
-)
+USER_AGENT = desktop_user_agent()
 
 SKIP_TAGS = frozenset({
     "script", "style", "noscript", "svg", "canvas", "iframe", "template",
@@ -297,7 +295,7 @@ async def read_many(
     if not picked:
         return []
     per_page = max(1800, min(max_chars_each, int(10_000 // max(1, len(picked)))))
-    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9"}
+    headers = chrome_headers()
     async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, headers=headers, trust_env=False, transport=transport) as client:
         return list(await asyncio.gather(*(
             _fetch_one(client, u, allow=allow or [], block=block or [], focus=focus,

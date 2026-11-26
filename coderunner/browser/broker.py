@@ -42,6 +42,7 @@ from typing import Any, Awaitable, Callable
 from ..safety import decision
 from ..core import paths
 from ..safety.policy import Action, Decision, _matches, current_run
+from . import identity as browser_identity
 from . import launcher as default_launcher
 from .cdp import CDPError, CDPPipe
 from .errors import BrowserError
@@ -400,6 +401,8 @@ class BrowserBroker:
         self._dismissed: dict[str, dict] = {}
         self._blocked: dict[str, str] = {}
         self._busy: dict[str, bool] = {}          # tabs the assistant is acting in -> tainted flag
+        self._identity: dict | None = None        # regular desktop Chrome identity override for sandbox/headless
+        self._timezone: str | None = None         # host IANA timezone synced to sandbox Chrome
         self._handoff: set[str] = set()
         self._expected: dict[str, str] = {}       # tab -> host of the approved navigation in progress
         self._committed: dict[str, str] = {}      # tab -> URL of the last committed main-frame document
@@ -916,6 +919,21 @@ class BrowserBroker:
         for name in DENIED_PERMISSIONS:      # best effort: names vary between versions
             with contextlib.suppress(CDPError):
                 await cdp.send("Browser.setPermission", {"permission": {"name": name}, "setting": "denied"})
+        # For the Linux sandbox VM browser (and headless dedicated Chrome), derive a self-consistent macOS desktop
+        # Chrome identity from the actual running Chrome version so UA, Sec-CH-UA, platform, locale, timezone,
+        # and WebGL match a normal desktop Chrome instead of Linux aarch64 / SwiftShader / HeadlessChrome.
+        if self._needs_chrome_identity():
+            ver: dict = {}
+            with contextlib.suppress(CDPError):
+                ver = await cdp.send("Browser.getVersion", timeout=5) or {}
+            self._identity = browser_identity.chrome_identity(ver.get("product") or ver.get("userAgent"))
+            self._timezone = browser_identity.host_timezone()
+        else:
+            self._identity = None
+            self._timezone = None
+
+    def _needs_chrome_identity(self) -> bool:
+        return self.mode == "computer" or (self.mode == "dedicated" and self.headless)
 
     async def _shutdown(self) -> None:
         process, cdp = self._process, self._cdp
@@ -1071,6 +1089,19 @@ class BrowserBroker:
             await self._send(sid, "Page.enable", timeout=ATTACH_TIMEOUT)
             await self._send(sid, "Page.setLifecycleEventsEnabled", {"enabled": True})
             await self._send(sid, "Page.setInterceptFileChooserDialog", {"enabled": True})
+            # Apply regular desktop Chrome identity (UA + Client Hints + locale + timezone + VM WebGL/stealth)
+            # before any navigation runs on this tab.
+            if self._identity:
+                with contextlib.suppress(CDPError):
+                    await self._send(sid, "Emulation.setUserAgentOverride", self._identity)
+                with contextlib.suppress(CDPError):
+                    await self._send(sid, "Emulation.setLocaleOverride", {"locale": browser_identity.DEFAULT_LOCALE})
+                if self._timezone:
+                    with contextlib.suppress(CDPError):
+                        await self._send(sid, "Emulation.setTimezoneOverride", {"timezoneId": self._timezone})
+                with contextlib.suppress(CDPError):
+                    await self._send(sid, "Page.addScriptToEvaluateOnNewDocument",
+                                     {"source": browser_identity.STEALTH_INIT_JS})
             # The page behaves as if its window had the focus. Otherwise, whenever the owner works in another
             # window, pop-up widgets ignore clicks: booking.com's destination box opened only with this on.
             await self._send(sid, "Emulation.setFocusEmulationEnabled", {"enabled": True})
