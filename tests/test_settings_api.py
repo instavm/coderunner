@@ -185,7 +185,7 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(rtest.status_code, 200)
                 self.assertEqual(rtest.json(), {"ok": True, "name": "calendar", "detail": "calendar ok"})
 
-            # Tailscale status passes integer admin_port (not Config object)
+            # Tailscale status/enable/disable pass integer admin_port and align remote.provider
             seen_ports = []
             def fake_ts_status(port):
                 seen_ports.append(port)
@@ -194,6 +194,15 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
                 rts = await c.get("/api/tailscale", headers=self.headers)
                 self.assertEqual(rts.status_code, 200)
                 self.assertEqual(seen_ports, [int(self.svc.config.get("gateway.admin_port") or 8224)])
+            with mock.patch("coderunner.server.remote.enable", return_value="https://mac.ts.net/"), \
+                 mock.patch("coderunner.server.remote.disable", return_value="Remote access disabled."):
+                ren = await c.post("/api/tailscale", headers=self.headers, json={"action": "enable", "owner": "me@example.com"})
+                self.assertTrue(ren.json()["ok"])
+                self.assertEqual(self.svc.config.get("remote.provider"), "tailscale")
+                self.assertIn("me@example.com", self.svc.config.get("remote.owners"))
+                rdis = await c.post("/api/tailscale", headers=self.headers, json={"action": "disable"})
+                self.assertTrue(rdis.json()["ok"])
+                self.assertEqual(self.svc.config.get("remote.provider"), "")
 
 
 if __name__ == "__main__":

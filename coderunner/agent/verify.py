@@ -14,8 +14,10 @@ complete. When a defect is caught, at most ONE append-only repair turn runs (pre
 from __future__ import annotations
 
 import re
+import urllib.parse
 from typing import Iterable
 
+from .digest import normal_url
 from .recovery import PageRecord, is_search_url, reg_host
 
 URL_RE = re.compile(r"https?://[^\s<>()\[\]\"']+")
@@ -145,6 +147,19 @@ def _clean_url(url: str) -> str:
     return url.rstrip(".,;:!?)")
 
 
+def _url_path_key(url: str) -> tuple[str, str]:
+    """(registrable_host, normalized_path) for matching opened pages ignoring fragments/tracking params."""
+    parts = urllib.parse.urlsplit(url)
+    return reg_host(url), parts.path.rstrip("/") or "/"
+
+
+def _is_opened_url(url: str, opened_norms: set[str], opened_paths: set[tuple[str, str]]) -> bool:
+    """True only when `url` matches an actually opened URL (full normalized URL or exact host+path)."""
+    if normal_url(url) in opened_norms:
+        return True
+    return _url_path_key(url) in opened_paths
+
+
 def build_repair_prompt(
     request: str,
     final: str,
@@ -152,51 +167,56 @@ def build_repair_prompt(
     read_pages: bool,
     min_chars_for_links: int = 200,
     tools_used: set[str] | None = None,
+    add_links_prefix: str = "",
 ) -> tuple[str, bool]:
     """Return (repair_prompt, needs_thinking) if the final answer has concrete defects, else ("", False).
 
-    Checked defects (all general-purpose, deterministic):
-    1. Unopened / hallucinated links, zero links after reading web pages, or missing links when
-       the user asked for multiple sourced items and we have verified opened pages for them.
-    2. Missing Markdown table when explicitly requested.
-    3. Missing recommendation / verdict when explicitly requested.
-    4. Wrong response language when explicitly requested.
-    5. Missing currency symbols when prices were asked and bare numbers were written.
-    6. In-head date/duration arithmetic when run_python was not used (escalates thinking to verify math).
+    Never interpolates website-controlled titles into the user prompt (only verified URLs), preventing
+    untrusted page metadata from steering the rewrite. Combines link grounding with completeness checks
+    into a single repair prompt so one turn fixes everything.
     """
     text = (final or "").strip()
     if not text or GAVE_UP_RE.search(text[:450]):
         return "", False
 
     pages = [p for p in opened_pages if p.url.startswith(("http://", "https://")) and not is_search_url(p.url)]
-    opened_hosts = {p.host for p in pages}
+    opened_norms = {normal_url(p.url) for p in pages}
+    opened_paths = {_url_path_key(p.url) for p in pages}
     issues: list[str] = []
     include_urls = False
     needs_think = False
 
-    # 1. Link grounding and coverage
+    # 1. Full-URL link grounding and coverage (rejects invented paths on opened hosts as well as unopened hosts)
     raw_urls = [_clean_url(u) for u in URL_RE.findall(text)]
-    valid_urls = [u for u in raw_urls if reg_host(u) in opened_hosts]
-    unopened_urls = [u for u in raw_urls if reg_host(u) not in opened_hosts]
+    valid_urls = [u for u in raw_urls if _is_opened_url(u, opened_norms, opened_paths)] if pages else raw_urls
+    unopened_urls = [u for u in raw_urls if not _is_opened_url(u, opened_norms, opened_paths)] if pages else []
 
     wants_links = bool(re.search(r"\b(?:links?|urls?|sources?|cite|liens?)\b|リンク", request, re.I))
-    if read_pages and pages:
-        if (wants_links or len(text) >= min_chars_for_links) and not valid_urls:
+    no_links_issue = False
+    if read_pages and (pages or add_links_prefix):
+        if (add_links_prefix or wants_links or len(text) >= min_chars_for_links) and not raw_urls:
+            no_links_issue = True
+            include_urls = bool(pages)
+            if not add_links_prefix:
+                issues.append(
+                    "Add inline links [name](https://...) to the pages your facts came from, using ONLY the "
+                    "verified URLs opened in this task listed below."
+                )
+        elif pages and raw_urls and not valid_urls:
             issues.append(
-                "Add inline links [name](https://...) to the pages your facts came from, using ONLY the verified "
-                "URLs opened in this task listed below."
+                "Replace every unverified or invented URL with exact verified URLs opened in this task from the list below."
             )
             include_urls = True
         elif unopened_urls:
             issues.append(
-                "Replace any URL from a site you did not open with exact verified URLs from the opened pages below."
+                "Replace any URL whose page or path was not actually opened with exact verified URLs from the list below."
             )
             include_urls = True
-        elif MULTI_LINK_ASK_RE.search(request):
+        elif pages and MULTI_LINK_ASK_RE.search(request):
             content_pages = [p for p in pages if len(p.url.split("/", 3)[-1].strip("/")) > 0]
             want = 3 if MULTI_COUNT_RE.search(request) else 2
-            target = min(want, len({p.url for p in content_pages}))
-            if target >= 2 and len(set(valid_urls)) < target:
+            target = min(want, len({normal_url(p.url) for p in content_pages}))
+            if target >= 2 and len({normal_url(u) for u in valid_urls}) < target:
                 issues.append(
                     f"Include inline links for each item/source (at least {target} distinct opened pages) "
                     "using ONLY the exact URLs listed below."
@@ -231,19 +251,25 @@ def build_repair_prompt(
         )
         needs_think = True
 
-    if not issues:
+    if not issues and not no_links_issue:
         return "", False
 
-    parts = [
-        "[Quality check before sending — not a new request] Without calling any tools, rewrite your reply "
-        "to fix only the following:",
-        *[f"- {item}" for item in issues],
-        "Keep every verified figure and fact accurate; do not invent data, headings or extra offers.",
-    ]
+    parts: list[str] = []
+    if no_links_issue and add_links_prefix:
+        parts.append(add_links_prefix)
+        if issues:
+            parts.append("Also fix the following in the same rewrite:")
+            parts.extend(f"- {item}" for item in issues)
+    else:
+        parts.append(
+            "[Quality check before sending — not a new request] Without calling any tools, rewrite your reply "
+            "to fix only the following:"
+        )
+        parts.extend(f"- {item}" for item in issues)
+        parts.append("Keep every verified figure and fact accurate; do not invent data, headings or extra offers.")
+
     if include_urls and pages:
-        url_lines = [
-            f"- {p.url}" + (f" ({p.title})" if p.title else "")
-            for p in pages[:12]
-        ]
+        # Verified URLs only (no website-controlled titles, so untrusted page text cannot steer the rewrite).
+        url_lines = [f"- {p.url}" for p in pages[:12]]
         parts.append("\nVerified URLs opened in this task (use ONLY these):\n" + "\n".join(url_lines))
     return "\n".join(parts), needs_think

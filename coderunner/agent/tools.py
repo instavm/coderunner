@@ -371,8 +371,16 @@ def browser_tools(svc) -> list[Tool]:
         return raw
 
     async def open_(args, ctx):
-        return _text(await _listed(_result(mark(ctx, "open", await b.navigate(args["url"], tainted=ctx.tainted))),
-                                   ctx))
+        batch_chars = int(getattr(ctx, "_batch_page_chars", 0) or 0)
+        prev_chars = getattr(b, "page_chars", None)
+        if batch_chars and isinstance(prev_chars, int) and batch_chars < prev_chars:
+            b.page_chars = batch_chars
+        try:
+            return _text(await _listed(_result(mark(ctx, "open", await b.navigate(args["url"], tainted=ctx.tainted))),
+                                       ctx))
+        finally:
+            if prev_chars is not None:
+                b.page_chars = prev_chars
 
     async def snapshot(args, ctx):
         start = str(args.get("start") or "").strip()

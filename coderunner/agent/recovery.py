@@ -252,10 +252,13 @@ class RunMonitor:
             self.plan_step_troubles += 1
             req_url = str(args.get("url") or url) if name == "browser_open" else url
             host = reg_host(req_url or url)
-            if req_url:
-                norm = normal_url(req_url)
+            # Record BOTH the requested URL and the landed URL (e.g. /missing -> /404) as dead,
+            # and evict any prior ledger entry so error pages are never offered as verified citations.
+            for candidate in {u for u in (req_url, url) if u}:
+                norm = normal_url(candidate)
                 prev_kind, prev_n = self.dead_urls.get(norm, (dead_kind, 0))
                 self.dead_urls[norm] = (dead_kind, prev_n + 1)
+                self.opened_pages.pop(norm, None)
             entries = self.host_dead.setdefault(host, [])
             entries.append((step, dead_kind, req_url or url))
             count = len(entries)
@@ -365,19 +368,31 @@ class RunMonitor:
             )
         return ""
 
-    def verified_pages(self, trail: list[dict[str, Any]] | None = None, limit: int = 16) -> list[PageRecord]:
-        """Deduplicated verified content URLs opened in this run (newest first, up to `limit`)."""
-        by_norm = dict(self.opened_pages)
+    def verified_pages(self, trail: list[dict[str, Any]] | None = None, limit: int | None = None) -> list[PageRecord]:
+        """Deduplicated verified content URLs opened in this run (newest first).
+
+        Prefers raw un-truncated URLs from `trail` over shortened (`…`) tool-output URLs, and strictly
+        excludes any URL (requested or landed) recorded in `dead_urls`.
+        """
+        by_norm: dict[str, PageRecord] = {
+            k: PageRecord(url=v.url, host=v.host, title=v.title, step=v.step)
+            for k, v in self.opened_pages.items()
+            if k not in self.dead_urls
+        }
         for entry in trail or ():
             if not entry.get("ok", True):
                 continue
-            url = str(entry.get("url") or "").strip()
-            if not url.startswith(("http://", "https://")) or is_search_url(url):
+            raw_url = str(entry.get("url") or "").strip()
+            if not raw_url.startswith(("http://", "https://")) or is_search_url(raw_url):
                 continue
-            norm = normal_url(url)
+            norm = normal_url(raw_url)
             if norm in self.dead_urls:
                 continue
-            if norm not in by_norm:
-                by_norm[norm] = PageRecord(url=url, host=reg_host(url), title="", step=0)
+            if norm in by_norm:
+                # Replace shortened query-value URL (`…`) with the raw full URL from the browser trail.
+                if "…" in by_norm[norm].url or len(raw_url) > len(by_norm[norm].url):
+                    by_norm[norm].url = raw_url
+            else:
+                by_norm[norm] = PageRecord(url=raw_url, host=reg_host(raw_url), title="", step=0)
         pages = sorted(by_norm.values(), key=lambda p: p.step, reverse=True)
-        return pages[:limit]
+        return pages[:limit] if limit is not None else pages

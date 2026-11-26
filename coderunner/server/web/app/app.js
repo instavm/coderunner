@@ -3152,20 +3152,21 @@ function toolDetail(name, a) {
   }
 }
 
+let vncRatioObserver = null;
 function syncVncRatio() {
-  const wrap = $("screenWrap");
-  if (!wrap) return;
+  const wrap = $("screenWrap"), scr = $("screen");
+  if (!wrap || !scr) return;
   const apply = () => {
-    const cv = $("screen")?.querySelector("canvas");
+    const cv = scr.querySelector("canvas");
     if (cv && cv.width > 100 && cv.height > 100) {
       wrap.style.setProperty("--vnc-ratio", `${cv.width} / ${cv.height}`);
-      return true;
     }
-    return false;
   };
-  if (apply()) return;
-  let tries = 0;
-  const t = setInterval(() => { if (apply() || ++tries > 20) clearInterval(t); }, 250);
+  apply();
+  if (!vncRatioObserver) {
+    vncRatioObserver = new MutationObserver(apply);
+    vncRatioObserver.observe(scr, {childList: true, subtree: true, attributes: true, attributeFilter: ["width", "height"]});
+  }
 }
 
 let deckScheduled = false;

@@ -286,6 +286,8 @@ async def run_stack(config, spec: StackSpec, *, suite: str = "tier2", names: lis
             work = Config(copy.deepcopy(config.data), path=pathlib.Path(tmp) / "config.json")
             try:
                 if not spec.remote_provider:
+                    # Isolate local stack benchmarks from any active remote/own-server setting in config.json.
+                    work.set("models.remote", {})
                     cur_model = manager.entry_id(work)
                     cur_rt = str(work.get("models.runtime") or "")
                     cur_ctx = int(work.get("models.context") or 32768)

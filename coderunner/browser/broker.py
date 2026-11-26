@@ -1793,8 +1793,9 @@ class BrowserBroker:
         return result
 
     async def _target_for_ref(self, tab: str | None, ref: Any) -> str:
-        """Resolve the tab for an element ref: when `tab` is unset and `ref` belongs to another open tab
-        owned by this same task (common after parallel browser_open calls), switch cleanly to that tab."""
+        """Resolve the tab for an element ref: when `tab` is unset and `ref` belongs uniquely to another open
+        tab explicitly owned by this same task (common after parallel browser_open calls), switch to that tab.
+        Never claims unowned tabs or tabs released by completed tasks."""
         target = await self._target(tab)
         if tab is not None or ref is None:
             return target
@@ -1804,9 +1805,14 @@ class BrowserBroker:
             return target
         if ref_int in self._refs.get(target, {}) or self._rebound(target, ref_int) is not None:
             return target
+        owner = self._scope()
+        if not owner:
+            return target
         pages = self._visible(await self._pages())
         matches = [info["targetId"] for info in pages
-                   if info["targetId"] != target and ref_int in self._refs.get(info["targetId"], {})]
+                   if info["targetId"] != target
+                   and self._tab_owner.get(info["targetId"]) == owner
+                   and ref_int in self._refs.get(info["targetId"], {})]
         if len(matches) == 1:
             other = matches[0]
             self._active = other

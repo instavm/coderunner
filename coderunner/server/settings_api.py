@@ -489,17 +489,20 @@ def settings_routes(svc, daemon) -> list[Route]:
             action = str(body.get("action") or "")
             try:
                 if action == "enable":
+                    url = await asyncio.to_thread(ts_remote.enable, port)
+                    cfg.set("remote.provider", "tailscale")
                     owner = str(body.get("owner") or "").strip()
                     if owner:
                         owners = list(cfg.get("remote.owners") or [])
                         if owner not in owners:
                             owners.append(owner)
                         cfg.set("remote.owners", owners)
-                        cfg.save()
-                    url = await asyncio.to_thread(ts_remote.enable, port)
+                    cfg.save()
                     return JSONResponse({"ok": True, "url": url})
                 if action == "disable":
                     detail = await asyncio.to_thread(ts_remote.disable, admin_port=port)
+                    cfg.set("remote.provider", "")
+                    cfg.save()
                     return JSONResponse({"ok": True, "detail": detail})
             except Exception as exc:
                 return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
