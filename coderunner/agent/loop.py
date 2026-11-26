@@ -282,13 +282,15 @@ def time_lead(total: float) -> float:
     return min(max(TIME_SHARE * total, TIME_LEAD_S), total / 2)
 
 
-# Asked for links and given none: the reply is written again once, linked to the pages it came from. (Two real
-# tasks out of four answered with prices and reviews and no link at all.)
+# An answer from web pages with no link at all is written again once, linked to the pages it came from. (Two real
+# tasks out of four answered with prices and reviews and no link at all; a run on 2026-11-26 left five of 27
+# answers unlinked, among them a booking left at the button with no link to the page it was on.)
 WANTS_LINKS = re.compile(r"\blinks?\b|\burls?\b|\bsources?\b|\bcite\b", re.I)
 HAS_LINK = re.compile(r"https?://")
-ADD_LINKS = ("Your reply has no links, and I asked for them. Without calling any tools, write the same reply again "
-             "with a link to the page each item or figure came from, as [name](https://...), using only addresses "
-             "of pages you opened in this task.")
+LINKS_MIN_CHARS = 200     # shorter replies (a yes, a routine set up) need no link
+ADD_LINKS = ("Your reply has no links{asked}. Without calling any tools, write the same reply again "
+             "with a link to the page each item, figure or next step came from, as [name](https://...), using only "
+             "addresses of pages you opened in this task.")
 REMIND_EVERY = 6      # steps between plan reminders while the plan stays the same
 # A message the owner sent while the task works: their own words, trusted like the request. The plan and the
 # task's limits stay as they are.
@@ -1402,10 +1404,13 @@ class Agent:
         again = bool(ctx.interim) and bool(NOTHING_MORE.match(final))
         if again:
             final = ctx.interim
-        read_pages = any(m.get("role") == "tool" and str(m.get("content", "")).startswith(PAGE_PREFIX) for m in messages)
-        if (WANTS_LINKS.search(text) and not HAS_LINK.search(final) and read_pages and not again
+        read_pages = (any(str(t.get("url", "")).startswith("http") for t in ctx.trail)
+                      or any(m.get("role") == "tool" and str(m.get("content", "")).startswith(PAGE_PREFIX)
+                             for m in messages))
+        asked = bool(WANTS_LINKS.search(text))
+        if ((asked or len(final) >= LINKS_MIN_CHARS) and not HAS_LINK.search(final) and read_pages and not again
                 and messages[-1].get("role") == "assistant"):
-            messages.append({"role": "user", "content": ADD_LINKS})
+            messages.append({"role": "user", "content": ADD_LINKS.format(asked=", and I asked for them" if asked else "")})
             try:
                 reply = await self._turn(ctx, messages, False, {"max_tokens": limit} if limit else {},
                                          tool_choice="none")

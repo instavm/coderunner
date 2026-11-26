@@ -1102,6 +1102,19 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-links2"),
                                                                "What does the Sony WH-1 cost?")
             self.assertEqual((reply, len(fake.requests) - count), ("The Sony WH-1 is ₹9,990.", 2))
+            # Not asked for links, but a full answer from pages with none: written again once, linked.
+            long = ("AMÒ has a table for four on Saturday at 19:30; I have taken it up to the button that books it. "
+                    "Click Book table on their page and it will ask for your contact details. The other places "
+                    "had nothing before 20:30.")
+            relinked = long.replace("their page", "[their page](https://shop.example/p)")
+            count = len(fake.requests)
+            fake.script = [tool_call("browser_scroll", {"direction": "down"}),
+                           {"role": "assistant", "content": long},
+                           {"role": "assistant", "content": relinked}]
+            reply = await Agent(svc, svc.llm, svc.registry).run(RunContext(conversation="t-links3"),
+                                                               "Book a table for four on Saturday evening.")
+            self.assertEqual((reply, len(fake.requests) - count), (relinked, 3))
+            self.assertTrue(fake.requests[-1]["messages"][-1]["content"].startswith("Your reply has no links. "))
             await svc.llm.aclose()
 
     async def test_plan_is_shown_at_every_step(self):
