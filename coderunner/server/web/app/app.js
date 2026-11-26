@@ -334,11 +334,13 @@ class TaskView {
   }
 
   showCheckpoint(reason) {
+    // Non-blocking progress notice: the task keeps running in the background without pausing.
     if (this.checkpoint || this.status !== "running") return;
     const card = el("div", "checkpoint");
-    const msg = el("span", "", reason || "This is taking longer than usual.");
+    const lead = el("div", "checkpoint-lead");
+    lead.append(el("span", "now-dot"), el("span", "", reason || "Still working in the background."));
     const actions = el("div", "checkpoint-actions");
-    const wrapBtn = el("button", "btn primary", "Answer with what you have");
+    const wrapBtn = el("button", "btn", "Answer with what you have");
     wrapBtn.type = "button";
     wrapBtn.onclick = async () => {
       wrapBtn.disabled = true; wrapBtn.textContent = "Wrapping up…";
@@ -347,11 +349,12 @@ class TaskView {
     const ctrlBtn = el("button", "btn", "Take control");
     ctrlBtn.type = "button";
     ctrlBtn.onclick = () => { showComputer(true); setView("screen", false); setControl(true); };
-    const keepBtn = el("button", "linkish small", "Keep going");
+    const keepBtn = el("button", "linkish small", "Dismiss");
     keepBtn.type = "button";
+    keepBtn.title = "Hide this notice — the task keeps running in the background";
     keepBtn.onclick = () => { card.remove(); this.checkpointDismissed = true; };
     actions.append(wrapBtn, ctrlBtn, keepBtn);
-    card.append(msg, actions);
+    card.append(lead, actions);
     this.checkpoint = this.say(card);
   }
 
@@ -674,7 +677,7 @@ class TaskView {
     this.now.time.textContent = (this.steps ? `Step ${this.steps} · ` : "") + clock(elapsed);
     updateDeckClock(this, elapsed);
     if (elapsed >= 180 && !this.checkpoint && !this.checkpointDismissed) {
-      this.showCheckpoint(`Still working (${clock(elapsed)}${this.steps ? `, ${this.steps} steps` : ""}).`);
+      this.showCheckpoint(`Still working in the background (${clock(elapsed)}${this.steps ? ` · ${this.steps} steps` : ""}).`);
     }
   }
 }

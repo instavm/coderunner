@@ -538,7 +538,8 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
       select("models");
     };
     const storageRows = [row("Models folder", data.models_dir || "", changeDir)];
-    for (const w of (data.weights || []).slice(0, 8)) {
+    const WEIGHT_LABELS = {coreml: "Core ML embeddings", speech: "On-device voice models"};
+    for (const w of (data.weights || []).filter((x) => x.gb >= 0.05).slice(0, 8)) {
       const rm = el("button", "btn danger", "Remove");
       rm.type = "button";
       rm.onclick = async () => {
@@ -546,7 +547,8 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
         await api("/api/models", {method: "POST", body: JSON.stringify({action: "remove_weights", id: w.id})}).catch((e) => notice(e.message));
         select("models");
       };
-      storageRows.push(row(w.id.replace(/--/g, "/"), `${fmtGb(w.gb)} (${w.files} files)`, rm));
+      const label = WEIGHT_LABELS[w.id] || w.id.replace(/--/g, "/");
+      storageRows.push(row(label, `${fmtGb(w.gb)} · ${w.files} ${w.files === 1 ? "file" : "files"}`, rm));
     }
     body.appendChild(group("Storage", storageRows));
 
@@ -715,14 +717,20 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
     ];
     const modeRows = [];
     for (const [key, label, desc] of modes) {
-      const radio = el("input");
+      const radio = el("input", "set-radio");
       radio.type = "radio"; radio.name = "browser_mode"; radio.checked = data.mode === key;
-      radio.onchange = async () => {
+      const pick = async () => {
+        if (data.mode === key) return;
+        radio.checked = true;
         await api("/api/browser", {method: "POST", body: JSON.stringify({action: "mode", mode: key})});
         markRestart();
         select("browser");
       };
-      modeRows.push(row(label, desc, radio));
+      radio.onchange = pick;
+      const r = row(label, desc, radio);
+      r.classList.add("set-choice");
+      r.onclick = (ev) => { if (ev.target !== radio) pick(); };
+      modeRows.push(r);
     }
     body.appendChild(group("Where the assistant browses", modeRows));
 
