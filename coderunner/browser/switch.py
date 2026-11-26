@@ -4,7 +4,7 @@ The assistant browses in Chrome on the sandbox VM (browser.mode "computer"). Whe
 bot wall (walls.py; the broker marks the step's result with "wall" after giving it a few seconds to let the
 browser through by itself), the owner is asked once, in the thread:
 
-    "example.com blocks the sandbox browser. Continue in the browser on your Mac?"
+    "example.com blocks the sandbox browser. Continue in CodeRunner's built-in browser on your Mac?"
     Allow once / Always for this site / No
 
 Allow: the page opens in a new tab of the Mac browser (app.py: the CodeRunner app's own browser, or a Chrome
@@ -29,7 +29,7 @@ from .urls import page_host
 from .walls import describe
 
 MAC, VM = "mac", "vm"
-QUESTION = "{site} blocks the sandbox browser. Continue in the browser on your Mac?"
+QUESTION = "{site} blocks the sandbox browser. Continue in CodeRunner's built-in browser on your Mac?"
 MOVED = ("{site} blocked the sandbox browser, so with the owner's OK this page is open in the browser on their Mac. "
          "Carry on here as usual.")
 STILL_WALLED = ("This page is {wall}. It is the owner's step, never yours: call browser_handoff so they clear it, "

@@ -291,7 +291,7 @@ class SwitchTests(HomeCase):
     async def test_a_wall_asks_once_and_the_sites_steps_go_on_on_the_mac(self):
         moved = await self.switch.navigate("https://shop.example/item")
         self.assertEqual([a.summary for a in self.asked],
-                         ["shop.example blocks the sandbox browser. Continue in the browser on your Mac?"])
+                         ["shop.example blocks the sandbox browser. Continue in CodeRunner's built-in browser on your Mac?"])
         self.assertEqual((self.asked[0].kind, self.asked[0].target), ("browser.mac", "shop.example"))
         self.assertEqual(moved["content"], "mac page")
         self.assertIn(("open", "https://shop.example/item"), self.mac.calls)     # a tab of its own, never the owner's
