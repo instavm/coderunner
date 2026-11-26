@@ -1,0 +1,10 @@
+{
+  "name": "CodeRunner",
+  "short_name": "CodeRunner",
+  "description": "Private local AI assistant on your Mac",
+  "start_url": "/app/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1e1e1c",
+  "theme_color": "#1e1e1c"
+}

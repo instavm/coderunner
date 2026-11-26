@@ -87,8 +87,27 @@ def classify(probe: dict | None) -> str | None:
     return None
 
 
+LOGIN_TITLE = re.compile(r"\b(?:sign\s*in|log\s*in|login|account\s+sign[- ]?in|authenticate)\b", re.I)
+LOGIN_INPUT = re.compile(r'<input\b[^>]*\btype=["\']?password["\']?', re.I)
+
+
+def detect_login(probe: dict | None) -> bool:
+    """True when a short page is a dedicated sign-in screen (password input + login title, no long content)."""
+    if not isinstance(probe, dict):
+        return False
+    text = str(probe.get("text") or "")
+    length = int(probe.get("length") or len(text))
+    if length > SHORT_TEXT:
+        return False
+    markup = str(probe.get("html") or "")
+    title = str(probe.get("title") or "")
+    return bool(LOGIN_INPUT.search(markup) and (LOGIN_TITLE.search(title) or LOGIN_TITLE.search(text[:500])))
+
+
 def describe(vendor: str) -> str:
     """The wall in a few words for the model and the audit trail."""
+    if vendor == "sign-in":
+        return "a sign-in screen"
     return "a bot check" if vendor == "a bot check" else f"a {vendor} bot check"
 
 

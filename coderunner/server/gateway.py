@@ -316,15 +316,33 @@ def admin_app(svc, daemon) -> Starlette:
 
     async def mac_browser(request: Request):
         """The browser on the Mac a blocked site continues in: whether it is there, the sites always let through
-        (grants the owner clears with DELETE /api/grants/{id}), and the browsers whose sign-ins could be brought."""
+        (grants the owner clears with DELETE /api/grants/{id}), signed-in session domains, and host browsers."""
         bridge = getattr(svc, "app_browser", None)
         if bridge is None:
-            return JSONResponse({"available": False, "sites": [], "browsers": []})
+            return JSONResponse({"available": False, "sites": [], "sessions": [], "browsers": []})
         from ..browser import cookies
         sites = [{"id": g["id"], "site": g["target"]} for g in svc.policy.grants()
                  if g.get("kind") == "browser.mac" and g.get("id") is not None]
-        return JSONResponse({"available": True, "app": bridge.status(), "sites": sites,
+        import inspect
+        list_fn = getattr(bridge, "cookie_domains", None)
+        sessions = await list_fn() if bridge.connected() and inspect.iscoroutinefunction(list_fn) else []
+        return JSONResponse({"available": True, "app": bridge.status(), "sites": sites, "sessions": sessions[:40],
                              "browsers": [{"id": name, "name": cookies.NAMES[name]} for name in cookies.installed()]})
+
+    async def mac_browser_signout(request: Request):
+        """Clear cookies for a single site inside CodeRunner's built-in Mac browser."""
+        if principal(request) != "admin-token":
+            return JSONResponse({"error": "Only the app on this Mac can do this"}, status_code=403)
+        bridge = getattr(svc, "app_browser", None)
+        if bridge is None or not bridge.connected():
+            return JSONResponse({"error": "Open the CodeRunner app first"}, status_code=409)
+        body = await request.json()
+        domain = str(body.get("domain") or "").strip().lower()
+        if not domain or "." not in domain:
+            return JSONResponse({"error": "Valid domain is required"}, status_code=400)
+        done = await bridge.clear_site_cookies(domain)
+        svc.audit.write("browser.site_signed_out", domain=domain, removed=done["removed"], origin=principal(request))
+        return JSONResponse({"ok": True, **done})
 
     async def mac_browser_import(request: Request):
         """The owner's sign-ins for the sites they ticked, from their own browser into the app's browser. Only the
@@ -501,7 +519,7 @@ def admin_app(svc, daemon) -> Starlette:
             body = await request.json()
             try:
                 created = svc.scheduler.add(body["name"], body["spec"], body["prompt"], body.get("channel", ""),
-                                            body.get("chat_id", ""))
+                                            body.get("chat_id", ""), on_change=bool(body.get("on_change")))
             except (KeyError, ValueError) as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
             return JSONResponse(created)
@@ -514,17 +532,31 @@ def admin_app(svc, daemon) -> Starlette:
             if "enabled" in body and hasattr(svc.scheduler, "set_enabled"):
                 return JSONResponse({"ok": bool(svc.scheduler.set_enabled(sid, bool(body["enabled"])))})
             if hasattr(svc.scheduler, "update"):
-                return JSONResponse({"ok": bool(svc.scheduler.update(sid, name=body.get("name"),
-                                                                     spec=body.get("spec"), prompt=body.get("prompt")))})
+                return JSONResponse({"ok": bool(svc.scheduler.update(
+                    sid, name=body.get("name"), spec=body.get("spec"), prompt=body.get("prompt"),
+                    on_change=body.get("on_change"),
+                ))})
             return JSONResponse({"error": "schedule update not supported"}, status_code=400)
         return JSONResponse({"removed": svc.scheduler.remove(sid)})
 
     async def pair_start(request: Request):
+        from ..core import qr
+        from . import remote as ts_remote
         code = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(8))
         svc.store.set_kv("pair_code", {"hash": _hash(code), "expires": time.time() + PAIR_TTL})
         failures.clear()
         svc.audit.write("remote.pair_started", by=principal(request))
-        return JSONResponse({"code": code, "expires_in": PAIR_TTL})
+        port = int(svc.config.get("gateway.admin_port") or 8224)
+        ts_url = ""
+        with contextlib.suppress(Exception):
+            st = await asyncio.to_thread(ts_remote.status, port)
+            if isinstance(st, dict) and st.get("serving") and st.get("url"):
+                ts_url = str(st["url"]).rstrip("/")
+        base_url = ts_url or f"http://127.0.0.1:{port}"
+        pair_url = f"{base_url}/pair?code={code}"
+        qr_svg = qr.to_svg(pair_url)
+        return JSONResponse({"code": code, "expires_in": PAIR_TTL, "url": pair_url,
+                             "tailscale_url": ts_url, "qr_svg": qr_svg})
 
     async def pair(request: Request):
         if request.method == "GET":
@@ -1008,6 +1040,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/grants/{id:int}", revoke, methods=["DELETE"]),
         Route("/api/browser/mac", mac_browser, methods=["GET"]),
         Route("/api/browser/mac/import", mac_browser_import, methods=["POST"]),
+        Route("/api/browser/mac/signout", mac_browser_signout, methods=["POST"]),
         Route("/api/audit", audit, methods=["GET"]),
         Route("/api/chat", chat, methods=["POST"]),
         Route("/api/chat/{conversation}", history, methods=["GET"]),

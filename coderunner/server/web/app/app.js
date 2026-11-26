@@ -126,18 +126,19 @@ function codeSummaryLine(code) {
 
 function toolSurface(name) {
   if (name === "run_python" || name === "run_shell" || name === "shell_job") return "terminal";
-  if (String(name || "").startsWith("browser_")) return "screen";
+  if (String(name || "").startsWith("browser_") || name === "web_read") return "screen";
   if (name === "files_search" || String(name || "").startsWith("file_")) return "files";
-  if (String(name || "").startsWith("memory_")) return "memory";
+  if (String(name || "").startsWith("memory_") || name === "profile_update") return "memory";
   return "";
 }
 
 function toolBadge(name) {
   if (name === "run_python") return {label: "Python", cls: "terminal"};
   if (name === "run_shell" || name === "shell_job") return {label: "Terminal", cls: "terminal"};
+  if (name === "web_read") return {label: "Reader", cls: ""};
   if (String(name || "").startsWith("browser_")) return {label: "Browser", cls: ""};
   if (name === "files_search" || String(name || "").startsWith("file_")) return {label: "Files", cls: ""};
-  if (String(name || "").startsWith("memory_")) return {label: "Memory", cls: ""};
+  if (String(name || "").startsWith("memory_") || name === "profile_update") return {label: "Profile", cls: ""};
   return null;
 }
 
@@ -161,6 +162,11 @@ function describeTool(name, raw) {
     case "browser_screenshot": return "Looking at the screen";
     case "browser_handoff": return "Asking you to take over";
     case "browser_task": return `Working in the browser: ${trunc(a.goal || a.task || "", 90)}`;
+    case "web_read": {
+      const urls = Array.isArray(a.urls) ? a.urls : (a.url ? [a.url] : []);
+      return said || (urls.length > 1 ? `Reading ${urls.length} pages in parallel` : urls[0] ? `Reading ${host(urls[0])}` : "Reading web pages");
+    }
+    case "profile_update": return "Updating your profile";
     case "run_shell": return said || (a.command ? `Running in terminal` : "Working in terminal");
     case "shell_job": return said || "Checking terminal job";
     case "run_python": return said || (a.code ? codeSummaryLine(a.code) : "Running Python");
@@ -688,10 +694,42 @@ class TaskView {
     const tookRow = el("div", "took-row");
     tookRow.appendChild(el("div", "took muted small", metaParts.join(" · ")));
     if (e.reply) {
+      const acts = el("div", "ans-actions");
       const copy = el("button", "copy-btn", "Copy");
       copy.type = "button";
       copy.onclick = () => { navigator.clipboard?.writeText(String(e.reply || "")); copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1400); };
-      tookRow.appendChild(copy);
+      acts.appendChild(copy);
+      const saveNote = el("button", "copy-btn", "Save to Notes");
+      saveNote.type = "button";
+      saveNote.onclick = async () => {
+        saveNote.disabled = true; saveNote.textContent = "Saving…";
+        try {
+          await api("/api/actions/quick", {method: "POST", body: JSON.stringify({
+            kind: "note", title: $("title")?.textContent || trunc(this.prompt || "CodeRunner note", 60), body: String(e.reply || ""),
+          })});
+          saveNote.textContent = "Saved"; setTimeout(() => { saveNote.textContent = "Save to Notes"; saveNote.disabled = false; }, 1600);
+        } catch (err) { saveNote.disabled = false; saveNote.textContent = "Save to Notes"; notice(err.message); }
+      };
+      acts.appendChild(saveNote);
+      if (/\b(?:subject:|dear\s+\w|regards,|sincerely,)/i.test(String(e.reply || ""))) {
+        const draftMail = el("button", "copy-btn", "Draft in Mail");
+        draftMail.type = "button";
+        draftMail.onclick = async () => {
+          draftMail.disabled = true; draftMail.textContent = "Drafting…";
+          try {
+            await api("/api/actions/quick", {method: "POST", body: JSON.stringify({
+              kind: "mail_draft", title: $("title")?.textContent || "Draft from CodeRunner", body: String(e.reply || ""),
+            })});
+            draftMail.textContent = "Drafted"; setTimeout(() => { draftMail.textContent = "Draft in Mail"; draftMail.disabled = false; }, 1600);
+          } catch (err) { draftMail.disabled = false; draftMail.textContent = "Draft in Mail"; notice(err.message); }
+        };
+        acts.appendChild(draftMail);
+      }
+      const printBtn = el("button", "copy-btn", "Print / PDF");
+      printBtn.type = "button";
+      printBtn.onclick = () => window.print();
+      acts.appendChild(printBtn);
+      tookRow.appendChild(acts);
     }
     this.flow.appendChild(tookRow);
     // Local-first recovery when a run failed, stopped, or was incomplete (only under the latest answer).
@@ -1900,8 +1938,24 @@ function recoveryCard(prompt, e) {
   const card = el("div", "recovery-card");
   const why = e.slowed ? "This run slowed down while memory was tight." :
     e.type === "failed" ? "Something interrupted this run." :
-    e.type === "cancelled" ? "Stopped before finishing." : "This task may be incomplete.";
+    e.type === "cancelled" ? "Stopped before finishing — want me to keep going?" :
+    "This is a partial update — want me to go deeper and finish the missing parts?";
   const actions = el("div", "recovery-actions");
+  if (e.incomplete || e.type === "cancelled") {
+    const deeper = el("button", "btn primary", "Continue & go deeper");
+    deeper.type = "button";
+    deeper.onclick = async () => {
+      deeper.disabled = true;
+      try {
+        await api("/api/tasks", {method: "POST", body: JSON.stringify({
+          message: "Continue from your partial update above: try alternative authoritative sources or tools to finish every remaining missing part, then give the complete answer.",
+          conversation: state.conversation,
+        })});
+        card.remove();
+      } catch (err) { deeper.disabled = false; notice(err.message); }
+    };
+    actions.appendChild(deeper);
+  }
   const again = el("button", "btn", "Try again");
   again.type = "button";
   again.onclick = async () => {

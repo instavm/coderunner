@@ -766,3 +766,17 @@ async def check(name: str, *, runner: Runner | None = None) -> str:
     items = await run_jxa(PROBES[name], [], app=APPS[name], runner=runner,
                           timeout=CALENDAR_TIMEOUT if name == "calendar" else DEFAULT_TIMEOUT)
     return f"{APPS[name]}: access works ({len(items or [])} found)."
+
+
+async def notes_create(title: str, body: str, *, runner: Runner | None = None) -> dict:
+    """Create a note in Apple Notes directly (used by owner-initiated quick actions)."""
+    return await run_jxa(NOTES_CREATE, _notes_create({"title": title, "body": body}),
+                         app="Notes", runner=runner)
+
+
+async def mail_draft(to: str, subject: str, body: str, cc: str = "", *, runner: Runner | None = None) -> dict:
+    """Save a draft in Apple Mail without sending (recipient may be blank for owner completion)."""
+    to_list = _addresses({"to": to}, "to", False) if str(to or "").strip() else []
+    cc_list = _addresses({"cc": cc}, "cc", False) if str(cc or "").strip() else []
+    args = ["\n".join(to_list), "\n".join(cc_list), str(subject or "").strip(), str(body or "")]
+    return await run_jxa(MAIL_DRAFT, args, app="Mail", runner=runner)

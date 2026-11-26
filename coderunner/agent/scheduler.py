@@ -21,6 +21,7 @@ the daemon was off collapse into a single catch-up run.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import time
@@ -182,7 +183,7 @@ class Scheduler:
         return now.astimezone(self.tz)
 
     def add(self, name: str, spec: str, prompt: str, channel: str = "", chat_id: str = "", *,
-            now: datetime | None = None) -> dict:
+            on_change: bool = False, now: datetime | None = None) -> dict:
         name, prompt = (name or "").strip(), (prompt or "").strip()
         spec = canonical(spec)
         if not name:
@@ -194,24 +195,26 @@ class Scheduler:
         if next_run is None:
             raise ValueError(f"{spec!r} is in the past")
         cursor = self.store.execute(
-            "INSERT INTO schedules(name, spec, prompt, channel, chat_id, next_run, last_status, enabled, created) "
-            "VALUES (?, ?, ?, ?, ?, ?, '', 1, ?)",
-            (name, spec, prompt, channel or "", str(chat_id or ""), next_run.timestamp(), current.timestamp()),
+            "INSERT INTO schedules(name, spec, prompt, channel, chat_id, next_run, last_status, enabled, on_change, created) "
+            "VALUES (?, ?, ?, ?, ?, ?, '', 1, ?, ?)",
+            (name, spec, prompt, channel or "", str(chat_id or ""), next_run.timestamp(),
+             1 if on_change else 0, current.timestamp()),
         )
         row = self.get(cursor.lastrowid)
         self.audit.write("schedule.add", id=row["id"], name=name, spec=spec, channel=channel,
-                         next_run=next_run.isoformat())
+                         on_change=bool(on_change), next_run=next_run.isoformat())
         return row
 
     def get(self, id: int) -> dict | None:
         row = self.store.one("SELECT * FROM schedules WHERE id = ?", (id,))
-        return {**row, "enabled": bool(row["enabled"])} if row else None
+        return {**row, "enabled": bool(row["enabled"]), "on_change": bool(row.get("on_change"))} if row else None
 
     def list(self) -> list[dict]:
-        return [{**row, "enabled": bool(row["enabled"])} for row in self.store.query("SELECT * FROM schedules ORDER BY id")]
+        return [{**row, "enabled": bool(row["enabled"]), "on_change": bool(row.get("on_change"))}
+                for row in self.store.query("SELECT * FROM schedules ORDER BY id")]
 
     def update(self, id: int, *, name: str | None = None, spec: str | None = None, prompt: str | None = None,
-               now: datetime | None = None) -> dict | None:
+               on_change: bool | None = None, now: datetime | None = None) -> dict | None:
         """Change what is given; None leaves it. A new spec counts from now and switches the schedule back on (a
         one-shot that already ran is set again). Returns the schedule as it now is, or None if there is none."""
         row = self.get(id)
@@ -226,6 +229,8 @@ class Scheduler:
             changes["prompt"] = prompt.strip()
             if not changes["prompt"]:
                 raise ValueError("a schedule needs a prompt")
+        if on_change is not None:
+            changes["on_change"] = 1 if on_change else 0
         if spec is not None:
             spec = canonical(spec)
             next_run = parse_spec(spec, self._now(now))
@@ -326,20 +331,41 @@ class Scheduler:
             return None
         return {**row, "scheduled_for": row["next_run"], "next_run": next_run, "enabled": not one_shot}
 
+    @staticmethod
+    def _reply_digest(text: str) -> str:
+        """Stable normalized digest for diff-aware on_change routines (ignores whitespace/case/clock jitter)."""
+        norm = re.sub(r"\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm|utc|ist|pst|est)?\b", "", text.lower())
+        norm = " ".join(re.findall(r"[a-z0-9₹$€£¥.%+-]+", norm))
+        return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:24]
+
     async def _run(self, row: dict, started: float) -> None:
         clock, stage = time.monotonic(), "run"
+        digest = str(row.get("last_digest") or "")
+        saved_reply = str(row.get("last_reply") or "")
         try:
             text = await asyncio.wait_for(self.run_task(row), self.run_timeout)
             text = "" if text is None else str(text)
             if text.strip():
-                stage = "delivery"
-                await asyncio.wait_for(self.deliver(row, text), self.run_timeout)
-            status = "ok"
+                new_digest = self._reply_digest(text)
+                if row.get("on_change") and digest and new_digest == digest:
+                    status = "unchanged"
+                    self.audit.write("schedule.unchanged", id=row["id"], name=row["name"])
+                else:
+                    stage = "delivery"
+                    await asyncio.wait_for(self.deliver(row, text), self.run_timeout)
+                    digest = new_digest
+                    saved_reply = text[:1200]
+                    status = "changed" if row.get("on_change") else "ok"
+            else:
+                status = "ok"
         except Exception as exc:
             reason = f"timed out after {self.run_timeout}s" if isinstance(exc, asyncio.TimeoutError) else (
                 str(exc) or type(exc).__name__)
             status = f"error: {reason}" if stage == "run" else f"error: delivery failed: {reason}"
         status = status[:500]
-        self.store.execute("UPDATE schedules SET last_run = ?, last_status = ? WHERE id = ?", (started, status, row["id"]))
+        self.store.execute(
+            "UPDATE schedules SET last_run = ?, last_status = ?, last_digest = ?, last_reply = ? WHERE id = ?",
+            (started, status, digest, saved_reply, row["id"]),
+        )
         self.audit.write("schedule.run", id=row["id"], name=row["name"], status=status,
                          seconds=round(time.monotonic() - clock, 3))

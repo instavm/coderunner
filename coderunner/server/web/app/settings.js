@@ -767,6 +767,23 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
         macRows.push(row(site.site, "Always allowed to continue in CodeRunner's built-in Mac browser.", rm));
       }
       body.appendChild(group("Built-in Mac browser", macRows));
+
+      // Signed-in session vault (domains & cookie counts only; 1-click per-site sign-out)
+      const sessions = macBrowser.sessions || [];
+      if (sessions.length) {
+        const sesRows = sessions.slice(0, 12).map((s) => {
+          const outBtn = el("button", "btn danger", "Sign out");
+          outBtn.type = "button";
+          outBtn.onclick = async () => {
+            outBtn.disabled = true;
+            await api("/api/browser/mac/signout", {method: "POST", body: JSON.stringify({domain: s.domain})})
+              .catch((e) => notice(e.message));
+            select("browser");
+          };
+          return row(s.domain, `${s.count} session ${s.count === 1 ? "cookie" : "cookies"} stored in Mac browser`, outBtn);
+        });
+        body.appendChild(group("Signed-in sessions (Mac browser)", sesRows));
+      }
     }
 
     if (data.mode === "chrome") {
@@ -811,6 +828,8 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
       const o = el("option", "", l); o.value = v; freqSel.appendChild(o);
     }
     const timeIn = el("input", "set-input set-time"); timeIn.type = "time"; timeIn.value = "08:00";
+    let onlyOnChange = false;
+    const changeSw = toggleSwitch(false, (v) => { onlyOnChange = v; }, "Only notify when changed");
     const add = el("button", "btn primary", "Add routine");
     add.type = "button";
     add.onclick = async () => {
@@ -818,11 +837,18 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
       const spec = freqSel.value.startsWith("every") ? freqSel.value : `${freqSel.value} ${timeIn.value || "08:00"}`;
       add.disabled = true;
       try {
-        await api("/api/schedules", {method: "POST", body: JSON.stringify({name: nameIn.value.trim(), spec, prompt: promptIn.value.trim()})});
+        await api("/api/schedules", {method: "POST", body: JSON.stringify({
+          name: nameIn.value.trim(), spec, prompt: promptIn.value.trim(), on_change: onlyOnChange,
+        })});
         select("routines");
       } catch (err) { add.disabled = false; notice(err.message); }
     };
-    formRows.push(row("Name", "", nameIn), row("Task", "", promptIn), row("When", "", [freqSel, timeIn, add]));
+    formRows.push(
+      row("Name", "", nameIn),
+      row("Task", "", promptIn),
+      row("Only notify when changed", "Great for price drops, fee watches, or availability checks.", changeSw),
+      row("When", "", [freqSel, timeIn, add]),
+    );
     body.appendChild(group("New routine", formRows));
 
     const existingRows = list.map((it) => {
@@ -840,7 +866,9 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
       };
       const sw = toggleSwitch(it.enabled !== 0 && it.enabled !== false, (on) =>
         api(`/api/schedules/${it.id}`, {method: "PATCH", body: JSON.stringify({enabled: on})}), it.name);
-      return row(it.name, `${it.spec} · ${it.prompt}`, [runBtn, sw, delBtn]);
+      const tag = it.on_change ? " · On change only" : "";
+      const st = it.last_status ? ` · Last: ${it.last_status}` : "";
+      return row(it.name, `${it.spec}${tag}${st} · ${it.prompt}`, [runBtn, sw, delBtn]);
     });
     if (existingRows.length) {
       body.appendChild(group("Your routines", existingRows));
@@ -866,13 +894,47 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
 
   // ---- 6. Privacy & Safety -------------------------------------------------------------------------
   async function renderPrivacy(body) {
-    const [cfgData, grants, mems, appCfg] = await Promise.all([
+    const [cfgData, grants, mems, profData, appCfg] = await Promise.all([
       api("/api/settings"), api("/api/grants"), api("/api/memories"),
+      api("/api/profile").catch(() => ({profile: {}, fields: []})),
       window.coderunnerShell?.appSettings?.().catch(() => null) || Promise.resolve(null),
     ]);
     if (active !== "privacy") return;
     body.replaceChildren();
     const s = cfgData.settings || {};
+
+    // Editable About You profile (persistent personal context)
+    const prof = (profData && profData.profile) || {};
+    const profInputs = {};
+    const profFields = [
+      ["city", "Home city", "Bengaluru, San Francisco…"],
+      ["home_airport", "Home airport", "BLR, SFO, LHR…"],
+      ["currency", "Preferred currency", "INR, USD, EUR…"],
+      ["dietary", "Dietary preferences", "Vegetarian, vegan, allergies…"],
+      ["travel_prefs", "Travel & booking", "Non-stop preferred, economy…"],
+      ["notes", "Other lasting notes", "Preferred shops, languages, etc."],
+    ];
+    const profRows = profFields.map(([k, lbl, ph]) => {
+      const inp = el("input", "set-input");
+      inp.placeholder = ph;
+      inp.value = prof[k] || "";
+      profInputs[k] = inp;
+      return row(lbl, "", inp);
+    });
+    const saveProf = el("button", "btn primary", "Save profile");
+    saveProf.type = "button";
+    saveProf.onclick = async () => {
+      saveProf.disabled = true;
+      const patch = {};
+      for (const [k, inp] of Object.entries(profInputs)) patch[k] = inp.value.trim();
+      try {
+        await api("/api/profile", {method: "PATCH", body: JSON.stringify(patch)});
+        notice("Profile saved locally.");
+      } catch (err) { notice(err.message); }
+      finally { saveProf.disabled = false; }
+    };
+    profRows.push(row("Personal context", "Stored only in your local database so you don't repeat defaults.", saveProf));
+    body.appendChild(group("About you", profRows));
 
     // App & Mac behavior
     const appRows = [
@@ -971,22 +1033,49 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
       row("Voice models", (v.status && v.status.available ? v.status.available.join(", ") : "Ready when set up"), setupV),
     ]));
 
-    // Remote device pairing
+    // Remote device pairing (1-click inline SVG QR code for mobile PWA over Tailscale)
     const pairCode = el("span", "set-code-inline");
-    const pairBtn = el("button", "btn", "Pair a phone or laptop");
+    const qrWrap = el("div", "qr-card");
+    qrWrap.hidden = true;
+    const pairBtn = el("button", "btn primary", "Show QR code");
     pairBtn.type = "button";
     pairBtn.onclick = async () => {
+      pairBtn.disabled = true;
       const res = await api("/api/pair", {method: "POST", body: "{}"}).catch((e) => { notice(e.message); return null; });
-      if (res && res.code) pairCode.textContent = `Code: ${res.code}`;
+      pairBtn.disabled = false;
+      if (!res || !res.code) return;
+      pairCode.textContent = `Code: ${res.code}`;
+      qrWrap.replaceChildren();
+      if (res.qr_svg && res.qr_svg.startsWith("<svg")) {
+        const img = el("img", "qr-img");
+        img.alt = "Pairing QR code";
+        img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(res.qr_svg);
+        qrWrap.appendChild(img);
+      }
+      const meta = el("div", "qr-meta");
+      meta.append(
+        el("div", "set-row-label", `Scan with your phone camera (code ${res.code})`),
+        el("div", "muted small", res.tailscale_url
+          ? `Opens ${res.tailscale_url} as a mobile web app — tap Share → Add to Home Screen.`
+          : "Enable Tailscale Serve for remote access outside Wi-Fi, or open this link on your Mac."),
+      );
+      const cp = el("button", "btn", "Copy link");
+      cp.type = "button";
+      cp.onclick = () => { navigator.clipboard?.writeText(res.url || ""); cp.textContent = "Copied"; setTimeout(() => { cp.textContent = "Copy link"; }, 1200); };
+      meta.appendChild(cp);
+      qrWrap.appendChild(meta);
+      qrWrap.hidden = false;
     };
-    const devRows = [row("Pair a device", "One-time code for opening CodeRunner from your phone over Tailscale.", [pairCode, pairBtn])];
+    const devRows = [row("Pair a phone (QR / PWA)", "Scan from iPhone or laptop to monitor tasks, approve actions, and send new work from anywhere.", [pairCode, pairBtn])];
     for (const d of (Array.isArray(devs) ? devs : (devs.devices || []))) {
       const rm = el("button", "btn danger", "Remove");
       rm.type = "button";
       rm.onclick = async () => { await api(`/api/devices/${d.id}`, {method: "DELETE"}); select("voice"); };
       devRows.push(row(d.name || d.id, d.last_seen || "Paired device", rm));
     }
-    body.appendChild(group("Phone & paired devices", devRows));
+    const devGroup = group("Phone & paired devices", devRows);
+    devGroup.appendChild(qrWrap);
+    body.appendChild(devGroup);
 
     // Telegram channel
     const tg = (ch && ch.telegram) || {};

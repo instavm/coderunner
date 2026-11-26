@@ -415,6 +415,8 @@ class AppBrowser {
     if (message.type === "welcome") this.setConnected(true);
     else if (message.type === "busy") this.socket?.destroy();         // another copy of the app has it
     else if (message.type === "cookies") this.setCookies(message);
+    else if (message.type === "cookie_domains") this.listCookieDomains(message);
+    else if (message.type === "clear_site_cookies") this.clearSiteCookies(message);
     else if (message.id !== undefined && message.method) this.run(message);
   }
 
@@ -434,6 +436,40 @@ class AppBrowser {
       try { await this.session.cookies.set(cookie); set += 1; } catch { failed += 1; }
     }
     this.send({type: "cookies-set", ref, set, failed});
+  }
+
+  // Return only domain names and cookie counts (never cookie names or values) for the Settings session vault.
+  async listCookieDomains({ref}) {
+    const counts = new Map();
+    try {
+      const all = await this.session.cookies.get({});
+      for (const c of all || []) {
+        const d = String(c.domain || "").replace(/^\./, "").replace(/^www\./, "").toLowerCase();
+        if (!d) continue;
+        counts.set(d, (counts.get(d) || 0) + 1);
+      }
+    } catch { /* empty */ }
+    const domains = [...counts.entries()].map(([domain, count]) => ({domain, count})).sort((a, b) => b.count - a.count);
+    this.send({type: "cookie-domains", ref, domains});
+  }
+
+  // Sign out of a single site in CodeRunner's built-in Mac browser (leaves all other sites untouched).
+  async clearSiteCookies({ref, domain}) {
+    const target = String(domain || "").replace(/^\./, "").replace(/^www\./, "").toLowerCase();
+    let removed = 0;
+    if (target) {
+      try {
+        const all = await this.session.cookies.get({});
+        for (const c of all || []) {
+          const d = String(c.domain || "").replace(/^\./, "").replace(/^www\./, "").toLowerCase();
+          if (d === target || d.endsWith("." + target)) {
+            const url = `${c.secure ? "https" : "http"}://${String(c.domain || "").replace(/^\./, "")}${c.path || "/"}`;
+            try { await this.session.cookies.remove(url, c.name); removed += 1; } catch { /* skip */ }
+          }
+        }
+      } catch { /* empty */ }
+    }
+    this.send({type: "site-cookies-cleared", ref, domain: target, removed});
   }
 
   // ---- the protocol ----------------------------------------------------------------------------------------
