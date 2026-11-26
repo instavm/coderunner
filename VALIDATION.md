@@ -764,6 +764,30 @@ onibus (the answer not in the site's language), dinners (prices without a curren
 set up). A run of `world` with Fara 1.5 4B driving the browser beside Bonsai 2.5 stopped after its first task
 when the disk filled; it is not counted.
 
+### The same suites on newer code, and answers without links (November 26)
+
+Bonsai 2.5 27B on the owner's server again, after a day of changes: steering, durable tasks, compaction with
+key lines, smaller page reads, the ambiguity and correction rules, shared-server slots. Same tasks, 30 minutes
+each; recipes off. Claude Haiku 5.5 is its November 25 run on the code of that evening.
+
+| run | world | everyday |
+|---|---|---|
+| Bonsai 2.5, November 25 | 9 of 13, 527 steps, 149 min | 9 of 14, 344 steps, 140 min |
+| Bonsai 2.5, November 26 night | 8 of 13, 433 steps, 128 min | 6 of 14, 305 steps, 116 min |
+| Bonsai 2.5, with answers relinked | not run | 11 of 14, 380 steps, 131 min |
+| Claude Haiku 5.5, November 25 | 7 of 13, 178 steps, 15 min | 8 of 14, 138 steps, 17 min |
+
+`world` took 18% fewer steps and 21 fewer minutes for one task fewer (gained bayrent, lost sfmarket and lyon).
+`everyday` fell to 6 because five answers built from web pages had no link at all (against one the night
+before): dentist and table stopped at the booking button and said so, without the page; monitor, bahn and
+preiswecker gave figures with no source. A reply is now written again once, linked, when it comes from pages and
+has no link, whether or not the request asked for links. With that, `everyday` passed 11 of 14 and every answer
+from the web carried links; the remaining misses were dinners (no `run_python` for the total), jobs and monitor
+(a link to a page it had not opened) and onibus (no bus company). The relinked run started before the dentist,
+table, concert, coffee-machine and jobs prompts were made more specific (experience, skills, insurance, ratings,
+genre), so it measured the old prompts; the next run measures the new ones and is not comparable task for task.
+The Fara 1.5 run planned after the night run did not happen: the Mac restarted.
+
 ## Not yet validated
 
 * CodeRunner's own Ollama on Linux: the archives' checksums are the release's own, their layout (`bin/ollama`)
