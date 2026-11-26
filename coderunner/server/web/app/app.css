@@ -39,11 +39,11 @@ button { font: inherit; color: inherit; cursor: pointer; transition: background 
 #sidebar { display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--surface-2); min-width: 0; }
 .side-head { height: var(--bar); flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 10px 0 14px;
   border-bottom: 1px solid var(--line); -webkit-app-region: drag; }
-.mac-shell .side-head { padding-left: 78px; }
+.mac-shell .side-head { padding-left: 76px; justify-content: flex-start; }
+.mac-shell .side-head .brand { display: none; }
 .side-head button { -webkit-app-region: no-drag; }
 .side-head-actions { display: flex; align-items: center; gap: 2px; }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 560; font-size: 13px; letter-spacing: -0.01em; min-width: 0; }
-.mac-shell .brand .brand-name { display: none; }
 .setup-brand { font-size: 12.5px; color: var(--muted); margin-top: 12px; }
 .setup-brand + h1 { margin-top: 4px; }
 .logo { flex: none; width: 20px; height: 20px; border-radius: 6px; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 8l4 4-4 4M13 16h4'/%3E%3C/svg%3E") center / 74% no-repeat, var(--fill); }
@@ -111,8 +111,8 @@ button.check-row:hover .check-what { color: var(--accent); }
 
 /* ---- main (Lane 2) ---- */
 #main { display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
-#mainHead { height: var(--bar); flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 14px 0 18px;
-  border-bottom: 1px solid var(--line); -webkit-app-region: drag; gap: 12px; }
+#mainHead { height: var(--bar); flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--line); -webkit-app-region: drag; gap: 10px; }
 #mainHead button { -webkit-app-region: no-drag; }
 #shell:not(.no-sidebar) #toggleSidebar { display: none; }
 .title { font-weight: 520; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -126,16 +126,16 @@ button.check-row:hover .check-what { color: var(--accent); }
   background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px rgb(0 0 0 / 14%); -webkit-app-region: no-drag; }
 .trace-ask p { margin: 0 0 12px; }
 .trace-ask-row { display: flex; justify-content: flex-end; gap: 8px; }
-#thread { flex: 1; overflow-y: auto; padding: 22px 0 30px; }
-#thread > * { max-width: 760px; margin-left: auto; margin-right: auto; padding: 0 24px; }
+#thread { flex: 1; overflow-y: auto; padding: 16px 0 18px; }
+#thread > * { max-width: 760px; margin-left: auto; margin-right: auto; padding: 0 20px; }
 .empty { padding-top: 12vh !important; }
 .empty h1 { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 6px; }
 .examples { display: grid; gap: 8px; margin-top: 22px; }
 .example { text-align: left; border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 11px 14px; }
 .example:hover { border-color: var(--accent); }
 
-.task { margin-bottom: 26px; }
-.bubble-user { margin-left: auto; width: fit-content; max-width: 85%; background: var(--surface-2); color: var(--text); padding: 9px 14px; border-radius: 14px 14px 4px 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task { margin-bottom: 22px; }
+.bubble-user { margin-left: auto; width: fit-content; max-width: 88%; background: var(--surface-2); color: var(--text); padding: 9px 14px; border-radius: 14px 14px 4px 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* What the assistant says is chat messages: a soft filled shape each, no frame and no heading. */
 .answer { margin: 14px 0 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .say { max-width: min(100%, 680px); background: none; border-radius: 0; padding: 2px 0;
@@ -257,7 +257,7 @@ a.att-file:hover { border-color: var(--accent); }
 .btn.danger { color: var(--danger); }
 .ask.closed { border-color: var(--line); background: var(--surface-2); }
 
-.composer-shell { position: relative; width: min(740px, calc(100% - 40px)); margin: 0 auto 12px; }
+.composer-shell { position: relative; width: min(740px, calc(100% - 32px)); margin: 0 auto 10px; }
 #composer { display: flex; flex-direction: column; width: 100%; margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 7px 8px; box-shadow: var(--shadow); }
 #composer:focus-within { border-color: #cfccc5; box-shadow: 0 2px 8px rgb(0 0 0 / 6%); }
 @media (prefers-color-scheme: dark) { #composer:focus-within { border-color: #4a4844; } }
@@ -303,8 +303,9 @@ a.att-file:hover { border-color: var(--accent); }
 .panel-head button, .composed-tabs { -webkit-app-region: no-drag; }
 .composed-tabs { display: flex; align-items: center; gap: 2px; min-width: 0; flex: 1; overflow-x: auto; scrollbar-width: none; }
 .composed-tabs::-webkit-scrollbar { display: none; }
-.ctab { display: inline-flex; align-items: center; gap: 6px; height: 30px; max-width: 170px; padding: 0 10px; border: 1px solid transparent;
-  border-radius: 8px; background: none; color: var(--muted); font-size: 12.5px; font-weight: 450; white-space: nowrap; }
+.ctab { display: inline-flex; align-items: center; gap: 5px; height: 28px; max-width: 164px; padding: 0 9px; border: 1px solid transparent;
+  border-radius: 7px; background: none; color: var(--muted); font-size: 12.5px; font-weight: 450; white-space: nowrap; }
+.ctab.ctab-icon { padding: 0; width: 28px; justify-content: center; flex: none; }
 .ctab:hover { color: var(--text); background: rgb(127 127 127 / 9%); }
 .ctab.on { color: var(--text); background: var(--surface); border-color: var(--line); font-weight: 500; box-shadow: var(--shadow); }
 .ctab-ico { width: 14px; height: 14px; display: grid; place-items: center; flex: none; }
@@ -367,9 +368,10 @@ a.att-file:hover { border-color: var(--accent); }
 #screenWrap.browsing .screen-note { display: none; }
 #browser { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--surface); }
 #browser[hidden] { display: none; }
-.b-tabs { display: flex; align-items: center; gap: 2px; padding: 6px 6px 0; background: var(--surface-2); overflow-x: auto; scrollbar-width: none; flex: none; }
-.b-tab { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 180px; flex: 0 1 180px; height: 28px; padding: 0 4px 0 10px;
-  border-radius: 8px 8px 0 0; font-size: 12px; color: var(--muted); cursor: default; }
+.b-tabs { display: flex; align-items: center; gap: 2px; padding: 4px 6px 0; background: var(--panel-bg); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; flex: none; }
+#browser.single-tab .b-tabs { height: 0; padding: 0; border-bottom: 0; overflow: hidden; opacity: 0; pointer-events: none; }
+.b-tab { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 180px; flex: 0 1 180px; height: 26px; padding: 0 4px 0 9px;
+  border-radius: 7px 7px 0 0; font-size: 12px; color: var(--muted); cursor: default; }
 .b-tab:hover { color: var(--text); }
 .b-tab.on { background: var(--surface); color: var(--text); }
 .b-tab.assistant .b-tab-name::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--fill); margin-right: 6px; vertical-align: 1px; }
@@ -378,19 +380,21 @@ a.att-file:hover { border-color: var(--accent); }
 .b-tab-close:hover { background: var(--line); opacity: 1; }
 .b-tab-close .ico, .b-btn .ico { width: 14px; height: 14px; stroke: var(--text); }
 #bMore .ico { width: 16px; height: 16px; stroke-width: 3; }      /* three dots, as heavy as the arrows beside them */
-.b-bar { display: flex; align-items: center; gap: 2px; padding: 5px 6px; border-bottom: 1px solid var(--line); flex: none; }
+.b-bar { display: flex; align-items: center; gap: 2px; height: 36px; padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--panel-bg); flex: none; }
 .b-btn { border: 0; background: none; width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; padding: 0; flex: none; }
 .b-btn:hover:not(:disabled) { background: var(--surface-2); }
 .b-btn:disabled { opacity: .35; cursor: default; }
 .b-btn.loading .ico { animation: b-spin 1s linear infinite; }
+#browser:not(.single-tab) .b-new-inline { display: none; }
 @keyframes b-spin { to { transform: rotate(360deg); } }
-#bUrl { flex: 1; min-width: 0; height: 26px; margin-left: 4px; padding: 0 10px; border: 1px solid transparent; border-radius: 7px;
-  background: var(--surface-2); color: var(--text); font: inherit; font-size: 12.5px; }
-#bUrl:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+#bUrl { flex: 1; min-width: 0; height: 25px; margin: 0 4px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--surface); color: var(--muted); font: inherit; font-size: 12px; text-align: center; }
+#bUrl:focus { outline: none; border-color: var(--accent); color: var(--text); text-align: left; }
 .b-view { position: relative; flex: 1; min-height: 0; background: var(--surface) center top / 100% auto no-repeat; }
 /* The "..." menu and its forms: drawn over a still of the page, since the page itself is a view above this one. */
-.b-menu { position: absolute; right: 8px; top: 72px; z-index: 3; min-width: 232px; padding: 5px; border-radius: 10px;
+.b-menu { position: absolute; right: 8px; top: 68px; z-index: 3; min-width: 232px; padding: 5px; border-radius: 10px;
   background: var(--surface); border: 1px solid var(--line); box-shadow: 0 8px 28px rgb(0 0 0 / 16%); font-size: 13px; }
+#browser.single-tab .b-menu { top: 40px; }
 .b-menu[hidden] { display: none; }
 .b-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; border: 0; background: none;
   text-align: left; padding: 6px 9px; border-radius: 6px; color: var(--text); font-size: 13px; }

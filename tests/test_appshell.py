@@ -173,7 +173,7 @@ console.log(JSON.stringify([
         self.assertIn('<button id="viewScreen" class="ctab on" type="button" role="tab" aria-selected="true" title="Sandbox screen">', markup)
         self.assertIn('<button id="viewTerminal" class="ctab" type="button" role="tab" aria-selected="false" title="Sandbox terminal">', markup)
         self.assertIn('<button id="viewBrowser" class="ctab" type="button" role="tab" aria-selected="false" hidden', markup)
-        self.assertIn('<button id="viewMac" class="ctab" type="button" role="tab" aria-selected="false" title="System and models">', markup)
+        self.assertIn('<button id="viewMac" class="ctab ctab-icon" type="button" role="tab" aria-selected="false" title="System and models"', markup)
         self.assertIn('<div id="term" hidden><div id="termNote" class="term-note">Connecting…</div></div>', markup)
         # xterm.js from the app's own files, never a CDN, loaded only when the tab opens.
         for name in ("xterm.js", "addon-fit.js", "xterm.css", "LICENSE.txt"):

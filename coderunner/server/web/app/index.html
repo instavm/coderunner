@@ -29,7 +29,6 @@
     </div>
 
     <div class="side-divider"></div>
-    <div class="side-section-head"><span>Tasks</span></div>
     <nav id="conversations" aria-label="Tasks"></nav>
 
     <div class="side-foot">
@@ -95,18 +94,18 @@
     <div class="panel-head">
       <div id="views" class="composed-tabs" role="tablist" aria-label="Workspace">
         <button id="viewScreen" class="ctab on" type="button" role="tab" aria-selected="true" title="Sandbox screen">
-          <span class="ctab-ico" data-ico="globe"></span><span id="viewScreenLabel" class="ctab-label">Screen</span>
+          <span class="ctab-ico" data-ico="monitor"></span><span id="viewScreenLabel" class="ctab-label">Screen</span>
         </button>
         <button id="viewTerminal" class="ctab" type="button" role="tab" aria-selected="false" title="Sandbox terminal">
           <span class="ctab-ico" data-ico="term"></span><span class="ctab-label">Terminal</span>
         </button>
         <span id="viewsGap" class="views-gap" aria-hidden="true" hidden></span>
         <button id="viewBrowser" class="ctab" type="button" role="tab" aria-selected="false" hidden
-                title="CodeRunner's own browser, on this Mac">
-          <span class="ctab-ico" data-ico="globe"></span><span class="ctab-label">Mac browser</span>
+                title="Browser on this Mac — its own profile, apart from your browser">
+          <span class="ctab-ico" data-ico="globe"></span><span id="viewBrowserLabel" class="ctab-label">Mac browser</span>
         </button>
-        <button id="viewMac" class="ctab" type="button" role="tab" aria-selected="false" title="System and models">
-          <span class="ctab-ico" data-ico="chip"></span><span class="ctab-label">System</span>
+        <button id="viewMac" class="ctab ctab-icon" type="button" role="tab" aria-selected="false" title="System and models" aria-label="System and models">
+          <span class="ctab-ico" data-ico="chip"></span>
         </button>
       </div>
       <div id="turn" class="turn" hidden>
@@ -124,7 +123,7 @@
         <span id="computerDot" class="status-dot"></span>
         <span id="panelTitle" class="sr-only">Assistant's computer</span>
         <span id="computerState" class="muted small">Starting…</span>
-        <span id="macState" class="muted small" hidden>Browser on this Mac · Its own profile</span>
+        <span id="macState" class="sr-only" hidden>Its own profile, apart from your browser</span>
       </div>
       <div id="addressPill" class="addr-pill">
         <span id="addressText" class="addr-text">Assistant's computer</span>
@@ -142,13 +141,14 @@
       <div id="screen"></div>
       <div id="shotFallback" class="shot-fallback" hidden></div>
       <div id="term" hidden><div id="termNote" class="term-note">Connecting…</div></div>
-      <div id="browser" hidden>
+      <div id="browser" class="single-tab" hidden>
         <div id="bTabs" class="b-tabs" role="tablist" aria-label="Pages"></div>
         <form id="bBar" class="b-bar" autocomplete="off">
           <button id="bBack" class="b-btn" type="button" aria-label="Back" title="Back"></button>
           <button id="bForward" class="b-btn" type="button" aria-label="Forward" title="Forward"></button>
           <button id="bReload" class="b-btn" type="button" aria-label="Reload" title="Reload"></button>
           <input id="bUrl" type="text" spellcheck="false" placeholder="Search or enter address" aria-label="Address">
+          <button id="bNewInline" class="b-btn b-new-inline" type="button" aria-label="New tab" title="New tab"></button>
           <button id="bMore" class="b-btn" type="button" aria-label="More" title="More" aria-haspopup="menu" aria-expanded="false"></button>
         </form>
         <div id="bView" class="b-view"><div id="bNote" class="term-note">Pages open here on your Mac</div></div>
@@ -170,7 +170,7 @@
     </div>
 
     <div class="panel-foot now-section">
-      <div id="nowLine" class="muted small">Idle</div>
+      <div id="nowLine" class="muted small" hidden>Idle</div>
     </div>
   </aside>
 </div>

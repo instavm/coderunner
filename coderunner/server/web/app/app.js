@@ -723,7 +723,7 @@ function updateScreenScope(focusInfo) {
     fb.hidden = true; fb.replaceChildren();
     ctx.hidden = true; ctx.replaceChildren();
     const host = focusInfo?.current_url ? focusInfo.current_url.replace(/^https?:\/\//, "").split("/")[0] : "";
-    if ($("viewScreenLabel")) $("viewScreenLabel").textContent = host || "Browser";
+    if ($("viewScreenLabel")) $("viewScreenLabel").textContent = host || "Screen";
     if ($("addressText")) $("addressText").textContent = focusInfo?.current_url
       ? trunc(focusInfo.current_url.replace(/^https?:\/\//, ""), 44) : "Assistant's computer";
     if ($("addressAction")) $("addressAction").hidden = true;
@@ -737,7 +737,7 @@ function updateScreenScope(focusInfo) {
     fb.hidden = false;
     ctx.hidden = true; ctx.replaceChildren();
     const shotHost = lastShot.url ? lastShot.url.replace(/^https?:\/\//, "").split("/")[0] : "";
-    if ($("viewScreenLabel")) $("viewScreenLabel").textContent = shotHost || "Browser";
+    if ($("viewScreenLabel")) $("viewScreenLabel").textContent = shotHost || "Screen";
     if ($("addressText")) $("addressText").textContent = shotHost ? `${shotHost} · last page` : "Last page from this task";
     if ($("addressAction")) {
       $("addressAction").textContent = "Live";
@@ -747,7 +747,7 @@ function updateScreenScope(focusInfo) {
   } else {
     fb.hidden = true; fb.replaceChildren();
     ctx.hidden = true; ctx.replaceChildren();
-    if ($("viewScreenLabel")) $("viewScreenLabel").textContent = "Browser";
+    if ($("viewScreenLabel")) $("viewScreenLabel").textContent = "Screen";
     if ($("addressText")) $("addressText").textContent = focusInfo?.current_url
       ? trunc(focusInfo.current_url.replace(/^https?:\/\//, ""), 38) : "Assistant's computer";
     if ($("addressAction")) $("addressAction").hidden = true;
@@ -1415,9 +1415,9 @@ function setView(next, remember = true) {
   $("term").hidden = !terminal;
   if ($("browser")) $("browser").hidden = !browsing;
   if ($("macPane")) $("macPane").hidden = !mac;
-  // Screen and terminal are the sandbox VM's; the browser is CodeRunner's own, on this Mac: the head says whose.
+  // Screen and terminal are the sandbox VM's; Mac browser has its own inline bar directly below the 44px tab strip.
   if ($("panelTitle")) $("panelTitle").textContent = browsing ? "Browser on this Mac" : "Assistant's computer";
-  if ($("panelBar")) $("panelBar").hidden = !(screen || browsing);
+  if ($("panelBar")) $("panelBar").hidden = !screen;
   if ($("computerState")) $("computerState").hidden = browsing;
   if ($("computerDot")) $("computerDot").hidden = browsing;
   if ($("addressPill")) $("addressPill").hidden = browsing;
@@ -1904,6 +1904,7 @@ const NAV_ICONS = {
   routines: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18 M12 7v5l3 2",
   customize: "M4 6h16 M4 12h16 M4 18h16 M9 4v4 M15 10v4 M11 16v4",
   globe: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18 M3 12h18 M12 3a14 14 0 0 1 0 18 M12 3a14 14 0 0 0 0 18",
+  monitor: "M3 5h18v12H3z M8 21h8 M12 17v4",
   term: "M5 8l4 4-4 4 M12 16h7",
   chip: "M9 3v2M15 3v2M9 19v2M15 19v2M3 9h2M3 15h2M19 9h2M19 15h2 M7 7h10v10H7z",
 };
@@ -2666,6 +2667,11 @@ function drawBrowser(next) {
   add.onclick = () => { shellBrowser.act({action: "new"}); $("bUrl").focus(); };
   row.appendChild(add);
   const active = tabs.find((tab) => tab.active);
+  $("browser").classList.toggle("single-tab", tabs.length <= 1);
+  if ($("viewBrowserLabel")) {
+    const label = active && active.url !== "about:blank" ? (active.title || hostOf(active.url) || "Mac browser") : "Mac browser";
+    $("viewBrowserLabel").textContent = label;
+  }
   if (document.activeElement !== $("bUrl")) $("bUrl").value = active && active.url !== "about:blank" ? active.url : "";
   $("bBack").disabled = !browserState.canBack;
   $("bForward").disabled = !browserState.canForward;
@@ -2678,8 +2684,9 @@ function startBrowser() {
   if (!shellBrowser) return;
   $("viewBrowser").hidden = false;
   $("viewsGap").hidden = false;
-  for (const [id, d] of [["bBack", BACK_ICON], ["bForward", FORWARD_ICON], ["bReload", RELOAD_ICON], ["bMore", MORE_ICON]])
-    $(id).replaceChildren(icon(d));
+  for (const [id, d] of [["bBack", BACK_ICON], ["bForward", FORWARD_ICON], ["bReload", RELOAD_ICON], ["bNewInline", PLUS_ICON], ["bMore", MORE_ICON]])
+    $(id)?.replaceChildren(icon(d));
+  if ($("bNewInline")) $("bNewInline").onclick = () => { shellBrowser.act({action: "new"}); $("bUrl").focus(); };
   $("bMore").onclick = () => ($("bMenu").hidden ? openBrowserMenu() : closeBrowserMenu());
   document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !$("bMenu").hidden) closeBrowserMenu(); });
   document.addEventListener("pointerdown", (event) => {
