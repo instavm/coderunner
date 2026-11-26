@@ -384,6 +384,8 @@ class ImageTests(unittest.TestCase):
         setup = (ROOT / "desktop-setup.sh").read_text()
         self.assertIn("--no-install-recommends", setup)
         self.assertIn("rm -rf /var/lib/apt/lists/*", setup)
+        # A home a reset made before the account existed is root's; the account takes its top folder back.
+        self.assertIn('chown "$USER_NAME:" "$(getent passwd "$USER_NAME" | cut -d: -f6)"', setup)
 
 
 if __name__ == "__main__":

@@ -27,6 +27,9 @@ mkdir -p /etc/opt/chrome/policies/managed
 echo '{"CommandLineFlagSecurityWarningsEnabled": false}' > /etc/opt/chrome/policies/managed/coderunner.json
 
 id -u "$USER_NAME" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$USER_NAME"
+# A home made before the account (a reset puts the browser profile back before the desktop is installed) is root's,
+# and Xfce's session then dies at once on ~/.ICEauthority; the account owns its home's top folder.
+chown "$USER_NAME:" "$(getent passwd "$USER_NAME" | cut -d: -f6)"
 home="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 mkdir -p /workspace "$home/.config/xfce4/xfconf/xfce-perchannel-xml"
 # The default panel layout up front: otherwise the first start asks which layout to use.
