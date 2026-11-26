@@ -557,7 +557,10 @@ class BrowserTabTests(unittest.TestCase):
         shell = (self.ROOT / "app" / "browser.js").read_text()
         self.assertIn('const PARTITION = "persist:coderunner-browser";', shell)
         self.assertIn("banned.push(`${this.daemonOrigin}/*`", shell)
-        self.assertNotRegex(shell, r"setUserAgent|userAgent\s*=|webdriver|WEBGL|toDataURL\s*=")   # nothing disguised
+        # Strips CodeRunner/Electron tokens and aligns Sec-CH-UA to the real Chromium version without faking GPU/canvas.
+        self.assertIn("desktopChromeIdentity", shell)
+        self.assertIn("sec-ch-ua", shell)
+        self.assertNotRegex(shell, r"webdriver|WEBGL|toDataURL\s*=")
 
 
 class PromptTests(unittest.TestCase):

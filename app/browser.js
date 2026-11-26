@@ -7,7 +7,10 @@
 // views live here in the main process, where webContents.debugger is, and the page never reaches into a site.
 // The page only draws the tabs, the address field and the buttons, and says where the view goes.
 //
-// Nothing about the browser is disguised: Electron's own user agent, the Mac's real platform, GPU and fonts.
+// The Mac's real platform, GPU, fonts and timezone are left as-is; only Electron's custom app/runtime tokens
+// ("CodeRunner/..." and "Electron/...") are stripped from this session's User-Agent and Sec-CH-UA Client Hints are
+// aligned to standard desktop Chrome matching the real underlying Chromium version so Google Sign-In and bot checks
+// do not reject the embedded browser.
 //
 // The assistant drives it as it drives the owner's Chrome through the extension (extension/background.js): the
 // daemon's broker speaks the DevTools protocol over a unix socket in the owner's assistant folder (0600), the app
@@ -37,6 +40,34 @@ const SEARCH = "https://duckduckgo.com/?q=";
 // Mac's through on the strength of its cookies (Cloudflare's cf_clearance, DataDome's datadome), and the sign-ins
 // the owner chose to bring over are cookies too: cleared at every quit, each would be asked for again.
 const KEEP_DEFAULT = "always";
+const GREASE_BRANDS = [
+  ["Not(A:Brand", "99"],
+  ["Not/A)Brand", "8"],
+  ["Not;A=Brand", "24"],
+];
+
+// Strip Electron's app/runtime tokens ("CodeRunner/x.y.z", "Electron/x.y.z") and normalize Chrome/<major>.0.0.0
+// with matching Sec-CH-UA Client Hints derived from the actual running Chromium version.
+function desktopChromeIdentity(rawUA, chromeVersion = (process.versions && process.versions.chrome) || "") {
+  const fromUA = /Chrome\/(\d+)(?:\.(\d+\.\d+\.\d+))?/.exec(String(rawUA || ""));
+  const full = /^\d+\.\d+\.\d+\.\d+$/.test(chromeVersion)
+    ? chromeVersion
+    : (fromUA ? (fromUA[2] ? `${fromUA[1]}.${fromUA[2]}` : `${fromUA[1]}.0.0.0`) : "136.0.0.0");
+  const major = full.split(".")[0];
+  let ua = String(rawUA || "")
+    .replace(/\s+CodeRunner\/[^\s]+/gi, "")
+    .replace(/\s+Electron\/[^\s]+/gi, "")
+    .replace(/Chrome\/\d+\.\d+\.\d+\.\d+/g, `Chrome/${major}.0.0.0`)
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!ua || !/Chrome\/\d+/.test(ua)) {
+    ua = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+  }
+  const [greaseName, greaseVer] = GREASE_BRANDS[(parseInt(major, 10) || 0) % GREASE_BRANDS.length];
+  const secChUa = `"Chromium";v="${major}", "Google Chrome";v="${major}", "${greaseName}";v="${greaseVer}"`;
+  const secChUaFull = `"Chromium";v="${full}", "Google Chrome";v="${full}", "${greaseName}";v="${greaseVer}.0.0.0"`;
+  return {userAgent: ua, full, major, secChUa, secChUaFull};
+}
 
 class AppBrowser {
   // assistantDir: the daemon's assistant folder (its token and socket address are there); daemonOrigin: the
@@ -105,6 +136,21 @@ class AppBrowser {
 
   guardSession() {
     const ses = this.session;
+    // Strip "CodeRunner/..." and "Electron/..." from this browser session's User-Agent and align Sec-CH-UA Client
+    // Hints with the real underlying Chromium version so Google Sign-In and WAFs see standard desktop Chrome.
+    const identity = desktopChromeIdentity(typeof ses.getUserAgent === "function" ? ses.getUserAgent() : "");
+    if (typeof ses.setUserAgent === "function") ses.setUserAgent(identity.userAgent, "en-US,en;q=0.9");
+    if (ses.webRequest && typeof ses.webRequest.onBeforeSendHeaders === "function") {
+      ses.webRequest.onBeforeSendHeaders({urls: ["http://*/*", "https://*/*"]}, (details, callback) => {
+        const headers = {...details.requestHeaders};
+        for (const key of Object.keys(headers)) {
+          const low = key.toLowerCase();
+          if (low === "sec-ch-ua") headers[key] = identity.secChUa;
+          else if (low === "sec-ch-ua-full-version-list") headers[key] = identity.secChUaFull;
+        }
+        callback({requestHeaders: headers});
+      });
+    }
     // Fullscreen video and copy buttons; every other permission (camera, location, notifications...) is refused,
     // as the broker refuses them in the assistant's other browsers.
     const fine = new Set(["fullscreen", "clipboard-sanitized-write"]);
@@ -633,4 +679,4 @@ function addressOf(text) {
   return SEARCH + encodeURIComponent(typed);
 }
 
-module.exports = {AppBrowser, PARTITION, KEEP_DEFAULT, addressOf};
+module.exports = {AppBrowser, PARTITION, KEEP_DEFAULT, addressOf, desktopChromeIdentity};

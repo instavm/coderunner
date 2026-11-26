@@ -241,7 +241,7 @@ class BrowserIdentityTests(unittest.IsolatedAsyncioTestCase):
             svc.config.set("browser.mode", mode)
             svc.config.set("browser.headless", headless)
             launcher = VersionedLauncher()
-            return BrowserBroker(svc.config, svc.policy, svc.audit, launcher=launcher), launcher
+            return BrowserBroker(svc.config, svc.policy, svc.audit, launcher=launcher, mode=mode), launcher
 
         # 1. Sandbox VM browser (mode="computer"): gets full Chrome identity + stealth init script
         b_vm, l_vm = make_broker("computer")
@@ -258,14 +258,28 @@ class BrowserIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(l_vm.browser.sent("Page.addScriptToEvaluateOnNewDocument")), 1)
         await b_vm.stop()
 
-        # 2. Built-in Mac browser (mode="mac"): stays untouched (no UA override / stealth injection)
+        # 2. Built-in Mac browser (mode="mac"): gets version-matched Chrome UA/Client Hints override
+        #    (so navigator.userAgentData matches desktop Google Chrome) without VM-only stealth script injection.
         b_mac, l_mac = make_broker("mac")
         await b_mac.start()
         await b_mac.tabs()
         await b_mac._session("P1")
-        self.assertEqual(l_mac.browser.sent("Emulation.setUserAgentOverride"), [])
+        mac_ua = l_mac.browser.sent("Emulation.setUserAgentOverride")
+        self.assertEqual(len(mac_ua), 1)
+        self.assertIn("Chrome/158.0.0.0", mac_ua[0]["userAgent"])
+        self.assertNotIn("Electron", mac_ua[0]["userAgent"])
+        self.assertEqual(l_mac.browser.sent("Emulation.setLocaleOverride"), [])
         self.assertEqual(l_mac.browser.sent("Page.addScriptToEvaluateOnNewDocument"), [])
         await b_mac.stop()
+
+        # 3. Everyday Chrome via extension (mode="chrome"): stays completely untouched.
+        b_ext, l_ext = make_broker("chrome")
+        await b_ext.start()
+        await b_ext.tabs()
+        await b_ext._session("P1")
+        self.assertEqual(l_ext.browser.sent("Emulation.setUserAgentOverride"), [])
+        self.assertEqual(l_ext.browser.sent("Page.addScriptToEvaluateOnNewDocument"), [])
+        await b_ext.stop()
 
 
 if __name__ == "__main__":
