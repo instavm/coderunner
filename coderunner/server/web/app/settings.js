@@ -269,7 +269,7 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
               el("div", "preset-head", p.label),
               el("div", "preset-model", modelName(p.model)),
               el("div", "preset-meta muted small",
-                 `~${Math.round(p.step_s || 0)} s/step · ${fmtGb(p.need_gb)} · ${p.vision ? "Vision" : "Text only"}`),
+                 `${p.step_s ? `~${Math.round(p.step_s)} s/step · ` : ""}${fmtGb(p.need_gb)} · ${p.vision ? "Vision" : "Text only"}`),
             );
             card.onclick = async () => {
               if (p.model === curId) return;

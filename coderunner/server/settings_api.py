@@ -15,6 +15,8 @@ import sys
 import threading
 from typing import Any
 
+import math
+
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -122,6 +124,18 @@ class BenchJob:
             self.result = res
             self.state = "done" if res.get("ok") else "failed"
 
+
+
+def json_safe(value: Any) -> Any:
+    """The planner marks a model that cannot run here with an infinite step time; JSON has no infinity, and one such
+    value made /api/models answer 500, so Models & Mac stayed on "Loading..." (2026-11-27). It is sent as null."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    return value
 
 def _installed_weights(config) -> list[dict[str, Any]]:
     """List downloaded local model folders inside models_dir() with disk sizes for safe cleanup."""
@@ -275,7 +289,7 @@ def settings_routes(svc, daemon) -> list[Route]:
         probed = probe.load(hw)
         planned = await asyncio.to_thread(manager.plan, cfg, hw=hw)
         candidates = [s.to_dict() for s in eval_pkg.default_candidates(cfg, hw=hw)]
-        return JSONResponse({
+        return JSONResponse(json_safe({
             "hardware": hw.to_dict(),
             "live_memory": mem,
             "probe": probed,
@@ -285,7 +299,7 @@ def settings_routes(svc, daemon) -> list[Route]:
             "weights": _installed_weights(cfg),
             "models_dir": str(runtimes.models_dir(cfg)),
             "models_dir_default": not cfg.get("models.dir"),
-        })
+        }))
 
     async def bench_api(request: Request):
         from .. import eval as eval_pkg

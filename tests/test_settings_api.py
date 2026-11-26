@@ -87,6 +87,13 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         self.app = admin_app(self.svc, self.daemon)
         self.headers = {"Authorization": f"Bearer {self.token}", "X-CodeRunner": "1"}
 
+    def test_an_infinite_step_time_is_sent_as_null(self):
+        import json
+        from coderunner.server.settings_api import json_safe
+        plan = {"rejected": [{"id": "big", "step_s": float("inf")}, {"id": "ok", "step_s": 12.5}], "nan": float("nan")}
+        self.assertEqual(json.loads(json.dumps(json_safe(plan), allow_nan=False)),
+                         {"rejected": [{"id": "big", "step_s": None}, {"id": "ok", "step_s": 12.5}], "nan": None})
+
     async def test_settings_allowlist_and_restart_flag(self):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="http://127.0.0.1") as c:
             # Unauthorized fails closed
