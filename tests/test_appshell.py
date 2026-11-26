@@ -311,6 +311,8 @@ console.log(JSON.stringify([
         self.assertIn("registered = Boolean(globalShortcut.register(candidate", main_js)
         self.assertIn("globalShortcut.register(cur.quickAskShortcut", main_js)
         self.assertIn("next.developerMode = update.developerMode", main_js)
+        settings_js = (appshell.app_dir().parent / "coderunner" / "server" / "web" / "app" / "settings.js").read_text()
+        self.assertIn("if (Array.isArray(control)) {", settings_js)
 
 
 if __name__ == "__main__":

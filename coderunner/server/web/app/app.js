@@ -1159,7 +1159,12 @@ $("composer").onsubmit = async (event) => {
   } catch (err) { notice(err.message); }
   finally { refreshComposer(); }
 };
-function grow() { const i = $("input"); i.style.height = "auto"; i.style.height = Math.min(i.scrollHeight, 200) + "px"; }
+function grow() {
+  const i = $("input");
+  i.style.height = "auto";
+  i.style.height = Math.min(i.scrollHeight, 200) + "px";
+  $("send")?.classList.toggle("ready", Boolean(i.value.trim() || (typeof pending !== "undefined" && pending.length)));
+}
 $("input").addEventListener("input", grow);
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("composer").requestSubmit(); }
@@ -1668,18 +1673,23 @@ async function loadModels() {
     line.replaceChildren();
     const leadWrap = el("span", "side-models-lead");
     const kind = server || elsewhere ? "server" : remote ? "remote" : "local";
-    const avatar = el("span", `side-avatar ${kind}`, kind === "remote" ? "C" : kind === "server" ? "S" : "L");
+    const avatar = el("span", `side-avatar ${kind}`);
+    avatar.appendChild(el("i", "side-avatar-dot"));
     const shortName = server ? modelName(remote.model) : remote ? modelName(remote.model) : modelName(models.chat) || "Local";
-    const whereText = server || elsewhere ? "Server" : remote ? "Not private" : "Local";
-    leadWrap.append(avatar, el("span", "", shortName));
-    if (remote && !server) leadWrap.appendChild(el("span", "not-private", "Not private"));
+    const whereText = server || elsewhere ? "Your server" : remote ? "Claude API" : "On this Mac";
+    const textCol = el("span", "side-models-text");
+    textCol.append(el("span", "side-models-name", shortName), el("span", "side-models-sub", whereText));
+    leadWrap.append(avatar, textCol);
+    if (remote && !server) leadWrap.appendChild(el("span", "not-private", "Cloud"));
     const chev = el("span", "side-chevron");
     chev.appendChild(icon("M7 10l5 5l5-5"));
     line.append(leadWrap, chev);
     line.title = (server ? `Requests go to your server at ${remote.host}. ` :
       elsewhere ? `Requests go to your server at ${elsewhere}. ` :
       remote ? "Requests go to Anthropic (not private). " : "Local on this computer. ") + "Click for Models and Settings.";
-    if ($("quickModelBtn")) $("quickModelBtn").textContent = `${shortName} · ${whereText}`;
+    if ($("quickModelBtn")) {
+      $("quickModelBtn").replaceChildren(el("span", "", shortName), icon("M7 10l5 5l5-5"));
+    }
     const lead = document.querySelector("#empty p");
     if (lead) lead.textContent = server || elsewhere ?
       "Planned by your own model server, and carried out on a private Linux machine with its own browser that you can watch and take over." :
@@ -1907,6 +1917,7 @@ const NAV_ICONS = {
   monitor: "M3 5h18v12H3z M8 21h8 M12 17v4",
   term: "M5 8l4 4-4 4 M12 16h7",
   chip: "M9 3v2M15 3v2M9 19v2M15 19v2M3 9h2M3 15h2M19 9h2M19 15h2 M7 7h10v10H7z",
+  chevRight: "M9 6l6 6l-6 6",
 };
 for (const [id, d] of [["expand", EXPAND_ICON], ["closeComputer", CLOSE_ICON], ["send", SEND_ICON],
                        ["toggleComputer", SCREEN_ICON], ["toggleSidebar", SIDEBAR_ICON], ["collapseSidebar", SIDEBAR_ICON],
@@ -2219,22 +2230,27 @@ async function refreshStarters() {
   const [files, status] = await Promise.all([api("/api/files").catch(() => null), api("/api/status").catch(() => null)]);
   const hasFiles = Boolean(files && Array.isArray(files.roots) && files.roots.length);
   const starters = [
-    "Compare three highly rated noise-cancelling headphones under $250 with prices and links",
-    hasFiles
+    ["search", "Compare three highly rated noise-cancelling headphones under $250 with prices and links"],
+    ["files", hasFiles
       ? "Search my shared folders for my most recent contract or receipt and summarise the key dates"
-      : "Drop a receipt, PDF or spreadsheet here and ask me to pull out the numbers",
-    "Check tomorrow's weather forecast and suggest what to pack",
+      : "Drop a receipt, PDF or spreadsheet here and ask me to pull out the numbers"],
+    ["routines", "Check tomorrow's weather forecast and suggest what to pack"],
   ];
   list.replaceChildren();
-  for (const text of starters) {
-    const b = el("button", "example", text);
-    b.onclick = () => { $("input").value = text; $("input").focus(); };
+  for (const [icoKey, text] of starters) {
+    const b = el("button", "example");
+    b.type = "button";
+    const ic = el("span", "example-ico");
+    ic.appendChild(icon(NAV_ICONS[icoKey] || NAV_ICONS.search));
+    b.append(ic, el("span", "example-txt", text));
+    b.onclick = () => { $("input").value = text; $("input").dispatchEvent(new Event("input")); $("input").focus(); };
     list.appendChild(b);
   }
   hint.replaceChildren();
   if (!hasFiles) {
-    const link = el("button", "linkish small", "Share a folder to search your files");
+    const link = el("button", "ghost-pill", "");
     link.type = "button";
+    link.append(icon(NAV_ICONS.files), el("span", "", "Share a folder to search files"));
     link.onclick = () => settingsUI.open("files");
     hint.append(link);
   }
@@ -2893,20 +2909,51 @@ async function refreshMacPane() {
   if (!box) return;
   const data = await api("/api/models").catch(() => null);
   if (!data) return;
-  const hw = data.hardware || {}, mem = data.live_memory || {}, probe = data.probe;
+  const hw = data.hardware || {}, mem = data.live_memory || data.memory || {}, probe = data.probe;
   box.replaceChildren();
-  const add = (val, lbl) => {
-    const t = el("div", "tile");
-    t.append(el("div", "tile-value", val), el("div", "tile-label", lbl));
-    box.appendChild(t);
-  };
-  add(hw.chip || "This Mac", `${hw.ram_gb || 0} GB unified RAM`);
-  add(mem.free_gb != null ? `${mem.free_gb} GB free` : `${hw.budget_gb || 0} GB budget`,
-      mem.swap_used_gb >= 1 ? `${mem.swap_used_gb} GB swap` : "Memory");
-  if (probe && probe.ok) {
-    add(`${Math.round(probe.bandwidth_gbs || hw.bandwidth_gbs)} GB/s`, probe.gpu_fp16_tflops ? `${probe.gpu_fp16_tflops} TFLOPS` : "GPU");
-    add(probe.ane_verified ? `${probe.ane_cores} cores · ${probe.ane_fp16_tops || "—"} TOPS` : `${probe.ane_cores || 0} cores`, "Neural Engine");
+
+  const card = el("div", "hw-card");
+  const head = el("div", "hw-head");
+  const chip = el("div", "hw-chip", hw.chip || "This Mac");
+  const ramGb = Number(hw.ram_gb || 0);
+  const badge = el("span", "hw-badge", ramGb ? `${ramGb} GB Unified` : "Local");
+  head.append(chip, badge);
+  card.appendChild(head);
+
+  const freeGb = mem.free_gb != null ? Number(mem.free_gb) : null;
+  const budgetGb = hw.budget_gb != null && Number(hw.budget_gb) > 0 ? Number(hw.budget_gb) : null;
+  if (ramGb > 0) {
+    const usedGb = freeGb != null ? Math.max(0, ramGb - freeGb) : (budgetGb ? Math.max(0, ramGb - budgetGb) : ramGb * 0.4);
+    const usedPct = Math.min(100, Math.max(4, Math.round((usedGb / ramGb) * 100)));
+    const bar = el("div", "hw-bar");
+    const fill = el("span", "hw-bar-fill");
+    fill.style.width = `${usedPct}%`;
+    bar.appendChild(fill);
+    card.appendChild(bar);
+    const memMeta = el("div", "hw-mem-meta");
+    const leftTxt = freeGb != null ? `${freeGb.toFixed(1)} GB available` : budgetGb ? `${budgetGb.toFixed(1)} GB model budget` : `${ramGb} GB unified`;
+    const swapGb = Number(mem.swap_used_gb || 0);
+    const rightTxt = swapGb >= 0.1 ? `${swapGb.toFixed(1)} GB swap` : "No swap pressure";
+    memMeta.append(el("span", "", leftTxt), el("span", "muted", rightTxt));
+    card.appendChild(memMeta);
   }
+
+  const stats = el("div", "hw-stats");
+  const addStat = (label, val, sub) => {
+    const cell = el("div", "hw-stat");
+    cell.append(el("div", "hw-stat-k", label), el("div", "hw-stat-v", val));
+    if (sub) cell.appendChild(el("div", "hw-stat-s", sub));
+    stats.appendChild(cell);
+  };
+  const bw = Math.round((probe && probe.ok && probe.bandwidth_gbs) || hw.bandwidth_gbs || 0);
+  addStat("Bandwidth", bw ? `${bw} GB/s` : "—", probe && probe.ok && probe.gpu_fp16_tflops ? `${probe.gpu_fp16_tflops} TFLOPS` : "Measured");
+  const aneCores = (probe && probe.ane_cores) || hw.ane_cores || 0;
+  const aneTops = (probe && probe.ane_fp16_tops) || hw.ane_tops || 0;
+  addStat("Neural Engine", aneCores ? `${aneCores}-core` : "Apple ANE", aneTops ? `${aneTops} TOPS FP16` : "Active");
+  const tier = data.tier || {};
+  addStat("Context", tier.target_ctx ? `${Math.round(tier.target_ctx / 1024)}K` : "32K", tier.parallel_tasks ? `${tier.parallel_tasks} parallel slots` : "");
+  card.appendChild(stats);
+  box.appendChild(card);
 }
 
 async function openQuickModelMenu() {

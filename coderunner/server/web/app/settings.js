@@ -22,6 +22,17 @@ const SECTIONS = [
   {id: "voice", label: "Voice & Phone"},
 ];
 
+function cfgGet(cfgData, key, fallback = undefined) {
+  const flat = cfgData && (cfgData.settings || cfgData.values);
+  if (flat && Object.prototype.hasOwnProperty.call(flat, key) && flat[key] !== undefined) return flat[key];
+  let cur = cfgData && cfgData.config;
+  for (const part of String(key).split(".")) {
+    if (!cur || typeof cur !== "object") { cur = undefined; break; }
+    cur = cur[part];
+  }
+  return cur !== undefined ? cur : fallback;
+}
+
 function svgIcon(d) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
@@ -65,8 +76,11 @@ function row(label, desc, control) {
   left.appendChild(el("div", "set-row-label", label));
   if (desc) left.appendChild(el("div", "set-row-desc muted small", desc));
   const right = el("div", "set-row-ctrl");
-  if (Array.isArray(control)) for (const c of control) if (c) right.appendChild(c);
-  else if (control) right.appendChild(control);
+  if (Array.isArray(control)) {
+    for (const c of control) if (c) right.appendChild(c);
+  } else if (control) {
+    right.appendChild(control);
+  }
   r.append(left, right);
   return r;
 }
@@ -118,7 +132,8 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
     const right = el("div", "set-pane");
     const top = el("div", "set-pane-head");
     const title = el("h2", "set-pane-title");
-    const closeBtn = el("button", "icon-btn set-close", "×");
+    const closeBtn = el("button", "icon-btn set-close");
+    closeBtn.appendChild(svgIcon("M6 6l12 12 M18 6l-12 12"));
     closeBtn.type = "button";
     closeBtn.title = "Close (Esc)";
     closeBtn.setAttribute("aria-label", "Close settings");
@@ -202,9 +217,9 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
       tile(`${Math.round(probe.bandwidth_gbs || hw.bandwidth_gbs)} GB/s`,
            probe.gpu_fp16_tflops ? `GPU · ${probe.gpu_fp16_tflops} TFLOPS` : "GPU bandwidth",
            `Measured ${probe.date || ""}`);
-      tile(probe.ane_verified ? `${probe.ane_cores} cores · ${probe.ane_fp16_tops || "—"} TOPS` : `${probe.ane_cores || 0} cores`,
+      tile(probe.ane_verified ? `${probe.ane_cores}-core ANE` : `${probe.ane_cores || 0} cores`,
            probe.ane_verified
-             ? (probe.gpu_contention_pct != null ? `Neural Engine (${probe.gpu_contention_pct}% GPU impact)` : "Neural Engine verified")
+             ? `${probe.ane_fp16_tops || "—"} TOPS${probe.gpu_contention_pct != null ? ` · ${probe.gpu_contention_pct}% GPU` : ""}`
              : "Neural Engine",
            probe.ane_plan_cost_pct != null ? `MLComputePlan: ${probe.ane_plan_cost_pct}% on Neural Engine` : "");
     } else {
@@ -244,8 +259,11 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
         if (presets.length) {
           const pGrid = el("div", "preset-grid");
           const curId = (data.active_stack || {}).planner || "";
+          let activeMarked = false;
           for (const p of presets) {
-            const card = el("button", "preset-card" + (p.model === curId ? " on" : ""));
+            const isOn = !activeMarked && p.model === curId;
+            if (isOn) activeMarked = true;
+            const card = el("button", "preset-card" + (isOn ? " on" : ""));
             card.type = "button";
             card.append(
               el("div", "preset-head", p.label),
@@ -306,7 +324,7 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
         };
 
         const thinkSel = el("select", "set-select");
-        const curThink = String(cfgData.settings["agent.thinking"] || "auto");
+        const curThink = String(cfgGet(cfgData, "agent.thinking", "auto") || "auto");
         for (const [val, lbl] of [["auto", "Automatic"], ["on", "Always think first"], ["off", "Off (fastest)"]]) {
           const opt = el("option", "", lbl); opt.value = val; opt.selected = curThink === val; thinkSel.appendChild(opt);
         }
@@ -321,7 +339,7 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
         };
 
         const idleSel = el("select", "set-select");
-        const curIdle = Number(cfgData.settings["models.idle_unload_minutes"] ?? 10);
+        const curIdle = Number(cfgGet(cfgData, "models.idle_unload_minutes", 10) ?? 10);
         for (const [val, lbl] of [[5, "5 minutes"], [10, "10 minutes"], [30, "30 minutes"], [0, "Never"]]) {
           const opt = el("option", "", lbl); opt.value = String(val); opt.selected = curIdle === val; idleSel.appendChild(opt);
         }
@@ -331,7 +349,7 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
           row("Web browsing specialist", "Optional vision model trained to navigate complex websites.", drvSel),
           row("Reasoning before steps", "Automatic thinks before the first step and after failures.", thinkSel),
           row("Check Hugging Face for newer models", "Finds newly released Apache/MIT models that fit this Mac.",
-              [toggleSwitch(cfgData.settings["models.discover"] !== false, (v) => saveSetting({"models.discover": v}), "Discover on Hugging Face"), hfBtn]),
+              [toggleSwitch(cfgGet(cfgData, "models.discover", true) !== false, (v) => saveSetting({"models.discover": v}), "Discover on Hugging Face"), hfBtn]),
           row("Unload model when idle", "Frees RAM automatically when you are not running tasks.", idleSel),
         ]));
       } else if (modeView === "server") {
@@ -661,7 +679,7 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
 
     body.appendChild(group("Site rules", [
       row("Ask before opening any new site", "Prompts for approval before navigating to a website.",
-          toggleSwitch(Boolean(cfgData.settings["policy.ask_new_site"]), (v) => saveSetting({"policy.ask_new_site": v}), "Ask before new site")),
+          toggleSwitch(Boolean(cfgGet(cfgData, "policy.ask_new_site", false)), (v) => saveSetting({"policy.ask_new_site": v}), "Ask before new site")),
       row("Never open", (data.block || []).join(", ") || "None", null),
     ]));
   }
