@@ -26,4 +26,19 @@ contextBridge.exposeInMainWorld("coderunnerShell", {
   // Developer mode (the Help menu): whether it is on as the page loads, and word when it changes.
   developerMode: () => ipcRenderer.invoke("developer-mode"),
   onDeveloperMode: (callback) => ipcRenderer.on("developer-mode", (_, on) => callback(on === true)),
+  // The computer panel's Browser tab: the page draws its tabs and buttons and says where the shell puts the
+  // browser itself; it never touches the pages in it.
+  browser: {
+    place: (bounds, shown) => ipcRenderer.send("browser-view", box(bounds), shown === true),
+    act: (request) => ipcRenderer.invoke("browser-act", {action: text(request?.action), id: Number(request?.id) || 0,
+                                                          url: text(request?.url).slice(0, 4000)}),
+    state: () => ipcRenderer.invoke("browser-state"),
+    onState: (callback) => ipcRenderer.on("browser-state", (_, state) => callback(state)),
+    onFront: (callback) => ipcRenderer.on("browser-front", () => callback()),
+  },
 });
+
+function box(bounds) {
+  const number = (value) => (Number.isFinite(value) ? value : 0);
+  return {x: number(bounds?.x), y: number(bounds?.y), width: number(bounds?.width), height: number(bounds?.height)};
+}

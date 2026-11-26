@@ -44,15 +44,23 @@ class AppShellTests(unittest.TestCase):
         main, preload = ((appshell.app_dir() / name).read_text() for name in ("main.js", "preload.js"))
         self.assertIn('preload: path.join(__dirname, "preload.js")', main)
         self.assertIn("contextIsolation: true, nodeIntegration: false, sandbox: true", main)
+        # The Browser tab's: where the browser goes, the owner's buttons, what it shows (main window only).
         asks = ["pick-folder", "start-assistant", "open-thread", "open-app", "open-computer", "hide-panel", "task-started",
-                "thread-open", "developer-mode"]
+                "thread-open", "developer-mode", "browser-view", "browser-act", "browser-state"]
         self.assertEqual(re.findall(r'ipcMain\.(?:handle|on)\("([\w-]+)"', main), asks)
         self.assertEqual(re.findall(r'ipcRenderer\.(?:invoke|send)\("([\w-]+)"', preload), asks)
         # What the shell says to the pages: which thread to open, that a panel was shown, developer mode turned on or off.
         self.assertEqual(re.findall(r'ipcRenderer\.on\("([\w-]+)"', preload),
-                         ["show-thread", "show-computer", "panel-shown", "test-this-mac", "developer-mode"])
+                         ["show-thread", "show-computer", "panel-shown", "test-this-mac", "developer-mode",
+                          "browser-state", "browser-front"])
         self.assertIn('ipcMain.handle("developer-mode", (event) => fromDaemon(event) && developerMode());', main)
         asks.remove("developer-mode")
+        # The Browser tab's asks are heard from the main window's own page only, the daemon's.
+        self.assertIn("const mainPage = (event) => fromDaemon(event) && mainWindow && !mainWindow.isDestroyed() && "
+                      "event.sender === mainWindow.webContents;", main)
+        for ask in ("browser-act", "browser-state"):
+            self.assertRegex(main, r'ipcMain\.handle\("%s", \(event[^)]*\) => \(mainPage\(event\)' % ask)
+            asks.remove(ask)
         self.assertEqual(re.findall(r'exposeInMainWorld\("(\w+)"', preload), ["coderunnerShell"])
         self.assertIn("if (asker !== ORIGIN) return null;", main)        # only the daemon's own page is answered
         self.assertIn("return asker === ORIGIN ? startDaemon() : false;", main)

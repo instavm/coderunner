@@ -301,6 +301,60 @@ a.att-file:hover { border-color: var(--accent); }
 #screenWrap.terminal { background: var(--surface); border-color: var(--line); border-width: 1px; }
 #screenWrap.terminal #screen { visibility: hidden; }
 #screenWrap.terminal .screen-note, #screenWrap.terminal .control { display: none; }
+/* The browser on this Mac: tabs, one row of buttons and the address, then the page itself, which the app's shell
+   draws over #bView. Light or dark with the app, like the terminal. */
+#screenWrap.browsing { aspect-ratio: auto; height: max(380px, calc(100vh - 230px)); flex: none; background: var(--surface); border-color: var(--line); border-width: 1px; }
+#screenWrap.browsing #screen { visibility: hidden; }
+#screenWrap.browsing .screen-note, #screenWrap.browsing .control { display: none; }
+#shell.expanded #screenWrap.browsing { flex: 1; height: auto; }
+#browser { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--surface); }
+#browser[hidden] { display: none; }
+.b-tabs { display: flex; align-items: center; gap: 2px; padding: 6px 6px 0; background: var(--surface-2); overflow-x: auto; scrollbar-width: none; flex: none; }
+.b-tab { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 180px; flex: 0 1 180px; height: 28px; padding: 0 4px 0 10px;
+  border-radius: 8px 8px 0 0; font-size: 12px; color: var(--muted); cursor: default; }
+.b-tab:hover { color: var(--text); }
+.b-tab.on { background: var(--surface); color: var(--text); }
+.b-tab.assistant .b-tab-name::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--fill); margin-right: 6px; vertical-align: 1px; }
+.b-tab-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.b-tab-close { border: 0; background: none; width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; padding: 0; flex: none; opacity: .7; }
+.b-tab-close:hover { background: var(--line); opacity: 1; }
+.b-tab-close .ico, .b-btn .ico { width: 14px; height: 14px; stroke: var(--text); }
+#bMore .ico { width: 16px; height: 16px; stroke-width: 3; }      /* three dots, as heavy as the arrows beside them */
+.b-bar { display: flex; align-items: center; gap: 2px; padding: 5px 6px; border-bottom: 1px solid var(--line); flex: none; }
+.b-btn { border: 0; background: none; width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; padding: 0; flex: none; }
+.b-btn:hover:not(:disabled) { background: var(--surface-2); }
+.b-btn:disabled { opacity: .35; cursor: default; }
+.b-btn.loading .ico { animation: b-spin 1s linear infinite; }
+@keyframes b-spin { to { transform: rotate(360deg); } }
+#bUrl { flex: 1; min-width: 0; height: 26px; margin-left: 4px; padding: 0 10px; border: 1px solid transparent; border-radius: 7px;
+  background: var(--surface-2); color: var(--text); font: inherit; font-size: 12.5px; }
+#bUrl:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+.b-view { position: relative; flex: 1; min-height: 0; background: var(--surface) center top / 100% auto no-repeat; }
+/* The "..." menu and its forms: drawn over a still of the page, since the page itself is a view above this one. */
+.b-menu { position: absolute; right: 8px; top: 72px; z-index: 3; min-width: 232px; padding: 5px; border-radius: 10px;
+  background: var(--surface); border: 1px solid var(--line); box-shadow: 0 8px 28px rgb(0 0 0 / 16%); font-size: 13px; }
+.b-menu[hidden] { display: none; }
+.b-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; border: 0; background: none;
+  text-align: left; padding: 6px 9px; border-radius: 6px; color: var(--text); font-size: 13px; }
+button.b-item:hover:not(:disabled) { background: var(--accent-soft); }
+button.b-item:disabled { color: var(--muted); cursor: default; }
+.b-item.danger { color: var(--danger); }
+.b-sep { height: 1px; margin: 5px 4px; background: var(--line); }
+.b-keep { display: flex; padding: 2px; border-radius: 999px; background: var(--surface-2); }
+.b-keep button { border: 0; background: none; padding: 2px 9px; border-radius: 999px; font-size: 12px; color: var(--muted); }
+.b-keep button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.b-form { display: grid; gap: 8px; padding: 6px 7px 4px; }
+.b-form p { margin: 0; line-height: 1.4; }
+.b-form input, .b-form select { font: inherit; font-size: 13px; color: var(--text); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 7px; padding: 5px 8px; min-width: 0; }
+.b-form .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+.btn.danger-fill { background: var(--danger); border-color: var(--danger); color: #fff; }
+.mac-box { margin-top: 12px; font-size: 12.5px; }
+.mac-box:empty { display: none; }
+.mac-title { margin-bottom: 4px; }
+.mac-site { display: flex; align-items: center; justify-content: space-between; padding: 2px 0; }
+.ask-check { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.ask-check input { accent-color: var(--fill); margin: 0; }
 .panel-section { padding: 14px 16px 0; }
 .now-section { padding-top: 10px; }
 .now-section:has(#nowLine[hidden]) { display: none; }
