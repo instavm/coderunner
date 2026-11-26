@@ -40,12 +40,29 @@ def _judge_endpoint(config, ep: manager.Endpoint) -> tuple[str, str, str, str, f
     return ep.base_url, ep.model, "chat", ep.api_key, threshold
 
 
+def _resolve_endpoint(config, spec: StackSpec | None = None) -> manager.Endpoint:
+    """Resolve the active OpenAI-compatible endpoint (own model server when active, else local runtime)."""
+    chosen = remote.active(config)
+    if chosen and chosen.get("provider") == remote.SERVER and (spec is None or spec.remote_provider == remote.SERVER):
+        return manager.Endpoint(
+            base_url=str(chosen["base_url"]).rstrip("/"),
+            model=str(chosen["model"]),
+            api_key=remote.server_key(),
+            vision=True,
+            embedding_model=config.get("models.embedding") or "",
+        )
+    return manager.ensure_running(config)
+
+
 async def run_tier1(config, spec: StackSpec | None = None, *, progress: Callable[[str], None] = lambda _: None,
                     run_safety: bool = True) -> dict[str, Any]:
     """Run Tier 1 (90s) gate on the active endpoint (or specified StackSpec if already active)."""
     hw = manager._hardware(config, None)
     spec = spec or stack_from_config(config, hw)
-    ep = manager.ensure_running(config)
+    if spec.remote_provider == remote.PROVIDER:
+        return {"ok": False, "suite": "tier1", "signature": spec.signature(), "stack": spec.to_dict(),
+                "error": "Quick check (Tier 1) tests OpenAI-compatible local or self-hosted servers; use Install health check for Claude."}
+    ep = _resolve_endpoint(config, spec)
     if not ep.base_url or not ep.model:
         return {"ok": False, "error": "No model is configured yet."}
     j_url, j_model, j_api, j_key, j_thresh = _judge_endpoint(config, ep)
@@ -337,7 +354,7 @@ async def run_stack(config, spec: StackSpec, *, suite: str = "tier2", names: lis
                             "stack": spec.to_dict(), "memory": mem,
                             "error": result.get("error") or "benchmark failed"}
 
-                ep = manager.endpoint(work)
+                ep = _resolve_endpoint(work, spec)
                 j_url, j_model, j_api, j_key, j_thresh = _judge_endpoint(work, ep)
                 safety = await run_safety_check(
                     j_url, j_model, api=j_api, api_key=j_key, threshold=j_thresh,
@@ -388,6 +405,14 @@ async def compare_stacks(config, specs: list[StackSpec], *, suite: str = "tier2"
         runs.append(res)
     ok_runs = [r for r in runs if r.get("ok")]
     summary = plain_summary(ok_runs, preference=preference)
+    err = ""
+    if not ok_runs and runs:
+        first = runs[0]
+        err = first.get("error") or ""
+        if not err:
+            failed = [c for c in (first.get("checks") or []) if not c.get("passed")]
+            if failed:
+                err = f"{first.get('passed', 0)}/{first.get('total', 0)} checks passed ({failed[0].get('name')}: {failed[0].get('detail', '')})"
     return {
         "ok": bool(ok_runs),
         "suite": suite,
@@ -395,4 +420,5 @@ async def compare_stacks(config, specs: list[StackSpec], *, suite: str = "tier2"
         "runs": runs,
         "summary": summary,
         "markdown": compare_markdown(ok_runs, preference=preference) if ok_runs else "",
+        **({"error": err} if err else {}),
     }

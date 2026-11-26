@@ -85,7 +85,7 @@ function row(label, desc, control) {
   return r;
 }
 
-export function createSettings({api, modelName, notice, onRestart, onRunCheck, onReloadModels}) {
+export function createSettings({api, modelName, notice, onRestart, onRunCheck, onReloadModels, onOpenMacBrowser}) {
   let backdrop = null;
   let active = "models";
   let restartNeeded = false;
@@ -172,14 +172,18 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
   let titleNode = null;
   async function select(sectionId) {
     clearTimeout(benchPoll);
-    if (sectionId === "bench") sectionId = "models";
+    const scrollToBench = sectionId === "bench";
+    if (scrollToBench) sectionId = "models";
     active = SECTIONS.some((s) => s.id === sectionId) ? sectionId : "models";
     for (const [id, btn] of railButtons) btn.classList.toggle("on", id === active);
     const meta = SECTIONS.find((s) => s.id === active);
     if (titleNode) titleNode.textContent = meta ? meta.label : "Settings";
     paneBody.replaceChildren(el("p", "muted small", "Loading…"));
     try {
-      if (active === "models") await renderModels(paneBody);
+      if (active === "models") {
+        await renderModels(paneBody);
+        if (scrollToBench) paneBody.querySelector("#benchLabSection")?.scrollIntoView({block: "start"});
+      }
       else if (active === "files") await renderFiles(paneBody);
       else if (active === "apps") await renderApps(paneBody);
       else if (active === "browser") await renderBrowser(paneBody);
@@ -405,6 +409,7 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
 
     // Benchmarks: Hardware + ANE probe, Tier 1 gate, Single vs Multi-Model Comparison
     const lab = el("div", "set-group");
+    lab.id = "benchLabSection";
     lab.appendChild(el("div", "set-group-title", "Benchmarks"));
     const labCard = el("div", "set-list");
     const statusLine = el("div", "set-bench-status muted small");
@@ -414,16 +419,18 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
       await api("/api/bench", {method: "POST", body: JSON.stringify({action: "probe", force: true})}).catch((e) => notice(e.message));
       watchBench();
     };
-    const cmpBtn = el("button", "btn primary", "Compare");
+    const cmpBtn = el("button", "btn primary", "Run");
     cmpBtn.type = "button";
     const suiteSel = el("select", "set-select");
     for (const [v, l] of [["tier1", "Quick check (~90s)"], ["tier2", "Sample tasks (~6 min)"], ["ane", "Neural Engine & voice"]]) {
       const o = el("option", "", l); o.value = v; suiteSel.appendChild(o);
     }
-    const chosenIds = new Set((benchData.candidates || []).slice(0, 2).map((c) => c.id));
+    // Select only the currently active stack by default so clicking Run never starts an unexpected multi-GB download.
+    const chosenIds = new Set((benchData.candidates || []).slice(0, 1).map((c) => c.id));
     cmpBtn.onclick = async () => {
       const stacks = (benchData.candidates || []).filter((c) => chosenIds.has(c.id));
-      await api("/api/bench", {method: "POST", body: JSON.stringify({action: "compare", suite: suiteSel.value, stacks})})
+      if (!stacks.length) { notice("Pick at least one setup to benchmark."); return; }
+      await api("/api/bench", {method: "POST", body: JSON.stringify({action: "compare", suite: suiteSel.value, stacks, reuse_cached: false})})
         .catch((e) => notice(e.message));
       watchBench();
     };
@@ -432,7 +439,7 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
     healthBtn.onclick = () => { close(); onRunCheck?.(); };
 
     labCard.appendChild(row("Hardware probe", "Memory bandwidth, Metal FP16, Neural Engine TOPS and GPU/ANE contention.", probeBtn));
-    labCard.appendChild(row("Model comparison", "Test single models or multi-model setups on the same tasks.", [suiteSel, cmpBtn]));
+    labCard.appendChild(row("Model benchmark", "Test your active model or compare single vs. multi-model stacks.", [suiteSel, cmpBtn]));
     if ((benchData.candidates || []).length) {
       const chips = el("div", "set-chips");
       for (const c of benchData.candidates.slice(0, 5)) {
@@ -448,25 +455,74 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
     }
     labCard.appendChild(row("Install health check", "Runs one of each everyday task type on the active setup.", healthBtn));
     lab.appendChild(labCard);
+    if (benchData.state === "failed" && benchData.result?.error) {
+      statusLine.textContent = `Last run failed: ${benchData.result.error}`;
+      statusLine.style.color = "var(--danger)";
+    } else if (benchData.state === "done" && benchData.lines?.length) {
+      statusLine.textContent = benchData.lines.slice(-1)[0];
+    }
     lab.appendChild(statusLine);
 
-    // Persistent multi-stack scoreboard (never discarded on model switch)
+    // Persistent multi-stack scoreboard with expandable check/task diagnostics
+    const historyByKey = new Map((benchData.history || []).map((h) => [`${h.signature || ""}|${h.suite || ""}`, h]));
     const rows = (benchData.summary && benchData.summary.rows) || [];
-    if (rows.length) {
+    const fallbackRuns = !rows.length && benchData.result?.runs?.length ? benchData.result.runs : [];
+    const displayRuns = rows.length ? rows : fallbackRuns.map((run) => ({
+      label: (run.stack && run.stack.label) || run.signature || "Setup",
+      passed: run.passed || 0, total: run.total || 0, step_s: run.step_s || 0,
+      memory_gb: (run.memory && run.memory.total_gb) || 0, comfort: (run.memory && run.memory.comfort) || "",
+      cache_hit_ratio: run.cache_hit_ratio, stack: run.stack, suite: run.suite,
+      checks: run.checks, tasks: run.tasks, raw: run,
+    }));
+    if (displayRuns.length) {
       const board = el("div", "set-list set-board");
-      for (const r of rows.slice(0, 6)) {
-        const meta = `${r.passed}/${r.total} passed · ${r.step_s ? `~${r.step_s}s/step` : "—"} · ${r.memory_gb ? `${r.memory_gb} GB` : "Remote"} · ${r.comfort}` +
-          (r.cache_hit_ratio != null ? ` · ${Math.round(r.cache_hit_ratio * 100)}% cache` : "");
-        const useBtn = el("button", "btn", "Use");
-        useBtn.type = "button";
-        useBtn.onclick = async () => {
-          const target = (r.stack && r.stack.planner) || "";
-          if (!target) return;
-          useBtn.disabled = true;
-          await api("/api/models", {method: "POST", body: JSON.stringify({action: "switch", model: target})}).catch((e) => notice(e.message));
-          close(); onReloadModels?.();
-        };
-        board.appendChild(row(r.label, meta, useBtn));
+      for (const r of displayRuns.slice(0, 6)) {
+        const raw = r.raw || historyByKey.get(`${(r.stack && r.stack.id) || ""}|${r.suite || ""}`) ||
+          (benchData.history || []).find((h) => (h.stack?.label === r.label) && (!r.suite || h.suite === r.suite)) || {};
+        const suiteTag = r.suite === "tier1" ? "Quick" : r.suite === "tier2" ? "Tasks" : r.suite || "";
+        const parts = [
+          suiteTag,
+          `${r.passed}/${r.total} passed`,
+          r.step_s ? `~${r.step_s}s/step` : "",
+          raw.read_tok_s ? `${Math.round(raw.read_tok_s)} r / ${Math.round(raw.gen_tok_s || 0)} w tok/s` : "",
+          r.cache_hit_ratio != null ? `${Math.round(r.cache_hit_ratio * 100)}% cache` : "",
+          r.memory_gb ? `${r.memory_gb} GB` : "Server",
+        ].filter(Boolean);
+        const ctrls = [];
+        const items = raw.checks || r.checks || raw.tasks || r.tasks || [];
+        let detailBox = null;
+        if (items.length) {
+          const detBtn = el("button", "linkish small", "Details");
+          detBtn.type = "button";
+          detBtn.onclick = () => { if (detailBox) detailBox.hidden = !detailBox.hidden; };
+          ctrls.push(detBtn);
+        }
+        if (r.stack && r.stack.planner && !r.stack.remote_provider) {
+          const useBtn = el("button", "btn", "Use");
+          useBtn.type = "button";
+          useBtn.onclick = async () => {
+            useBtn.disabled = true;
+            await api("/api/models", {method: "POST", body: JSON.stringify({action: "switch", model: r.stack.planner})}).catch((e) => notice(e.message));
+            close(); onReloadModels?.();
+          };
+          ctrls.push(useBtn);
+        }
+        board.appendChild(row(r.label, parts.join(" · "), ctrls));
+        if (items.length) {
+          detailBox = el("div", "set-bench-detail");
+          detailBox.hidden = r.passed === r.total && r.total > 0;
+          for (const it of items) {
+            const ok = Boolean(it.passed);
+            const line = el("div", "set-bench-item " + (ok ? "ok" : "fail"));
+            const left = el("span", "");
+            left.append(el("span", "mk", ok ? "✓" : "✕"), el("span", "", it.name || "check"));
+            const why = [it.detail || it.why || "", it.seconds != null ? `${it.seconds}s` : ""].filter(Boolean).join(" · ");
+            line.append(left, el("span", "set-bench-item-why", why));
+            line.title = why;
+            detailBox.appendChild(line);
+          }
+          board.appendChild(detailBox);
+        }
       }
       lab.appendChild(board);
     }
@@ -546,14 +602,22 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
       };
       chips.appendChild(b);
     }
-    const idxText = files.files != null ? `${files.files.toLocaleString()} files indexed` : "Background index ready";
+    const totalFiles = files.files != null
+      ? Number(files.files)
+      : Object.values(files.by_kind || {}).reduce((acc, k) => acc + Number((k && k.files) || 0), 0);
+    const idxText = totalFiles > 0 ? `${totalFiles.toLocaleString()} files indexed` : "Background index ready";
     folderRows.push(row("Shared folders", idxText, addBtn));
     const fg = group("Folders on this Mac", folderRows, "Only shared folders are indexed. Keys, .env files, and ~/Library are always skipped.");
     if (chips.childNodes.length) fg.insertBefore(chips, fg.lastChild);
     body.appendChild(fg);
 
-    // Mail / Messages / Notes / Calendar indexing
-    const sources = new Set(files.sources || []);
+    // Mail / Messages / Notes / Calendar indexing (/api/files returns sources as {chosen, enabled, indexed} or an array)
+    const rawSources = files.sources;
+    const sourceList = Array.isArray(rawSources)
+      ? rawSources
+      : [...(rawSources?.chosen || []), ...(rawSources?.enabled || [])];
+    const sources = new Set(sourceList);
+    const sourceCounts = (rawSources && !Array.isArray(rawSources) && rawSources.indexed) || {};
     const srcRows = [];
     for (const [id, label, desc] of [
       ["mail", "Mail", "Index inbox and sent messages (codes and reset links redacted)."],
@@ -561,6 +625,8 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
       ["notes", "Notes", "Search Apple Notes alongside your files."],
       ["calendar", "Calendar", "Index upcoming and recent events."],
     ]) {
+      const n = Number(sourceCounts[id] || 0);
+      const fullDesc = n > 0 ? `${desc} (${n.toLocaleString()} indexed)` : desc;
       const ctrls = [toggleSwitch(sources.has(id), async (on) => {
         await api("/api/files", {method: "POST", body: JSON.stringify(on ? {source_add: id} : {source_remove: id})})
           .catch((e) => notice(e.message));
@@ -572,7 +638,7 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
         fda.onclick = () => window.coderunnerShell.openSystemSettings("Privacy_AllFiles");
         ctrls.unshift(fda);
       }
-      srcRows.push(row(label, desc, ctrls));
+      srcRows.push(row(label, fullDesc, ctrls));
     }
     body.appendChild(group("Apps in search", srcRows));
 
@@ -636,11 +702,14 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
 
   // ---- 4. Browser ----------------------------------------------------------------------------------
   async function renderBrowser(body) {
-    const [data, cfgData] = await Promise.all([api("/api/browser"), api("/api/settings")]);
+    const [data, cfgData, macBrowser] = await Promise.all([
+      api("/api/browser"), api("/api/settings"), api("/api/browser/mac").catch(() => ({available: false})),
+    ]);
     if (active !== "browser") return;
     body.replaceChildren();
     const modes = [
-      ["computer", "Assistant's own computer", "Private Chrome running inside the isolated Linux VM you can watch and take over."],
+      ["computer", "Assistant's own computer + Built-in Mac browser",
+       "Private Chrome inside the isolated Linux VM you can watch and take over. If a site blocks the VM browser, CodeRunner offers to continue in its own built-in Mac browser tab."],
       ["chrome", "Tab group in your Chrome", "Uses a single CodeRunner tab group in your everyday browser; other tabs stay untouched."],
       ["dedicated", "Separate Chrome window", "Clean Chrome profile on this Mac with no shared logins or cookies."],
     ];
@@ -656,6 +725,41 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
       modeRows.push(row(label, desc, radio));
     }
     body.appendChild(group("Where the assistant browses", modeRows));
+
+    if (macBrowser && macBrowser.available) {
+      const macRows = [];
+      const openMacBtn = onOpenMacBrowser ? el("button", "btn", "Open Mac browser") : null;
+      if (openMacBtn) {
+        openMacBtn.type = "button";
+        openMacBtn.onclick = () => { close(); onOpenMacBrowser(); };
+      }
+      const connected = Boolean(macBrowser.app && macBrowser.app.connected);
+      macRows.push(row(
+        "CodeRunner's built-in Mac browser",
+        connected
+          ? "Ready in the workspace panel — its own isolated profile on this Mac, separate from your personal browser. Automatically offered when a site walls off the Linux VM."
+          : "Built into the CodeRunner desktop app with its own isolated profile on this Mac.",
+        openMacBtn,
+      ));
+      const importNames = (macBrowser.browsers || []).map((b) => b.name).filter(Boolean);
+      if (importNames.length) {
+        macRows.push(row(
+          "Sign-in cookie import",
+          `Can import cookies for a single site on demand from ${importNames.join(" or ")} (via the Mac browser's ⋯ menu).`,
+          el("span", "muted small", "On demand"),
+        ));
+      }
+      for (const site of (macBrowser.sites || [])) {
+        const rm = el("button", "btn", "Ask next time");
+        rm.type = "button";
+        rm.onclick = async () => {
+          await api(`/api/grants/${site.id}`, {method: "DELETE"}).catch((e) => notice(e.message));
+          select("browser");
+        };
+        macRows.push(row(site.site, "Always allowed to continue in CodeRunner's built-in Mac browser.", rm));
+      }
+      body.appendChild(group("Built-in Mac browser", macRows));
+    }
 
     if (data.mode === "chrome") {
       const extDir = (data.extension && data.extension.extension_dir) || "";

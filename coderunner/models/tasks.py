@@ -179,8 +179,13 @@ def _config(owner, endpoint, site: fixtures.Sites, documents: pathlib.Path, visi
     from ..core.config import Config
 
     data = json.loads(json.dumps(owner.data))
-    data["models"].update(base_url=endpoint.base_url, chat=endpoint.model, driver={})
+    owner_remote = (owner.data.get("models") or {}).get("remote") or {}
+    keep_server = owner_remote.get("provider") == "openai" and owner_remote.get("base_url")
+    data["models"].update(base_url=endpoint.base_url, chat=endpoint.model, api_key=endpoint.api_key or "",
+                          vision=bool(endpoint.vision), driver={},
+                          remote=dict(owner_remote) if keep_server else {})
     data["browser"].update(mode="dedicated", headless=not visible, allow=["127.0.0.1"])
+    data.setdefault("sandbox", {})["driver"] = "none"
     data["policy"] = {"rules": [{"kind": "browser.interact", "target": "127.0.0.1", "decision": "allow"}]}
     data["files"]["roots"] = [str(documents)]
     data["owner"]["desktop_notifications"] = False
@@ -190,8 +195,12 @@ def _config(owner, endpoint, site: fixtures.Sites, documents: pathlib.Path, visi
 
 def served(config) -> dict:
     """The model being measured, down to the file: the same name can mean another quantization elsewhere."""
+    from . import remote
     from .runtimes import LlamaCppRuntime, OllamaRuntime, choose_runtime
 
+    chosen = remote.active(config)
+    if chosen and chosen.get("provider") == remote.SERVER:
+        return {"runtime": remote.SERVER, "runtime_version": "", "model": chosen["model"], "build": chosen["model"]}
     rt = choose_runtime(config)
     info = {"runtime": rt.name if rt else config.get("models.runtime") or "", "runtime_version": "",
             "model": config.get("models.chat") or "", "build": config.get("models.chat") or ""}
@@ -220,11 +229,21 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
               progress: Callable[[str], None] = print) -> dict:
     """Run the tasks with the served model; returns the result (also saved, see save())."""
     from ..agent import RunContext
-    from . import manager
+    from . import manager, remote
 
     tasks = [t for t in TASKS if not names or t.name in names]
     hw = hardware.detect(float(config.get("sandbox.memory_gb") or 1))
-    endpoint = manager.ensure_running(config)
+    chosen = remote.active(config)
+    if chosen and chosen.get("provider") == remote.SERVER:
+        endpoint = manager.Endpoint(
+            base_url=str(chosen["base_url"]).rstrip("/"),
+            model=str(chosen["model"]),
+            api_key=remote.server_key(),
+            vision=True,
+            embedding_model=config.get("models.embedding") or "",
+        )
+    else:
+        endpoint = manager.ensure_running(config)
     if not endpoint.model or not endpoint.base_url:
         return {"ok": False, "error": "No model is configured yet; run `coderunner setup` first."}
     record = {"suite": SUITE, "date": datetime.date.today().isoformat(), "machine": fingerprint(hw),
@@ -239,7 +258,16 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
         documents = pathlib.Path(tmp) / "Documents"
         fixtures.write_documents(documents)
         paths.ensure_dirs()
+        if chosen and chosen.get("provider") == remote.SERVER and endpoint.api_key:
+            key_file = remote.server_key_path()
+            key_file.parent.mkdir(parents=True, exist_ok=True)
+            key_file.write_text(endpoint.api_key + "\n")
+            key_file.chmod(0o600)
         svc = Daemon(_config(config, endpoint, site, documents, visible)).svc
+        # Tier 2 tasks run in an isolated throwaway home without the owner's sandbox VM.
+        svc.sandbox = None
+        for tool_name in ("run_python", "run_shell", "shell_job"):
+            svc.registry.tools.pop(tool_name, None)
         svc.llm.recover = None                   # a crash is a result here, not something to hide
         meter = Meter(svc.llm)
         asked: list[dict] = []

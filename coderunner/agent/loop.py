@@ -16,7 +16,7 @@ from ..browser.broker import NO_CHANGE
 from ..core import paths
 from ..core.llm import LLM, LLMError
 from ..safety.policy import current_run
-from . import compaction
+from . import compaction, recovery, verify
 from .digest import Readings, cut_level, digest, is_cut, let_go, normal_url, request_words
 from .journal import BROWSER_MOVED, INTERRUPTED, ctx_state, portable, restore_ctx
 from .recipes import Recipes, host_of, matches, save_from_run
@@ -353,10 +353,11 @@ TOO_LONG = ("I had to stop here: this task gathered more than I can keep in mind
 
 
 # An answer that opens by pointing at the thread instead of answering: "The answer is complete and already shared
-# in the thread. To summarize the key findings:" (a 27B, after saying its finding as it worked).
+# in the thread. To summarize the key findings:" (a 27B, after saying its finding as it worked), or internal
+# working narration ("All three verified. Final answer:").
 META_OPENING = re.compile(r"^\s*(?:(?:the|my) answer is (?:complete|above|already)[^.\n]*[.:!]\s*|[^.\n]{0,80}\balready "
                           r"(?:shared|given|said|posted|written) (?:in|above)[^.\n]*[.:!]\s*|(?:to summari[sz]e|in summary)"
-                          r"[^:\n]{0,60}:\s*)+", re.I)
+                          r"[^:\n]{0,60}:\s*|[^\n]{0,120}\bfinal answer\s*:\s*)+", re.I)
 
 
 # A status line that holds a finding rather than what the task is doing: a price, a figure with its unit, a
@@ -798,7 +799,32 @@ class Agent:
         if cut is None or compaction.tokens_of(summarized) < compaction.MIN_SUMMARIZED * held:
             why = "nothing_to_summarize"
         elif held < compaction.SUMMARY_MIN_ROOM and not fast:
-            why = "small_room"              # the key-line trim, in one go: cheaper than a summary at this size
+            # At 32K try the zero-cost extractive trim first; only escalate to an LLM summary if the trim
+            # can no longer bring the conversation below 72% of its room (prevents thrashing 25K re-reads every 2 steps).
+            done = self._fallback(messages, known, context, room, words, size, bool(force))
+            after_trim = done["after"] if done else size
+            if after_trim <= 0.72 * base or ctx.compaction.get("fails", 0) >= compaction.SUMMARY_FAILS:
+                record.update(fallback="small_room", after=after_trim, seconds=round(time.monotonic() - started, 1),
+                              **({"results": done["results"]} if done else {}))
+                if done:
+                    self.svc.audit.write("agent.compacted", conversation=ctx.conversation, **record)
+                return done
+            # Extractive trim left the window congested (>72% full): fall through to structured summary compaction.
+            cut = compaction.cut_point(messages, head, compaction.keep_tokens(held))
+            summarized = [m for m in messages[head:cut or head] if not compaction.is_summary(m)]
+            if cut is None:
+                record.update(fallback="small_room", after=after_trim, seconds=round(time.monotonic() - started, 1),
+                              **({"results": done["results"]} if done else {}))
+                if done:
+                    self.svc.audit.write("agent.compacted", conversation=ctx.conversation, **record)
+                return done
+            text, why, usage = await self._summary(ctx, messages if not force else messages[:cut])
+            if why:
+                ctx.compaction["fails"] = ctx.compaction.get("fails", 0) + 1
+                record.update(fallback=why, after=after_trim, seconds=round(time.monotonic() - started, 1),
+                              **({"results": done["results"]} if done else {}))
+                self.svc.audit.write("agent.compacted", conversation=ctx.conversation, **record)
+                return done
         elif ctx.compaction.get("fails", 0) >= compaction.SUMMARY_FAILS:
             why = "summaries_failed_before"
         else:
@@ -1155,6 +1181,10 @@ class Agent:
         ran_out = False                             # the steps ran out before an answer
         closing = ""                                # the request for an answer when the steps or the room ran out
         repeats = Repeats()
+        monitor = recovery.RunMonitor()             # tracks dead pages, host pivots, stale plans & verified URLs
+        escalate_think = False                      # soft setback (404, bot wall, repeat, pivot): reason next step
+        nudged_extract = False                      # at most one tool-enabled nudge to read results / run_python
+        nudged_python = False
         late_repeats = 0                            # repeated searches and pages after WRAP_FROM steps
         slow_turns = 0                              # consecutive local turns below 30% of calibrated speed
         words = request_words(text)
@@ -1265,14 +1295,23 @@ class Agent:
             # laptop. The plan is therefore appended, and kept, whenever it changes and every few steps, so
             # a small model keeps its place in long tasks.
             since += 1
-            if ctx.plan and (ctx.plan != reminded or since > REMIND_EVERY):
+            replan_hint = monitor.update_plan_progress(ctx.plan)
+            if replan_hint:
+                escalate_think = True
+                self.svc.audit.write("agent.plan_replan", conversation=ctx.conversation, step=step,
+                                     turns=monitor.plan_step_turns, troubles=monitor.plan_step_troubles)
+                ctx.emit({"type": "activity", "event": "agent.pivot", "reason": "Reconsidering stalled plan step"})
+            if ctx.plan and (ctx.plan != reminded or since > REMIND_EVERY or replan_hint):
                 note = PLAN_REMINDER + render_plan(ctx.plan)
                 if all_done(ctx.plan) and not (reminded and all_done(reminded)):
                     note += PLAN_DONE           # once, as the last step is marked done: not a stop
+                if replan_hint:
+                    note += replan_hint
                 messages.append({"role": "user", "content": note})
                 reminded, since = [dict(item) for item in ctx.plan], 1
             steered = self._steer(ctx, messages)        # the owner's words last, just before the request
-            think = None if thinking != "auto" or step == 0 or failed or steered else False
+            think = None if thinking != "auto" or step == 0 or failed or steered or escalate_think else False
+            escalate_think = False
             if thinking == "off" or (thinking == "auto" and steady):
                 think = False
             # Twice the limit where the model may think first: its thinking counts against it.
@@ -1335,13 +1374,39 @@ class Agent:
                     nudged = True
                     messages.append({"role": "user", "content": "Write your reply to me now, based on what you have so far."})
                     continue
-                final = reply["content"] or "(no response)"
-                if reply["content"]:
+                candidate = reply["content"] or ""
+                if candidate and step + 2 < max_steps * STEP_BUDGETS:
+                    read_now = (any(str(t.get("url", "")).startswith("http") for t in ctx.trail)
+                                or any(m.get("role") == "tool" and str(m.get("content", "")).startswith(PAGE_PREFIX)
+                                       for m in messages))
+                    ext_nudge = "" if nudged_extract else verify.needs_extraction_nudge(text, candidate, read_now)
+                    if ext_nudge:
+                        nudged_extract = True
+                        escalate_think = True
+                        messages.append({"role": "assistant", "content": candidate})
+                        messages.append({"role": "user", "content": ext_nudge})
+                        self.svc.audit.write("agent.nudge_extract", conversation=ctx.conversation, step=step)
+                        ctx.emit({"type": "activity", "event": "agent.verify", "reason": "Reading items before answering"})
+                        continue
+                    py_nudge = "" if nudged_python else verify.needs_python_nudge(
+                        text, candidate, monitor.tools_used, "run_python" in self.registry.tools
+                    )
+                    if py_nudge:
+                        nudged_python = True
+                        escalate_think = True
+                        messages.append({"role": "assistant", "content": candidate})
+                        messages.append({"role": "user", "content": py_nudge})
+                        self.svc.audit.write("agent.nudge_python", conversation=ctx.conversation, step=step)
+                        ctx.emit({"type": "activity", "event": "agent.verify", "reason": "Verifying calculations in Python"})
+                        continue
+                final = candidate or "(no response)"
+                if candidate:
                     messages.append({"role": "assistant", "content": final})
                     answered = True
                     followed = self._follow_up(ctx, messages, text, final)
                     if followed is not None:        # the owner wrote while it answered: their next turn, here
                         text, answered, nudged = followed, False, False
+                        nudged_extract = nudged_python = False
                         commit(step)
                         continue
                 break
@@ -1356,9 +1421,13 @@ class Agent:
                 ctx.emit({"type": "note", "text": line})
             step_start = len(messages)
             failed = False
+            step_tools: list[str] = []
+            step_no_change = False
+            step_plan_before = [dict(item) for item in ctx.plan]
             for pos, call in enumerate(reply["tool_calls"]):
                 function = call.get("function", {})
                 name, arguments = function.get("name", ""), function.get("arguments", "{}")
+                step_tools.append(name)
                 key = call_key(name, arguments)
                 if failed:
                     # Later calls were planned on a page the failed step may have changed: the model looks again.
@@ -1370,9 +1439,12 @@ class Agent:
                     plan_before = [dict(item) for item in ctx.plan]
                     ctx.emit({"type": "tool", "id": call.get("id", ""), "name": name, "arguments": arguments})
                     args = parsed(arguments)
-                    kept = readings.kept(name, args, acts)
-                    again = repeats.check(name, arguments, acts - 1, kept=bool(kept))
-                    if kept:
+                    dead_block = monitor.precheck_open(str(args.get("url") or "")) if name == "browser_open" else ""
+                    kept = "" if dead_block else readings.kept(name, args, acts)
+                    again = "" if dead_block else repeats.check(name, arguments, acts - 1, kept=bool(kept))
+                    if dead_block:
+                        result = dead_block
+                    elif kept:
                         # A page read before in this task and not acted on since: what it said, not a new load.
                         said = progress_line(str(args.get("say") or ""), ctx.said)
                         if said:
@@ -1385,7 +1457,16 @@ class Agent:
                             journal.intent(acts, pos, name)     # kept before it runs: a restart now is known
                         result = await self.registry.invoke(name, arguments, ctx)
                     failed = result.startswith("Error:") or "\nError:" in result[:200]
-                    if not failed and not kept:
+                    rec = monitor.record_call(name, args, result, acts, failed)
+                    if rec["needs_think"]:
+                        escalate_think = True
+                    if rec["dead_kind"]:
+                        self.svc.audit.write("agent.dead_page", conversation=ctx.conversation, step=acts,
+                                             kind=rec["dead_kind"], host=rec["pivot_host"] or "")
+                    if rec["pivot_host"]:
+                        ctx.emit({"type": "activity", "event": "agent.pivot", "host": rec["pivot_host"],
+                                  "reason": f"Switching away from {rec['pivot_host']} ({rec['dead_kind'].replace('_', ' ')})"})
+                    if not failed and not kept and not rec["dead_kind"]:
                         readings.record(name, args, result, acts)
                     if not failed:
                         same = "" if kept else repeats.same(name, arguments, result, step)  # recorded either way
@@ -1393,9 +1474,13 @@ class Agent:
                         if again or kept:
                             result += again
                             late_repeats += step >= wrap_from
+                            escalate_think = True
+                    if rec["note"]:
+                        result += rec["note"]
                     # preview: what the thread may show; result: a longer start of it, for the trace a developer
                     # reads (server/trace.py), kept only where it says more than the preview.
-                    ctx.emit({"type": "tool_done", "id": call.get("id", ""), "name": name, "ok": not failed,
+                    ctx.emit({"type": "tool_done", "id": call.get("id", ""), "name": name,
+                              "ok": not failed and not rec["dead_kind"],
                               "preview": result[:300], **({"result": result[:2000]} if len(result) > 300 else {})})
                     if ctx.plan != plan_before:
                         ctx.emit({"type": "plan", "steps": ctx.plan})
@@ -1410,13 +1495,30 @@ class Agent:
                     if singles >= SINGLES_BEFORE_HINT and singles % SINGLES_BEFORE_HINT == 0 and not failed:
                         result += BATCH_HINT.format(count=singles)
                     if name.startswith("browser_") and name not in PASSIVE_BROWSER:
-                        stuck = stuck + 1 if failed or NO_CHANGE in result else 0
+                        no_chg = NO_CHANGE in result
+                        if no_chg:
+                            step_no_change = True
+                            escalate_think = True
+                        stuck = stuck + 1 if failed or no_chg else 0
                         if handover and stuck == STUCK_BEFORE_HINT:
                             result += HANDOVER_HINT.format(count=stuck)
                     result += await self._site_note(ctx, name, arguments, failed)
                 messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result})
                 if journal is not None:
                     journal.result(acts, pos, name, result, ctx_state(ctx))
+            step_check = monitor.record_step_tools(
+                step_tools, any_no_change=step_no_change, plan_changed=(ctx.plan != step_plan_before)
+            )
+            if step_check["needs_think"]:
+                escalate_think = True
+            if step_check["note"] and messages and messages[-1].get("role") == "tool":
+                messages[-1] = {**messages[-1], "content": str(messages[-1].get("content") or "") + step_check["note"]}
+            if step_check["force_answer"]:
+                self.svc.audit.write("agent.plan_stuck", conversation=ctx.conversation, step=step)
+                ctx.emit({"type": "activity", "event": "agent.pivot", "reason": "Breaking repeated plan loop to answer"})
+                final = ctx.interim or stopped_reply(ctx)
+                closing = recovery.PLAN_STUCK_ANSWER
+                break
             over = self._size(messages, known) - FIT * room
             if over > 0:
                 self._cut_step(messages, step_start, int(over * NEW_CHARS))
@@ -1433,9 +1535,9 @@ class Agent:
             final = ctx.interim or "I stopped after reaching the step limit. Tell me how you'd like to continue."
             closing = OUT_OF_STEPS
         if closing:
-            # Steps or room that ran out leave the task unfinished; one that went round in circles answered from
-            # what it had, and says itself if something is missing (UNDONE).
-            ran_out = closing != GOING_ROUND
+            # Steps or room that ran out leave the task unfinished; one that went round in circles or broke a
+            # plan-only spin answered from what it had, and says itself if something is missing (UNDONE).
+            ran_out = closing not in (GOING_ROUND, recovery.PLAN_STUCK_ANSWER)
             messages.append({"role": "user", "content": closing})
             try:
                 # Same tools as every other request, only switched off: a request without them is a different
@@ -1454,18 +1556,44 @@ class Agent:
         read_pages = (any(str(t.get("url", "")).startswith("http") for t in ctx.trail)
                       or any(m.get("role") == "tool" and str(m.get("content", "")).startswith(PAGE_PREFIX)
                              for m in messages))
+        verified_pages = monitor.verified_pages(ctx.trail)
         asked = bool(WANTS_LINKS.search(text))
+        repaired = False
         if ((asked or len(final) >= LINKS_MIN_CHARS) and not HAS_LINK.search(final) and read_pages and not again
                 and messages[-1].get("role") == "assistant"):
-            messages.append({"role": "user", "content": ADD_LINKS.format(asked=", and I asked for them" if asked else "")})
+            prompt = ADD_LINKS.format(asked=", and I asked for them" if asked else "")
+            if verified_pages:
+                url_lines = [f"- {p.url}" + (f" ({p.title})" if p.title else "") for p in verified_pages[:12]]
+                prompt += "\n\nVerified URLs opened in this task:\n" + "\n".join(url_lines)
+            messages.append({"role": "user", "content": prompt})
             try:
                 reply = await self._turn(ctx, messages, False, {"max_tokens": limit} if limit else {},
                                          tool_choice="none")
                 if HAS_LINK.search(reply["content"] or ""):
                     final = reply["content"]
+                    repaired = True
                     self.svc.audit.write("agent.links_added", conversation=ctx.conversation)
+                    ctx.emit({"type": "activity", "event": "agent.verify", "reason": "Added verified source links"})
             except LLMError:
                 pass
+        if not repaired and not again and messages[-1].get("role") == "assistant":
+            repair_prompt, repair_think = verify.build_repair_prompt(
+                text, final, verified_pages, read_pages,
+                min_chars_for_links=LINKS_MIN_CHARS, tools_used=monitor.tools_used,
+            )
+            if repair_prompt:
+                messages.append({"role": "user", "content": repair_prompt})
+                try:
+                    use_think = None if (repair_think and thinking != "off" and not steady) else False
+                    cap = {"max_tokens": limit * (1 if use_think is False else 2)} if limit else {}
+                    reply = await self._turn(ctx, messages, use_think, cap, tool_choice="none")
+                    fixed = (reply.get("content") or "").strip()
+                    if fixed and len(fixed) >= min(60, len(final) // 2):
+                        final = fixed
+                        self.svc.audit.write("agent.answer_verified", conversation=ctx.conversation)
+                        ctx.emit({"type": "activity", "event": "agent.verify", "reason": "Verified accuracy, links & completeness"})
+                except LLMError:
+                    pass
         final = without_meta(final)
         ctx.incomplete = ran_out or bool(UNDONE.search(final))
         if ctx.events is not None:

@@ -141,8 +141,23 @@
     <div id="screenContext" class="screen-context muted small" hidden></div>
 
     <div id="screenWrap">
-      <div id="screen"></div>
-      <div id="shotFallback" class="shot-fallback" hidden></div>
+      <div id="screenStage" class="screen-stage">
+        <div id="screen"></div>
+        <div id="shotFallback" class="shot-fallback" hidden></div>
+        <div id="screenNote" class="screen-note">Connecting to the screen…</div>
+      </div>
+      <section id="screenDeck" class="screen-deck" aria-label="Workspace activity">
+        <div class="deck-head">
+          <div class="deck-tabs" role="tablist" aria-label="Workspace details">
+            <button id="deckTabActivity" class="deck-tab on" type="button" role="tab" aria-selected="true">Activity<span id="deckCountActivity" class="deck-count" hidden></span></button>
+            <button id="deckTabPages" class="deck-tab" type="button" role="tab" aria-selected="false">Pages<span id="deckCountPages" class="deck-count" hidden></span></button>
+            <button id="deckTabFiles" class="deck-tab" type="button" role="tab" aria-selected="false">Files<span id="deckCountFiles" class="deck-count" hidden></span></button>
+          </div>
+          <div id="deckMeta" class="deck-meta"></div>
+        </div>
+        <div id="deckPlan" class="deck-plan" hidden></div>
+        <div id="deckBody" class="deck-body"></div>
+      </section>
       <div id="term" hidden><div id="termNote" class="term-note">Connecting…</div></div>
       <div id="browser" class="single-tab" hidden>
         <div id="bTabs" class="b-tabs" role="tablist" aria-label="Pages"></div>
@@ -172,7 +187,6 @@
           <span class="mac-action-chev" data-ico="chevRight"></span>
         </button>
       </div>
-      <div id="screenNote" class="screen-note">Connecting to the screen…</div>
     </div>
 
     <div class="panel-foot now-section">

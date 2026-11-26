@@ -44,7 +44,7 @@ NOT_CHAT = re.compile(r"(?i)(?:^|[-_])(base|embed\w*|rerank\w*|guard|reward|tts|
 # test would reject them, but only after a multi-gigabyte download, so they are left out up front.
 SPECIALIST = re.compile(r"(?i)(ocr|parsing|gui[-_ ]?(agent|owl)|computer.?use|ui.?agent|ui-mate|fara\d|robot|"
                         r"embodied|[-_]driv(e|ing)|medical|translat|retriev|decision|router|linter|guard|math|prover|"
-                        r"aescode)")
+                        r"aescode|userrep|repgen|persona)")
 # GGUF files that ride along with a model but are not it: speculative-decoding heads, encoders...
 AUXILIARY = re.compile(r"(?i)(mmproj|mtp|draft|eagle|dflash|vision|encoder|audio|tokenizer|projector)")
 # Bits per weight of common GGUF quantizations; higher keeps more of the model's quality.
