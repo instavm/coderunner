@@ -314,6 +314,44 @@ def admin_app(svc, daemon) -> Starlette:
         svc.policy.revoke(int(request.path_params["id"]))
         return JSONResponse({"revoked": True})
 
+    async def mac_browser(request: Request):
+        """The browser on the Mac a blocked site continues in: whether it is there, the sites always let through
+        (grants the owner clears with DELETE /api/grants/{id}), and the browsers whose sign-ins could be brought."""
+        bridge = getattr(svc, "app_browser", None)
+        if bridge is None:
+            return JSONResponse({"available": False, "sites": [], "browsers": []})
+        from ..browser import cookies
+        sites = [{"id": g["id"], "site": g["target"]} for g in svc.policy.grants()
+                 if g.get("kind") == "browser.mac" and g.get("id") is not None]
+        return JSONResponse({"available": True, "app": bridge.status(), "sites": sites,
+                             "browsers": [{"id": name, "name": cookies.NAMES[name]} for name in cookies.installed()]})
+
+    async def mac_browser_import(request: Request):
+        """The owner's sign-ins for the sites they ticked, from their own browser into the app's browser. Only the
+        app on this Mac may ask (the admin token), never a paired device; macOS asks the owner for the Keychain."""
+        if principal(request) != "admin-token":
+            return JSONResponse({"error": "Only the app on this Mac can do this"}, status_code=403)
+        bridge = getattr(svc, "app_browser", None)
+        if bridge is None or not bridge.connected():
+            return JSONResponse({"error": "Open the CodeRunner app first"}, status_code=409)
+        from ..browser import cookies
+        body = {}
+        with contextlib.suppress(Exception):
+            body = await request.json()
+        browser = str(body.get("browser") or (cookies.installed() or ["chrome"])[0])
+        domains = body.get("domains") if isinstance(body.get("domains"), list) else []
+        try:
+            found = await asyncio.to_thread(cookies.read, browser, domains)
+            done = await bridge.set_cookies(found)
+        except cookies.CookieError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception as exc:            # the app went away, or did not answer
+            return JSONResponse({"error": f"The sign-ins could not be brought over: {exc}"}, status_code=502)
+        # Which sites and how many, never a cookie's name or value.
+        svc.audit.write("browser.cookies_imported", browser=browser, sites=cookies.clean_domains(domains),
+                        count=done["set"], failed=done["failed"], origin=principal(request))
+        return JSONResponse({"imported": done["set"], "failed": done["failed"], "browser": cookies.NAMES[browser]})
+
     async def audit(request: Request):
         return JSONResponse(svc.audit.tail(int(request.query_params.get("limit", 100))))
 
@@ -968,6 +1006,8 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/approvals/{id}", decide, methods=["POST"]),
         Route("/api/grants", grants, methods=["GET"]),
         Route("/api/grants/{id:int}", revoke, methods=["DELETE"]),
+        Route("/api/browser/mac", mac_browser, methods=["GET"]),
+        Route("/api/browser/mac/import", mac_browser_import, methods=["POST"]),
         Route("/api/audit", audit, methods=["GET"]),
         Route("/api/chat", chat, methods=["POST"]),
         Route("/api/chat/{conversation}", history, methods=["GET"]),

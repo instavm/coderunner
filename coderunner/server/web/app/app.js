@@ -384,6 +384,8 @@ class TaskView {
 
   ask(e) {
     const handoff = e.kind === "browser.handoff";
+    const mac = e.kind === "browser.mac";               // a blocked site, to go on in the browser on this Mac
+    const onMac = handoff && e.detail?.browser === "mac" && shellBrowser;     // a step that is the owner's, there
     const card = el("div", "ask");
     card.appendChild(el("div", "ask-title", handoff ? "Your turn on the computer" : "Needs your approval"));
     // One sentence says what is asked; the step itself (a script, a form) is shown small under it.
@@ -421,7 +423,42 @@ class TaskView {
       closeAsk(e.id, allow);
       this.setNow(before);            // no longer waiting for the owner
     };
-    if (handoff) {
+    if (mac) {
+      // Their sign-in for the site may come along, the first time only, and only if they tick it.
+      const signIn = e.detail?.sign_in && shellBrowser ? el("label", "ask-check") : null;
+      if (signIn) {
+        const box = el("input", "");
+        box.type = "checkbox";
+        signIn.append(box, el("span", "", `Use my ${BROWSER_NAMES[e.detail.sign_in] || "browser"} sign-in for ${e.target}`));
+        card.appendChild(signIn);
+      }
+      const yes = async (scope) => {
+        if (signIn?.querySelector("input").checked) {
+          try { await api("/api/browser/mac/import", {method: "POST", body: JSON.stringify({domains: [e.target], browser: e.detail.sign_in})}); }
+          catch (err) { notice(err.message); }
+        }
+        await decide(true, scope);
+        if (shellBrowser) { showComputer(true); setView("browser"); }
+      };
+      const once = el("button", "btn primary", "Allow once");
+      once.onclick = () => yes("once");
+      const always = el("button", "btn", "Always for this site");
+      always.onclick = () => yes("always");
+      const no = el("button", "btn danger", "No");
+      no.onclick = () => decide(false);
+      row.append(once, always, no);
+    } else if (onMac) {
+      // The page is in the browser on this Mac: the Browser tab is where the owner does it.
+      const look = el("button", "btn primary", "Show");
+      const done = el("button", "btn", "I'm done");
+      look.onclick = () => { showComputer(true); setView("browser"); look.remove(); done.classList.add("primary"); };
+      done.onclick = () => decide(true);
+      const skip = el("button", "btn danger", "Skip");
+      skip.onclick = () => decide(false);
+      row.append(look, done, skip);
+      showComputer(true);
+      setView("browser");
+    } else if (handoff) {
       const take = el("button", "btn primary", "Take control");
       const done = el("button", "btn", "I'm done");
       const finish = () => { setControl(false); setExpanded(false); decide(true); };
@@ -1306,7 +1343,7 @@ async function connectScreen() {
 // Taking control is only offered while the screen is connected: with no screen there is nothing to take, and the
 // tasks would wait for an owner who cannot see them.
 function showSwitch(connected) {
-  $("control").hidden = !connected;
+  $("control").hidden = !connected || view !== "screen";
   if (!connected && control) setControl(false);
 }
 function setControl(on) {
@@ -1341,10 +1378,12 @@ function showComputer(on, remember = false) {
   $("shell").classList.toggle("no-computer", !on);
   if (remember) keepPane("computer", on);
   if (on) fitTerminal();
+  placeBrowser();
 }
 function showSidebar(on, remember = true) {
   $("shell").classList.toggle("no-sidebar", !on);
   if (remember) keepPane("sidebar", on);
+  placeBrowser();
 }
 
 // ---- the computer's terminal: a tab beside the screen ------------------------------
@@ -1355,30 +1394,43 @@ function showSidebar(on, remember = true) {
 const VIEW_KEY = "coderunner.computerView";
 const termState = {term: null, fit: null, ws: null, wait: 1000, timer: null, loading: null, size: ""};
 let view = "screen";
+// The browser on this Mac (the Browser tab): only in the desktop app, whose shell holds the browser itself.
+const shellBrowser = window.coderunnerShell?.browser || null;
 
 function setView(next, remember = true) {
-  view = next === "terminal" ? "terminal" : next === "mac" ? "mac" : "screen";
-  const terminal = view === "terminal", mac = view === "mac", screen = view === "screen";
-  if (!screen && control) setControl(false);           // the screen is handed back: nothing waits on the owner
-  $("viewScreen").classList.toggle("on", screen);
-  $("viewTerminal").classList.toggle("on", terminal);
-  $("viewMac")?.classList.toggle("on", mac);
-  $("viewScreen").setAttribute("aria-selected", String(screen));
-  $("viewTerminal").setAttribute("aria-selected", String(terminal));
-  $("viewMac")?.setAttribute("aria-selected", String(mac));
+  view = next === "terminal" ? "terminal"
+    : next === "browser" && shellBrowser ? "browser"
+    : next === "mac" ? "mac"
+    : "screen";
+  const terminal = view === "terminal", browsing = view === "browser", mac = view === "mac", screen = view === "screen";
+  if (!screen && control) setControl(false);   // the screen is handed back: nothing waits on the owner
+  for (const [id, name] of [["viewScreen", "screen"], ["viewTerminal", "terminal"], ["viewBrowser", "browser"], ["viewMac", "mac"]]) {
+    $(id)?.classList.toggle("on", view === name);
+    $(id)?.setAttribute("aria-selected", String(view === name));
+  }
   $("screenWrap").classList.toggle("terminal", terminal);
+  $("screenWrap").classList.toggle("browsing", browsing);
   $("screenWrap").classList.toggle("mac-on", mac);
-  $("computer").classList.toggle("terminal-on", terminal || mac);
+  $("computer").classList.toggle("terminal-on", terminal || browsing || mac);   // light or dark like the app, not the desktop
   $("term").hidden = !terminal;
+  if ($("browser")) $("browser").hidden = !browsing;
   if ($("macPane")) $("macPane").hidden = !mac;
-  if ($("panelBar")) $("panelBar").hidden = !screen;
+  // Screen and terminal are the sandbox VM's; the browser is CodeRunner's own, on this Mac: the head says whose.
+  if ($("panelTitle")) $("panelTitle").textContent = browsing ? "Browser on this Mac" : "Assistant's computer";
+  if ($("panelBar")) $("panelBar").hidden = !(screen || browsing);
+  if ($("computerState")) $("computerState").hidden = browsing;
+  if ($("computerDot")) $("computerDot").hidden = browsing;
+  if ($("addressPill")) $("addressPill").hidden = browsing;
+  if ($("control")) $("control").hidden = !screen || !Boolean(rfb?.connected);
+  if ($("macState")) $("macState").hidden = !browsing;
   if (remember && !mac) { try { localStorage.setItem(VIEW_KEY, view); } catch { /* private window: not remembered */ } }
   setPanelWidth();
   if (terminal) openTerminal();
   if (mac) refreshMacPane();
+  placeBrowser();
 }
 
-// The panel's width: its default from the stylesheet, 15% wider with the terminal open (a terminal wants columns),
+// The panel's width: its default from the stylesheet, 15% wider with the terminal or the browser open (they want columns),
 // or what the owner dragged its edge to, kept for each tab.
 const WIDTH_KEY = "coderunner.panelWidth";
 function savedWidths() { try { return JSON.parse(localStorage.getItem(WIDTH_KEY) || "{}"); } catch { return {}; } }
@@ -1389,7 +1441,7 @@ function setPanelWidth(px) {
     const saved = savedWidths()[view];
     if (!saved) {
       shell.style.removeProperty("--panel");
-      if (view !== "terminal") return;
+      if (view === "screen") return;
       px = parseFloat(getComputedStyle($("computer")).width) * 1.15;
     } else px = saved;
   }
@@ -1522,6 +1574,7 @@ function connectTerminal() {
 
 $("viewScreen").onclick = () => setView("screen");
 $("viewTerminal").onclick = () => setView("terminal");
+$("viewBrowser").onclick = () => setView("browser");
 try { if (localStorage.getItem(VIEW_KEY) === "terminal") setView("terminal", false); } catch { /* not remembered */ }
 setPanelWidth();                  // the width the owner left it at
 window.addEventListener("resize", () => { if (savedWidths()[view]) setPanelWidth(); });
@@ -1634,6 +1687,7 @@ async function loadModels() {
       "Planned by Claude on Anthropic's API, and carried out on a private Linux machine with its own browser that you can watch and take over." :
       "Tasks run on your own computer: local models, and a private Linux machine with its own browser that you can watch and take over.";
     loadRemote();
+    loadMacBrowser();
   } catch { /* shown once the daemon answers */ }
 }
 
@@ -2558,6 +2612,247 @@ async function checkSetup() {
   return true;
 }
 
+// ---- the browser on this Mac: a tab beside the screen and the terminal --------------------------------
+// The shell keeps the browser itself (app/browser.js); this page draws its tabs, the address and three buttons,
+// and says where it goes. A site that blocks the sandbox's browser continues here once the owner allows it.
+
+const BROWSER_NAMES = {chrome: "Chrome", brave: "Brave", edge: "Edge", chromium: "Chromium", firefox: "Firefox"};
+const BACK_ICON = "M15 6l-6 6l6 6";
+const FORWARD_ICON = "M9 6l6 6l-6 6";
+const RELOAD_ICON = "M19 12a7 7 0 1 1-2-4.9 M19 4v4h-4";
+const MORE_ICON = "M5 12h.01 M12 12h.01 M19 12h.01";
+const browserState = {tabs: [], canBack: false, canForward: false, connected: false, keep: "always", placed: "", timer: null,
+                      covered: false};
+
+function placeBrowser() {
+  if (!shellBrowser) return;
+  const r = $("bView").getBoundingClientRect();
+  const shown = view === "browser" && !$("shell").classList.contains("no-computer") && !document.hidden &&
+    !document.querySelector(".lightbox, .set-backdrop") && !browserState.covered && r.width > 0 && r.height > 0;
+  const placed = `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)},${shown}`;
+  if (placed === browserState.placed) return;
+  browserState.placed = placed;
+  shellBrowser.place({x: r.left, y: r.top, width: r.width, height: r.height}, shown);
+}
+
+const hostOf = (url) => { try { return new URL(url).host.replace(/^www\./, ""); } catch { return ""; } };
+
+function drawBrowser(next) {
+  Object.assign(browserState, next || {});
+  const tabs = browserState.tabs || [];
+  const row = $("bTabs");
+  row.replaceChildren();
+  for (const tab of tabs) {
+    const item = el("div", "b-tab" + (tab.active ? " on" : "") + (tab.assistant ? " assistant" : ""));
+    item.setAttribute("role", "tab");
+    item.setAttribute("aria-selected", String(tab.active));
+    const name = tab.title || hostOf(tab.url) || "New tab";
+    item.title = tab.assistant ? `${name} · in use by the assistant` : name;
+    const label = el("span", "b-tab-name", name);
+    item.onclick = () => shellBrowser.act({action: "select", id: tab.id});
+    const close = el("button", "b-tab-close");
+    close.type = "button";
+    close.setAttribute("aria-label", `Close ${name}`);
+    close.replaceChildren(icon(CLOSE_ICON));
+    close.onclick = (event) => { event.stopPropagation(); shellBrowser.act({action: "close", id: tab.id}); };
+    item.append(label, close);
+    row.appendChild(item);
+  }
+  const add = el("button", "b-btn b-new");
+  add.type = "button";
+  add.title = "New tab";
+  add.setAttribute("aria-label", "New tab");
+  add.replaceChildren(icon(PLUS_ICON));
+  add.onclick = () => { shellBrowser.act({action: "new"}); $("bUrl").focus(); };
+  row.appendChild(add);
+  const active = tabs.find((tab) => tab.active);
+  if (document.activeElement !== $("bUrl")) $("bUrl").value = active && active.url !== "about:blank" ? active.url : "";
+  $("bBack").disabled = !browserState.canBack;
+  $("bForward").disabled = !browserState.canForward;
+  $("bReload").classList.toggle("loading", Boolean(active?.loading));
+  $("bNote").hidden = tabs.length > 0;
+  placeBrowser();
+}
+
+function startBrowser() {
+  if (!shellBrowser) return;
+  $("viewBrowser").hidden = false;
+  $("viewsGap").hidden = false;
+  for (const [id, d] of [["bBack", BACK_ICON], ["bForward", FORWARD_ICON], ["bReload", RELOAD_ICON], ["bMore", MORE_ICON]])
+    $(id).replaceChildren(icon(d));
+  $("bMore").onclick = () => ($("bMenu").hidden ? openBrowserMenu() : closeBrowserMenu());
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !$("bMenu").hidden) closeBrowserMenu(); });
+  document.addEventListener("pointerdown", (event) => {
+    if (!$("bMenu").hidden && !event.target.closest?.("#bMenu, #bMore")) closeBrowserMenu();
+  });
+  $("bBack").onclick = () => shellBrowser.act({action: "back"});
+  $("bForward").onclick = () => shellBrowser.act({action: "forward"});
+  $("bReload").onclick = () => shellBrowser.act({action: "reload"});
+  $("bBar").onsubmit = (event) => {
+    event.preventDefault();
+    const typed = $("bUrl").value.trim();
+    if (typed) shellBrowser.act({action: "go", url: typed});
+    $("bUrl").blur();
+  };
+  shellBrowser.onState((next) => drawBrowser(next));
+  // The assistant went on with a page here: the tab is shown, unless the owner has the sandbox's screen.
+  shellBrowser.onFront(() => { if (!control && !$("shell").classList.contains("no-computer")) setView("browser"); });
+  shellBrowser.state().then((first) => drawBrowser(first)).catch(() => {});
+  new ResizeObserver(() => placeBrowser()).observe($("bView"));
+  $("computer").addEventListener("scroll", placeBrowser, {passive: true});
+  window.addEventListener("resize", placeBrowser);
+  document.addEventListener("visibilitychange", placeBrowser);
+  // A move with no change of size (the sidebar put away, the panel scrolled by a fold opening) is caught here.
+  browserState.timer = setInterval(() => { if (view === "browser" || browserState.placed.endsWith("true")) placeBrowser(); }, 400);
+  try { if (localStorage.getItem(VIEW_KEY) === "browser") setView("browser", false); } catch { /* not remembered */ }
+}
+
+// The "..." menu beside the address: the page's address out (the default browser, the clipboard), its cookies in
+// (import, for the sites the owner names), how long cookies stay, and a clean slate. The page itself is a view
+// drawn over everything here, so while the menu is open the page is shown as a still in its place.
+async function coverBrowser(on) {
+  if (on && !browserState.covered) {
+    const still = await shellBrowser.act({action: "still"}).catch(() => "");
+    $("bView").style.backgroundImage = still ? `url("${still}")` : "";
+  }
+  browserState.covered = on;
+  if (!on) $("bView").style.backgroundImage = "";
+  placeBrowser();
+}
+
+function menuItem(label, onclick, {danger = false, disabled = false} = {}) {
+  const item = el("button", "b-item" + (danger ? " danger" : ""), label);
+  item.type = "button";
+  item.setAttribute("role", "menuitem");
+  item.disabled = disabled;
+  item.onclick = onclick;
+  return item;
+}
+
+async function openBrowserMenu() {
+  const menu = $("bMenu"), active = (browserState.tabs || []).find((tab) => tab.active);
+  const web = /^https?:/.test(active?.url || "");
+  await coverBrowser(true);
+  const keep = el("div", "b-item");
+  const choice = el("div", "b-keep");
+  for (const [mode, label] of [["quit", "Until quit"], ["always", "Always"]]) {
+    const button = el("button", browserState.keep === mode ? "on" : "", label);
+    button.type = "button";
+    button.setAttribute("aria-pressed", String(browserState.keep === mode));
+    button.onclick = async () => {
+      browserState.keep = await shellBrowser.act({action: "keep", url: mode});
+      choice.querySelectorAll("button").forEach((b) => { b.classList.toggle("on", b === button); b.setAttribute("aria-pressed", String(b === button)); });
+    };
+    choice.appendChild(button);
+  }
+  keep.append(el("span", "", "Keep cookies"), choice);
+  menu.replaceChildren(
+    menuItem("Open in default browser", () => { shellBrowser.act({action: "open-outside"}); closeBrowserMenu(); }, {disabled: !web}),
+    menuItem("Copy link", () => { shellBrowser.act({action: "copy"}); closeBrowserMenu(); notice("Link copied."); }, {disabled: !web}),
+    el("div", "b-sep"),
+    menuItem("Import cookies…", () => importForm(active?.url)),
+    keep,
+    el("div", "b-sep"),
+    menuItem("Clear browsing data", () => clearForm(), {danger: true}));
+  menu.hidden = false;
+  $("bMore").setAttribute("aria-expanded", "true");
+}
+
+function closeBrowserMenu() {
+  $("bMenu").hidden = true;
+  $("bMore").setAttribute("aria-expanded", "false");
+  coverBrowser(false);
+}
+
+function formRow(...buttons) {
+  const row = el("div", "row");
+  row.append(...buttons);
+  return row;
+}
+
+// Asked once, then done: this browser's cookies, site data, cache and history; nothing of the owner's own browser.
+function clearForm() {
+  const form = el("div", "b-form");
+  const cancel = el("button", "btn", "Cancel");
+  const clear = el("button", "btn danger-fill", "Clear");
+  cancel.type = clear.type = "button";
+  cancel.onclick = () => closeBrowserMenu();
+  clear.onclick = async () => {
+    clear.disabled = true;
+    try { await shellBrowser.act({action: "clear"}); notice("Browsing data cleared."); }
+    catch { notice("That did not work. Try again."); }
+    closeBrowserMenu();
+  };
+  form.append(el("p", "", "Clear cookies, site data and history in this browser? You will be signed out of its sites."),
+              formRow(cancel, clear));
+  $("bMenu").replaceChildren(form);
+}
+
+// Cookies from the owner's own browser, for the one site they name (the page's site to start with).
+async function importForm(url) {
+  const form = el("form", "b-form");
+  const site = el("input", "");
+  site.placeholder = "example.com";
+  site.setAttribute("aria-label", "Site");
+  try { site.value = new URL(url || "").hostname.replace(/^www\./, ""); } catch { /* no page: the owner types the site */ }
+  const from = el("select", "");
+  from.setAttribute("aria-label", "From");
+  let info = {};
+  try { info = await api("/api/browser/mac"); } catch { /* said below */ }
+  for (const browser of info.browsers || []) from.appendChild(Object.assign(el("option", "", browser.name), {value: browser.id}));
+  const cancel = el("button", "btn", "Cancel");
+  const go = el("button", "btn primary", "Import");
+  cancel.type = "button";
+  go.type = "submit";
+  cancel.onclick = () => closeBrowserMenu();
+  const none = !(info.browsers || []).length;
+  go.disabled = none;
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const name = site.value.trim();
+    if (!name) return;
+    go.disabled = true;
+    try {
+      const done = await api("/api/browser/mac/import", {method: "POST", body: JSON.stringify({domains: [name], browser: from.value})});
+      notice(done.imported ? `Imported ${done.imported} cookies for ${name}.` : `No ${done.browser} cookies for ${name}.`);
+      closeBrowserMenu();
+    } catch (err) { notice(err.message); go.disabled = false; }
+  };
+  form.append(el("p", "", none ? "No Chrome or Firefox cookies were found on this Mac." :
+                 "Your sign-in for one site, from your own browser. macOS asks first."),
+              site, from, formRow(cancel, go));
+  $("bMenu").replaceChildren(form);
+  site.focus();
+}
+
+// Models and privacy: the sites always let through to this Mac's browser, each cleared with one click (cookies
+// come in from the Browser tab's menu).
+async function loadMacBrowser() {
+  const box = $("macBox");
+  let info;
+  try { info = await api("/api/browser/mac"); } catch { return; }
+  box.replaceChildren();
+  if (!info.available) return;
+  const sites = info.sites || [];
+  if (sites.length) {
+    box.appendChild(el("div", "mac-title muted", "Always in your Mac's browser"));
+    for (const entry of sites) {
+      const line = el("div", "mac-site");
+      const clear = el("button", "b-tab-close");
+      clear.type = "button";
+      clear.title = "Ask again next time";
+      clear.setAttribute("aria-label", `Stop using your Mac's browser for ${entry.site} without asking`);
+      clear.replaceChildren(icon(CLOSE_ICON));
+      clear.onclick = async () => {
+        try { await api(`/api/grants/${entry.id}`, {method: "DELETE"}); } catch (err) { notice(err.message); }
+        loadMacBrowser();
+      };
+      line.append(el("span", "", entry.site), clear);
+      box.appendChild(line);
+    }
+  }
+}
+
 // ---- start -------------------------------------------------------------------------
 
 // A thread opened by id: #c=<id> in the address (the desktop app's menu bar or a notification, as the window
@@ -2708,4 +3003,5 @@ checkSetup().then((firstRun) => {
 });
 listen();
 connectScreen();
+startBrowser();
 tellControl(false);           // a window closed while it had the screen would otherwise keep the tasks waiting

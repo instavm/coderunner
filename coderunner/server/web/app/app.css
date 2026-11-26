@@ -4,7 +4,7 @@
   --bg: #faf9f7; --surface: #ffffff; --surface-2: #f4f3ef; --panel-bg: #f6f5f1; --line: #e5e3de; --text: #1f1e1b; --muted: #75736d;
   --accent: #2563eb; --fill: #2563eb; --accent-soft: #e3ebfd; --accent-text: #ffffff; --warn: #9a5216; --warn-soft: #f7e8d8;
   --danger: #c0392f; --ok: #1f8a4c; --shadow: 0 1px 2px rgb(0 0 0 / 5%);
-  --radius: 10px; --bar: 44px; --sidebar: clamp(216px, 19.5vw, 252px); --panel: clamp(360px, 37vw, 520px);
+  --radius: 10px; --bar: 44px; --sidebar: clamp(216px, 19.5vw, 252px); --panel: clamp(368px, 37vw, 520px);
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -328,6 +328,9 @@ a.att-file:hover { border-color: var(--accent); }
 #screen canvas { cursor: default; }
 .screen-note { position: absolute; inset: 0; display: grid; place-items: center; color: #bdbab1; font-size: 13px; padding: 20px; text-align: center; pointer-events: none; }
 .screen-note:empty { display: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+.views-gap { width: 1px; height: 14px; margin: 0 3px; background: var(--line); flex: none; }
+.views-gap[hidden] { display: none; }
 .control { display: flex; flex: none; background: rgb(0 0 0 / 6%); border-radius: 7px; padding: 2px; }
 .seg { border: 0; background: none; color: var(--muted); padding: 2px 8px; border-radius: 5px; font-size: 11.5px; white-space: nowrap; }
 .seg:not(.on):hover { color: var(--text); }
@@ -357,6 +360,59 @@ a.att-file:hover { border-color: var(--accent); }
 #screenWrap.terminal { background: var(--surface); }
 #screenWrap.terminal #screen { visibility: hidden; }
 #screenWrap.terminal .screen-note { display: none; }
+/* The browser on this Mac: tabs, one row of buttons and the address, then the page itself, which the app's shell
+   draws over #bView. Light or dark with the app, like the terminal. */
+#screenWrap.browsing { flex: 1; background: var(--surface); }
+#screenWrap.browsing #screen { visibility: hidden; }
+#screenWrap.browsing .screen-note { display: none; }
+#browser { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--surface); }
+#browser[hidden] { display: none; }
+.b-tabs { display: flex; align-items: center; gap: 2px; padding: 6px 6px 0; background: var(--surface-2); overflow-x: auto; scrollbar-width: none; flex: none; }
+.b-tab { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 180px; flex: 0 1 180px; height: 28px; padding: 0 4px 0 10px;
+  border-radius: 8px 8px 0 0; font-size: 12px; color: var(--muted); cursor: default; }
+.b-tab:hover { color: var(--text); }
+.b-tab.on { background: var(--surface); color: var(--text); }
+.b-tab.assistant .b-tab-name::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--fill); margin-right: 6px; vertical-align: 1px; }
+.b-tab-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.b-tab-close { border: 0; background: none; width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; padding: 0; flex: none; opacity: .7; }
+.b-tab-close:hover { background: var(--line); opacity: 1; }
+.b-tab-close .ico, .b-btn .ico { width: 14px; height: 14px; stroke: var(--text); }
+#bMore .ico { width: 16px; height: 16px; stroke-width: 3; }      /* three dots, as heavy as the arrows beside them */
+.b-bar { display: flex; align-items: center; gap: 2px; padding: 5px 6px; border-bottom: 1px solid var(--line); flex: none; }
+.b-btn { border: 0; background: none; width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; padding: 0; flex: none; }
+.b-btn:hover:not(:disabled) { background: var(--surface-2); }
+.b-btn:disabled { opacity: .35; cursor: default; }
+.b-btn.loading .ico { animation: b-spin 1s linear infinite; }
+@keyframes b-spin { to { transform: rotate(360deg); } }
+#bUrl { flex: 1; min-width: 0; height: 26px; margin-left: 4px; padding: 0 10px; border: 1px solid transparent; border-radius: 7px;
+  background: var(--surface-2); color: var(--text); font: inherit; font-size: 12.5px; }
+#bUrl:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+.b-view { position: relative; flex: 1; min-height: 0; background: var(--surface) center top / 100% auto no-repeat; }
+/* The "..." menu and its forms: drawn over a still of the page, since the page itself is a view above this one. */
+.b-menu { position: absolute; right: 8px; top: 72px; z-index: 3; min-width: 232px; padding: 5px; border-radius: 10px;
+  background: var(--surface); border: 1px solid var(--line); box-shadow: 0 8px 28px rgb(0 0 0 / 16%); font-size: 13px; }
+.b-menu[hidden] { display: none; }
+.b-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; border: 0; background: none;
+  text-align: left; padding: 6px 9px; border-radius: 6px; color: var(--text); font-size: 13px; }
+button.b-item:hover:not(:disabled) { background: var(--accent-soft); }
+button.b-item:disabled { color: var(--muted); cursor: default; }
+.b-item.danger { color: var(--danger); }
+.b-sep { height: 1px; margin: 5px 4px; background: var(--line); }
+.b-keep { display: flex; padding: 2px; border-radius: 999px; background: var(--surface-2); }
+.b-keep button { border: 0; background: none; padding: 2px 9px; border-radius: 999px; font-size: 12px; color: var(--muted); }
+.b-keep button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.b-form { display: grid; gap: 8px; padding: 6px 7px 4px; }
+.b-form p { margin: 0; line-height: 1.4; }
+.b-form input, .b-form select { font: inherit; font-size: 13px; color: var(--text); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 7px; padding: 5px 8px; min-width: 0; }
+.b-form .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+.btn.danger-fill { background: var(--danger); border-color: var(--danger); color: #fff; }
+.mac-box { margin-top: 12px; font-size: 12.5px; }
+.mac-box:empty { display: none; }
+.mac-title { margin-bottom: 4px; }
+.mac-site { display: flex; align-items: center; justify-content: space-between; padding: 2px 0; }
+.ask-check { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.ask-check input { accent-color: var(--fill); margin: 0; }
 .panel-foot { flex: none; padding: 6px 12px; border-top: 1px solid var(--line); background: var(--panel-bg); }
 .panel-foot:has(#nowLine[hidden]) { display: none; }
 .models-fold { padding-bottom: 16px; }

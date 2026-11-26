@@ -200,7 +200,7 @@ class TrayShellTests(unittest.TestCase):
 
     @unittest.skipIf(shutil.which("node") is None, "node not installed")
     def test_every_script_parses(self):
-        for path in [self.app / "main.js", self.app / "preload.js", *(WEB / name for name in
+        for path in [self.app / "main.js", self.app / "preload.js", self.app / "browser.js", *(WEB / name for name in
                                                                          ("app.js", "render.js", "tray.js", "ask.js"))]:
             done = subprocess.run(["node", "--check", str(path)], capture_output=True, text=True, timeout=60)
             self.assertEqual(done.returncode, 0, f"{path.name}: {done.stderr[-400:]}")

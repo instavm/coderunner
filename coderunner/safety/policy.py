@@ -65,6 +65,7 @@ DEFAULTS: dict[str, Decision] = {
     "browser.interact": Decision.ALLOW,   # ordinary clicks and typing; committing ones are browser.sensitive
     "browser.sensitive": Decision.ASK,    # pay, book, send, post, delete, change settings, grant access
     "browser.password": Decision.DENY,    # the owner types passwords, never the model
+    "browser.mac": Decision.ASK,          # a site that blocks the sandbox's browser goes on in the one on the Mac
     "egress.connect": Decision.ASK,
     "secret.use": Decision.DENY,          # allowed only for hosts configured per secret
     "connector.read": Decision.DENY,      # allowed only for enabled connectors

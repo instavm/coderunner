@@ -11,13 +11,24 @@
 //     popover of the latest threads and a quick-ask window on a global shortcut (both pages served by the daemon,
 //     tray.html and ask.html), and tells the owner when a thread they are not looking at finishes or needs them.
 //     Closing the window on a Mac leaves the app in the menu bar; Cmd+Q quits;
-//   - keeps Developer Mode (Help menu, off unless turned on), in which the page offers a thread's trace.
+//   - keeps Developer Mode (Help menu, off unless turned on), in which the page offers a thread's trace;
+//   - keeps the computer panel's Browser tab (browser.js): a browser on this Mac that a site blocking the sandbox's
+//     browser continues in, with the owner's OK, driven by the daemon over a socket only the owner can open.
+// CODERUNNER_APP_HIDDEN=1 runs it for a test: no window is ever shown, no menu bar icon, no shortcut, nothing focused.
 const {app, BrowserWindow, Menu, Notification, Tray, dialog, globalShortcut, ipcMain, nativeImage, nativeTheme, screen,
        session, shell} = require("electron");
 const {execFile} = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const {AppBrowser} = require("./browser.js");
+
+const HIDDEN = process.env.CODERUNNER_APP_HIDDEN === "1";
+if (HIDDEN) {
+  if (process.env.CODERUNNER_APP_DATA) app.setPath("userData", process.env.CODERUNNER_APP_DATA);
+  app.commandLine.appendSwitch("use-mock-keychain");        // a hidden Keychain prompt would hang every page
+  if (process.platform === "darwin") { app.setActivationPolicy("accessory"); app.dock?.hide(); }
+}
 
 const HOME = process.env.CODERUNNER_HOME || path.join(os.homedir(), ".coderunner");
 const ASSISTANT = path.join(HOME, "assistant");
@@ -84,6 +95,7 @@ function coderunnerCommand() {
 let starting = false;
 let failure = "";
 function startDaemon() {
+  if (HIDDEN) return false;
   const command = coderunnerCommand();
   if (!command) return false;
   if (starting) return true;
@@ -134,6 +146,7 @@ function keepToDaemon(win) {
 // once the page is there.
 let mainWindow = null;
 let viewed = "";
+let appBrowser = null;          // browser.js: the Browser tab's tabs and the daemon's connection to them
 // `open`: what to show once the page is there, as the address's hash ("c=<id>", "computer=expanded").
 function createWindow(open = "") {
   const win = new BrowserWindow({
@@ -143,8 +156,12 @@ function createWindow(open = "") {
     trafficLightPosition: {x: 16, y: 14},
     webPreferences: PAGE_PREFERENCES,
   });
-  win.once("ready-to-show", () => win.show());
+  win.once("ready-to-show", () => { if (!HIDDEN) win.show(); });
   win.on("focus", () => seen(viewed));
+  // The Browser tab's views live in this window while it is open; a new page (a reload) hides them until it
+  // says where they go.
+  appBrowser?.setHost(win);
+  win.webContents.on("did-start-navigation", (details) => { if (details.isMainFrame && !details.isSameDocument) appBrowser?.place(null, false); });
   win.on("closed", () => {
     if (mainWindow === win) { mainWindow = null; viewed = ""; }
     if (!MAC) app.quit();           // elsewhere the app is its window, as before
@@ -194,10 +211,9 @@ function showMain(conversation = "", computer = false) {
       else tell(contents);
     }
     if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
+    if (!HIDDEN) { mainWindow.show(); mainWindow.focus(); }
   }
-  if (MAC) app.focus({steal: true});
+  if (MAC && !HIDDEN) app.focus({steal: true});
   hidePanels();
 }
 
@@ -508,18 +524,22 @@ function settings() {
 let developerThisRun = null;     // what the menu set, when the file could not keep it
 function developerMode() { return developerThisRun ?? settings().developerMode === true; }
 
-function setDeveloperMode(on) {
+// One setting written to settings.json beside the others; a file that is not JSON is left as it is.
+function saveSetting(key, value) {
   const file = path.join(app.getPath("userData"), "settings.json");
-  developerThisRun = Boolean(on);
   let saved = {};
   try { saved = JSON.parse(fs.readFileSync(file, "utf8")) || {}; }
-  catch (error) { saved = error.code === "ENOENT" ? {} : null; }      // not JSON: left as it is
-  if (saved) {
-    try {
-      fs.mkdirSync(path.dirname(file), {recursive: true});
-      fs.writeFileSync(file, JSON.stringify({...saved, developerMode: Boolean(on)}, null, 2) + "\n");
-    } catch { /* for this run only */ }
-  }
+  catch (error) { saved = error.code === "ENOENT" ? {} : null; }
+  if (!saved) return;
+  try {
+    fs.mkdirSync(path.dirname(file), {recursive: true});
+    fs.writeFileSync(file, JSON.stringify({...saved, [key]: value}, null, 2) + "\n");
+  } catch { /* for this run only */ }
+}
+
+function setDeveloperMode(on) {
+  developerThisRun = Boolean(on);
+  saveSetting("developerMode", Boolean(on));
   for (const win of BrowserWindow.getAllWindows())
     if (!win.isDestroyed() && win.webContents.getURL().startsWith(`${ORIGIN}/app/`)) win.webContents.send("developer-mode", Boolean(on));
 }
@@ -645,11 +665,33 @@ app.whenReady().then(() => {
   });
   // Whether developer mode is on, asked by the page as it loads.
   ipcMain.handle("developer-mode", (event) => fromDaemon(event) && developerMode());
+  // The Browser tab, from the main window's page only: where its view goes (in the page's pixels, so zoom counts)
+  // and whether it shows; the owner's tab, address and button presses; what it shows now.
+  const mainPage = (event) => fromDaemon(event) && mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents;
+  ipcMain.on("browser-view", (event, bounds, shown) => {
+    if (!fromDaemon(event) || !mainPage(event) || !appBrowser) return;
+    const zoom = mainWindow.webContents.getZoomFactor(), box = bounds && typeof bounds === "object" ? bounds : {};
+    appBrowser.place({x: box.x * zoom, y: box.y * zoom, width: box.width * zoom, height: box.height * zoom}, shown === true);
+  });
+  ipcMain.handle("browser-act", (event, request) => (mainPage(event) && appBrowser ? appBrowser.act(request) : null));
+  ipcMain.handle("browser-state", (event) => (mainPage(event) && appBrowser ? appBrowser.state() : null));
+  // Keep cookies (the Browser tab's menu): settings.json browserKeepCookies, "always" unless set to "quit".
+  let keepThisRun = null;
+  appBrowser = new AppBrowser({assistantDir: ASSISTANT, daemonOrigin: ORIGIN,
+                               keep: () => keepThisRun ?? (settings().browserKeepCookies === "quit" ? "quit" : "always"),
+                               setKeep: (mode) => { keepThisRun = mode; saveSetting("browserKeepCookies", mode); }});
+  const toPage = (channel, ...args) => {
+    const contents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+    if (contents && contents.getURL().startsWith(`${ORIGIN}/app/`)) contents.send(channel, ...args);
+  };
+  appBrowser.onState = (state) => toPage("browser-state", state);
+  appBrowser.onFront = () => toPage("browser-front");
+  appBrowser.connect();
   buildMenu();
   mainWindow = createWindow();
   watchDaemon();
-  createTray();
-  if (MAC) registerQuickAsk();
+  if (!HIDDEN) createTray();
+  if (MAC && !HIDDEN) registerQuickAsk();
   followEvents();
   refreshSoon(0);
   nativeTheme.on("updated", () => { trayState.image = ""; drawTray(); });
@@ -657,7 +699,18 @@ app.whenReady().then(() => {
 });
 
 app.on("will-quit", () => globalShortcut.unregisterAll());
+app.on("will-quit", () => appBrowser?.stop());
+// Keep cookies "until quit": the Browser tab's cookies go as the app quits (and, should that not finish, when it
+// next starts, before any page loads).
+let cookiesCleared = false;
+app.on("before-quit", (event) => {
+  if (cookiesCleared || !appBrowser || appBrowser.keep() !== "quit") return;
+  event.preventDefault();
+  cookiesCleared = true;
+  Promise.race([appBrowser.clearCookies(), new Promise((resolve) => setTimeout(resolve, 2000))]).finally(() => app.quit());
+});
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 
 // For driving the app from a test (node --inspect): the same actions as the icon's click and the shortcut.
-module.exports = {togglePopover, toggleAsk, showMain, refreshTray, trayState};
+module.exports = {togglePopover, toggleAsk, showMain, refreshTray, trayState, browser: () => appBrowser,
+                  mainWindow: () => mainWindow};
