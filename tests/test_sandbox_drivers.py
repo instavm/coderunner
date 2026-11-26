@@ -181,6 +181,14 @@ class SandboxCommandTests(unittest.TestCase):
             "shutil.disk_usage", {"return_value": collections.namedtuple("u", "total used free")(0, 0, 4e9)}))
         self.assertEqual((code, driver.deleted), (1, False))
         self.assertIn("Nothing was deleted", out)
+        # The old sandbox's disk is deleted before the build, so it counts toward the space a build needs.
+        driver = FakeDriver("running")
+        driver.disk_bytes = lambda: 14e9
+        code, out, mocks = self.run_cli(["sandbox", "reset", "--yes", "--build"], driver, disk=(
+            "shutil.disk_usage", {"return_value": collections.namedtuple("u", "total used free")(0, 0, 7e9)}),
+            call=("subprocess.call", {"return_value": 0}), carry=("coderunner.sandbox.computer.carry_out", {}))
+        self.assertEqual((code, driver.deleted), (0, True))
+        self.assertIn("--build", mocks["call"].call_args.args[0])
 
     def test_settings_are_read_back_from_inspect(self):
         info = [{"configuration": {

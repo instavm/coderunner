@@ -202,8 +202,11 @@ def cmd_sandbox(args, config: Config) -> int:
     options, env = reset.options_for(driver, state, cpus=args.cpus, memory=args.memory, network=args.network,
                                      mounts=args.mount, build=args.build)
     free_gb = shutil.disk_usage(pathlib.Path.home()).free / 1e9
+    # The old VM's disk is deleted before the installer builds (and checks again), so its space counts as free.
+    disk = getattr(driver, "disk_bytes", lambda: None)() if state != "missing" else None
+    free_gb += (disk or 0) / 1e9
     if args.build and free_gb < BUILD_SPACE_GB:     # the installer refuses then, after the old sandbox is gone
-        print(f"Building the image needs about {BUILD_SPACE_GB} GB free; {free_gb:.0f} GB is free. Nothing was "
+        print(f"Building the image needs about {BUILD_SPACE_GB} GB free; {free_gb:.0f} GB is free, counting the old sandbox's disk. Nothing was "
               "deleted; free some space, or reset without --build to reuse the current image.")
         return 1
     if state != "missing" and not args.yes:
