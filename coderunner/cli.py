@@ -155,7 +155,19 @@ def cmd_down(args, config: Config) -> int:
     return 0
 
 
-BUILD_SPACE_GB = 20                          # as install.sh checks
+BUILD_SPACE_GB = 26                          # install.sh's own figure, read from it when it is there
+
+
+def build_space_gb() -> int:
+    """The free space install.sh wants for a build, from install.sh itself: a lower figure here let a reset delete
+    the old sandbox and then have the installer refuse the build (2026-11-26: 20 here, 26 there, 19 free)."""
+    import re
+    from .sandbox import reset
+    try:
+        found = re.search(r"^BUILD_SPACE_GB=(\d+)", reset.installer().read_text(), re.M)
+    except OSError:
+        found = None
+    return int(found.group(1)) if found else BUILD_SPACE_GB
 NO_SANDBOX = "No sandbox is installed. Run ./install.sh (without --search) to create one."
 
 
@@ -205,8 +217,9 @@ def cmd_sandbox(args, config: Config) -> int:
     # The old VM's disk is deleted before the installer builds (and checks again), so its space counts as free.
     disk = getattr(driver, "disk_bytes", lambda: None)() if state != "missing" else None
     free_gb += (disk or 0) / 1e9
-    if args.build and free_gb < BUILD_SPACE_GB:     # the installer refuses then, after the old sandbox is gone
-        print(f"Building the image needs about {BUILD_SPACE_GB} GB free; {free_gb:.0f} GB is free, counting the old sandbox's disk. Nothing was "
+    need_gb = build_space_gb()
+    if args.build and free_gb < need_gb:            # the installer refuses then, after the old sandbox is gone
+        print(f"Building the image needs about {need_gb} GB free; {free_gb:.0f} GB is free, counting the old sandbox's disk. Nothing was "
               "deleted; free some space, or reset without --build to reuse the current image.")
         return 1
     if state != "missing" and not args.yes:

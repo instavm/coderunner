@@ -185,10 +185,18 @@ class SandboxCommandTests(unittest.TestCase):
         driver = FakeDriver("running")
         driver.disk_bytes = lambda: 14e9
         code, out, mocks = self.run_cli(["sandbox", "reset", "--yes", "--build"], driver, disk=(
-            "shutil.disk_usage", {"return_value": collections.namedtuple("u", "total used free")(0, 0, 7e9)}),
+            "shutil.disk_usage", {"return_value": collections.namedtuple("u", "total used free")(0, 0, 13e9)}),
             call=("subprocess.call", {"return_value": 0}), carry=("coderunner.sandbox.computer.carry_out", {}))
         self.assertEqual((code, driver.deleted), (0, True))
         self.assertIn("--build", mocks["call"].call_args.args[0])
+        # The figure is install.sh's own: 7 GB free beside the old 14 GB is short of its 26.
+        from coderunner import cli
+        self.assertEqual(cli.build_space_gb(), 26)
+        driver = FakeDriver("running")
+        driver.disk_bytes = lambda: 14e9
+        code, out, _ = self.run_cli(["sandbox", "reset", "--yes", "--build"], driver, disk=(
+            "shutil.disk_usage", {"return_value": collections.namedtuple("u", "total used free")(0, 0, 7e9)}))
+        self.assertEqual((code, driver.deleted), (1, False))
 
     def test_settings_are_read_back_from_inspect(self):
         info = [{"configuration": {
