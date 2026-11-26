@@ -252,7 +252,6 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
               el("div", "preset-model", modelName(p.model)),
               el("div", "preset-meta muted small",
                  `~${Math.round(p.step_s || 0)} s/step · ${fmtGb(p.need_gb)} · ${p.vision ? "Vision" : "Text only"}`),
-              el("div", "preset-desc muted small", p.summary),
             );
             card.onclick = async () => {
               if (p.model === curId) return;
@@ -386,21 +385,21 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
     body.append(modeRow, modeBox);
     drawMode();
 
-    // Benchmark Lab: Hardware + ANE probe, Tier 1 check, Single vs Multi-Model Combo Comparison
+    // Benchmarks: Hardware + ANE probe, Tier 1 gate, Single vs Multi-Model Comparison
     const lab = el("div", "set-group");
-    lab.appendChild(el("div", "set-group-title", "Benchmark Lab"));
+    lab.appendChild(el("div", "set-group-title", "Benchmarks"));
     const labCard = el("div", "set-list");
     const statusLine = el("div", "set-bench-status muted small");
-    const probeBtn = el("button", "btn", "Bench GPU & Neural Engine");
+    const probeBtn = el("button", "btn", "Measure hardware");
     probeBtn.type = "button";
     probeBtn.onclick = async () => {
       await api("/api/bench", {method: "POST", body: JSON.stringify({action: "probe", force: true})}).catch((e) => notice(e.message));
       watchBench();
     };
-    const cmpBtn = el("button", "btn primary", "Compare setups");
+    const cmpBtn = el("button", "btn primary", "Compare");
     cmpBtn.type = "button";
     const suiteSel = el("select", "set-select");
-    for (const [v, l] of [["tier1", "Quick gate (~90s)"], ["tier2", "Full tasks (~6 min)"], ["ane", "Neural Engine & voice"]]) {
+    for (const [v, l] of [["tier1", "Quick check (~90s)"], ["tier2", "Sample tasks (~6 min)"], ["ane", "Neural Engine & voice"]]) {
       const o = el("option", "", l); o.value = v; suiteSel.appendChild(o);
     }
     const chosenIds = new Set((benchData.candidates || []).slice(0, 2).map((c) => c.id));
@@ -414,8 +413,8 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
     healthBtn.type = "button";
     healthBtn.onclick = () => { close(); onRunCheck?.(); };
 
-    labCard.appendChild(row("Measure this Mac", "Tests unified memory bandwidth, Metal FP16, Neural Engine TOPS and GPU/ANE isolation (~10s).", probeBtn));
-    labCard.appendChild(row("Single vs. multi-model comparison", "Compare speed, task pass rate, prompt cache hit rate, and RAM comfort side by side.", [suiteSel, cmpBtn]));
+    labCard.appendChild(row("Hardware probe", "Memory bandwidth, Metal FP16, Neural Engine TOPS and GPU/ANE contention.", probeBtn));
+    labCard.appendChild(row("Model comparison", "Test single models or multi-model setups on the same tasks.", [suiteSel, cmpBtn]));
     if ((benchData.candidates || []).length) {
       const chips = el("div", "set-chips");
       for (const c of benchData.candidates.slice(0, 5)) {
@@ -440,7 +439,7 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
       for (const r of rows.slice(0, 6)) {
         const meta = `${r.passed}/${r.total} passed · ${r.step_s ? `~${r.step_s}s/step` : "—"} · ${r.memory_gb ? `${r.memory_gb} GB` : "Remote"} · ${r.comfort}` +
           (r.cache_hit_ratio != null ? ` · ${Math.round(r.cache_hit_ratio * 100)}% cache` : "");
-        const useBtn = el("button", "btn", r.winner ? "Use winner" : "Use");
+        const useBtn = el("button", "btn", "Use");
         useBtn.type = "button";
         useBtn.onclick = async () => {
           const target = (r.stack && r.stack.planner) || "";
@@ -449,7 +448,7 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
           await api("/api/models", {method: "POST", body: JSON.stringify({action: "switch", model: target})}).catch((e) => notice(e.message));
           close(); onReloadModels?.();
         };
-        board.appendChild(row(r.label + (r.winner ? " · Best here" : ""), meta, useBtn));
+        board.appendChild(row(r.label, meta, useBtn));
       }
       lab.appendChild(board);
     }

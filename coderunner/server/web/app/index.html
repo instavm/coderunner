@@ -10,22 +10,37 @@
 <div id="shell">
   <aside id="sidebar">
     <div class="side-head">
-      <div class="brand"><span class="logo" aria-hidden="true"></span>CodeRunner <span class="brand-by">by InstaVM</span></div>
-      <button id="newTask" class="icon-btn" title="New task (⌘N)" aria-label="New task"></button>
+      <div class="brand"><span class="logo" aria-hidden="true"></span><span class="brand-name">CodeRunner</span></div>
+      <div class="side-head-actions">
+        <button id="collapseSidebar" class="icon-btn" title="Hide sidebar" aria-label="Hide sidebar"></button>
+      </div>
     </div>
-    <div class="side-search">
+
+    <div class="side-nav" aria-label="Navigation">
+      <button id="newTask" class="nav-item" type="button" title="New task (⌘N)"><span class="nav-ico" data-ico="plus"></span><span>New</span></button>
+      <button id="navSearch" class="nav-item" type="button" title="Search tasks (⌘K)"><span class="nav-ico" data-ico="search"></span><span>Search</span></button>
+      <button id="navFiles" class="nav-item" type="button"><span class="nav-ico" data-ico="files"></span><span>Files</span></button>
+      <button id="navRoutines" class="nav-item" type="button"><span class="nav-ico" data-ico="routines"></span><span>Routines</span></button>
+      <button id="navCustomize" class="nav-item" type="button" title="Settings (⌘,)"><span class="nav-ico" data-ico="customize"></span><span>Customize</span></button>
+    </div>
+
+    <div id="sideSearchWrap" class="side-search" hidden>
       <input id="convSearch" type="search" placeholder="Search tasks…" aria-label="Search tasks" autocomplete="off">
     </div>
+
+    <div class="side-divider"></div>
+    <div class="side-section-head"><span>Tasks</span></div>
     <nav id="conversations" aria-label="Tasks"></nav>
+
     <div class="side-foot">
-      <button id="modelsLine" class="side-models muted small" type="button" title="Models, benchmarks and settings (⌘,)"></button>
+      <button id="modelsLine" class="side-models" type="button" title="Models and settings (⌘,)"></button>
     </div>
   </aside>
 
   <main id="main">
     <header id="mainHead">
       <div class="head-lead">
-        <button id="toggleSidebar" class="icon-btn" title="Tasks" aria-label="Show or hide the task list"></button>
+        <button id="toggleSidebar" class="icon-btn" title="Show sidebar" aria-label="Show sidebar"></button>
         <button id="newTaskHead" class="icon-btn" title="New task (⌘N)" aria-label="New task"></button>
         <div id="title" class="title">New task</div>
       </div>
@@ -37,8 +52,7 @@
           <p>This file has what the assistant saw and did in this thread, with keys and contact details removed. Check it before sending.</p>
           <div class="trace-ask-row"><button id="traceCancel" class="btn" type="button">Cancel</button><button id="traceSave" class="btn primary" type="button">Save</button></div>
         </div>
-        <button id="openSettingsHead" class="icon-btn" title="Settings (⌘,)" aria-label="Settings"></button>
-        <button id="toggleComputer" class="icon-btn" title="Assistant's computer" aria-label="Show or hide the assistant's computer"></button>
+        <button id="toggleComputer" class="icon-btn" title="Show or hide workspace" aria-label="Show or hide the assistant's computer"></button>
       </div>
     </header>
     <div id="offline" class="offline" role="status" hidden><span class="offline-dot"></span><span id="offlineText">Reconnecting…</span></div>
@@ -46,35 +60,49 @@
     <section id="thread" aria-live="polite">
       <div id="empty" class="empty">
         <h1>What should I get done?</h1>
-        <p class="muted">Tasks run on your own computer: local models, and a private Linux machine with its own browser that you can watch and take over.</p>
+        <p class="muted">Runs on this computer: local models, your shared folders, and a private browser you can watch or take over.</p>
         <div id="starterList" class="examples">
           <button class="example">Compare three highly rated noise-cancelling headphones under $250 with prices and links</button>
-          <button class="example">Analyse a spreadsheet, receipt or PDF — drop a file here to start</button>
+          <button class="example">Drop a receipt, PDF or spreadsheet here to extract figures</button>
           <button class="example">Check tomorrow's weather forecast and suggest what to pack</button>
         </div>
         <div id="starterHint" class="empty-hint muted small"></div>
       </div>
     </section>
     <div id="notice" class="notice" role="alert" hidden></div>
-    <form id="composer" autocomplete="off">
-      <div id="attachments" class="attachments" hidden></div>
-      <div class="composer-row">
-        <button id="attach" class="attach" type="button" title="Attach files" aria-label="Attach files"></button>
-        <button id="mic" class="attach mic" type="button" hidden title="Dictate. macOS dictation also works here: Edit, Start Dictation."
-                aria-label="Dictate"></button>
-        <textarea id="input" rows="1" placeholder="Describe a task…" aria-label="Task"></textarea>
-        <span id="micState" class="mic-state" role="status" hidden><span class="mic-level"><i id="micLevel"></i></span><span id="micTime">0:00</span></span>
-        <button id="send" class="send" type="submit" aria-label="Start task"></button>
+    <div class="composer-shell">
+      <form id="composer" autocomplete="off">
+        <div id="attachments" class="attachments" hidden></div>
+        <div class="composer-row">
+          <button id="attach" class="attach" type="button" title="Attach files" aria-label="Attach files"></button>
+          <textarea id="input" rows="1" placeholder="Describe a task…" aria-label="Task"></textarea>
+          <span id="micState" class="mic-state" role="status" hidden><span class="mic-level"><i id="micLevel"></i></span><span id="micTime">0:00</span></span>
+          <button id="mic" class="attach mic" type="button" hidden title="Dictate. macOS dictation also works here: Edit, Start Dictation."
+                  aria-label="Dictate"></button>
+          <button id="send" class="send" type="submit" aria-label="Start task"></button>
+        </div>
+        <input id="filePick" type="file" multiple hidden>
+      </form>
+      <div id="composerMeta" class="composer-meta">
+        <div id="quickModelPop" class="quick-pop" role="menu" hidden></div>
+        <button id="quickModelBtn" class="meta-btn" type="button" title="Switch model">Local</button>
+        <button id="quickThinkBtn" class="meta-btn" type="button" title="Thinking mode">Auto</button>
       </div>
-      <input id="filePick" type="file" multiple hidden>
-    </form>
+    </div>
   </main>
 
   <aside id="computer" aria-label="Assistant's computer">
     <div class="panel-head">
-      <div>
-        <div class="panel-title">Assistant's computer</div>
-        <div id="computerState" class="muted small">Starting…</div>
+      <div id="views" class="composed-tabs" role="tablist" aria-label="Workspace">
+        <button id="viewScreen" class="ctab on" type="button" role="tab" aria-selected="true">
+          <span class="ctab-ico" data-ico="globe"></span><span id="viewScreenLabel" class="ctab-label">Browser</span>
+        </button>
+        <button id="viewTerminal" class="ctab" type="button" role="tab" aria-selected="false">
+          <span class="ctab-ico" data-ico="term"></span><span class="ctab-label">Terminal</span>
+        </button>
+        <button id="viewMac" class="ctab" type="button" role="tab" aria-selected="false">
+          <span class="ctab-ico" data-ico="chip"></span><span class="ctab-label">System</span>
+        </button>
       </div>
       <div id="turn" class="turn" hidden>
         <span id="turnText"></span>
@@ -85,35 +113,45 @@
         <button id="closeComputer" class="icon-btn" title="Hide" aria-label="Hide the assistant's computer"></button>
       </div>
     </div>
-    <div class="panel-bar">
-      <div id="views" class="views" role="tablist" aria-label="View">
-        <button id="viewScreen" class="view on" type="button" role="tab" aria-selected="true">Screen</button>
-        <button id="viewTerminal" class="view" type="button" role="tab" aria-selected="false">Terminal</button>
+
+    <div id="panelBar" class="panel-bar">
+      <div class="addr-status">
+        <span id="computerDot" class="status-dot"></span>
+        <span id="computerState" class="muted small">Starting…</span>
+      </div>
+      <div id="addressPill" class="addr-pill">
+        <span id="addressText" class="addr-text">Assistant's computer</span>
+        <button id="addressAction" class="linkish small" type="button" hidden></button>
       </div>
       <div id="control" class="control" hidden>
-        <button id="watching" class="seg on" type="button">Watching</button>
-        <button id="takeControl" class="seg" type="button">Take control</button>
+        <button id="watching" class="seg on" type="button">Watch</button>
+        <button id="takeControl" class="seg" type="button">Control</button>
       </div>
     </div>
+
     <div id="screenContext" class="screen-context muted small" hidden></div>
+
     <div id="screenWrap">
       <div id="screen"></div>
       <div id="shotFallback" class="shot-fallback" hidden></div>
       <div id="term" hidden><div id="termNote" class="term-note">Connecting…</div></div>
+      <div id="macPane" class="mac-pane" hidden>
+        <div id="macSummary" class="mac-summary"></div>
+        <div class="mac-pane-card">
+          <div class="mac-pane-title">Models &amp; privacy</div>
+          <dl id="models" class="models"></dl>
+          <div id="remoteBox" class="remote-box"></div>
+        </div>
+        <div class="panel-links">
+          <button id="panelModelsBtn" class="btn" type="button">Models &amp; Benchmarks…</button>
+        </div>
+      </div>
       <div id="screenNote" class="screen-note">Connecting to the screen…</div>
     </div>
-    <div class="panel-section now-section">
+
+    <div class="panel-foot now-section">
       <div id="nowLine" class="muted small">Idle</div>
     </div>
-    <details class="panel-section models-fold">
-      <summary>Models and privacy</summary>
-      <dl id="models" class="models"></dl>
-      <div class="panel-links">
-        <button id="panelModelsBtn" class="btn" type="button">Models &amp; Mac…</button>
-        <button id="panelBenchBtn" class="btn" type="button">Benchmark…</button>
-      </div>
-      <div id="remoteBox" class="remote-box"></div>
-    </details>
   </aside>
 </div>
 <script type="module" src="app.js"></script>

@@ -161,9 +161,10 @@ console.log(JSON.stringify([
         root = appshell.app_dir().parent
         web = root / "coderunner" / "server" / "web" / "app"
         page, style, markup = ((web / name).read_text() for name in ("app.js", "app.css", "index.html"))
-        # Two small tabs over the box: the screen and the terminal, nothing else to read.
-        self.assertIn('<button id="viewScreen" class="view on" type="button" role="tab" aria-selected="true">Screen</button>', markup)
-        self.assertIn('<button id="viewTerminal" class="view" type="button" role="tab" aria-selected="false">Terminal</button>', markup)
+        # Composed tabs in the workspace header: browser screen, terminal, and system overview.
+        self.assertIn('<button id="viewScreen" class="ctab on" type="button" role="tab" aria-selected="true">', markup)
+        self.assertIn('<button id="viewTerminal" class="ctab" type="button" role="tab" aria-selected="false">', markup)
+        self.assertIn('<button id="viewMac" class="ctab" type="button" role="tab" aria-selected="false">', markup)
         self.assertIn('<div id="term" hidden><div id="termNote" class="term-note">Connecting…</div></div>', markup)
         # xterm.js from the app's own files, never a CDN, loaded only when the tab opens.
         for name in ("xterm.js", "addon-fit.js", "xterm.css", "LICENSE.txt"):

@@ -603,8 +603,9 @@ function drawConversations(list) {
     wrap.appendChild(button);
     if (!["running", "queued"].includes(c.status)) {
       const acts = el("span", "conv-actions");
-      const ren = el("button", "conv-act", "✎");
+      const ren = el("button", "conv-act");
       ren.type = "button"; ren.title = "Rename"; ren.setAttribute("aria-label", "Rename task");
+      ren.appendChild(icon("M4 20h4l10.5-10.5a2 2 0 0 0-4-4L4 16v4z"));
       ren.onclick = async (ev) => {
         ev.stopPropagation();
         const next = prompt("Rename task:", title);
@@ -613,8 +614,9 @@ function drawConversations(list) {
           .catch((e) => notice(e.message));
         loadConversations();
       };
-      const del = el("button", "conv-act danger", "×");
+      const del = el("button", "conv-act danger");
       del.type = "button"; del.title = "Delete"; del.setAttribute("aria-label", "Delete task");
+      del.appendChild(icon("M6 6l12 12 M18 6L6 18"));
       del.onclick = async (ev) => {
         ev.stopPropagation();
         await api(`/api/conversations/${encodeURIComponent(c.conversation)}`, {method: "DELETE"}).catch((e) => notice(e.message));
@@ -682,12 +684,12 @@ function updateScreenScope(focusInfo) {
   for (const v of state.views.values()) if (v.lastShot) lastShot = v.lastShot;
   if (openRunning || !state.conversation || focusInfo?.shown) {
     fb.hidden = true; fb.replaceChildren();
-    if (focusInfo?.current_url && openRunning) {
-      ctx.hidden = false;
-      ctx.replaceChildren(el("span", "", trunc(focusInfo.current_url.replace(/^https?:\/\//, ""), 44)));
-    } else {
-      ctx.hidden = true; ctx.replaceChildren();
-    }
+    ctx.hidden = true; ctx.replaceChildren();
+    const host = focusInfo?.current_url ? focusInfo.current_url.replace(/^https?:\/\//, "").split("/")[0] : "";
+    if ($("viewScreenLabel")) $("viewScreenLabel").textContent = host || "Browser";
+    if ($("addressText")) $("addressText").textContent = focusInfo?.current_url
+      ? trunc(focusInfo.current_url.replace(/^https?:\/\//, ""), 44) : "Assistant's computer";
+    if ($("addressAction")) $("addressAction").hidden = true;
     return;
   }
   if (lastShot) {
@@ -696,19 +698,22 @@ function updateScreenScope(focusInfo) {
     img.alt = "Last page from this task";
     fb.replaceChildren(img);
     fb.hidden = false;
-    const liveBtn = el("button", "linkish small", "Live desktop");
-    liveBtn.type = "button";
-    liveBtn.onclick = () => { fb.hidden = true; ctx.hidden = true; };
-    ctx.hidden = false;
-    ctx.replaceChildren(el("span", "", "Last page from this task"), liveBtn);
+    ctx.hidden = true; ctx.replaceChildren();
+    const shotHost = lastShot.url ? lastShot.url.replace(/^https?:\/\//, "").split("/")[0] : "";
+    if ($("viewScreenLabel")) $("viewScreenLabel").textContent = shotHost || "Browser";
+    if ($("addressText")) $("addressText").textContent = shotHost ? `${shotHost} · last page` : "Last page from this task";
+    if ($("addressAction")) {
+      $("addressAction").textContent = "Live";
+      $("addressAction").hidden = false;
+      $("addressAction").onclick = () => { fb.hidden = true; $("addressAction").hidden = true; $("addressText").textContent = "Assistant's computer"; };
+    }
   } else {
     fb.hidden = true; fb.replaceChildren();
-    if (focusInfo?.current_url) {
-      ctx.hidden = false;
-      ctx.replaceChildren(el("span", "", `Idle · showing ${trunc(focusInfo.current_url.replace(/^https?:\/\//, ""), 34)}`));
-    } else {
-      ctx.hidden = true; ctx.replaceChildren();
-    }
+    ctx.hidden = true; ctx.replaceChildren();
+    if ($("viewScreenLabel")) $("viewScreenLabel").textContent = "Browser";
+    if ($("addressText")) $("addressText").textContent = focusInfo?.current_url
+      ? trunc(focusInfo.current_url.replace(/^https?:\/\//, ""), 38) : "Assistant's computer";
+    if ($("addressAction")) $("addressAction").hidden = true;
   }
 }
 
@@ -1352,19 +1357,25 @@ const termState = {term: null, fit: null, ws: null, wait: 1000, timer: null, loa
 let view = "screen";
 
 function setView(next, remember = true) {
-  view = next === "terminal" ? "terminal" : "screen";
-  const terminal = view === "terminal";
-  if (terminal && control) setControl(false);           // the screen is handed back: nothing waits on the owner
-  $("viewScreen").classList.toggle("on", !terminal);
+  view = next === "terminal" ? "terminal" : next === "mac" ? "mac" : "screen";
+  const terminal = view === "terminal", mac = view === "mac", screen = view === "screen";
+  if (!screen && control) setControl(false);           // the screen is handed back: nothing waits on the owner
+  $("viewScreen").classList.toggle("on", screen);
   $("viewTerminal").classList.toggle("on", terminal);
-  $("viewScreen").setAttribute("aria-selected", String(!terminal));
+  $("viewMac")?.classList.toggle("on", mac);
+  $("viewScreen").setAttribute("aria-selected", String(screen));
   $("viewTerminal").setAttribute("aria-selected", String(terminal));
+  $("viewMac")?.setAttribute("aria-selected", String(mac));
   $("screenWrap").classList.toggle("terminal", terminal);
-  $("computer").classList.toggle("terminal-on", terminal);
+  $("screenWrap").classList.toggle("mac-on", mac);
+  $("computer").classList.toggle("terminal-on", terminal || mac);
   $("term").hidden = !terminal;
-  if (remember) { try { localStorage.setItem(VIEW_KEY, view); } catch { /* private window: not remembered */ } }
+  if ($("macPane")) $("macPane").hidden = !mac;
+  if ($("panelBar")) $("panelBar").hidden = !screen;
+  if (remember && !mac) { try { localStorage.setItem(VIEW_KEY, view); } catch { /* private window: not remembered */ } }
   setPanelWidth();
   if (terminal) openTerminal();
+  if (mac) refreshMacPane();
 }
 
 // The panel's width: its default from the stylesheet, 15% wider with the terminal open (a terminal wants columns),
@@ -1529,7 +1540,9 @@ function setNow(text) { state.nowText = text; refreshNow(); }
 function refreshNow() {
   const busy = state.running.size > 0;
   // Without a screen the word is why (getting ready, unavailable, disk full), not "Connecting" every few seconds.
-  $("computerState").textContent = control ? "You're in control" : rfb ? (busy ? "Working" : "Idle") : screenWord || (busy ? "Working" : "Connecting");
+  $("computerState").textContent = control ? "In control" : rfb ? (busy ? "Working" : "Idle") : screenWord || (busy ? "Working" : "Connecting");
+  const cdot = $("computerDot");
+  if (cdot) cdot.className = "status-dot" + (control ? " control" : busy ? " busy" : rfb ? " live" : "");
   // The line speaks for the open task while it runs; otherwise for the others (its last words went stale).
   const open = [...state.running.values()].some((r) => r.conversation === state.conversation);
   $("input").placeholder = open && state.conversation ? "Add to this task…" : "Describe a task…";
@@ -1601,20 +1614,19 @@ async function loadModels() {
     const line = $("modelsLine");
     line.replaceChildren();
     const leadWrap = el("span", "side-models-lead");
-    const dotKind = server || elsewhere ? "server" : remote ? "remote" : "local";
-    leadWrap.appendChild(el("i", `privacy-dot ${dotKind}`));
-    if (server) leadWrap.append(el("span", "", `${modelName(remote.model)} · your server`));
-    else if (remote) {
-      leadWrap.append(el("span", "", modelName(remote.model)), el("span", "not-private", "Not private"));
-    }
-    else if (elsewhere && models.chat) leadWrap.append(el("span", "", `${modelName(models.chat)} · your server`));
-    else if (models.chat) leadWrap.append(el("span", "", `Local · ${modelName(models.chat)}`));
-    else leadWrap.append(el("span", "", "Models & Settings"));
-    line.append(leadWrap, el("span", "muted", "⌘,"));
-    line.title = (server ? `Your requests are sent to your model server at ${remote.host}. ` :
-      elsewhere ? `Your requests are sent to your model server at ${elsewhere}. ` :
-      remote ? "Your requests are sent to Anthropic (not private). " : "100% private on this computer. ")
-      + "Click to open Models, Benchmarks & Settings.";
+    const kind = server || elsewhere ? "server" : remote ? "remote" : "local";
+    const avatar = el("span", `side-avatar ${kind}`, kind === "remote" ? "C" : kind === "server" ? "S" : "L");
+    const shortName = server ? modelName(remote.model) : remote ? modelName(remote.model) : modelName(models.chat) || "Local";
+    const whereText = server || elsewhere ? "Server" : remote ? "Not private" : "Local";
+    leadWrap.append(avatar, el("span", "", shortName));
+    if (remote && !server) leadWrap.appendChild(el("span", "not-private", "Not private"));
+    const chev = el("span", "side-chevron");
+    chev.appendChild(icon("M7 10l5 5l5-5"));
+    line.append(leadWrap, chev);
+    line.title = (server ? `Requests go to your server at ${remote.host}. ` :
+      elsewhere ? `Requests go to your server at ${elsewhere}. ` :
+      remote ? "Requests go to Anthropic (not private). " : "Local on this computer. ") + "Click for Models and Settings.";
+    if ($("quickModelBtn")) $("quickModelBtn").textContent = `${shortName} · ${whereText}`;
     const lead = document.querySelector("#empty p");
     if (lead) lead.textContent = server || elsewhere ?
       "Planned by your own model server, and carried out on a private Linux machine with its own browser that you can watch and take over." :
@@ -1831,12 +1843,24 @@ const SEND_ICON = "M12 19V5 M6 11l6-6l6 6";
 const SCREEN_ICON = "M4 5h16v14H4z M15 5v14";
 const SIDEBAR_ICON = "M4 5h16v14H4z M9 5v14";
 const TRACE_ICON = "M12 4v11 M7 10l5 5l5-5 M5 20h14";
-const SETTINGS_ICON = "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h.1a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.1a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z";
-// The glyph buttons in the page drawn as line icons, one set throughout.
-for (const [id, d] of [["newTask", PLUS_ICON], ["expand", EXPAND_ICON], ["closeComputer", CLOSE_ICON], ["send", SEND_ICON],
-                       ["toggleComputer", SCREEN_ICON], ["toggleSidebar", SIDEBAR_ICON], ["newTaskHead", PLUS_ICON],
-                       ["openSettingsHead", SETTINGS_ICON], ["exportTrace", TRACE_ICON]])
+const NAV_ICONS = {
+  plus: "M12 5v14 M5 12h14",
+  search: "M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14 M20 20l-3.8-3.8",
+  files: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  routines: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18 M12 7v5l3 2",
+  customize: "M4 6h16 M4 12h16 M4 18h16 M9 4v4 M15 10v4 M11 16v4",
+  globe: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18 M3 12h18 M12 3a14 14 0 0 1 0 18 M12 3a14 14 0 0 0 0 18",
+  term: "M5 8l4 4-4 4 M12 16h7",
+  chip: "M9 3v2M15 3v2M9 19v2M15 19v2M3 9h2M3 15h2M19 9h2M19 15h2 M7 7h10v10H7z",
+};
+for (const [id, d] of [["expand", EXPAND_ICON], ["closeComputer", CLOSE_ICON], ["send", SEND_ICON],
+                       ["toggleComputer", SCREEN_ICON], ["toggleSidebar", SIDEBAR_ICON], ["collapseSidebar", SIDEBAR_ICON],
+                       ["newTaskHead", PLUS_ICON], ["exportTrace", TRACE_ICON]])
   document.getElementById(id)?.replaceChildren(icon(d));
+for (const slot of document.querySelectorAll("[data-ico]")) {
+  const d = NAV_ICONS[slot.dataset.ico];
+  if (d) slot.replaceChildren(icon(d));
+}
 
 // A small line icon, drawn with strokes on a 24 by 24 grid.
 function icon(d) {
@@ -2562,6 +2586,99 @@ function expandComputer() {
   setView("screen", false);
   setExpanded(true);
 }
+async function refreshMacPane() {
+  const box = $("macSummary");
+  if (!box) return;
+  const data = await api("/api/models").catch(() => null);
+  if (!data) return;
+  const hw = data.hardware || {}, mem = data.live_memory || {}, probe = data.probe;
+  box.replaceChildren();
+  const add = (val, lbl) => {
+    const t = el("div", "tile");
+    t.append(el("div", "tile-value", val), el("div", "tile-label", lbl));
+    box.appendChild(t);
+  };
+  add(hw.chip || "This Mac", `${hw.ram_gb || 0} GB unified RAM`);
+  add(mem.free_gb != null ? `${mem.free_gb} GB free` : `${hw.budget_gb || 0} GB budget`,
+      mem.swap_used_gb >= 1 ? `${mem.swap_used_gb} GB swap` : "Memory");
+  if (probe && probe.ok) {
+    add(`${Math.round(probe.bandwidth_gbs || hw.bandwidth_gbs)} GB/s`, probe.gpu_fp16_tflops ? `${probe.gpu_fp16_tflops} TFLOPS` : "GPU");
+    add(probe.ane_verified ? `${probe.ane_cores} cores · ${probe.ane_fp16_tops || "—"} TOPS` : `${probe.ane_cores || 0} cores`, "Neural Engine");
+  }
+}
+
+async function openQuickModelMenu() {
+  const pop = $("quickModelPop");
+  if (!pop) return;
+  if (!pop.hidden) { pop.hidden = true; return; }
+  pop.replaceChildren(el("div", "muted small", "Loading…"));
+  pop.hidden = false;
+  const data = await api("/api/models").catch(() => null);
+  if (!data) { pop.hidden = true; return; }
+  const curId = (data.active_stack || {}).planner || "";
+  pop.replaceChildren();
+  for (const p of ((data.plan && data.plan.presets) || [])) {
+    const b = el("button", "quick-opt" + (p.model === curId ? " on" : ""));
+    b.type = "button";
+    b.append(el("span", "", `${p.label} · ${modelName(p.model)}`), el("span", "muted small", `~${Math.round(p.step_s || 0)}s`));
+    b.onclick = async () => {
+      pop.hidden = true;
+      if (p.model === curId) return;
+      await api("/api/models", {method: "POST", body: JSON.stringify({action: "switch", model: p.model})}).catch((e) => notice(e.message));
+      checkSetup(); loadModels();
+    };
+    pop.appendChild(b);
+  }
+  pop.appendChild(el("div", "quick-sep"));
+  const more = el("button", "quick-opt", "Models, servers & benchmarks…");
+  more.type = "button";
+  more.onclick = () => { pop.hidden = true; settingsUI.open("models"); };
+  pop.appendChild(more);
+}
+
+const THINK_MODES = ["auto", "on", "off"];
+const THINK_LABELS = {auto: "Auto", on: "Thinking on", off: "Fast (no thinking)"};
+let curThinking = "auto";
+async function loadThinkingLabel() {
+  const cfg = await api("/api/settings").catch(() => null);
+  if (cfg?.settings && $("quickThinkBtn")) {
+    curThinking = String(cfg.settings["agent.thinking"] || "auto");
+    $("quickThinkBtn").textContent = THINK_LABELS[curThinking] || "Auto";
+  }
+}
+$("quickThinkBtn")?.addEventListener("click", async () => {
+  curThinking = THINK_MODES[(THINK_MODES.indexOf(curThinking) + 1) % THINK_MODES.length];
+  $("quickThinkBtn").textContent = THINK_LABELS[curThinking];
+  await api("/api/settings", {method: "PATCH", body: JSON.stringify({"agent.thinking": curThinking})}).catch(() => {});
+});
+$("quickModelBtn")?.addEventListener("click", (e) => { e.stopPropagation(); openQuickModelMenu(); });
+document.addEventListener("click", (e) => {
+  const pop = $("quickModelPop");
+  if (pop && !pop.hidden && !pop.contains(e.target) && e.target !== $("quickModelBtn")) pop.hidden = true;
+});
+
+$("collapseSidebar")?.addEventListener("click", () => showSidebar(false));
+$("navSearch")?.addEventListener("click", () => {
+  const wrap = $("sideSearchWrap");
+  if (!wrap) return;
+  wrap.hidden = !wrap.hidden;
+  if (!wrap.hidden) $("convSearch")?.focus();
+  else if ($("convSearch")) { $("convSearch").value = ""; drawConversations(convCache); }
+});
+$("navFiles")?.addEventListener("click", () => settingsUI.open("files"));
+$("navRoutines")?.addEventListener("click", () => settingsUI.open("routines"));
+$("navCustomize")?.addEventListener("click", () => settingsUI.open("models"));
+$("viewMac")?.addEventListener("click", () => setView("mac"));
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    if ($("shell").classList.contains("no-sidebar")) showSidebar(true);
+    if ($("sideSearchWrap")) $("sideSearchWrap").hidden = false;
+    $("convSearch")?.focus();
+  }
+});
+loadThinkingLabel();
+
 const settingsUI = createSettings({
   api,
   modelName,
@@ -2571,9 +2688,7 @@ const settingsUI = createSettings({
   onReloadModels: () => { checkSetup(); loadModels(); },
 });
 $("modelsLine")?.addEventListener("click", () => settingsUI.open("models"));
-$("openSettingsHead")?.addEventListener("click", () => settingsUI.open("models"));
 $("panelModelsBtn")?.addEventListener("click", () => settingsUI.open("models"));
-$("panelBenchBtn")?.addEventListener("click", () => settingsUI.open("bench"));
 window.coderunnerShell?.onOpenSettings?.((sec) => settingsUI.open(sec || "models"));
 
 window.addEventListener("hashchange", () => openById(threadInAddress()));
