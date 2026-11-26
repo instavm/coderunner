@@ -481,11 +481,16 @@ EVERYDAY = [
          {"German": GERMAN, "a table": r"\|.*\|", "eight weeks": r"woche\s*8\b|\|\s*8\s*\|", "rest days": r"ruhetag|\bruhe\b|pause|\bfrei\b|erholung",
           "the 10 km": r"10[\s-]?km|10\s?k\b", "the dates": r"4\.\s?(1\.|jan)|04\.01\.|januar|2027"},
          links=0, needs=(), suite="everyday"),
-    Real("jobs", "jobs", "three junior data-analyst jobs in Berlin, and one application taken to the page that wants a CV",
-         "Find me three junior data analyst jobs in Berlin posted in the last two weeks, with the company, the salary "
-         "if they show it, and the link. Then start applying to the one that fits best and stop when it asks for my "
-         "CV or personal details.",
-         {"data analyst": r"data analyst|datenanalyst|data analytics", "Berlin": r"berlin"},
+    Real("jobs", "jobs", "three data-analyst jobs in Berlin for 1-3 years' experience with SQL and Python, and one "
+         "application taken to the page that wants a CV",
+         "Find me three data analyst jobs in Berlin, on-site or hybrid, for someone with 2 years of experience who "
+         "works in SQL, Python and Tableau and speaks English but little German. Only roles posted in the last two "
+         "weeks that ask for 0-3 years. For each, give the company, the experience they ask for, the salary if they "
+         "show it, and the link. Then start applying to the one that fits best and stop when it asks for my CV or "
+         "personal details.",
+         {"data analyst": r"data analyst|datenanalyst|data analytics", "Berlin": r"berlin", "SQL": r"\bsql\b",
+          "the experience asked": r"\b\d\s*(?:[-–]|to)?\s*\d?\s*\+?\s*(?:years?|yrs?|jahre)|\bentry[- ]level\b|"
+                                   r"berufserfahrung|no experience"},
          links=3, stops=True, long=True, suite="everyday", acted=r"apply|bewerb|application|continue|weiter"),
     Real("konzert", "events", "two Tokyo concerts in early 2027 with tickets under a budget, answered in Japanese",
          "2027年2月か3月に東京であるコンサートで、チケットが1枚1万円以下のものを2つ探してください。売り切れのものは除いて、"
