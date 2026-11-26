@@ -562,6 +562,13 @@ class BrowserTabTests(unittest.TestCase):
         self.assertIn("sec-ch-ua", shell)
         self.assertNotRegex(shell, r"webdriver|WEBGL|toDataURL\s*=")
 
+    def test_closing_a_tab_detaches_without_reattach_spin_loop(self):
+        shell = (self.ROOT / "app" / "browser.js").read_text()
+        self.assertIn("tab.closing = true;", shell)
+        self.assertIn("contents.debugger.removeAllListeners()", shell)
+        self.assertIn('reason === "target closed"', shell)
+        self.assertIn("tab.reattachTimer = setTimeout(", shell)
+
 
 class PromptTests(unittest.TestCase):
     def test_the_agent_knows_a_blocked_site_can_continue_on_the_mac(self):
