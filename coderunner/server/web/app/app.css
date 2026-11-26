@@ -356,6 +356,9 @@ a.att-file:hover { border-color: var(--accent); }
 .ctab.ctab-icon { padding: 0; width: 28px; justify-content: center; flex: none; }
 .ctab:hover { color: var(--text); background: rgb(127 127 127 / 9%); }
 .ctab.on { color: var(--text); background: var(--surface); border-color: var(--line); font-weight: 500; box-shadow: var(--shadow); }
+.ctab.working::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; animation: pulse 1.2s ease-in-out infinite; }
+.addr-status.clickable { cursor: pointer; }
+.addr-status.clickable:hover #computerState { color: var(--accent); text-decoration: underline; }
 .ctab-ico { width: 14px; height: 14px; display: grid; place-items: center; flex: none; }
 .ctab-ico .ico { width: 14px; height: 14px; stroke: currentColor; }
 .ctab-label { overflow: hidden; text-overflow: ellipsis; }
@@ -442,7 +445,10 @@ a.att-file:hover { border-color: var(--accent); }
 .deck-row.open .deck-row-sub { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 120px; overflow-y: auto;
   margin-top: 4px; padding: 5px 7px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--line);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
-.deck-row-time { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; padding-top: 1px; }
+.deck-row-time { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; padding-top: 1px; }
+.deck-src { font-size: 10px; font-weight: 550; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 4px; padding: 0 4px; line-height: 15px; letter-spacing: .01em; }
+.deck-src.terminal { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 26%, transparent); background: var(--accent-soft); }
 /* Idle / overview cards inside the deck */
 .deck-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; box-shadow: var(--shadow); }
 .deck-kv { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0; font-size: 12px; }

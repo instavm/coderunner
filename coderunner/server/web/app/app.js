@@ -113,28 +113,57 @@ function args(raw) {
   try { return JSON.parse(raw || "{}"); } catch { return {}; }
 }
 
+function codeSummaryLine(code) {
+  const lines = String(code || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  // Skip boilerplate imports/shebangs so Python/shell rows show what the script actually does.
+  const comment = lines.find((l) => l.startsWith("#") && !l.startsWith("#!") && l.length > 3);
+  if (comment) return trunc(comment.replace(/^#+\s*/, ""), 68);
+  const url = /https?:\/\/([^\s"'`]+)/.exec(String(code || ""));
+  if (url) return `Fetching ${trunc(url[1].replace(/^www\./, ""), 52)}`;
+  const body = lines.find((l) => !/^(?:import\s|from\s+\S+\s+import\b|set\s+-|export\s+|cd\s+)/.test(l));
+  return trunc(body || lines[0] || "", 68);
+}
+
+function toolSurface(name) {
+  if (name === "run_python" || name === "run_shell" || name === "shell_job") return "terminal";
+  if (String(name || "").startsWith("browser_")) return "screen";
+  if (name === "files_search" || String(name || "").startsWith("file_")) return "files";
+  if (String(name || "").startsWith("memory_")) return "memory";
+  return "";
+}
+
+function toolBadge(name) {
+  if (name === "run_python") return {label: "Python", cls: "terminal"};
+  if (name === "run_shell" || name === "shell_job") return {label: "Terminal", cls: "terminal"};
+  if (String(name || "").startsWith("browser_")) return {label: "Browser", cls: ""};
+  if (name === "files_search" || String(name || "").startsWith("file_")) return {label: "Files", cls: ""};
+  if (String(name || "").startsWith("memory_")) return {label: "Memory", cls: ""};
+  return null;
+}
+
 function describeTool(name, raw) {
   const a = args(raw);
+  const said = typeof a.say === "string" && a.say.trim() ? trunc(a.say.trim(), 72) : "";
   switch (name) {
     case "browser_open": case "browser_navigate": return `Opening ${host(a.url)}`;
     case "browser_search": return `Searching the web for “${String(a.query || "").slice(0, 60)}”`;
-    case "browser_snapshot": return "Reading the page";
-    case "browser_list": return "Reading the results on the page";
-    case "browser_click": return "Working on the page";
-    case "browser_type": return a.text ? `Typing “${trunc(a.text, 40)}”` : "Typing";
-    case "browser_batch": return "Filling in the page";
+    case "browser_snapshot": return said || "Reading the page";
+    case "browser_list": return said || "Reading the results on the page";
+    case "browser_click": return said || "Working on the page";
+    case "browser_type": return a.text ? `Typing “${trunc(a.text, 40)}”` : (said || "Typing");
+    case "browser_batch": return said || "Filling in the page";
     case "browser_find": return `Looking for “${trunc(a.text || a.query, 40)}” on the page`;
     case "browser_select": return `Choosing “${trunc(a.option, 40)}”`;
-    case "browser_press": return "Working on the page";
-    case "browser_scroll": return "Reading further down the page";
+    case "browser_press": return said || "Working on the page";
+    case "browser_scroll": return said || "Reading further down the page";
     case "browser_back": return "Going back";
     case "browser_tabs": return "Looking at the open pages";
     case "browser_screenshot": return "Looking at the screen";
     case "browser_handoff": return "Asking you to take over";
     case "browser_task": return `Working in the browser: ${trunc(a.goal || a.task || "", 90)}`;
-    case "run_shell": return "Working on the computer";
-    case "shell_job": return "Waiting for a job on the computer";
-    case "run_python": return "Working something out";
+    case "run_shell": return said || (a.command ? `Running in terminal` : "Working in terminal");
+    case "shell_job": return said || "Checking terminal job";
+    case "run_python": return said || (a.code ? codeSummaryLine(a.code) : "Running Python");
     case "files_search": return `Searching your files for “${trunc(a.query, 50)}”`;
     case "file_read": return `Reading ${base(a.path)}`;
     case "file_view": return `Looking at ${base(a.path)}`;
@@ -148,7 +177,7 @@ function describeTool(name, raw) {
     case "schedule_delete": return "Removing the routine";
     case "schedule_list": return "Looking at your routines";
     case "send_message": return "Sending a message";
-    default: return "Working";
+    default: return said || "Working";
   }
 }
 
@@ -188,6 +217,7 @@ const state = {
   developer: false,             // developer mode (the desktop app's Help menu): the thread's "Export trace"
   deckTab: "activity",          // activity | pages | files (below the top-pinned VNC screen)
   deckPlanOpen: false,
+  activeSurface: "",            // screen | terminal | browser | thinking (where the active tool is executing)
   status: null,                 // latest /api/status snapshot for the idle companion deck
 };
 
@@ -391,6 +421,8 @@ class TaskView {
         if (e.name === "plan_update" || e.name === "tell_owner" || e.name === "show_items") break;
         this.steps += 1;
         const label = describeTool(e.name, e.arguments);
+        const surf = toolSurface(e.name);
+        if (this.status === "running") state.activeSurface = surf || "thinking";
         this.setNow(label);
         const a = args(e.arguments);
         if (a.url && (e.name === "browser_open" || e.name === "browser_navigate")) this.recordPage(a.url, "", "ok", false, true);
@@ -398,7 +430,8 @@ class TaskView {
           id: e.id || `step-${this.steps}`,
           name: e.name,
           title: label,
-          sub: toolDetail(e.name, a),
+          sub: toolDetail(e.name, a, label),
+          badge: toolBadge(e.name),
           preview: "",
           state: "running",
           ts: e.ts || Date.now() / 1000,
@@ -412,6 +445,7 @@ class TaskView {
       }
       case "tool_done": {
         const entry = (e.id && this.toolById.get(e.id)) || [...this.feed].reverse().find((x) => x.state === "running" && x.name === e.name);
+        if (this.status === "running") { state.activeSurface = "thinking"; refreshNow(); }
         const rawPreview = plain(e.preview || "");
         const urlMatch = /^url:\s*(\S+)/m.exec(rawPreview);
         const titleMatch = /^title:\s*(.+)$/m.exec(rawPreview);
@@ -1053,11 +1087,19 @@ function listen() {
     const e = JSON.parse(message.data);
     state.lastSeq = Math.max(state.lastSeq, e.seq || 0);
     if (e.type === "started") state.running.set(e.task, {conversation: e.conversation, label: "", title: e.prompt || ""});
+    if (e.type === "tool" && e.name && !["plan_update", "tell_owner", "show_items"].includes(e.name)) {
+      const s = toolSurface(e.name);
+      if (s) state.activeSurface = s;
+    }
+    if (e.type === "tool_done" && state.running.size) state.activeSurface = "thinking";
     // Another thread's status line is kept, so the panel can say what that task is doing rather than only that it is.
     if ((e.type === "note" || e.type === "paused") && state.running.has(e.task))
       state.running.get(e.task).label = trunc(String(e.text || "").split(/(?<=[.!?])\s/)[0], 90);
     if (e.type === "resumed" && state.running.has(e.task)) state.running.get(e.task).label = "";
-    if (["done", "failed", "cancelled"].includes(e.type)) state.running.delete(e.task);
+    if (["done", "failed", "cancelled"].includes(e.type)) {
+      state.running.delete(e.task);
+      if (!state.running.size) state.activeSurface = "";
+    }
     if (e.conversation === state.conversation) {
       if (state.loading?.id === e.conversation) state.loading.events.push(e);
       else showEvent(e);
@@ -1702,8 +1744,26 @@ if (savedPanes().computer === false) showComputer(false);
 function setNow(text) { state.nowText = text; refreshNow(); }
 function refreshNow() {
   const busy = state.running.size > 0;
+  const macActive = (browserState.tabs || []).some((t) => t.assistant);
+  const surface = !busy ? "" : macActive && state.activeSurface === "screen" ? "browser" : (state.activeSurface || "thinking");
+  $("viewScreen")?.classList.toggle("working", busy && surface === "screen");
+  $("viewTerminal")?.classList.toggle("working", busy && surface === "terminal");
+  $("viewBrowser")?.classList.toggle("working", busy && surface === "browser");
+  const whereLabel = surface === "terminal" ? "In terminal"
+    : surface === "browser" ? "In Mac browser"
+    : surface === "screen" ? "In browser"
+    : "Thinking";
   // Without a screen the word is why (getting ready, unavailable, disk full), not "Connecting" every few seconds.
-  $("computerState").textContent = control ? "In control" : rfb ? (busy ? "Working" : "Idle") : screenWord || (busy ? "Working" : "Connecting");
+  $("computerState").textContent = control ? "In control" : rfb ? (busy ? whereLabel : "Idle") : screenWord || (busy ? whereLabel : "Connecting");
+  const statusWrap = $("computerState")?.parentElement;
+  if (statusWrap) {
+    const canJumpTerm = busy && surface === "terminal" && view !== "terminal";
+    const canJumpMac = busy && surface === "browser" && shellBrowser && view !== "browser";
+    statusWrap.classList.toggle("clickable", canJumpTerm || canJumpMac);
+    statusWrap.title = canJumpTerm ? "Running in the sandbox terminal — click to open Terminal"
+      : canJumpMac ? "Working in Mac browser — click to open" : "";
+    statusWrap.onclick = canJumpTerm ? () => setView("terminal") : canJumpMac ? () => setView("browser") : null;
+  }
   const cdot = $("computerDot");
   if (cdot) cdot.className = "status-dot" + (control ? " control" : busy ? " busy" : rfb ? " live" : "");
   // The line speaks for the open task while it runs; otherwise for the others (its last words went stale).
@@ -3137,22 +3197,24 @@ loadThinkingLabel();
 
 // ---- Workspace Companion Deck (fills the space cleanly below the top-pinned VNC screen) ----
 
-function toolDetail(name, a) {
+function toolDetail(name, a, title = "") {
   if (!a || typeof a !== "object") return "";
+  let sub = "";
   switch (name) {
-    case "browser_open": case "browser_navigate": return trunc(String(a.url || "").replace(/^https?:\/\/(www\.)?/, ""), 72);
-    case "browser_search": return trunc(String(a.query || ""), 72);
-    case "browser_batch": return Array.isArray(a.steps) ? `${a.steps.length} batched actions` : "";
-    case "browser_find": return a.text ? `“${trunc(a.text, 50)}”` : "";
-    case "browser_select": return a.option ? trunc(a.option, 50) : "";
-    case "browser_type": return a.text ? `“${trunc(a.text, 44)}”` : "";
-    case "run_python": return trunc(String(a.code || "").trim().split("\n")[0], 68);
-    case "run_shell": return trunc(String(a.command || "").trim().split("\n")[0], 68);
-    case "files_search": return trunc(String(a.query || ""), 60);
-    case "file_read": case "file_view": case "file_listen": return trunc(String(a.path || ""), 68);
-    case "browser_task": return trunc(String(a.goal || ""), 72);
-    default: return a.say ? trunc(String(a.say), 72) : "";
+    case "browser_open": case "browser_navigate": sub = trunc(String(a.url || "").replace(/^https?:\/\/(www\.)?/, ""), 72); break;
+    case "browser_search": sub = trunc(String(a.query || ""), 72); break;
+    case "browser_batch": sub = Array.isArray(a.steps) ? `${a.steps.length} batched actions` : ""; break;
+    case "browser_find": sub = a.text ? `“${trunc(a.text, 50)}”` : ""; break;
+    case "browser_select": sub = a.option ? trunc(a.option, 50) : ""; break;
+    case "browser_type": sub = a.text ? `“${trunc(a.text, 44)}”` : ""; break;
+    case "run_python": sub = codeSummaryLine(a.code); break;
+    case "run_shell": sub = codeSummaryLine(a.command); break;
+    case "files_search": sub = trunc(String(a.query || ""), 60); break;
+    case "file_read": case "file_view": case "file_listen": sub = trunc(String(a.path || ""), 68); break;
+    case "browser_task": sub = trunc(String(a.goal || ""), 72); break;
+    default: sub = a.say ? trunc(String(a.say), 72) : ""; break;
   }
+  return sub && sub !== title ? sub : "";
 }
 
 let vncRatioObserver = null;
@@ -3357,7 +3419,10 @@ function renderDeck() {
       }
       const timeTxt = item.duration != null ? (item.duration < 10 ? `${item.duration.toFixed(1)}s` : clock(item.duration))
         : item.step ? `#${item.step}` : "";
-      row.append(glyph, main, el("span", "deck-row-time", timeTxt));
+      const right = el("span", "deck-row-time");
+      if (item.badge) right.appendChild(el("span", "deck-src" + (item.badge.cls ? " " + item.badge.cls : ""), item.badge.label));
+      if (timeTxt) right.appendChild(el("span", "", timeTxt));
+      row.append(glyph, main, right);
       list.appendChild(row);
     }
     if (!feed.length && runningView) {
