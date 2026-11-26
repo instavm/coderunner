@@ -366,6 +366,10 @@ a.att-file:hover { border-color: var(--accent); }
 #screenWrap.in-control { box-shadow: inset 0 0 0 2px var(--warn); }
 #screen { position: absolute; inset: 0; }
 #screen canvas { cursor: default; }
+/* In the side panel the screen sits at the top, the space under it the panel's own: noVNC centres its canvas with
+   auto margins, which left black bands above and below. Expanded, it stays centred in the window. */
+#shell:not(.expanded) #screenWrap:not(.terminal):not(.browsing):not(.mac-on) { background: var(--rail); }
+#shell:not(.expanded) #screen canvas { margin-top: 0 !important; margin-bottom: auto !important; }
 .screen-note { position: absolute; inset: 0; display: grid; place-items: center; color: #bdbab1; font-size: 13px; padding: 20px; text-align: center; pointer-events: none; }
 .screen-note:empty { display: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
