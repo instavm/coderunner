@@ -970,13 +970,26 @@ class BrowserBroker:
 
     async def focus(self, scope: str) -> bool:
         """Bring a task's tab to the front of the assistant's own computer, for the owner looking at that task."""
-        target = self._actives.get(scope)
-        if not target or self._cdp is None or self._cdp.closed:
-            return False
-        with contextlib.suppress(Exception):
-            await self._cdp.send("Target.activateTarget", {"targetId": target}, timeout=5)
-            return True
-        return False
+        return (await self.focus_info(scope))["shown"]
+
+    async def focus_info(self, scope: str) -> dict:
+        """Focus the task's tab if still open (active or remembered last tab), returning focus ownership info."""
+        active_conv = next(iter(self._actives), "")
+        target = self._actives.get(scope) or self._last.get(scope)
+        if target and self._tab_owner.get(target) not in (None, scope):
+            target = None
+        url = ""
+        if self._cdp is None or self._cdp.closed:
+            return {"shown": False, "active_conversation": active_conv, "current_url": ""}
+        if target:
+            with contextlib.suppress(Exception):
+                await self._cdp.send("Target.activateTarget", {"targetId": target}, timeout=5)
+                url = str((self._read_urls.get(target) or ""))
+                return {"shown": True, "active_conversation": scope, "current_url": url}
+        current = self._actives.get(active_conv) if active_conv else None
+        if current:
+            url = str(self._read_urls.get(current) or "")
+        return {"shown": False, "active_conversation": active_conv, "current_url": url}
 
     async def _courtesy(self, host: str) -> None:
         scope, now = self._scope(), time.monotonic()

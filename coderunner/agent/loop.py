@@ -451,6 +451,9 @@ class RunContext:
     # The run's compactions (agent.compaction): how many summaries failed, so a model that cannot write one is not
     # asked again and again.
     compaction: dict = field(default_factory=dict)
+    wrap_now: bool = False          # owner asked to answer immediately with what has been found so far
+    steps: int = 0                  # completed model steps (acts), exposed in provenance metadata
+    slowed: bool = False            # true when local generation speed collapsed under memory/swap pressure
 
     def emit(self, event: dict) -> None:
         if self.events is not None:
@@ -1152,9 +1155,24 @@ class Agent:
         closing = ""                                # the request for an answer when the steps or the room ran out
         repeats = Repeats()
         late_repeats = 0                            # repeated searches and pages after WRAP_FROM steps
+        slow_turns = 0                              # consecutive local turns below 30% of calibrated speed
         words = request_words(text)
         readings = Readings(words)                  # the pages read, answered again from their key lines
         acts = 0                                    # the model's replies with tool calls: its steps, from 1
+        # Speed-adaptive repeat threshold: slower local models check for loops sooner instead of waiting 15+ min.
+        expected_tok_s = 0.0
+        if not getattr(self.llm, "remote", False):
+            try:
+                from ..models import bench as model_bench
+                bp = model_bench._path()
+                if bp.exists():
+                    cal = json.loads(bp.read_text())
+                    expected_tok_s = float((cal.get("measured") or {}).get("gen_tok_s") or 0)
+            except Exception:
+                expected_tok_s = 0.0
+        wrap_from = WRAP_FROM
+        if expected_tok_s and expected_tok_s < 14.0:
+            wrap_from = max(12, min(WRAP_FROM, int(round(expected_tok_s * 1.6))))
         # When the run has a deadline: how long before it the run writes an interim answer (0: none, or written
         # already), and how long before its hard stop it writes its final one. Counted from ctx each step, since
         # waiting for the owner moves both on (RunContext.pause).
@@ -1194,6 +1212,12 @@ class Agent:
                    for m in messages for call in (m.get("tool_calls") or []) if isinstance(call, dict)):
                 messages.append({"role": "user", "content": BROWSER_MOVED})
         for step in range(first, max_steps * STEP_BUDGETS):
+            ctx.steps = acts
+            if ctx.wrap_now:
+                self.svc.audit.write("agent.wrap_requested", step=step)
+                final = ctx.interim or stopped_reply(ctx)
+                closing = TIME_UP
+                break
             if late_repeats >= REPEATS_BEFORE_ANSWER:
                 self.svc.audit.write("agent.going_round", step=step, repeats=late_repeats)
                 final = "I stopped: I was going over the same searches again."
@@ -1213,7 +1237,7 @@ class Agent:
                 if compact is not None:
                     messages[:], known, closing = compact, [0, 0], OUT_OF_ROOM
                 break
-            if step >= WRAP_FROM and (step - WRAP_FROM) % WRAP_EVERY == 0:
+            if step >= wrap_from and (step - wrap_from) % WRAP_EVERY == 0:
                 # Not a limit: a long task is asked, now and then, whether what it has already answers the request
                 # (a 27B searched on for 160 steps after it had three review sites' picks).
                 messages.append({"role": "user", "content": WRAP_NUDGE.format(steps=step)})
@@ -1274,6 +1298,22 @@ class Agent:
                                      read_ms=round(timings.get("prompt_ms") or 0),
                                      wrote_ms=round(timings.get("predicted_ms") or 0),
                                      **({"restored": reply["restored"]} if reply.get("restored") else {}))
+                # Live swap/speed watchdog: if local decode collapses below 30% of calibrated speed twice in a row,
+                # surface an honest slowdown signal so the owner knows why the task is slow.
+                gen_rate = float(timings.get("predicted_per_second") or 0)
+                if expected_tok_s > 0 and gen_rate > 0 and int(timings.get("predicted_n") or 0) >= 8:
+                    if gen_rate < 0.30 * expected_tok_s:
+                        slow_turns += 1
+                        if slow_turns == 2 and not ctx.slowed:
+                            ctx.slowed = True
+                            from ..models import hardware as model_hw
+                            swap = model_hw.swap_used_gb()
+                            self.svc.audit.write("agent.slowdown", gen_tok_s=round(gen_rate, 1),
+                                                 expected_tok_s=round(expected_tok_s, 1), swap_used_gb=swap)
+                            ctx.emit({"type": "slowdown", "gen_tok_s": round(gen_rate, 1),
+                                      "expected_tok_s": round(expected_tok_s, 1), "swap_used_gb": swap})
+                    else:
+                        slow_turns = 0
             if usage.get("prompt_tokens"):
                 known = [len(messages), int(usage["prompt_tokens"])]
                 turns = getattr(self.svc, "turns", None)
@@ -1351,7 +1391,7 @@ class Agent:
                         again = again or same
                         if again or kept:
                             result += again
-                            late_repeats += step >= WRAP_FROM
+                            late_repeats += step >= wrap_from
                     # preview: what the thread may show; result: a longer start of it, for the trace a developer
                     # reads (server/trace.py), kept only where it says more than the preview.
                     ctx.emit({"type": "tool_done", "id": call.get("id", ""), "name": name, "ok": not failed,

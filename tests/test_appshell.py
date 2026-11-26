@@ -44,20 +44,23 @@ class AppShellTests(unittest.TestCase):
         main, preload = ((appshell.app_dir() / name).read_text() for name in ("main.js", "preload.js"))
         self.assertIn('preload: path.join(__dirname, "preload.js")', main)
         self.assertIn("contextIsolation: true, nodeIntegration: false, sandbox: true", main)
-        asks = ["pick-folder", "start-assistant", "open-thread", "open-app", "open-computer", "hide-panel", "task-started",
+        asks = ["pick-folder", "start-assistant", "show-in-finder", "open-system-settings", "app-settings",
+                "open-thread", "open-app", "open-computer", "open-settings", "hide-panel", "task-started",
                 "thread-open", "developer-mode"]
         self.assertEqual(re.findall(r'ipcMain\.(?:handle|on)\("([\w-]+)"', main), asks)
         self.assertEqual(re.findall(r'ipcRenderer\.(?:invoke|send)\("([\w-]+)"', preload), asks)
         # What the shell says to the pages: which thread to open, that a panel was shown, developer mode turned on or off.
         self.assertEqual(re.findall(r'ipcRenderer\.on\("([\w-]+)"', preload),
-                         ["show-thread", "show-computer", "panel-shown", "test-this-mac", "developer-mode"])
+                         ["show-thread", "show-computer", "open-settings", "panel-shown", "test-this-mac", "developer-mode"])
         self.assertIn('ipcMain.handle("developer-mode", (event) => fromDaemon(event) && developerMode());', main)
         asks.remove("developer-mode")
         self.assertEqual(re.findall(r'exposeInMainWorld\("(\w+)"', preload), ["coderunnerShell"])
         self.assertIn("if (asker !== ORIGIN) return null;", main)        # only the daemon's own page is answered
         self.assertIn("return asker === ORIGIN ? startDaemon() : false;", main)
-        # The menu bar's asks are heard only from the daemon's own pages, too.
-        for ask in asks[2:]:
+        # Every IPC handler and message is strictly origin-gated to the daemon's own pages.
+        for ask in ("show-in-finder", "open-system-settings", "app-settings"):
+            self.assertRegex(main, r'ipcMain\.handle\("%s", \(event[^)]*\) => \{\s*if \([^)]*fromDaemon\(event\)' % ask)
+        for ask in ("open-thread", "open-app", "open-computer", "open-settings", "hide-panel", "task-started", "thread-open"):
             self.assertRegex(main, r'ipcMain\.on\("%s", \(event[^)]*\) => \{\s*(?:if \(fromDaemon\(event\)|const win = .*\n\s+if '
                                    r'\(fromDaemon\(event\)|if \(!fromDaemon\(event\))' % ask)
 

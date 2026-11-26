@@ -13,9 +13,12 @@
       <div class="brand"><span class="logo" aria-hidden="true"></span>CodeRunner <span class="brand-by">by InstaVM</span></div>
       <button id="newTask" class="icon-btn" title="New task (⌘N)" aria-label="New task"></button>
     </div>
+    <div class="side-search">
+      <input id="convSearch" type="search" placeholder="Search tasks…" aria-label="Search tasks" autocomplete="off">
+    </div>
     <nav id="conversations" aria-label="Tasks"></nav>
     <div class="side-foot">
-      <div id="modelsLine" class="muted small"></div>
+      <button id="modelsLine" class="side-models muted small" type="button" title="Models, benchmarks and settings (⌘,)"></button>
     </div>
   </aside>
 
@@ -27,24 +30,29 @@
         <div id="title" class="title">New task</div>
       </div>
       <div class="head-actions">
+        <button id="threadFilesBtn" class="pill-btn" type="button" hidden>Files</button>
+        <div id="threadFilesPop" class="trace-ask files-pop" role="dialog" aria-label="Files in this thread" hidden></div>
         <button id="exportTrace" class="icon-btn" title="Export trace" aria-label="Export trace" hidden></button>
         <div id="traceAsk" class="trace-ask" role="dialog" aria-label="Export trace" hidden>
           <p>This file has what the assistant saw and did in this thread, with keys and contact details removed. Check it before sending.</p>
           <div class="trace-ask-row"><button id="traceCancel" class="btn" type="button">Cancel</button><button id="traceSave" class="btn primary" type="button">Save</button></div>
         </div>
+        <button id="openSettingsHead" class="icon-btn" title="Settings (⌘,)" aria-label="Settings"></button>
         <button id="toggleComputer" class="icon-btn" title="Assistant's computer" aria-label="Show or hide the assistant's computer"></button>
       </div>
     </header>
     <div id="offline" class="offline" role="status" hidden><span class="offline-dot"></span><span id="offlineText">Reconnecting…</span></div>
+    <div id="approvalBar" class="approval-bar" role="status" hidden></div>
     <section id="thread" aria-live="polite">
       <div id="empty" class="empty">
         <h1>What should I get done?</h1>
         <p class="muted">Tasks run on your own computer: local models, and a private Linux machine with its own browser that you can watch and take over.</p>
-        <div class="examples">
-          <button class="example">Find the cheapest Pixel 8 on Amazon.in and Flipkart and compare sellers</button>
-          <button class="example">Search my files for the latest rental agreement and summarise the notice period</button>
-          <button class="example">Check tomorrow's weather in Bengaluru and suggest what to wear</button>
+        <div id="starterList" class="examples">
+          <button class="example">Compare three highly rated noise-cancelling headphones under $250 with prices and links</button>
+          <button class="example">Analyse a spreadsheet, receipt or PDF — drop a file here to start</button>
+          <button class="example">Check tomorrow's weather forecast and suggest what to pack</button>
         </div>
+        <div id="starterHint" class="empty-hint muted small"></div>
       </div>
     </section>
     <div id="notice" class="notice" role="alert" hidden></div>
@@ -77,18 +85,22 @@
         <button id="closeComputer" class="icon-btn" title="Hide" aria-label="Hide the assistant's computer"></button>
       </div>
     </div>
-    <div id="views" class="views" role="tablist" aria-label="View">
-      <button id="viewScreen" class="view on" type="button" role="tab" aria-selected="true">Screen</button>
-      <button id="viewTerminal" class="view" type="button" role="tab" aria-selected="false">Terminal</button>
-    </div>
-    <div id="screenWrap">
-      <div id="screen"></div>
-      <div id="term" hidden><div id="termNote" class="term-note">Connecting…</div></div>
-      <div id="screenNote" class="screen-note">Connecting to the screen…</div>
+    <div class="panel-bar">
+      <div id="views" class="views" role="tablist" aria-label="View">
+        <button id="viewScreen" class="view on" type="button" role="tab" aria-selected="true">Screen</button>
+        <button id="viewTerminal" class="view" type="button" role="tab" aria-selected="false">Terminal</button>
+      </div>
       <div id="control" class="control" hidden>
         <button id="watching" class="seg on" type="button">Watching</button>
         <button id="takeControl" class="seg" type="button">Take control</button>
       </div>
+    </div>
+    <div id="screenContext" class="screen-context muted small" hidden></div>
+    <div id="screenWrap">
+      <div id="screen"></div>
+      <div id="shotFallback" class="shot-fallback" hidden></div>
+      <div id="term" hidden><div id="termNote" class="term-note">Connecting…</div></div>
+      <div id="screenNote" class="screen-note">Connecting to the screen…</div>
     </div>
     <div class="panel-section now-section">
       <div id="nowLine" class="muted small">Idle</div>
@@ -96,6 +108,10 @@
     <details class="panel-section models-fold">
       <summary>Models and privacy</summary>
       <dl id="models" class="models"></dl>
+      <div class="panel-links">
+        <button id="panelModelsBtn" class="btn" type="button">Models &amp; Mac…</button>
+        <button id="panelBenchBtn" class="btn" type="button">Benchmark…</button>
+      </div>
       <div id="remoteBox" class="remote-box"></div>
     </details>
   </aside>

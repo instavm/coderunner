@@ -1,1 +1,48 @@
-[]
+[
+ {
+  "suite": 2,
+  "date": "2026-11-22",
+  "machine": {"os": "darwin", "chip": "Apple M3 Pro", "ram_gb": 18, "gpu": "apple", "gpus": 0},
+  "runtime": "llama.cpp",
+  "runtime_version": "b11564",
+  "model": "qwen3.5-9b",
+  "build": "Qwen3.5-9B-Q4_K_M.gguf",
+  "context": 32768,
+  "thinking": "auto",
+  "passed": 5,
+  "total": 5,
+  "seconds": 390.0,
+  "median_request_s": 10.0,
+  "slowed": false,
+  "tasks": [
+   {"name": "flights", "passed": true, "seconds": 146.0, "requests": 7, "tool_calls": 6, "median_request_s": 10.0, "gen_tok_s": 19.9},
+   {"name": "evening", "passed": true, "seconds": 78.0, "requests": 7, "tool_calls": 6, "median_request_s": 10.0, "gen_tok_s": 19.9},
+   {"name": "library", "passed": true, "seconds": 31.0, "requests": 4, "tool_calls": 4, "median_request_s": 8.0, "gen_tok_s": 19.9},
+   {"name": "documents", "passed": true, "seconds": 31.0, "requests": 4, "tool_calls": 3, "median_request_s": 8.0, "gen_tok_s": 19.9},
+   {"name": "appliance", "passed": true, "seconds": 104.0, "requests": 10, "tool_calls": 12, "median_request_s": 10.0, "gen_tok_s": 19.9}
+  ]
+ },
+ {
+  "suite": 2,
+  "date": "2026-11-22",
+  "machine": {"os": "darwin", "chip": "Apple M3 Pro", "ram_gb": 18, "gpu": "apple", "gpus": 0},
+  "runtime": "llama.cpp",
+  "runtime_version": "b11564",
+  "model": "bonsai-2-27b",
+  "build": "bonsai-2-27b-Q2_0.gguf",
+  "context": 32768,
+  "thinking": "auto",
+  "passed": 5,
+  "total": 5,
+  "seconds": 760.0,
+  "median_request_s": 19.8,
+  "slowed": false,
+  "tasks": [
+   {"name": "flights", "passed": true, "seconds": 280.0, "requests": 10, "tool_calls": 9, "median_request_s": 19.8, "gen_tok_s": 11.6},
+   {"name": "evening", "passed": true, "seconds": 210.0, "requests": 9, "tool_calls": 8, "median_request_s": 19.8, "gen_tok_s": 11.6},
+   {"name": "library", "passed": true, "seconds": 65.0, "requests": 4, "tool_calls": 3, "median_request_s": 17.5, "gen_tok_s": 11.6},
+   {"name": "documents", "passed": true, "seconds": 70.0, "requests": 4, "tool_calls": 3, "median_request_s": 18.0, "gen_tok_s": 11.6},
+   {"name": "appliance", "passed": true, "seconds": 135.0, "requests": 7, "tool_calls": 7, "median_request_s": 19.8, "gen_tok_s": 11.6}
+  ]
+ }
+]

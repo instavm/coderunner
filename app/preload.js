@@ -7,8 +7,14 @@ const {contextBridge, ipcRenderer} = require("electron");
 const text = (value) => (typeof value === "string" ? value : "");
 
 contextBridge.exposeInMainWorld("coderunnerShell", {
-  pickFolder: (start) => ipcRenderer.invoke("pick-folder", typeof start === "string" ? start : ""),
+  pickFolder: (startOrOpts) => ipcRenderer.invoke("pick-folder",
+    typeof startOrOpts === "object" && startOrOpts
+      ? {start: text(startOrOpts.start), title: text(startOrOpts.title), buttonLabel: text(startOrOpts.buttonLabel)}
+      : text(startOrOpts)),
   startAssistant: () => ipcRenderer.invoke("start-assistant"),
+  showInFinder: (target) => ipcRenderer.invoke("show-in-finder", text(target)),
+  openSystemSettings: (pane) => ipcRenderer.invoke("open-system-settings", text(pane)),
+  appSettings: (update) => ipcRenderer.invoke("app-settings", update && typeof update === "object" ? update : null),
   // The menu bar's popover and the quick ask (also the daemon's pages): a thread, the app or the computer's
   // screen opened, the panel put away, word that a task was started. The main page says which thread it shows
   // and is told what to open. The shell shows the notifications (notifies), so the page does not show them twice.
@@ -16,11 +22,13 @@ contextBridge.exposeInMainWorld("coderunnerShell", {
   openThread: (conversation) => ipcRenderer.send("open-thread", text(conversation)),
   openApp: () => ipcRenderer.send("open-app"),
   openComputer: () => ipcRenderer.send("open-computer"),
+  openSettings: (section) => ipcRenderer.send("open-settings", text(section)),
   hidePanel: () => ipcRenderer.send("hide-panel"),
   taskStarted: () => ipcRenderer.send("task-started"),
   threadOpen: (conversation) => ipcRenderer.send("thread-open", text(conversation)),
   onShowThread: (callback) => ipcRenderer.on("show-thread", (_, conversation) => callback(text(conversation))),
   onShowComputer: (callback) => ipcRenderer.on("show-computer", () => callback()),
+  onOpenSettings: (callback) => ipcRenderer.on("open-settings", (_, section) => callback(text(section))),
   onShown: (callback) => ipcRenderer.on("panel-shown", () => callback()),
   onTestThisMac: (callback) => ipcRenderer.on("test-this-mac", () => callback()),
   // Developer mode (the Help menu): whether it is on as the page loads, and word when it changes.

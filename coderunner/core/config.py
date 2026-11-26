@@ -14,13 +14,14 @@ from typing import Any
 from . import paths
 
 DEFAULTS: dict[str, Any] = {
-    "owner": {"name": "", "timezone": "", "desktop_notifications": True},
+    "owner": {"name": "", "timezone": "", "desktop_notifications": True, "onboarded": False},
     "sandbox": {
         "driver": "auto",            # auto | apple | docker
         "name": "coderunner",
         "url": "",                   # MCP/REST base, e.g. http://coderunner.local:8222
         "network": "default",        # default | none | proxy
         "memory_gb": 2,              # VM memory, subtracted from the model budget (install.sh --memory, lite: 2g)
+        "on_demand": "auto",         # auto (lazy on <=18 GB Macs) | true | false
         "disk_budget_gb": 8,         # the VM's disk on the Mac past this: recreated when idle, data kept; 0: never
     },
     "gateway": {
@@ -64,6 +65,7 @@ DEFAULTS: dict[str, Any] = {
         "media": True,               # also index images, audio and video when the model supports them
         "media_on_battery": False,   # false: on battery those wait for the charger (GPU work); text goes on
         "media_waits": False,        # true: pictures, sound and video wait whatever the power (GPU kept idle)
+        "yield_during_llm_turn": "auto",  # auto (yield when ANE/GPU contention > 8%) | true | false
         "max_file_mb": 200,
         "scan_interval": 600,        # seconds between checks for new or changed files
     },

@@ -116,5 +116,17 @@ async function api(path, options = {}) {
   return data;
 }
 
+async function refreshMode() {
+  try {
+    const st = await api("/api/status");
+    const remote = st.remote;
+    const badge = $("modeBadge");
+    if (badge) {
+      const notPrivate = Boolean(remote && remote.provider && remote.provider !== "openai");
+      badge.hidden = !notPrivate;
+    }
+  } catch { /* daemon restarting */ }
+}
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") shell.hidePanel?.(); });
-shell.onShown?.(() => { $("askInput").focus(); $("askInput").select(); });
+shell.onShown?.(() => { refreshMode(); $("askInput").focus(); $("askInput").select(); });
+refreshMode();

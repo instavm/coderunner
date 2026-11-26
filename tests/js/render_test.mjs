@@ -82,4 +82,12 @@ assert.equal(answer("The three are shown above.", shown, (n) => n)[0].className.
 const other = answer("Shown below.\n\n- **Delivery** is free\n- **Returns** within 10 days", shown, (n) => n);
 assert.equal(other.flatMap((p) => p.all ? p.all(tag("ul")) : []).length, 1);
 assert.equal(answer("one\n\ntwo", [], (n) => n).length, 2);
+
+// Numbered comparison tables promote column 1 as title, and multilingual price columns (Preço, Precio, etc.)
+// elevate to the card's top-right price slot.
+const pt = messages("| # | Empresa | Saída | Chegada | Preço |\n|---|---|---|---|---|\n| 3 | Buser (semi-leito) | 11:30 | 19:20 | R$ 124,90 |");
+const ptCard = pt[0].all((n) => n.className === "md-card")[0];
+assert.equal(ptCard.all((n) => n.className === "md-card-title")[0].textContent, "Buser (semi-leito)");
+assert.equal(ptCard.all((n) => n.className === "md-card-price")[0].textContent, "R$ 124,90");
+assert.equal(ptCard.all((n) => n.className === "md-card-line").length, 2);
 console.log("ok");

@@ -31,13 +31,29 @@ BENCHMARKS = (
     "TIGER-Lab/MMLU-Pro:mmlu_pro",
     "harborframework/terminal-bench-2.0:terminalbench_2",
     "harborframework/terminal-bench-2.1:terminalbench_2_1",
+    "harborframework/terminal-bench:terminalbench_4",
     "hkust-nlp/Toolathlon:toolathlon_verified",
     "ScaleAI/SWE-bench_Pro:SWE_Bench_Pro",
     "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved",
     "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved",
+    "deep-swe:deep_swe",
     "MMMU/MMMU_Pro:mmmu_pro_vision",
     "MathArena/aime_2026:MathArena/aime_2026",
 )
+AXES = {
+    "agentic_tools": ("hkust-nlp/Toolathlon:toolathlon_verified",
+                      "harborframework/terminal-bench-2.1:terminalbench_2_1",
+                      "harborframework/terminal-bench:terminalbench_4",
+                      "harborframework/terminal-bench-2.0:terminalbench_2"),
+    "coding": ("ScaleAI/SWE-bench_Pro:SWE_Bench_Pro",
+               "SWE-bench/SWE-bench_Verified:swe_bench_%_resolved",
+               "SWE-bench/SWE-bench_Multilingual:swe_bench_multilingual_%_resolved",
+               "deep-swe:deep_swe"),
+    "vision": ("MMMU/MMMU_Pro:mmmu_pro_vision",),
+    "reasoning": ("Idavidrein/gpqa:diamond",
+                  "TIGER-Lab/MMLU-Pro:mmlu_pro",
+                  "MathArena/aime_2026:MathArena/aime_2026"),
+}
 MIN_MODELS = 3            # a benchmark reported by fewer models cannot place anyone
 SHRINK = 1.0              # pulls models with one or two scores toward the mean
 ITERATIONS = 200
@@ -47,6 +63,9 @@ PRECISION_LOSS = ((4.5, 0.0), (4.0, 0.05), (3.0, 0.15), (2.0, 0.3), (1.5, 0.5), 
 # of the full model's scores they retain. Calibrated so a conventional 2-bit build keeps today's 2-bit loss:
 # IQ2_XXS keeps 84.1% of Qwen3.8-27B's average in Prism's comparison, and 1.9 x 0.159 = 0.30.
 RETENTION_LOSS = 1.9
+# Relative prior for brand-new Hugging Face releases that have no structured evalResults yet: still ranked
+# behind empirically scored peers when scores exist, but not buried at -3.0 behind weak legacy models.
+PRIOR_DISCOUNT = 0.35
 
 
 def scores_from(eval_results: list[dict]) -> dict[str, float]:
@@ -128,6 +147,10 @@ def fit(scores: dict[str, dict[str, float]]) -> dict[str, float]:
         spread[key] = (statistics.mean(values), statistics.pstdev(values) or 1.0)
     ability = {repo: statistics.mean((v - spread[k][0]) / spread[k][1] for k, v in row.items())
                for repo, row in obs.items()}
+    # Weight agentic/coding benchmarks slightly higher than pure quiz sets so an assistant planner is not
+    # outranked by a model that only reported MMMU/MMLU-Pro with no tool-use or coding scores.
+    agentic = set(AXES["agentic_tools"]) | set(AXES["coding"])
+    weight = {key: 1.5 if key in agentic else 1.0 for key in benches}
     for _ in range(ITERATIONS):
         line = {}
         for key in benches:
@@ -138,8 +161,8 @@ def fit(scores: dict[str, dict[str, float]]) -> dict[str, float]:
             scale = max(sum((x - mx) * (y - my) for x, y in pairs) / var, 1.0)
             line[key] = (my - scale * mx, scale)
         for repo, row in obs.items():
-            num = sum(line[k][1] * (v - line[k][0]) for k, v in row.items())
-            den = sum(line[k][1] ** 2 for k in row) + SHRINK * min(line[k][1] for k in row) ** 2
+            num = sum(weight[k] * line[k][1] * (v - line[k][0]) for k, v in row.items())
+            den = sum(weight[k] * line[k][1] ** 2 for k in row) + SHRINK * min(line[k][1] for k in row) ** 2
             ability[repo] = num / den
         mean = statistics.mean(ability.values())
         dev = statistics.pstdev(ability.values()) or 1.0
@@ -179,3 +202,32 @@ def ability(entry: dict, bits: float | None = None) -> float | None:
     if evidence.get("build") or bits is None:
         return known[repo]
     return round(known[repo] - precision_loss(bits), 3)
+
+
+def axes(entry: dict, bits: float | None = None) -> dict[str, float]:
+    """Per-domain capability summary (agentic_tools, coding, vision, reasoning) normalized 0..100 when scores exist."""
+    evidence = entry.get("evidence") or {}
+    repo = evidence.get("repo") or (entry.get("license") or {}).get("base_repo") or entry.get("repo")
+    row = table().get(repo or "") or {}
+    if not row:
+        return {}
+    retention = float(evidence["retained"]) if evidence.get("retained") is not None else (
+        1.0 if (evidence.get("build") or bits is None) else max(0.7, 1.0 - precision_loss(bits) / RETENTION_LOSS))
+    out: dict[str, float] = {}
+    for axis, keys in AXES.items():
+        vals = [float(row[k]) * retention for k in keys if k in row]
+        if vals:
+            out[axis] = round(statistics.mean(vals), 1)
+    return out
+
+
+def prior_ability(entry: dict, bits: float | None = None) -> float:
+    """Uncertainty-discounted size/architecture prior for brand-new models lacking Hub evalResults."""
+    import math
+    total = max(float(entry.get("params_b") or 4.0), 1.0)
+    active = max(float(entry.get("active_params_b") or total), 1.0)
+    # Center near ~14B dense (~0.0), scale smoothly with active + total capacity, and apply conservative discount.
+    raw = 0.25 * math.log2(total / 14.0) + 0.15 * math.log2(active / 10.0) - PRIOR_DISCOUNT
+    if bits is not None:
+        raw -= precision_loss(bits)
+    return round(max(-1.8, min(0.8, raw)), 3)

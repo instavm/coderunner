@@ -15,6 +15,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from typing import Callable
 
@@ -455,6 +456,67 @@ class OllamaRuntime(Runtime):
         return "vision" in self.capabilities(model or self.model_id(entry))
 
 
+# llama.cpp's official build, checked against the SHA-256 GitHub publishes for each asset.
+LLAMA_RELEASE = "b12776"
+LLAMA_BUILDS = {  # (os, arch) -> (asset, sha256)
+    ("darwin", "arm64"): ("macos-arm64", "cb0c5c97a1a4ad50a0d64e228a67694de5c3a876d1ae0077b39e3c2381f3a039"),
+    ("darwin", "x86_64"): ("macos-x64", "e644d574b6800879163352cea41b4ebbe03d88a6704adab28dddbe44805f4918"),
+    ("linux", "x86_64"): ("ubuntu-x64", "27e18f608c7cd1e2f86d70f91bde4299e795113c0065322f6339cbe5135e79c2"),
+    ("linux", "aarch64"): ("ubuntu-arm64", "69a37e8fc18bf06214052d39fd83605846273ba08d7a6d88651e95788ca926db"),
+}
+
+
+def llama_dir() -> pathlib.Path:
+    return paths.assistant_dir() / "runtimes" / f"llama-{LLAMA_RELEASE}"
+
+
+def llama_build_for_host() -> tuple[str, str] | None:
+    arch = platform.machine().lower().replace("amd64", "x86_64").replace("arm64e", "arm64")
+    if sys.platform == "linux" and arch == "arm64":
+        arch = "aarch64"
+    return LLAMA_BUILDS.get((sys.platform, arch))
+
+
+def install_llama_release(progress: Progress | None = None, *, release: str | None = None,
+                          builds: dict | None = None, build: tuple[str, str] | None = None,
+                          target: pathlib.Path | None = None) -> pathlib.Path:
+    """Download and checksum-verify llama.cpp's pinned release archive into assistant_dir()/runtimes."""
+    import hashlib
+    import tarfile
+
+    rel = release or LLAMA_RELEASE
+    if build is None:
+        table = builds if builds is not None else LLAMA_BUILDS
+        arch = platform.machine().lower().replace("amd64", "x86_64").replace("arm64e", "arm64")
+        if sys.platform == "linux" and arch == "arm64":
+            arch = "aarch64"
+        build = table.get((sys.platform, arch))
+    if build is None:
+        raise RuntimeError("llama.cpp publishes no build for this platform")
+    asset, sha256 = build
+    name = f"llama-{rel}-bin-{asset}.tar.gz"
+    url = f"https://github.com/ggml-org/llama.cpp/releases/download/{rel}/{name}"
+    dest = target or (paths.assistant_dir() / "runtimes" / f"llama-{rel}")
+    dest.mkdir(parents=True, exist_ok=True)
+    archive = dest / name
+    if progress:
+        progress(f"downloading {name}")
+    digest = hashlib.sha256()
+    with httpx.stream("GET", url, follow_redirects=True, timeout=httpx.Timeout(30, read=300)) as response:
+        response.raise_for_status()
+        with open(archive, "wb") as handle:
+            for chunk in response.iter_bytes(1 << 20):
+                digest.update(chunk)
+                handle.write(chunk)
+    if digest.hexdigest() != sha256:
+        archive.unlink()
+        raise RuntimeError(f"{name} does not match its published checksum")
+    with tarfile.open(archive) as tar:
+        tar.extractall(dest, filter="data")     # refuses absolute paths, links out, devices
+    archive.unlink()
+    return dest
+
+
 class LlamaCppRuntime(Runtime):
     name = "llama.cpp"
 
@@ -481,8 +543,7 @@ class LlamaCppRuntime(Runtime):
 
     def can_install(self) -> bool:
         """Whether llama.cpp publishes a build for this platform (pull fetches it when no llama-server is here)."""
-        from ..voice.qwen import QwenASR
-        return QwenASR.build_for_host() is not None
+        return llama_build_for_host() is not None
 
     def running(self) -> bool:
         return _ok(f"http://127.0.0.1:{self.port}/health")
@@ -512,6 +573,20 @@ class LlamaCppRuntime(Runtime):
             if art.get("mmproj") and catalog.has_vision(entry, self.name):
                 record["mmproj"] = str(hub.download(art["mmproj_repo"], art["mmproj"], folder / art["mmproj"],
                                                     sha256=art.get("mmproj_sha256"), progress=progress))
+            state = self._state()
+            state.setdefault("models", {})[entry["id"]] = record
+            self._save(state)
+            return
+        if art.get("repo") and art.get("file") and art.get("sha256"):
+            # Pinned direct HF file + SHA-256 (e.g., Ternary Bonsai 2.5 Q2_0): skips manifest lookup.
+            folder = self.root / art["repo"].replace("/", "--")
+            record = {"repo": art["repo"], "commit": "main", "mmproj": None, "model": str(hub.download(
+                art["repo"], art["file"], folder / art["file"], sha256=art["sha256"],
+                size=art.get("bytes"), progress=progress))}
+            if art.get("mmproj") and catalog.has_vision(entry, self.name):
+                record["mmproj"] = str(hub.download(art.get("mmproj_repo") or art["repo"], art["mmproj"],
+                                                    folder / art["mmproj"], sha256=art.get("mmproj_sha256"),
+                                                    progress=progress))
             state = self._state()
             state.setdefault("models", {})[entry["id"]] = record
             self._save(state)
@@ -558,15 +633,21 @@ class LlamaCppRuntime(Runtime):
             state.pop("active")
         self._save(state)
 
-    def prepare(self, entry: dict, ctx: int, offload: bool = False) -> str:
+    def prepare(self, entry: dict, ctx: int, offload: bool = False, *, kv_q8: bool = False,
+                no_mmap: bool = False) -> str:
         state = self._state()
         record = state.get("models", {}).get(entry["id"])
         if not record:
             raise RuntimeError(f"{entry['id']} has not been downloaded for llama.cpp")
         art = (entry.get("artifacts") or {}).get(catalog.ARTIFACT.get(self.name, "gguf")) or {}
+        args = list(art.get("server_args") or [])
+        if (kv_q8 or ctx >= 65536) and "-ctk" not in args:
+            args += ["-ctk", "q8_0", "-ctv", "q8_0"]
+        if no_mmap and "--no-mmap" not in args and "--load-mode" not in args:
+            args += ["--no-mmap"]
         active = {"id": entry["id"], "alias": self.model_id(entry), "ctx": ctx,
                   "model": record["model"], "mmproj": record.get("mmproj"), "offload": offload,
-                  **({"args": list(art["server_args"])} if art.get("server_args") else {})}
+                  **({"args": args} if args else {})}
         if state.get("active") != active:
             self.stop()  # restarts with the new model on the next start()
         state["active"] = active
@@ -574,9 +655,8 @@ class LlamaCppRuntime(Runtime):
         return active["alias"]
 
     def install(self, progress: Progress | None = None) -> None:
-        """llama.cpp's official build (pinned, checksum-checked), the one voice setup installs for Qwen3-ASR."""
-        from ..voice.qwen import QwenASR
-        QwenASR().install_llama(progress)
+        """llama.cpp's official build (pinned, checksum-checked)."""
+        install_llama_release(progress)
         if not self.binary():
             raise RuntimeError("llama.cpp's build has no llama-server")
 
@@ -640,16 +720,16 @@ class PrismRuntime(LlamaCppRuntime):
     """
 
     name = "prism"
-    RELEASE = "prism-b10743-adfffbe"
+    RELEASE = "prism-b12232-f702476"
     BUILDS = {  # (os, arch, gpu) -> (asset, sha256); gpu "" matches any
         ("darwin", "arm64", ""): ("macos-arm64",
-                                  "596d257973080ca5011a4be50477c5f93ed1d231fcccfc2afb44bb573bb9629a"),
+                                  "d39332891793dfcaf690ed86a783bd3eda30c5a855c453c179a197236243e19d"),
         ("linux", "x86_64", "nvidia"): ("linux-cuda-12.4-x64",
-                                        "fef4c7e8d83ff261d89809c1b302fe5f826adc1a74e13654b67ec056fbc1c639"),
+                                        "b5750a2e4eb7369093d5ec7a1e82bf3e3772fefd5e998a46e8f245d4fb3490ed"),
         ("linux", "x86_64", ""): ("ubuntu-vulkan-x64",
-                                  "95a3d082629643642842bc2195e0730880273005171517cf857804702f693edc"),
+                                  "c65f0134336b8c60cf18998cfd5ac0dd863340e756bcf9ed255c3e463d64f263"),
         ("linux", "aarch64", ""): ("ubuntu-arm64",
-                                   "ee4cb83a2985572459a5686ef175503d4e526b46b97c7fcc7152e868169b3060"),
+                                   "fd96b0a238c8efe51abfe1f27d025d83db80583761efa860c2ac3faab5f0b3de"),
     }
 
     PORT_OFFSET = 1
@@ -800,6 +880,40 @@ class DriverRuntime(LlamaCppRuntime):
         _terminate("llama-driver", "llama-server")
 
 
+class JudgeRuntime(LlamaCppRuntime):
+    """A dedicated lightweight llama.cpp server for safety commit judging and injection screening on Apple
+    silicon Macs (24 GB+) without requiring Ollama, keeping the main chat model's KV cache untouched."""
+
+    name = "judge"
+    PORT_OFFSET = 4
+
+    def __init__(self, config=None, port: int | None = None, hub: Hub | None = None):
+        super().__init__(config, port, hub)
+        self.state_path = self.root / "judge.json"
+
+    def command(self, active: dict) -> list[str]:
+        cmd = [self.binary() or "llama-server", "-m", active["model"]]
+        idle = idle_seconds(self.config)
+        return cmd + ["--jinja", "-c", str(min(int(active.get("ctx") or 4096), 8192)), "--host", "127.0.0.1",
+                      "--port", str(self.port), "--cache-ram", "0", "-np", "1", "-ngl", "99",
+                      "--alias", active["alias"]] + (["--sleep-idle-seconds", str(idle)] if idle else [])
+
+    def start(self, timeout: float = 180) -> None:
+        if self.running():
+            return
+        if not self.available():
+            self.install()
+        active = self._state().get("active")
+        if not active:
+            raise RuntimeError("No safety judge model is prepared")
+        proc = _spawn("llama-judge", self.command(active))
+        _wait_ready(self.running, proc, timeout, "the safety judge",
+                    str(paths.assistant_dir() / "logs" / "llama-judge.log"))
+
+    def stop(self) -> None:
+        _terminate("llama-judge", "llama-server")
+
+
 class OpenAIRuntime(Runtime):
     """An endpoint the owner runs themselves (LM Studio, vLLM, a remote server...)."""
 
@@ -828,10 +942,139 @@ class OpenAIRuntime(Runtime):
 
 
 class MLXRuntime(OpenAIRuntime):
-    """mlx_lm.server / mlx_vlm.server started by the owner; treated as an external endpoint."""
+    """Managed Apple Silicon MLX runtime (`mlx-lm` / `mlx-vlm` under assistant_dir()/runtimes/mlx),
+    falling back seamlessly to an already-running owner MLX server on base_url."""
 
     name = "mlx"
+    PORT_OFFSET = 5
+    PACKAGES = ("mlx-lm", "huggingface_hub")
     default_url = "http://127.0.0.1:8080/v1"
+
+    def __init__(self, config=None, base_url: str | None = None, port: int | None = None, hub: Hub | None = None):
+        super().__init__(config, base_url=base_url)
+        self.hub = hub
+        self.port = port or server_port(config, self.PORT_OFFSET)
+        self.root = models_dir(config) / "mlx"
+        self.env = paths.assistant_dir() / "runtimes" / "mlx"
+        self.state_path = self.root / "mlx.json"
+        if not base_url and not (config.get("models.base_url") if config else ""):
+            self.base_url = f"http://127.0.0.1:{self.port}/v1"
+
+    @staticmethod
+    def supported() -> bool:
+        return sys.platform == "darwin" and platform.machine().lower() in ("arm64", "arm64e")
+
+    def python(self) -> str | None:
+        found, ready = self.env / "bin" / "python", self.env / "installed.txt"
+        try:
+            return str(found) if found.exists() and ready.read_text().strip() == "\n".join(self.PACKAGES) else None
+        except OSError:
+            return None
+
+    def can_install(self) -> bool:
+        return self.supported()
+
+    def available(self) -> bool:
+        return self.python() is not None or self.running()
+
+    def _state(self) -> dict:
+        try:
+            return json.loads(self.state_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save(self, state: dict) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text(json.dumps(state, indent=2))
+
+    def install(self, progress: Progress | None = None) -> None:
+        if not self.supported():
+            raise RuntimeError("MLX models require Apple silicon")
+        if progress:
+            progress("installing MLX runtime packages (mlx-lm)")
+        shutil.rmtree(self.env, ignore_errors=True)
+        for cmd in ([sys.executable, "-m", "venv", str(self.env)],
+                    [str(self.env / "bin" / "python"), "-m", "pip", "install", "-q",
+                     "--disable-pip-version-check", "--retries", "5", "--timeout", "60", *self.PACKAGES]):
+            done = subprocess.run(cmd, capture_output=True, text=True)
+            if done.returncode:
+                shutil.rmtree(self.env, ignore_errors=True)
+                raise RuntimeError(f"Installing MLX failed: {(done.stderr or done.stdout)[-400:]}")
+        (self.env / "installed.txt").write_text("\n".join(self.PACKAGES))
+
+    def model_folder(self, entry: dict) -> pathlib.Path:
+        art = (entry.get("artifacts") or {}).get("mlx") or {}
+        return self.root / str(art.get("repo") or entry["id"]).replace("/", "--")
+
+    def installed(self, entry: dict) -> bool:
+        rec = self._state().get("models", {}).get(entry["id"]) or {}
+        return bool(rec.get("path")) and os.path.isdir(rec["path"])
+
+    def pull(self, entry: dict, progress: Progress | None = None) -> None:
+        if not self.python():
+            self.install(progress)
+        art = (entry.get("artifacts") or {}).get("mlx") or {}
+        repo = art.get("repo")
+        if not repo:
+            raise RuntimeError(f"{entry['id']} has no MLX artifact")
+        folder = self.model_folder(entry)
+        folder.mkdir(parents=True, exist_ok=True)
+        if progress:
+            progress(f"downloading {repo} for MLX")
+        cmd = [self.python(), "-c",
+               "from huggingface_hub import snapshot_download; import sys; "
+               "snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2])",
+               repo, str(folder)]
+        done = subprocess.run(cmd, capture_output=True, text=True)
+        if done.returncode:
+            raise RuntimeError(f"Downloading MLX model {repo} failed: {(done.stderr or done.stdout)[-400:]}")
+        state = self._state()
+        state.setdefault("models", {})[entry["id"]] = {"repo": repo, "path": str(folder)}
+        self._save(state)
+
+    def remove(self, entry: dict) -> None:
+        state = self._state()
+        rec = state.get("models", {}).pop(entry["id"], None) or {}
+        if rec.get("path"):
+            folder = pathlib.Path(rec["path"]).resolve()
+            if self.root.resolve() in folder.parents:
+                shutil.rmtree(folder, ignore_errors=True)
+        if (state.get("active") or {}).get("id") == entry["id"]:
+            state.pop("active", None)
+        self._save(state)
+
+    def prepare(self, entry: dict, ctx: int, offload: bool = False) -> str:
+        state = self._state()
+        rec = state.get("models", {}).get(entry["id"])
+        if not rec:
+            raise RuntimeError(f"{entry['id']} has not been downloaded for MLX")
+        active = {"id": entry["id"], "alias": self.model_id(entry), "path": rec["path"], "ctx": ctx}
+        if state.get("active") != active:
+            self.stop()
+        state["active"] = active
+        self._save(state)
+        return active["alias"]
+
+    def command(self, active: dict) -> list[str]:
+        return [self.python() or sys.executable, "-m", "mlx_lm.server",
+                "--model", active["path"], "--host", "127.0.0.1", "--port", str(self.port)]
+
+    def start(self, timeout: float = 300) -> None:
+        if self.running():
+            return
+        if not self.python():
+            raise RuntimeError("MLX runtime is not installed")
+        active = self._state().get("active")
+        if not active:
+            raise RuntimeError("No MLX model is prepared")
+        proc = _spawn("mlx-server", self.command(active))
+        _wait_ready(self.running, proc, timeout, "mlx-lm server", str(paths.assistant_dir() / "logs" / "mlx-server.log"))
+
+    def stop(self) -> None:
+        _terminate("mlx-server", "python")
+
+    def model_id(self, entry: dict) -> str:
+        return f"coderunner-{entry['id']}" if self.python() else super().model_id(entry)
 
 
 RUNTIMES: dict[str, type[Runtime]] = {

@@ -142,9 +142,18 @@ class Daemon:
             self.svc.audit.write("model.warm_failed", error=str(exc)[:200])
 
     async def _start_sandbox(self) -> None:
-        """Bring up the sandbox VM and its desktop at start, in the background (sandbox/keeper.py): after a restart
-        macOS brings back the daemon (its login service) but not the VM, and the owner should see the computer's
-        screen as soon as the app opens, without a button to press. A sandbox never installed is left alone."""
+        """Bring up the sandbox VM at start unless on-demand VM policy is active (<= 18 GB Macs keep the
+        VM asleep until code or computer tools need it, preserving ~2 GB for macOS and local models)."""
+        mode = self.config.get("sandbox.on_demand", "auto")
+        on_demand = mode is True or str(mode).lower() == "true"
+        if str(mode).lower() == "auto":
+            from ..models import hardware
+            hw = hardware.detect(float(self.config.get("sandbox.memory_gb") or 2))
+            on_demand = (hw.gpu == "apple" and 0 < hw.ram_gb <= 10.0
+                         and (self.config.get("browser.mode") or "dedicated") != "computer")
+        if on_demand:
+            self.svc.audit.write("sandbox.on_demand", reason="deferred until first code or computer step")
+            return
         if await self.computer.ensure(desktop=False, timeout=600):
             await self._vm_timezone()
 

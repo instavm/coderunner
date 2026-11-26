@@ -72,6 +72,7 @@ class RateLimited(HubError):
 
 class Hub:
     calls = 0           # requests made to the Hub's API by this process (setup_eval reports them)
+    _calls_lock = threading.Lock()
 
     def __init__(self, client: httpx.Client | None = None, cache_dir: pathlib.Path | None | bool = None,
                  ttl: float = 24 * 3600):
@@ -93,9 +94,10 @@ class Hub:
         if cache and cache.exists() and time.time() - cache.stat().st_mtime < self.ttl:
             try:
                 return json.loads(cache.read_text())
-            except json.JSONDecodeError:
+            except (OSError, json.JSONDecodeError):
                 pass
-        Hub.calls += 1
+        with Hub._calls_lock:
+            Hub.calls += 1
         try:
             response = self.client.get(url, headers={**self._auth(), **(headers or {})})
         except httpx.HTTPError as exc:
@@ -113,8 +115,50 @@ class Hub:
         data = response.json()
         if cache:
             cache.parent.mkdir(parents=True, exist_ok=True)
-            cache.write_text(json.dumps(data))
+            tmp = cache.with_name(f"{cache.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps(data))
+            os.replace(tmp, cache)
         return data
+
+    def preflight_gguf(self, repo: str, file: str, base_repo: str | None = None) -> dict:
+        """Fast (<2s) pre-download verification of a GGUF header and Jinja tool-calling template.
+
+        Reads the first 64 KB of the GGUF file via HTTP Range to verify GGUF magic/version and checks
+        tokenizer_config.json (on the GGUF repo or its base repo) for tool-calling template tokens.
+        """
+        result: dict = {"ok": True, "magic_ok": None, "has_tool_template": None, "architecture": "", "warnings": []}
+        try:
+            url = f"{endpoint()}/{repo}/resolve/main/{quote(file)}"
+            resp = self.client.get(url, headers={**self._auth(), "Range": "bytes=0-65535"},
+                                   timeout=httpx.Timeout(10, read=10))
+            if resp.status_code in (200, 206):
+                head = resp.content
+                result["magic_ok"] = head[:4] == b"GGUF"
+                if not result["magic_ok"]:
+                    result["ok"] = False
+                    result["warnings"].append(f"{file} does not start with a valid GGUF header")
+                else:
+                    match = re.search(rb"general\.architecture[^a-z0-9_.-]{1,16}([a-z][a-z0-9_.-]{1,32})", head)
+                    if match:
+                        result["architecture"] = match.group(1).decode("ascii", errors="ignore")
+                    if b"tokenizer.chat_template" in head:
+                        result["has_tool_template"] = (b"tools" in head or b"tool_call" in head)
+        except httpx.HTTPError:
+            pass
+        if result["has_tool_template"] is None:
+            for candidate_repo in dict.fromkeys(r for r in (repo, base_repo) if r):
+                try:
+                    tok = self._get_json(f"{endpoint()}/{candidate_repo}/resolve/main/tokenizer_config.json",
+                                         f"tok-{candidate_repo}")
+                    tmpl = str((tok or {}).get("chat_template") or "")
+                    if tmpl:
+                        result["has_tool_template"] = ("tools" in tmpl or "tool_call" in tmpl)
+                        break
+                except HubError:
+                    continue
+        if result["has_tool_template"] is False:
+            result["warnings"].append("chat_template has no tool-calling support")
+        return result
 
     def model_info(self, repo: str, revision: str | None = None) -> dict:
         path = f"{repo}/revision/{revision}" if revision and revision != "main" else repo
