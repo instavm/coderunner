@@ -450,7 +450,7 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         # A booking stopped at the approval for the very step that books it passes; one that never chose a time,
         # or does not say where it stopped, does not.
         table, page = tasks["table"], ["https://www.opentable.co.uk/r/san-carlo-manchester"]
-        said = ("San Carlo has a table for four people next Saturday at 7:30 pm: "
+        said = ("San Carlo (Italian, 4.6, vegan pasta on the menu) has a table for four people next Saturday at 7:30 pm: "
                 "https://www.opentable.co.uk/r/san-carlo-manchester. Putting in your contact details is yours.")
         refused = [{"kind": "browser.sensitive", "summary": 'Click button "7:30 PM" on opentable.co.uk', "allowed": False}]
         state, why, _ = realworld.grade(table, said, page, refused, [], ['button "7:30 PM"'])

@@ -336,9 +336,10 @@ WORLD = [
          {"Islington": r"islington|\bN[17]\b|\bEC1", "one bedroom": r"\b1\s?(bed|br)|one.bed",
           "a monthly rent": r"pcm|per month|/\s?month|a month|p/?m\b"}, links=1, prices=3),
     Real("kaffee", "shopping", "three coffee machines under a budget from two German shops, answered in German",
-         "Finde drei Kaffeevollautomaten unter 500 € bei zwei deutschen Händlern (zum Beispiel otto.de, mediamarkt.de, "
-         "saturn.de oder amazon.de). Nenne für jeden Preis, Bewertung und Link, und empfiehl einen. Antworte auf Deutsch.",
-         {"German": GERMAN, "coffee machines": r"kaffeevollautomat|vollautomat|espresso",
+         "Finde drei Kaffeevollautomaten mit automatischem Milchsystem für Cappuccino, unter 500 € und mit mindestens "
+         "4 Sternen, bei zwei deutschen Händlern (zum Beispiel otto.de, mediamarkt.de, saturn.de oder amazon.de). Nenne "
+         "für jeden Preis, Bewertung und Link, und empfiehl einen. Antworte auf Deutsch.",
+         {"German": GERMAN, "coffee machines": r"kaffeevollautomat|vollautomat|espresso", "milk": r"milch|cappuccino",
           "a recommendation": r"empfehl|Empfehlung|meine Wahl|am besten|Tipp"}, links=2, prices=3),
     Real("idealo", "lookup", "one product's price on a German comparison site and at a shop, against a threshold",
          "Wie viel kostet der Sony WH-1000XM6 gerade auf idealo.de, und wie viel bei amazon.de? Liegt eines der "
@@ -450,15 +451,17 @@ CHOICE = r"recommend|pick|best (choice|value|option|buy|bet)|go with|choose|my c
 CLOCK = r"\b\d{1,2}(:\d{2})?\s?(am|pm|a\.m\.|p\.m\.)"
 EVERYDAY = [
     Real("dentist", "booking", "a new-patient dental cleaning: the earliest slot, taken to the page for the patient's details",
-         "Find a dentist in Austin, TX who can see a new patient for a cleaning next week and book me the earliest "
-         "slot you can find online. I'll put in my own details, so just get it as far as that.",
+         "Find a dentist in downtown Austin, TX (78701 or close by) who takes Delta Dental PPO and can see a new patient "
+         "for a cleaning and exam next week, on a weekday after 3pm. Book me the earliest such slot you can find online. "
+         "I'll put in my own details, so just get it as far as that.",
          {"a dentist": r"dent|\bDDS\b|\bDMD\b", "a time": CLOCK + r"|\b\d{1,2}:\d{2}\b", "Austin": r"austin|\bTX\b|\b787\d\d\b"},
          links=1, stops=True, long=True, suite="everyday",
          acted=r"book|schedule|request|select|continue|appointment|\b\d{1,2}:\d{2}"),
     Real("table", "booking", "a table for four on a Saturday evening, taken to the page that asks for contact details",
-         "Can you get me a table for four at a good Italian restaurant in central Manchester next Saturday around "
-         "7:30pm? Use OpenTable or whatever works, and take it up to the point where it wants my contact details.",
-         {"a time": r"\b[678][:.]\d{2}\s?(pm|p\.m\.)|\b(18|19|20)[:.]\d{2}\b", "Manchester": r"manchester|\bM[1-4]\b",
+         "Can you get me a table for four at an Italian restaurant in central Manchester rated 4.5 or more, with vegan "
+         "options for one of us, next Saturday between 7 and 8pm? Use OpenTable or whatever works, and take it up to "
+         "the point where it wants my contact details.",
+         {"Italian": r"italian|italia|trattoria|osteria|pizz|pasta", "a time": r"\b[678][:.]\d{2}\s?(pm|p\.m\.)|\b(18|19|20)[:.]\d{2}\b", "Manchester": r"manchester|\bM[1-4]\b",
           "four people": r"\b(4|four)\s?(people|guests|diners|covers|persons|adults)|(party|table) (of|for) (4|four)"},
          links=1, stops=True, long=True, suite="everyday",
          acted=r"\b[678][:.]\d{2}|\b(18|19|20)[:.]\d{2}|reserve|book|select|find a table|continue"),
@@ -493,9 +496,9 @@ EVERYDAY = [
                                    r"berufserfahrung|no experience"},
          links=3, stops=True, long=True, suite="everyday", acted=r"apply|bewerb|application|continue|weiter"),
     Real("konzert", "events", "two Tokyo concerts in early 2027 with tickets under a budget, answered in Japanese",
-         "2027年2月か3月に東京であるコンサートで、チケットが1枚1万円以下のものを2つ探してください。売り切れのものは除いて、"
-         "公演名・日時・会場・料金・リンクを教えてください。",
-         {"Japanese": r"([぀-ヿ].*){4}", "dates": r"(?<!\d)[23]月|\b2027[/.-]0?[23]\b|\b0?[23]/\d{1,2}\b",
+         "2027年2月か3月の土日に東京23区内であるクラシック（オーケストラ）のコンサートで、チケットが1枚1万円以下のものを"
+         "2つ探してください。売り切れのものは除いて、公演名・日時・会場・料金・リンクを教えてください。",
+         {"Japanese": r"([぀-ヿ].*){4}", "an orchestra": r"オーケストラ|交響|フィル|管弦楽|クラシック|symphon|philharmon", "dates": r"(?<!\d)[23]月|\b2027[/.-]0?[23]\b|\b0?[23]/\d{1,2}\b",
           "a venue": r"ホール|アリーナ|ドーム|武道館|劇場|会館|スタジアム|センター|ガーデン|ライブハウス|クラブ|zepp|hall|arena"},
          links=1, prices=2, suite="everyday"),
     Real("monitor", "shopping", "three 4K monitors for photo editing under a budget, compared in a table with a pick",
