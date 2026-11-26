@@ -28,7 +28,7 @@ def carry_file() -> pathlib.Path:
 
 def options_for(driver, state: str, *, cpus: str | None = None, memory: str | None = None,
                 network: str | None = None, mounts: list[str] | None = None,
-                build: bool = False) -> tuple[list[str], dict]:
+                build: bool = False, desktop: bool = False) -> tuple[list[str], dict]:
     """The installer's arguments and environment for the VM made again, from what is given and the old VM."""
     kept = driver.settings() if state != "missing" else {}
     chosen = {"cpus": cpus or kept.get("cpus"), "memory": memory or kept.get("memory"),
@@ -37,7 +37,9 @@ def options_for(driver, state: str, *, cpus: str | None = None, memory: str | No
     for mount in mounts or kept.get("mounts") or []:     # given mounts replace the old ones
         options += ["--mount", mount]
     # The same image again unless a build asks for a fresh one: published images can lag behind the checkout.
-    options += ["--no-assistant", *(["--build"] if build else
+    # --no-assistant alone builds an image without the desktop, and the daemon then installs it into every VM made
+    # from it (minutes of downloads, and the VM's disk back near its budget): an assistant's build keeps it baked in.
+    options += ["--no-assistant", *(["--build", *(["--desktop"] if desktop else [])] if build else
                                     ["--image", kept["image"]] if kept.get("image") else [])]
     env = {**os.environ, **({"CODERUNNER_HOME": kept["home"]} if kept.get("home") else {})}
     return options, env

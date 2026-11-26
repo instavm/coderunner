@@ -189,6 +189,11 @@ class SandboxCommandTests(unittest.TestCase):
             call=("subprocess.call", {"return_value": 0}), carry=("coderunner.sandbox.computer.carry_out", {}))
         self.assertEqual((code, driver.deleted), (0, True))
         self.assertIn("--build", mocks["call"].call_args.args[0])
+        # An assistant's build keeps the desktop in the image, or every VM made from it installs it again.
+        from coderunner.sandbox import reset
+        built, _ = reset.options_for(FakeDriver("running"), "running", build=True, desktop=True)
+        self.assertEqual(built[-3:], ["--no-assistant", "--build", "--desktop"])
+        self.assertNotIn("--desktop", reset.options_for(FakeDriver("running"), "running", desktop=True)[0])
         # The figure is install.sh's own: 7 GB free beside the old 14 GB is short of its 26.
         from coderunner import cli
         self.assertEqual(cli.build_space_gb(), 26)

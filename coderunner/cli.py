@@ -212,7 +212,8 @@ def cmd_sandbox(args, config: Config) -> int:
     # the old VM's settings where none are given. Only the sandbox is recreated (--no-assistant), not models.
     from .sandbox import reset
     options, env = reset.options_for(driver, state, cpus=args.cpus, memory=args.memory, network=args.network,
-                                     mounts=args.mount, build=args.build)
+                                     mounts=args.mount, build=args.build,
+                                     desktop=(paths.assistant_dir() / "config.json").exists())
     free_gb = shutil.disk_usage(pathlib.Path.home()).free / 1e9
     # The old VM's disk is deleted before the installer builds (and checks again), so its space counts as free.
     disk = getattr(driver, "disk_bytes", lambda: None)() if state != "missing" else None

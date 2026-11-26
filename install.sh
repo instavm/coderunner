@@ -77,6 +77,7 @@ Options:
   --image NAME              Use a specific sandbox image
   --model ID                Use this model instead of the hardware-based pick
   --no-assistant            Install the sandbox and the coderunner CLI only (no model setup or login service)
+  --desktop                 Bake the assistant's desktop (Xfce, VNC, Chrome) into a built image even with --no-assistant
   --search                  Search mode: the file index and the search tools for Claude Code, Codex and other
                             agents over MCP. No sandbox VM, no chat model (about 1.5 GB, a few minutes).
   -y, --yes                 Accepted for older scripts: the installer no longer asks before fetching a model runtime
@@ -130,6 +131,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --no-assistant)
             ASSISTANT=0
+            shift
+            ;;
+        --desktop)
+            DESKTOP_IMAGE=1
             shift
             ;;
         -y|--yes)
@@ -373,7 +378,7 @@ remove_build_leftovers() {
 # The assistant's sandbox comes with its desktop (Xfce, a VNC screen and Chrome) baked into a locally built image,
 # so a re-created VM has it at once; the daemon installs it into a VM without one by itself.
 build_args() {
-    if [ "$ASSISTANT" = "1" ]; then printf '%s\n' --build-arg DESKTOP=1; fi
+    if [ "$ASSISTANT" = "1" ] || [ "${DESKTOP_IMAGE:-0}" = "1" ]; then printf '%s\n' --build-arg DESKTOP=1; fi
 }
 
 # The data volume outlives the VM: the desktop Chrome's sign-ins, its Downloads and /workspace are kept there
