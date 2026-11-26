@@ -65,8 +65,9 @@
   <aside id="computer" aria-label="Assistant's computer">
     <div class="panel-head">
       <div>
-        <div class="panel-title">Assistant's computer</div>
+        <div id="panelTitle" class="panel-title">Assistant's computer</div>
         <div id="computerState" class="muted small">Starting…</div>
+        <div id="macState" class="muted small" hidden>Its own profile, apart from your browser</div>
       </div>
       <div id="turn" class="turn" hidden>
         <span id="turnText"></span>
@@ -80,7 +81,9 @@
     <div id="views" class="views" role="tablist" aria-label="View">
       <button id="viewScreen" class="view on" type="button" role="tab" aria-selected="true">Screen</button>
       <button id="viewTerminal" class="view" type="button" role="tab" aria-selected="false">Terminal</button>
-      <button id="viewBrowser" class="view" type="button" role="tab" aria-selected="false" hidden>Browser</button>
+      <span id="viewsGap" class="views-gap" aria-hidden="true" hidden></span>
+      <button id="viewBrowser" class="view" type="button" role="tab" aria-selected="false" hidden
+              title="CodeRunner's own browser, on this Mac">Mac browser</button>
     </div>
     <div id="screenWrap">
       <div id="screen"></div>

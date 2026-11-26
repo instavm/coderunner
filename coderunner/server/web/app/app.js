@@ -1241,6 +1241,10 @@ function setView(next, remember = true) {
   $("computer").classList.toggle("terminal-on", terminal || browsing);   // light or dark like the app, not the desktop
   $("term").hidden = !terminal;
   $("browser").hidden = !browsing;
+  // Screen and terminal are the sandbox VM's; the browser is CodeRunner's own, on this Mac: the head says whose.
+  $("panelTitle").textContent = browsing ? "Browser on this Mac" : "Assistant's computer";
+  $("computerState").hidden = browsing;
+  $("macState").hidden = !browsing;
   if (remember) { try { localStorage.setItem(VIEW_KEY, view); } catch { /* private window: not remembered */ } }
   setPanelWidth();
   if (terminal) openTerminal();
@@ -2309,6 +2313,7 @@ function drawBrowser(next) {
 function startBrowser() {
   if (!shellBrowser) return;
   $("viewBrowser").hidden = false;
+  $("viewsGap").hidden = false;
   for (const [id, d] of [["bBack", BACK_ICON], ["bForward", FORWARD_ICON], ["bReload", RELOAD_ICON], ["bMore", MORE_ICON]])
     $(id).replaceChildren(icon(d));
   $("bMore").onclick = () => ($("bMenu").hidden ? openBrowserMenu() : closeBrowserMenu());
