@@ -263,6 +263,12 @@ class BrowserSwitch:
         else:
             self.mac.release(scope)
         self._forget(scope)
+        if (self.mac.running() and self.mac_launcher is not None
+                and callable(getattr(self.mac, "stop", None))
+                and getattr(self.mac_launcher, "using_fallback", lambda: False)() is True
+                and getattr(self.mac_launcher, "app_open", lambda: False)() is True
+                and MAC not in self._lanes.values()):
+            await self.mac.stop()
         return closed
 
     def release(self, scope: str) -> None:

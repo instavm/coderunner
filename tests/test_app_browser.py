@@ -214,6 +214,40 @@ class BridgeTests(HomeCase):
         with self.assertRaises(Exception):
             await AppLauncher(self.bridge, wait=0.1).launch("coderunner-app", self.tmp)
 
+    async def test_mac_broker_switches_back_to_built_in_app_once_it_reconnects(self):
+        from test_browser import FakeLauncher
+        from coderunner.browser.broker import BrowserBroker
+        fallback = FakeLauncher()
+        app_launcher = FakeLauncher()
+
+        class SwitchableMacLauncher(MacLauncher):
+            def __init__(self, bridge):
+                super().__init__(bridge, fallback=fallback)
+                self._connected = False
+                self.app = app_launcher
+
+            def app_open(self) -> bool:
+                return self._connected
+
+        launcher = SwitchableMacLauncher(self.bridge)
+        cfg = Config({})
+        store = Store(self.tmp / "switchback.db")
+        audit = AuditLog(self.tmp / "switchback.jsonl")
+        broker = BrowserBroker(cfg, Policy(cfg, store, audit), audit, launcher=launcher, mode="mac")
+        # 1. App closed -> launches fallback Chrome.
+        await broker.start()
+        self.assertTrue(launcher.using_fallback())
+        self.assertEqual(len(fallback.browsers), 1)
+        self.assertEqual(len(app_launcher.browsers), 0)
+        # 2. App reconnects -> next _ensure() shuts down fallback Chrome and switches to built-in app browser.
+        launcher._connected = True
+        await broker.start()
+        self.assertFalse(launcher.using_fallback())
+        self.assertEqual(len(fallback.terminated), 1)
+        self.assertEqual(len(app_launcher.browsers), 1)
+        await broker.stop()
+        store.close()
+
 
 # ---- the switch -------------------------------------------------------------------------------------------
 
