@@ -853,15 +853,23 @@ class BrowserBroker:
         with contextlib.suppress(RuntimeError):
             asyncio.get_running_loop().create_task(close())
 
+    def _prefer_app_over_fallback(self) -> bool:
+        """If mode='mac' fell back to Chrome while the CodeRunner app was closed, switch back once the app reconnects."""
+        launcher = self._launched_by
+        return (self.mode == "mac" and self.running() and not self._busy
+                and callable(getattr(launcher, "using_fallback", None)) and launcher.using_fallback()
+                and callable(getattr(launcher, "app_open", None)) and launcher.app_open())
+
     async def _ensure(self) -> CDPPipe:
-        if self.running():
+        if self.running() and not self._prefer_app_over_fallback():
             return self._cdp
         async with self._start_lock:
-            if self.running():
+            if self.running() and not self._prefer_app_over_fallback():
                 return self._cdp
-            if self._process is not None:          # closed by the owner, crashed or lost the pipe
+            if self._process is not None:          # closed by the owner, crashed, lost the pipe, or app reconnected
+                upgraded = self._prefer_app_over_fallback()
                 await self._shutdown()
-                self.audit.write("browser.restart")
+                self.audit.write("browser.switched_to_app" if upgraded else "browser.restart")
             launcher = self._launcher()
             executable = launcher.find_browser(self.config)
             if not executable:
