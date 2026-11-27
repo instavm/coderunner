@@ -81,9 +81,14 @@ def chrome_identity(product_or_ua: str | None = None, *, accept_language: str | 
         {"brand": "Google Chrome", "version": full},
         {"brand": grease_name, "version": f"{grease_ver}.0.0.0"},
     ]
+    # CDP Emulation.setUserAgentOverride expects bare comma-separated language codes ("en-US,en")
+    # because Chromium automatically formats ;q= weights on the Accept-Language header.
+    cdp_lang = (accept_language or host_accept_language()).split(";", 1)[0]
+    if "," not in cdp_lang:
+        cdp_lang = "en-US,en"
     return {
         "userAgent": desktop_user_agent(full),
-        "acceptLanguage": accept_language or host_accept_language(),
+        "acceptLanguage": cdp_lang,
         "platform": "MacIntel",
         "userAgentMetadata": {
             "brands": brands,
@@ -108,7 +113,7 @@ def chrome_headers(product_or_ua: str | None = None, *, accept_language: str | N
     return {
         "User-Agent": ident["userAgent"],
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": ident["acceptLanguage"],
+        "Accept-Language": accept_language or host_accept_language(),
         "Sec-CH-UA": sec_ch_ua,
         "Sec-CH-UA-Mobile": "?0",
         "Sec-CH-UA-Platform": '"macOS"',

@@ -79,7 +79,7 @@ function waitingPage(title, message) {
 }
 
 async function daemonUp() {
-  try { return (await fetch(`${ORIGIN}/health`, {signal: AbortSignal.timeout(2000)})).ok; } catch { return false; }
+  try { return (await fetch(`${ORIGIN}/health`, {signal: AbortSignal.timeout(600)})).ok; } catch { return false; }
 }
 
 // The `coderunner` command: where the installer puts it, since an app opened from the Dock or a launcher gets a
@@ -187,9 +187,9 @@ function createWindow(open = "") {
     } else if (failure) {
       show("The assistant did not start", `${failure} Run \`coderunner up\` in a terminal to see more.`);
     } else {
-      show("CodeRunner is starting", `Starting the assistant at ${ADDRESS}…`);
+      show("CodeRunner is starting", "");
     }
-    setTimeout(load, 2000);
+    setTimeout(load, 400);
   };
   load();
   return win;

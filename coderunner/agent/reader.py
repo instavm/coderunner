@@ -247,10 +247,12 @@ async def _fetch_one(
     if resp.status_code >= 400:
         return {"url": final_url, "ok": False, "status": resp.status_code,
                 "error": f"HTTP {resp.status_code}", "needs_browser": resp.status_code in (401, 403, 429, 503)}
-    if "html" not in ctype and "text/" not in ctype and "xml" not in ctype:
+    if "html" not in ctype and "text/" not in ctype and "xml" not in ctype and "json" not in ctype:
         return {"url": final_url, "ok": False, "error": f"Non-text content ({ctype[:40]})", "needs_browser": True}
 
     raw = resp.text[:MAX_BYTES]
+    if "json" in ctype:
+        return {"url": final_url, "ok": True, "title": final_url, "content": raw.strip()[:max_chars], "needs_browser": False}
     wall = classify(probe_from_html(raw, status=resp.status_code))
     if wall:
         return {"url": final_url, "ok": False, "error": f"Blocked by {wall}", "needs_browser": True, "wall": wall}

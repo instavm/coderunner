@@ -161,7 +161,9 @@ function table(heads, rows) {
   const current = rows.map((r) => [...r]);
   let sortCol = -1, sortAsc = true;
   const drawBody = () => {
-    body.replaceChildren();
+    if (typeof body.replaceChildren === "function") body.replaceChildren();
+    else if (Array.isArray(body.children)) body.children.length = 0;
+    else body.textContent = "";
     for (const row of current) {
       const line = body.appendChild(el("tr"));
       for (const cell of row) inline(line.appendChild(el("td")), cell);

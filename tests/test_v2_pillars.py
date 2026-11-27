@@ -281,6 +281,26 @@ class BrowserIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(l_ext.browser.sent("Page.addScriptToEvaluateOnNewDocument"), [])
         await b_ext.stop()
 
+    def test_startup_splash_hides_internal_address_and_keeper_detects_local_network_block(self):
+        import pathlib
+        import sys
+        from coderunner.sandbox.keeper import FAILED, LOCAL_NETWORK_BLOCKED, Keeper
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        main_js = (root / "app" / "main.js").read_text()
+        self.assertNotIn("Starting the assistant at ${ADDRESS}", main_js)
+        self.assertIn('show("CodeRunner is starting", "")', main_js)
+
+        browser_js = (root / "app" / "browser.js").read_text()
+        self.assertIn('setUserAgent(identity.userAgent, "en-US,en")', browser_js)
+        self.assertIn('"Sec-CH-UA"', browser_js)
+
+        if sys.platform == "darwin":
+            from coderunner.core.config import Config
+            sb = mock.Mock(base_url="http://coderunner.local:8222", last_error=OSError(65, "No route to host"))
+            k = Keeper(Config(), mock.Mock(), sb, mock.Mock())
+            self.assertTrue(k._local_network_blocked())
+
 
 if __name__ == "__main__":
     unittest.main()

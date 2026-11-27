@@ -46,6 +46,10 @@ MESSAGES = {
     ABSENT: "This install has no computer for the assistant.",
 }
 VM_DISK_FULL = "The assistant's computer has run out of disk space."
+LOCAL_NETWORK_BLOCKED = (
+    "macOS Local Network access is off for CodeRunner. "
+    "Turn it on in System Settings → Privacy & Security → Local Network."
+)
 TIDYING = "Tidying the assistant's computer…"
 TIDIED = "Tidied the assistant's computer"
 NOTE_KEPT_S = 86400                 # the app shows the note once, if it opens within a day
@@ -240,7 +244,7 @@ class Keeper:
             except Exception as exc:          # never let a surprise end the daemon's care for it
                 self.audit.write("computer.error", error=f"{type(exc).__name__}: {exc}"[:200])
                 outcome = "broken"
-            if outcome in (READY, DISK_FULL, ABSENT):
+            if outcome in (READY, DISK_FULL, ABSENT) or (outcome == FAILED and self.message == LOCAL_NETWORK_BLOCKED):
                 return outcome
             if self.state != WORKING:
                 self._set(WORKING)
@@ -285,6 +289,8 @@ class Keeper:
         """None when the computer is as wanted; otherwise what is wrong."""
         if not await self._answers(self.HEALTH_WAIT_S):
             kind = await self._inside()
+            if kind in ("installed", "missing") and self._local_network_blocked():
+                return "local_network"
             return kind if kind in ("io", "vm_disk_full", "stuck") else "unhealthy"
         self._healthy_event().set()
         if not self.want_desktop:
@@ -325,6 +331,10 @@ class Keeper:
             self.audit.write("computer.disk_full", where="vm")
             self._set(DISK_FULL, VM_DISK_FULL)
             return DISK_FULL
+        if problem == "local_network":
+            self.audit.write("computer.local_network_blocked", url=getattr(self.sandbox, "base_url", ""))
+            self._set(FAILED, LOCAL_NETWORK_BLOCKED)
+            return FAILED
         for step in STEPS[STEPS.index(FIRST_STEP.get(problem, "container")):]:
             if self._disk_low():
                 return self._disk_full()
@@ -549,11 +559,32 @@ class Keeper:
     def _mac_disk_free_gb() -> float:
         return shutil.disk_usage(pathlib.Path.home()).free / 1e9
 
+    def _local_network_blocked(self) -> bool:
+        """macOS Local Network privacy rejects connections to 192.168.x.x / *.local with immediate EHOSTUNREACH."""
+        if sys.platform != "darwin":
+            return False
+        host = (urlsplit(getattr(self.sandbox, "base_url", "") or "").hostname or "").lower()
+        if not host or host in ("127.0.0.1", "localhost", "::1"):
+            return False
+        exc = getattr(self.sandbox, "last_error", None)
+        while exc is not None:
+            if getattr(exc, "errno", None) == 65 or "no route to host" in str(exc).lower():
+                return True
+            exc = exc.__cause__ or exc.__context__
+        return False
+
     async def _answers(self, seconds: float) -> bool:
+        no_route_streak = 0
         for attempt in range(max(1, int(seconds // 2))):
             with contextlib.suppress(Exception):
                 if await self.sandbox.health():
                     return True
+            if self._local_network_blocked():
+                no_route_streak += 1
+                if no_route_streak >= 3:
+                    return False
+            else:
+                no_route_streak = 0
             await self._sleep(2)
         return False
 

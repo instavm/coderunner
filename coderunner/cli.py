@@ -97,15 +97,17 @@ def cmd_up(args, config: Config) -> int:
     from .sandbox import driver_for
     driver = driver_for(config)
     state = driver.status()
-    if state not in ("running", "missing", "unavailable"):
-        print(f"Starting sandbox ({driver.name})…")
-        driver.start()
-    elif state == "missing" and config.get("sandbox.driver") != "none":
+    if state == "missing" and config.get("sandbox.driver") != "none":
         print(NO_SANDBOX)
     _stopped_mark().unlink(missing_ok=True)
     if _daemon_up(config):
+        if state not in ("running", "missing", "unavailable"):
+            print(f"Starting sandbox ({driver.name})…")
+            driver.start()
         print("Daemon already running.")
         return 0
+    # Start the daemon first so the desktop app opens in ~1s while ComputerKeeper brings the sandbox VM up
+    # asynchronously in the background, instead of blocking the splash screen for 15–30s on VM boot.
     from .server import service
     if service.status().get("installed"):
         service.restart()
@@ -119,7 +121,7 @@ def cmd_up(args, config: Config) -> int:
             print(f"✅ CodeRunner is running. Owner UI: http://127.0.0.1:{config.get('gateway.admin_port')}/ "
                   "(pair a browser with `coderunner remote pair`).")
             return 0
-        time.sleep(1)
+        time.sleep(0.4)
     print(f"❌ The daemon did not start; see {paths.assistant_dir() / 'logs' / 'daemon.log'}")
     return 1
 

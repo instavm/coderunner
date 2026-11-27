@@ -66,7 +66,32 @@ function desktopChromeIdentity(rawUA, chromeVersion = (process.versions && proce
   const [greaseName, greaseVer] = GREASE_BRANDS[(parseInt(major, 10) || 0) % GREASE_BRANDS.length];
   const secChUa = `"Chromium";v="${major}", "Google Chrome";v="${major}", "${greaseName}";v="${greaseVer}"`;
   const secChUaFull = `"Chromium";v="${full}", "Google Chrome";v="${full}", "${greaseName}";v="${greaseVer}.0.0.0"`;
-  return {userAgent: ua, full, major, secChUa, secChUaFull};
+  const cdpParams = {
+    userAgent: ua,
+    acceptLanguage: "en-US,en",
+    platform: "MacIntel",
+    userAgentMetadata: {
+      brands: [
+        {brand: "Chromium", version: major},
+        {brand: "Google Chrome", version: major},
+        {brand: greaseName, version: greaseVer},
+      ],
+      fullVersionList: [
+        {brand: "Chromium", version: full},
+        {brand: "Google Chrome", version: full},
+        {brand: greaseName, version: `${greaseVer}.0.0.0`},
+      ],
+      fullVersion: full,
+      platform: "macOS",
+      platformVersion: "15.4.0",
+      architecture: "arm",
+      model: "",
+      mobile: false,
+      bitness: "64",
+      wow64: false,
+    },
+  };
+  return {userAgent: ua, full, major, secChUa, secChUaFull, cdpParams};
 }
 
 class AppBrowser {
@@ -138,15 +163,26 @@ class AppBrowser {
     const ses = this.session;
     // Strip "CodeRunner/..." and "Electron/..." from this browser session's User-Agent and align Sec-CH-UA Client
     // Hints with the real underlying Chromium version so Google Sign-In and WAFs see standard desktop Chrome.
+    // Note: Electron's setUserAgent(ua, acceptLanguages) takes bare language codes ("en-US,en") and adds ;q= itself.
     const identity = desktopChromeIdentity(typeof ses.getUserAgent === "function" ? ses.getUserAgent() : "");
-    if (typeof ses.setUserAgent === "function") ses.setUserAgent(identity.userAgent, "en-US,en;q=0.9");
+    this.chromeIdentity = identity;
+    if (typeof ses.setUserAgent === "function") ses.setUserAgent(identity.userAgent, "en-US,en");
     if (ses.webRequest && typeof ses.webRequest.onBeforeSendHeaders === "function") {
       ses.webRequest.onBeforeSendHeaders({urls: ["http://*/*", "https://*/*"]}, (details, callback) => {
         const headers = {...details.requestHeaders};
+        const isHttps = String(details.url || "").startsWith("https://");
+        let hasChUa = false, hasChMob = false, hasChPlat = false;
         for (const key of Object.keys(headers)) {
           const low = key.toLowerCase();
-          if (low === "sec-ch-ua") headers[key] = identity.secChUa;
+          if (low === "sec-ch-ua") { headers[key] = identity.secChUa; hasChUa = true; }
+          else if (low === "sec-ch-ua-mobile") { headers[key] = "?0"; hasChMob = true; }
+          else if (low === "sec-ch-ua-platform") { headers[key] = '"macOS"'; hasChPlat = true; }
           else if (low === "sec-ch-ua-full-version-list") headers[key] = identity.secChUaFull;
+        }
+        if (isHttps) {
+          if (!hasChUa) headers["Sec-CH-UA"] = identity.secChUa;
+          if (!hasChMob) headers["Sec-CH-UA-Mobile"] = "?0";
+          if (!hasChPlat) headers["Sec-CH-UA-Platform"] = '"macOS"';
         }
         callback({requestHeaders: headers});
       });
@@ -245,8 +281,11 @@ class AppBrowser {
     this.layout();
     this.announce(tab);
     // Even a blank tab gets its page loaded: until a view has loaded something it has no page process, and the
-    // protocol's page commands (Page.enable) wait for one.
+    // protocol's page commands (Page.enable, Emulation.setUserAgentOverride) wait for one.
     contents.loadURL(url || "about:blank").catch(() => {});
+    if (this.chromeIdentity) {
+      contents.debugger.sendCommand("Emulation.setUserAgentOverride", this.chromeIdentity.cdpParams).catch(() => {});
+    }
     this.changed();
     return tab;
   }
@@ -302,6 +341,9 @@ class AppBrowser {
       try {
         view.webContents.debugger.attach("1.3");
         tab.targetId = (await view.webContents.debugger.sendCommand("Target.getTargetInfo")).targetInfo.targetId;
+        if (this.chromeIdentity) {
+          view.webContents.debugger.sendCommand("Emulation.setUserAgentOverride", this.chromeIdentity.cdpParams).catch(() => {});
+        }
         this.announce(tab);
       } catch { /* closed already */ }
     })();
@@ -583,7 +625,12 @@ class AppBrowser {
       try {
         try { if (contents.debugger.isAttached()) contents.debugger.detach(); } catch { /* not attached */ }
         if (!contents.isDestroyed() && !tab.closing && this.tabs.has(tab.id)) {
-          try { contents.debugger.attach("1.3"); } catch { /* gone */ }
+          try {
+            contents.debugger.attach("1.3");
+            if (this.chromeIdentity) {
+              contents.debugger.sendCommand("Emulation.setUserAgentOverride", this.chromeIdentity.cdpParams).catch(() => {});
+            }
+          } catch { /* gone */ }
         }
       } finally {
         tab.releasing = false;
