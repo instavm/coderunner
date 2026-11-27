@@ -48,8 +48,8 @@ from .cdp import CDPError, CDPPipe
 from .errors import BrowserError
 from .links import plain_link
 from .page import PAGE_CHARS, ax_value, cut, fit, page_changes, render_ax, short_url, squash
-from .scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, FOCUSED_JS, LIST_JS, OPTIONS_JS, SCROLL_JS, SELECT_ALL_JS,
-                      SELECT_OPTION_JS, SETTLE_JS, SLIDER_JS)
+from .scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, FIELD_TEXT_JS, FOCUSED_JS, LIST_JS, OPTIONS_JS,
+                      SCROLL_JS, SELECT_ALL_JS, SELECT_OPTION_JS, SETTLE_JS, SLIDER_JS)
 from .urls import is_local_ip, local_problem, page_host, parse_url, same_site
 from .walls import WALL_JS, classify
 
@@ -229,6 +229,26 @@ CHALLENGE_JS = """(() => {
     '[id*="captcha" i], [name*="captcha" i], [class*="captcha" i]');
   return [...found].some((n) => shown(n) && !n.closest('.grecaptcha-badge'));
 })()"""
+
+
+# Elements the accessibility tree numbers by themselves, or that stand for the page: never counted as drawn controls.
+NATIVE_CONTROLS = frozenset({"HTML", "BODY", "A", "BUTTON", "INPUT", "SELECT", "TEXTAREA", "LABEL", "SUMMARY",
+                             "OPTION", "IFRAME", "VIDEO", "AUDIO"})
+
+
+# Roles that take typed text, and inputs that do not.
+TEXT_ROLES = frozenset({"textbox", "searchbox", "combobox", "spinbutton", "slider"})
+NOT_TEXT_INPUTS = frozenset({"button", "submit", "reset", "image", "checkbox", "radio", "file", "color", "hidden"})
+
+
+def takes_text(node: dict) -> bool:
+    """Whether an element, from a DOM.describeNode result, is one text can be typed into."""
+    raw = node.get("attributes") or []
+    attrs = {raw[i].lower(): raw[i + 1] for i in range(0, len(raw) - 1, 2)}
+    tag = node.get("nodeName", "").upper()
+    if tag == "INPUT":
+        return attrs.get("type", "text").lower() not in NOT_TEXT_INPUTS
+    return tag == "TEXTAREA" or attrs.get("contenteditable", "false").lower() in ("", "true", "plaintext-only")
 
 
 def field_kind(node: dict) -> str | None:
@@ -1661,13 +1681,45 @@ class BrowserBroker:
     async def _render(self, target: str, sid: str, url: str, whole: bool = False) -> str:
         nodes = (await self._send(sid, "Accessibility.getFullAXTree", timeout=60)).get("nodes", [])
         secret = await self._secret_fields(sid, nodes)
+        clickable = await self._pointer_boxes(sid)
         marks: dict = {}
         content, refs = render_ax(nodes, url, secret, self._numbers.setdefault(target, {"next": 1, "ids": {}}),
-                                  whole=whole, marks=marks)
+                                  whole=whole, marks=marks, clickable=clickable)
         if not whole:
             self._marks[target] = marks
         self._renumbered(target, refs, url)
         return content
+
+    async def _pointer_boxes(self, sid: str) -> set[int]:
+        """The outermost elements the page shows with a pointer cursor (whose parent shows another), by backend
+        node id: what a person sees as clickable. Pages built with React and the like make boxes clickable with
+        one listener at their root, so the box itself has no role and no listener of its own; the pointer is the
+        sign left (Flipkart's "Chat with us"). Native controls are numbered already and are left out."""
+        try:
+            snap = await self._send(sid, "DOMSnapshot.captureSnapshot", {"computedStyles": ["cursor"]}, timeout=15)
+        except (CDPError, asyncio.TimeoutError):
+            return set()
+        strings = snap.get("strings") or []
+        found: set[int] = set()
+        for doc in snap.get("documents") or []:
+            nodes, layout = doc.get("nodes") or {}, doc.get("layout") or {}
+            parents, names = nodes.get("parentIndex") or [], nodes.get("nodeName") or []
+            backends, kinds = nodes.get("backendNodeId") or [], nodes.get("nodeType") or []
+            cursor: dict[int, bool] = {}
+            for index, styles in zip(layout.get("nodeIndex") or [], layout.get("styles") or []):
+                cursor[index] = bool(styles) and 0 <= styles[0] < len(strings) and strings[styles[0]] == "pointer"
+            for index, pointer in cursor.items():
+                if not pointer or index >= len(kinds) or kinds[index] != 1:
+                    continue
+                name = strings[names[index]].upper() if 0 <= names[index] < len(strings) else ""
+                if name in NATIVE_CONTROLS:
+                    continue
+                up = parents[index] if index < len(parents) else -1
+                while up >= 0 and up not in cursor:            # a parent without a box (display: contents)
+                    up = parents[up] if up < len(parents) else -1
+                if up < 0 or not cursor.get(up):
+                    found.add(backends[index])
+        return found
 
     def _renumbered(self, target: str, refs: dict[int, dict], url: str) -> None:
         """A page read again: its elements as they are now, and the numbers it no longer has kept with what
@@ -2268,6 +2320,9 @@ class BrowserBroker:
         if field == "captcha" or CAPTCHA_FIELD.search(element.get("name") or ""):
             self.audit.write("browser.captcha_left", page=url)
             raise BrowserError(CAPTCHA_HINT)
+        if element["role"] not in TEXT_ROLES and not takes_text(node):
+            # A chat's send button beside its message box took the text in a run, and nothing went anywhere.
+            raise BrowserError(self._not_a_field(target, ref, label))
         if field == "password":
             if not await self.policy.check(Action("browser.password", host, f"Type into {label} on {host}",
                                                   {"url": url, "ref": ref}, tainted), origin=self.origin):
@@ -2308,11 +2363,19 @@ class BrowserBroker:
                 await self._call(sid, await self._object(sid, backend, context), SELECT_ALL_JS)
                 if not text:
                     await self._key(sid, "Backspace")
+            field_obj = await self._object(sid, backend, await self._world(sid, target)) if text else None
+            before = await self._call(sid, field_obj, FIELD_TEXT_JS) if field_obj else None
             if text and keystrokes and len(text) <= KEYSTROKE_CHARS and text.isascii():
                 for char in text:               # key events too, for fields that act on keys (suggestions)
                     await self._char(sid, char)
             elif text:
                 await self._send(sid, "Input.insertText", {"text": text})
+            if field_obj and isinstance(before, str):
+                after = await self._call(sid, field_obj, FIELD_TEXT_JS)
+                if after == before and not (clear and before.split("\0")[0] == text):   # retyped as it was
+                    # Reported as typed, the model sent the same text again and again (a Flipkart chat).
+                    raise BrowserError(f"The text did not go into [{ref}] {label}; nothing on the page changed. "
+                                       + self._not_a_field(target, ref, label, lead=False))
             navigated = False
             if submit:
                 watch = self._watch_navigation(sid, target)
@@ -2323,6 +2386,17 @@ class BrowserBroker:
             if field is None:
                 result["_audit"] = {"text": text}
             return result
+
+    def _not_a_field(self, target: str, ref: int, label: str, lead: bool = True) -> str:
+        """Why [ref] cannot be typed into, and the text fields of the page nearest it, to type into instead."""
+        fields = sorted((abs(number - ref), number, info) for number, info in (self._refs.get(target) or {}).items()
+                        if info.get("role") in ("textbox", "searchbox", "combobox") and number != ref)
+        named = "; ".join(f'[{number}] {info["role"]} {json.dumps(info.get("name") or "", ensure_ascii=False)}'
+                          for _, number, info in fields[:3])
+        head = f"[{ref}] {label} is not a text field. " if lead else ""
+        if named:
+            return head + f"Type into a text field instead: {named}."
+        return head + "If clicking it opens a field, click it first and then type into the field the page shows."
 
     async def _slide(self, target: str, sid: str, backend: int, text: str, tainted: bool) -> dict:
         """Typing a number into a slider sets it (a price filter's "Max."): typed text, clicks and arrow keys

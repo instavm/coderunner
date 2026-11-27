@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CodeRunner",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Lets your local CodeRunner assistant use the tabs in its CodeRunner tab group, and no other tab.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1NN2N0r8QswRTtP1mlO1HBa3jT47YD9SbQR8hX5ZVb7thBthgginH9YZ/0ydeOnHJkVkegmdMTToPcsYrbvkNB6VPtmX1lFLVmFmdfth2AEAzU/FelBW00zw8P4BokWIjFHL8e4vfU3bCKvcQQahIyMY4KMtKUimdb9Hic7Azv+2RIDu7lQGlf8dWDFTx74BzaToT/0Q7YhMwOf4mns5kVmeBYVpymbAAsFEml0sz+rIzeGXSCyu7y8P8V+Gu3y67VRl2/4EUKyeWBSSvQSQdKefmVyQLfbj8xCo3authQAn50YgwVCldoXrYDaY98RmkOfwDGTUYYUzLhWplzdukQIDAQAB",
   "minimum_chrome_version": "125",

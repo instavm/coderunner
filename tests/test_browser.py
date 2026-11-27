@@ -1125,6 +1125,38 @@ class BrowserToolTextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(asked, [{"more": True}, {"start": "Price"}])        # start= says where, more is left out
 
 
+    async def test_a_site_address_that_is_not_there_opens_the_home_page_and_names_its_search_box(self):
+        # Zomato: the model wrote zomato.com/search/monster from memory and got a 404 page; then guessed again.
+        from coderunner.agent.recovery import classify_dead_page
+        from coderunner.agent.tools import browser_tools
+        opened = []
+
+        class Broker:
+            async def navigate(self, url, tainted=False):
+                opened.append(url)
+                if url.endswith("/search/monster"):
+                    return {"ok": True, "url": url, "title": "404 | Zomato", "content": "This is a 404 page"}
+                if url == "https://www.swiggy.com/search?query=monster":
+                    return {"ok": True, "url": url, "title": "Swiggy", "content": "[3] link \"Monster 350ml\""}
+                return {"ok": True, "url": url, "title": "Zomato", "content":
+                        '[1] link "Get the App" -> /app\n[2] textbox "Bengaluru"\n'
+                        '[3] textbox "Search for restaurant, cuisine or a dish"'}
+
+            async def items(self, **options):
+                return {"ok": True, "total": 0}
+        tools = {tool.name: tool for tool in browser_tools(SimpleNamespace(browser=Broker(), vision=False, driver=None))}
+        ctx = SimpleNamespace(tainted=False)
+        args = {"url": "https://www.zomato.com/search/monster"}
+        text = await tools["browser_open"].handler(args, ctx)
+        self.assertEqual(opened, ["https://www.zomato.com/search/monster", "https://www.zomato.com/"])
+        self.assertIn('its search box [3] textbox "Search for restaurant, cuisine or a dish"', text)
+        self.assertIn("Get the App", text)
+        self.assertEqual(classify_dead_page("browser_open", args, text)[0], "")     # not counted against the site
+        # An address that is there is left as it is.
+        opened.clear()
+        text = await tools["browser_open"].handler({"url": "https://www.swiggy.com/search?query=monster"}, ctx)
+        self.assertEqual((opened, "opened_instead" in text), (["https://www.swiggy.com/search?query=monster"], False))
+
 class ReadinessTests(BrokerTestCase):
     browser_config = {"allow": ["shop.example"]}
     rules = [{"kind": "browser.interact", "target": "shop.example", "decision": "allow"}]
@@ -1804,6 +1836,27 @@ document.addEventListener('DOMContentLoaded', () => get('late'));
 document.getElementById('go').onclick = () => get('out');
 </script></body></html>"""
 
+# An order page and its support chat as Flipkart draws them: "Chat with us" is a box made clickable by one
+# listener at the page's root (no role, no listener of its own), the message box is contenteditable with its
+# placeholder drawn by CSS, and the send control is an icon in a box. Product cards are links holding boxes.
+SUPPORT = b"""<!doctype html><html><head><title>Order</title><style>.go{cursor:pointer;color:blue}
+.box:empty::before{content:'Write a Message';color:#999}.box{border:1px solid;min-height:20px;width:300px}
+</style></head><body><div id="root"><p>Return policy ended on Wed Nov 25</p>
+<div class="go" id="chat"><img alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="10"><span>Chat with
+us</span></div>
+<a href="/p/1"><div class="go">Shoes Rs 742</div></a>
+<div class="go" id="tour" style="padding:4px"><a href="/help">Help centre</a> <span>and FAQs</span></div>
+<div id="log"></div><div class="box" id="msg" contenteditable="true"></div>
+<input aria-label="Locked" id="locked"><div class="go" id="send"><svg width="16" height="16"><path d="M0 0L16 8L0 16z"/></svg></div></div>
+<script>
+document.getElementById('locked').addEventListener('beforeinput', (e) => e.preventDefault());
+document.getElementById('root').addEventListener('click', (e) => {
+  if (e.target.closest('#chat')) document.getElementById('log').textContent = 'Flipkart Support: how may I help you?';
+  if (e.target.closest('#send')) { const m = document.getElementById('msg');
+    document.getElementById('log').textContent = 'sent: ' + m.innerText; m.textContent = ''; }
+});
+</script></body></html>"""
+
 
 class _Fixture(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -1826,6 +1879,7 @@ class _Fixture(http.server.BaseHTTPRequestHandler):
         body = FIXTURE.replace(b"PORT", port) if self.path == "/" else DRAWN if self.path == "/drawn" else \
             CONTROLS if self.path == "/controls" else LISTING if self.path == "/list" else \
             WORDLESS if self.path == "/boxes" else FETCHING if self.path == "/fetching" else \
+            SUPPORT if self.path == "/support" else \
             b"<title>Next</title><h2>Second page</h2>"
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1971,6 +2025,34 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("stands at 4 (from 1 to 5)", moved["note"])
         self.assertEqual(await self.page("document.getElementById('stars').getAttribute('aria-valuenow')"), "4")
         self.assertIn("typing the number", (await self.broker.type(refs["Stars"], "four"))["error"])
+
+    async def test_a_support_chat_drawn_by_script_is_opened_and_typed_into_by_number(self):
+        # Flipkart: the model found "Chat with us" and "Write a Message" as plain text with no number, typed
+        # into the icon-only send button beside the box, was told it worked, and sent the same text again.
+        opened = await self.broker.navigate(self.base + "/support")
+        self.assertTrue(opened["ok"], opened)
+        content = opened["content"]
+        refs = self.refs()
+        self.assertIn(f'[{refs["Chat with us"]}] button "Chat with us"', content)
+        self.assertIn(f'[{refs["Write a Message"]}] textbox "Write a Message"', content)
+        self.assertNotIn('button "Shoes Rs 742"', content)                  # inside a link: the link is numbered
+        self.assertIn('link "Help centre"', content)                        # a card holding a link: its link
+        self.assertNotIn('button "Help centre', content)
+        self.assertIn("how may I help", (await self.broker.click(refs["Chat with us"]))["changes"])
+        send = next(ref for ref, info in self.broker._refs[self.broker._active].items()
+                    if info["role"] == "button" and not info["name"])
+        refused = await self.broker.type(send, "Where are my SuperCoins?")
+        self.assertIn("not a text field", refused["error"])
+        self.assertIn(f'[{refs["Write a Message"]}] textbox "Write a Message"', refused["error"])
+        typed = await self.broker.type(refs["Write a Message"], "Where are my SuperCoins?")
+        self.assertTrue(typed["ok"], typed)
+        self.assertEqual(await self.page("document.getElementById('msg').innerText"), "Where are my SuperCoins?")
+        self.assertTrue((await self.broker.click(send))["ok"])
+        self.assertEqual(await self.page("document.getElementById('log').textContent"),
+                         "sent: Where are my SuperCoins?")
+        # A field that drops what is typed is reported as such, not as typed.
+        dropped = await self.broker.type(self.refs()["Locked"], "hello")
+        self.assertIn("did not go into", dropped["error"])
 
     async def test_points_on_drawn_controls_reach_them(self):
         # A point on ::before content hits the pseudo-element, not an element: booking.com's one-way radio
