@@ -112,7 +112,9 @@ class TraceRouteTests(unittest.IsolatedAsyncioTestCase):
                      "model qwen-test, slot 0", "time limit 600 s", "| Models | chat: qwen-test"):
             self.assertIn(part, md)
         # The timeline's entries are in the order they happened.
-        order = [md.index(s) for s in ("+0.0 s **Request**", "Turn (step 0)", "**Plan v1**",
+        # The request comes first, a moment after the task was made: +0.0 s, or +0.1 s on a busy machine.
+        self.assertRegex(md, r"\+0\.[01] s \*\*Request\*\*")
+        order = [md.index(s) for s in (" **Request**", "Turn (step 0)", "**Plan v1**",
                                        "**Step 1", "Judge `decision.check`", "**Approval asked**", "Turn (step 1)",
                                        "**Plan v2**", "**Step 2", "**Approval decided**", "**Interim answer**", "**Ended: done**")]
         self.assertEqual(order, sorted(order))
