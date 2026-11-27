@@ -1126,7 +1126,7 @@ class BrowserToolTextTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_a_site_address_that_is_not_there_opens_the_home_page_and_names_its_search_box(self):
-        # Zomato: the model wrote zomato.com/search/monster from memory and got a 404 page; then guessed again.
+        # A search address written from memory that the site does not have: its home page and search box instead.
         from coderunner.agent.recovery import classify_dead_page
         from coderunner.agent.tools import browser_tools
         opened = []
@@ -1134,11 +1134,11 @@ class BrowserToolTextTests(unittest.IsolatedAsyncioTestCase):
         class Broker:
             async def navigate(self, url, tainted=False):
                 opened.append(url)
-                if url.endswith("/search/monster"):
-                    return {"ok": True, "url": url, "title": "404 | Zomato", "content": "This is a 404 page"}
-                if url == "https://www.swiggy.com/search?query=monster":
-                    return {"ok": True, "url": url, "title": "Swiggy", "content": "[3] link \"Monster 350ml\""}
-                return {"ok": True, "url": url, "title": "Zomato", "content":
+                if url.endswith("/search/cola"):
+                    return {"ok": True, "url": url, "title": "404 | Food", "content": "This is a 404 page"}
+                if url == "https://grocery.example/search?query=cola":
+                    return {"ok": True, "url": url, "title": "Grocery", "content": "[3] link \"Cola 300ml\""}
+                return {"ok": True, "url": url, "title": "Food", "content":
                         '[1] link "Get the App" -> /app\n[2] textbox "Bengaluru"\n'
                         '[3] textbox "Search for restaurant, cuisine or a dish"'}
 
@@ -1146,22 +1146,22 @@ class BrowserToolTextTests(unittest.IsolatedAsyncioTestCase):
                 return {"ok": True, "total": 0}
         tools = {tool.name: tool for tool in browser_tools(SimpleNamespace(browser=Broker(), vision=False, driver=None))}
         ctx = SimpleNamespace(tainted=False)
-        args = {"url": "https://www.zomato.com/search/monster"}
+        args = {"url": "https://food.example/search/cola"}
         text = await tools["browser_open"].handler(args, ctx)
-        self.assertEqual(opened, ["https://www.zomato.com/search/monster", "https://www.zomato.com/"])
+        self.assertEqual(opened, ["https://food.example/search/cola", "https://food.example/"])
         self.assertIn('its search box [3] textbox "Search for restaurant, cuisine or a dish"', text)
         self.assertIn("Get the App", text)
         self.assertEqual(classify_dead_page("browser_open", args, text)[0], "")     # not counted against the site
-        # Flipkart's missing page has no 404 in its title: its words say so.
+        # A missing page whose title does not say so: its words do.
         opened.clear()
-        flipkart = "Unfortunately the page you are looking for has been moved or deleted\n[52] link \"GO TO HOMEPAGE\" -> /"
-        self.assertEqual(classify_dead_page("browser_open", {"url": "https://www.flipkart.com/monster-energy-350ml-can"},
-                                            "url: https://www.flipkart.com/monster-energy-350ml-can\ntitle: Online "
-                                            "Shopping India\n\n" + flipkart)[0], "not_found")
+        missing = "Unfortunately the page you are looking for has been moved or deleted\n[52] link \"GO TO HOMEPAGE\" -> /"
+        self.assertEqual(classify_dead_page("browser_open", {"url": "https://shop.example/cola-300ml-can"},
+                                            "url: https://shop.example/cola-300ml-can\ntitle: Online "
+                                            "Shopping\n\n" + missing)[0], "not_found")
         # An address that is there is left as it is.
         opened.clear()
-        text = await tools["browser_open"].handler({"url": "https://www.swiggy.com/search?query=monster"}, ctx)
-        self.assertEqual((opened, "opened_instead" in text), (["https://www.swiggy.com/search?query=monster"], False))
+        text = await tools["browser_open"].handler({"url": "https://grocery.example/search?query=cola"}, ctx)
+        self.assertEqual((opened, "opened_instead" in text), (["https://grocery.example/search?query=cola"], False))
 
 class ReadinessTests(BrokerTestCase):
     browser_config = {"allow": ["shop.example"]}
@@ -1842,7 +1842,7 @@ document.addEventListener('DOMContentLoaded', () => get('late'));
 document.getElementById('go').onclick = () => get('out');
 </script></body></html>"""
 
-# An order page and its support chat as Flipkart draws them: "Chat with us" is a box made clickable by one
+# An order page and its support chat as some shops draw them: "Chat with us" is a box made clickable by one
 # listener at the page's root (no role, no listener of its own), the message box is contenteditable with its
 # placeholder drawn by CSS, and the send control is an icon in a box. Product cards are links holding boxes.
 SUPPORT = b"""<!doctype html><html><head><title>Order</title><style>.go{cursor:pointer;color:blue}
@@ -1857,7 +1857,7 @@ us</span></div>
 <script>
 document.getElementById('locked').addEventListener('beforeinput', (e) => e.preventDefault());
 document.getElementById('root').addEventListener('click', (e) => {
-  if (e.target.closest('#chat')) document.getElementById('log').textContent = 'Flipkart Support: how may I help you?';
+  if (e.target.closest('#chat')) document.getElementById('log').textContent = 'Support: how may I help you?';
   if (e.target.closest('#send')) { const m = document.getElementById('msg');
     document.getElementById('log').textContent = 'sent: ' + m.innerText; m.textContent = ''; }
 });
@@ -2033,8 +2033,8 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("typing the number", (await self.broker.type(refs["Stars"], "four"))["error"])
 
     async def test_a_support_chat_drawn_by_script_is_opened_and_typed_into_by_number(self):
-        # Flipkart: the model found "Chat with us" and "Write a Message" as plain text with no number, typed
-        # into the icon-only send button beside the box, was told it worked, and sent the same text again.
+        # "Chat with us" and the message box were plain text with no number; the model typed into the icon-only
+        # send button beside the box, was told it worked, and sent the same text again.
         opened = await self.broker.navigate(self.base + "/support")
         self.assertTrue(opened["ok"], opened)
         content = opened["content"]
@@ -2047,15 +2047,15 @@ class RealBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("how may I help", (await self.broker.click(refs["Chat with us"]))["changes"])
         send = next(ref for ref, info in self.broker._refs[self.broker._active].items()
                     if info["role"] == "button" and not info["name"])
-        refused = await self.broker.type(send, "Where are my SuperCoins?")
+        refused = await self.broker.type(send, "Where is my refund?")
         self.assertIn("not a text field", refused["error"])
         self.assertIn(f'[{refs["Write a Message"]}] textbox "Write a Message"', refused["error"])
-        typed = await self.broker.type(refs["Write a Message"], "Where are my SuperCoins?")
+        typed = await self.broker.type(refs["Write a Message"], "Where is my refund?")
         self.assertTrue(typed["ok"], typed)
-        self.assertEqual(await self.page("document.getElementById('msg').innerText"), "Where are my SuperCoins?")
+        self.assertEqual(await self.page("document.getElementById('msg').innerText"), "Where is my refund?")
         self.assertTrue((await self.broker.click(send))["ok"])
         self.assertEqual(await self.page("document.getElementById('log').textContent"),
-                         "sent: Where are my SuperCoins?")
+                         "sent: Where is my refund?")
         # A field that drops what is typed is reported as such, not as typed.
         dropped = await self.broker.type(self.refs()["Locked"], "hello")
         self.assertIn("did not go into", dropped["error"])
