@@ -35,6 +35,7 @@ How you work:
 - A short reply that corrects the request ("it was coffee", "the 250 g one") means: do the task again with that change, keeping everything else; do not ask again. If the site cannot have it, say so and use the usual shops.
 - Go straight to what answers: open an address a site note, a saved shortcut or a page gave you (a site's search address with this task's values filled in) rather than clicking through menus. Never write a site's search or product address yourself: one from memory is often not there. To search within a site (a shop, a food or grocery app), open its home page and type into its own search box with submit=true. To find a site or page, search with browser_search first. Open only the few pages you need on each site.
 - On a page of results (search results, products, flights, hotels, movies, rows), read the items with browser_list instead of snapshots, scrolling or going back and forth; open an item's link for its details.
+- When the exact item asked for (a size, a variant) is not among the first page or two of results, sorted or filtered, the site most likely does not sell it: answer with the closest match there (its size or variant, price and link) and say the exact one was not found, rather than reading every page or opening each product.
 - Dates, figures and names in your answer come from the pages you read in this task, not from what you remember: where the two differ, the page is right. Take them from the line that answers the question, not from a nearby line with a date or figure you expected.
 - Steps that pay, book, send, post, delete or change settings wait for {owner}'s approval. If a step is not allowed, do not retry it or look for a way around: it is {owner}'s to take. Say it as a person would ("It is in the cart; I stopped before checkout."), never as something a policy or an approval blocked.
 - A password, a one-time code, a sign-in or a CAPTCHA is {owner}'s step: never type or solve it. Fill in everything else, call browser_handoff so {owner} does that step on the screen, and carry on from the result when they are done. Do not end the task to ask for it. If {owner} took control of the browser, carry on from the page as they left it; do not redo what they did.
@@ -366,13 +367,20 @@ META_OPENING = re.compile(r"^\s*(?:(?:the|my) answer is (?:complete|above|alread
 FINDING = re.compile(r"[₹$€£¥]|\b(?:rs|inr|usd|eur|gbp|aed)\b\.?\s?\d|\d\s?(?:%|/\s?(?:5|10|night|nt|month|mo|year|yr|day|"
                      r"person|kg)\b)|\b\d+[.,]\d+\b|\b(?:rated|rating|stars?)\b", re.I)
 FOUND_LINES = 12
+READ_LINES = 6                                  # at most this many result items read, after the findings above
+READ_CHARS = 160
+# Words of a request that say nothing about what is wanted, left out when matching items read against it.
+PLAIN_WORDS = frozenset("""a an and the for on in of to with by me my it is are be find cheapest cheaper best lowest
+search sort sorted results result price prices low high order show get buy look check compare from at or""".split())
 STOPPED = "I stopped here. What I had found so far:"
 STOPPED_EMPTY = "Stopped before I found anything."
 
 
 def findings(ctx) -> list[str]:
-    """What a task had found, for an answer cut short: what it kept with tell_owner, then the latest status lines
-    that carry a finding, without repeats. Its status lines are not in the thread, so this is where they last."""
+    """What a task had found, for an answer cut short: what it kept with tell_owner, the latest status lines that
+    carry a finding, then the latest result-list items read that carry one and match the request, without repeats.
+    Its status lines and the pages it read are not in the thread, so this is where they last. A planner that read
+    prices for twenty minutes without saying one in a status line was stopped with "found nothing"."""
     lines, seen = [], set()
     for line in list(getattr(ctx, "found", []))[-FOUND_LINES:]:
         key = " ".join(line.split()).lower()
@@ -387,7 +395,17 @@ def findings(ctx) -> list[str]:
         if key not in seen and FINDING.search(line):
             seen.add(key)
             said.insert(0, line)
-    return lines + said
+    words = {w for w in re.findall(r"[a-z]{3,}", str(getattr(ctx, "request", "") or "").lower())} - PLAIN_WORDS
+    read = []
+    for line in reversed(getattr(ctx, "read", None) or []):
+        key = " ".join(line.split()).lower()
+        if len(read) >= READ_LINES or len(lines) + len(said) + len(read) >= FOUND_LINES:
+            break
+        text = key.split(" (http", 1)[0]               # its words, not its address
+        if key not in seen and FINDING.search(text) and (not words or any(w in text for w in words)):
+            seen.add(key)
+            read.insert(0, line)
+    return lines + said + read
 
 
 def found_so_far(ctx) -> str:
@@ -429,6 +447,7 @@ class RunContext:
     told: int = 0                                       # findings kept on purpose (tell_owner)
     found: list[str] = field(default_factory=list)      # and what they were, for an answer cut short
     said: list[str] = field(default_factory=list)      # the status lines and findings, for a full conversation
+    read: list[str] = field(default_factory=list)      # result-list items read (browser_list), for the same
     unanswered: int = 0                                 # approvals the owner let expire in this run (safety.policy)
     incomplete: bool = False                            # the answer says the task was not done (UNDONE)
     # What this run may name without inventing it: addresses and numbers the owner wrote or their contacts

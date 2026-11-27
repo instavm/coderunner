@@ -101,6 +101,23 @@ class RecoveryUnitTests(unittest.TestCase):
         self.assertEqual([p.url for p in pages], ["https://shop.example/item-a"])
 
 
+    def test_paging_through_one_list_of_results_is_told_to_answer_with_the_closest_match(self):
+        # A run read nine pages of one search for a size the site did not sell, and never answered.
+        mon = recovery.RunMonitor()
+        page = lambda url: f"tab: t1\nurl: {url}\ntitle: Cola - Buy online\n\n[1] link \"Cola 500 ml\" -> /p/1"
+        notes = [mon.record_call("browser_click", {"ref": 7}, page(f"https://shop.example/search?q=cola&sort=price_asc"
+                                                                    f"&page={n}"), n, False)["note"] for n in (2, 3, 4)]
+        self.assertEqual(notes[:2], ["", ""])
+        self.assertIn("read 4 pages of these results", notes[2])           # page 1 counts: it is where they began
+        self.assertIn("closest match", notes[2])
+        again = mon.record_call("browser_click", {"ref": 8}, page("https://shop.example/search?q=cola&page=5"), 5, False)
+        self.assertEqual(again["note"], "")                                 # said once for a list
+        other = mon.record_call("browser_click", {"ref": 9}, page("https://shop.example/search?q=tea&page=2"), 6, False)
+        self.assertEqual(other["note"], "")                                 # another search is another list
+        self.assertEqual(recovery.result_list("https://news.example/world/page/3/"),
+                         ("news.example/world?", "3"))
+        self.assertIsNone(recovery.result_list("https://shop.example/p/cola-500ml"))
+
 class VerifyUnitTests(unittest.TestCase):
     def test_stub_and_python_nudges(self):
         req = "Trouve trois appartements T2 à louer à Lyon pour moins de 1 000 € par mois."
