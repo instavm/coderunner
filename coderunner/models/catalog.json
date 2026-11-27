@@ -1389,6 +1389,42 @@
       "verified": "2026-11-26"
     },
     {
+      "id": "lfm3-omni-2b",
+      "family": "lfm3",
+      "roles": [
+        "voice"
+      ],
+      "rank": 1,
+      "params_b": 2.17,
+      "active_params_b": 2.17,
+      "arch": {
+        "full_attn_layers": 16,
+        "kv_heads": 8,
+        "head_dim": 64
+      },
+      "ctx_max": 32768,
+      "license": {
+        "spdx": "other",
+        "name": "LFM Open License v1.0",
+        "base_repo": "LiquidAI/LFM3-Omni-2B",
+        "link": "https://huggingface.co/LiquidAI/LFM3-Omni-2B",
+        "commercial": true
+      },
+      "artifacts": {
+        "gguf": {
+          "repo": "LiquidAI/LFM3-Omni-2B-GGUF",
+          "quant": "Q4_K_M",
+          "size_gb": 1.4,
+          "mmproj_gb": 0.9,
+          "mmproj_required": true,
+          "vision": false,
+          "server_args": ["--reasoning", "off"]
+        }
+      },
+      "notes": "Liquid AI omni model for on-device speech: 16 kHz input, 24 kHz speech via LiquidCodec. Served as a llama.cpp sidecar for live Talk and spoken task replies; never the planner.",
+      "verified": "2026-11-27"
+    },
+    {
       "id": "qwen3-embedding-0.6b",
       "family": "qwen3",
       "roles": [

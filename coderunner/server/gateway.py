@@ -408,6 +408,100 @@ def admin_app(svc, daemon) -> Starlette:
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
+    async def voice_speak(request: Request):
+        """On-demand Listen: speak cleaned text through LFM3-Omni and return an ephemeral speech id."""
+        speaker = getattr(daemon, "speaker", None) or getattr(svc, "speaker", None)
+        if speaker is None or not (svc.config.get("voice.omni_model") and speaker.runtime.ready()):
+            return JSONResponse({"error": "LFM3-Omni is not set up. Open Settings → Voice & Phone."}, status_code=503)
+        body = await request.json()
+        text = str(body.get("text") or "").strip()
+        if not text:
+            return JSONResponse({"error": "Nothing to speak."}, status_code=400)
+        try:
+            meta = await speaker.speak_text(text, conversation=str(body.get("conversation") or ""),
+                                            kind=str(body.get("kind") or "listen"))
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)[:300]}, status_code=500)
+        if not meta:
+            return JSONResponse({"error": "Nothing to speak."}, status_code=400)
+        return JSONResponse(meta)
+
+    async def voice_speech(request: Request):
+        """Stream ephemeral PCM16 for a spoken aside (never from SQLite)."""
+        speaker = getattr(daemon, "speaker", None) or getattr(svc, "speaker", None)
+        if speaker is None:
+            return JSONResponse({"error": "Voice is not ready."}, status_code=503)
+        item = speaker.speech.get(request.path_params["id"])
+        if not item:
+            return JSONResponse({"error": "That speech clip has expired."}, status_code=404)
+        rate = int(item.get("rate") or 24000)
+        return Response(item["pcm"], media_type=f"audio/pcm;rate={rate};encoding=signed-int;bits=16",
+                        headers={"Cache-Control": "no-store", "X-Speech-Text": urllib.parse.quote(item.get("text") or "")})
+
+    async def voice_realtime(websocket: WebSocket):
+        """Proxy authenticated live Talk to llama-server /v1/realtime (16 kHz in, 24 kHz out)."""
+        from websockets.asyncio.client import connect
+        from ..models.runtimes import VoiceRuntime
+        speaker = getattr(daemon, "speaker", None) or getattr(svc, "speaker", None)
+        runtime = VoiceRuntime(svc.config)
+        if not runtime.ready():
+            await websocket.close(code=1013, reason="LFM3-Omni is not set up")
+            return
+        slot = speaker.slot if speaker is not None else None
+        if slot is not None and slot.busy:
+            await websocket.close(code=1013, reason=slot.busy_reason or "The voice model is busy")
+            return
+        await websocket.accept()
+        try:
+            if slot is not None:
+                await slot.acquire("talk")
+            runtime.ensure()
+            upstream = await connect(runtime.realtime_url(), max_size=None, open_timeout=30,
+                                     ping_interval=None, proxy=None)
+        except Exception as exc:
+            if slot is not None:
+                slot.release()
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1011, reason=str(exc)[:100])
+            return
+        svc.audit.write("voice.talk_opened", by=websocket.scope.get("state", {}).get("principal", "?"))
+
+        async def up():
+            try:
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        return
+                    if message.get("text") is not None:
+                        await upstream.send(message["text"])
+                    elif message.get("bytes") is not None:
+                        await upstream.send(message["bytes"])
+            except (WebSocketDisconnect, ConnectionError, RuntimeError):
+                return
+            except Exception:
+                return
+
+        async def down():
+            try:
+                async for data in upstream:
+                    if isinstance(data, bytes):
+                        await websocket.send_bytes(data)
+                    else:
+                        await websocket.send_text(data)
+            except Exception:
+                return
+
+        tasks = [asyncio.create_task(up()), asyncio.create_task(down())]
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in tasks:
+            task.cancel()
+        with contextlib.suppress(Exception):
+            await upstream.close()
+        with contextlib.suppress(Exception):
+            await websocket.close()
+        if slot is not None:
+            slot.release()
+
     async def history(request: Request):
         conversation = f"web:{request.path_params['conversation']}"  # matches handle_message("web", ...)
         rows = svc.store.query("SELECT role, content, created FROM messages WHERE conversation = ? "
@@ -842,6 +936,9 @@ def admin_app(svc, daemon) -> Starlette:
                     except asyncio.TimeoutError:
                         yield ": keep-alive\n\n"
                         continue
+                    if event.get("live"):
+                        yield f"data: {json.dumps(event, default=str)}\n\n"
+                        continue
                     if event["seq"] <= last:
                         continue
                     last = event["seq"]
@@ -1045,6 +1142,8 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/chat", chat, methods=["POST"]),
         Route("/api/chat/{conversation}", history, methods=["GET"]),
         Route("/api/voice", voice_message, methods=["POST"]),
+        Route("/api/voice/speak", voice_speak, methods=["POST"]),
+        Route("/api/voice/speech/{id}", voice_speech, methods=["GET"]),
         Route("/api/tools", tools, methods=["GET"]),
         Route("/api/tools/{name}", call_tool, methods=["POST"]),
         Route("/api/schedules", schedules, methods=["GET", "POST"]),
@@ -1076,6 +1175,7 @@ def admin_app(svc, daemon) -> Starlette:
         *settings_routes(svc, daemon),
         WebSocketRoute("/api/computer/screen", computer_screen),
         WebSocketRoute("/api/computer/terminal", computer_terminal),
+        WebSocketRoute("/api/voice/realtime", voice_realtime),
     ])
     return OwnerAuth(app, svc)
 

@@ -66,6 +66,14 @@ class EventBus:
                 queue.put_nowait(event)
         return event
 
+    def notify_live(self, event: dict) -> dict:
+        """Push an ephemeral event to open SSE clients without writing to SQLite (spoken audio cues)."""
+        event = {"ts": time.time(), "seq": 0, "live": True, **event}
+        for queue in list(self.subscribers):
+            if queue.qsize() < 2000:
+                queue.put_nowait(event)
+        return event
+
     def latest(self) -> int:
         row = self.store.one("SELECT MAX(seq) AS seq FROM task_events")
         return int((row or {}).get("seq") or 0)

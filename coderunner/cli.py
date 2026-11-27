@@ -923,6 +923,7 @@ async def _find_here(config: Config, query: str, kind: str | None, limit: int) -
 def cmd_voice(args, config: Config) -> int:
     import asyncio
 
+    from .models import manager as model_manager
     from .voice import Voice
     if args.language:
         config.set("voice.language", args.language)
@@ -932,13 +933,21 @@ def cmd_voice(args, config: Config) -> int:
         result = asyncio.run(voice.setup(progress=print, engine=args.engine))
         _print(result)
         return 0 if result.get("ok") else 1
+    if args.action == "omni":
+        result = model_manager.setup_voice_omni(config, progress=print, accept_license=bool(args.accept_license))
+        _print(result)
+        return 0 if result.get("ok") else 1
+    if args.action == "omni-remove":
+        result = model_manager.setup_voice_omni(config, progress=print, off=True)
+        _print(result)
+        return 0 if result.get("ok") else 1
     if args.action == "transcribe":
         if not args.file:
             print("Say which audio file to transcribe.")
             return 2
         print(asyncio.run(voice.transcribe(args.file)))
         return 0
-    _print(voice.status())
+    _print({"dictation": voice.status(), "omni": model_manager.voice_omni_status(config)})
     return 0
 
 
@@ -1131,12 +1140,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_find)
 
-    p = sub.add_parser("voice", help="On-device speech to text: Parakeet on the Neural Engine, Apple speech, else "
-                                     "Qwen3-ASR on llama.cpp")
-    p.add_argument("action", choices=["status", "setup", "transcribe"], nargs="?", default="status")
+    p = sub.add_parser("voice", help="On-device speech: dictation (Parakeet / Apple / Qwen3-ASR) and LFM3-Omni Talk")
+    p.add_argument("action", choices=["status", "setup", "transcribe", "omni", "omni-remove"], nargs="?",
+                   default="status")
     p.add_argument("file", nargs="?", help="audio file to transcribe")
     p.add_argument("--engine", choices=["parakeet-coreml", "apple", "qwen3-asr"], help="set up only this engine")
     p.add_argument("--language", help='spoken language, e.g. "en-IN" or "hi"; "auto" follows the system')
+    p.add_argument("--accept-license", action="store_true",
+                   help="accept LFM Open License v1.0 when installing LFM3-Omni")
     p.set_defaults(func=cmd_voice)
 
     p = sub.add_parser("token", help="Print the sandbox API token (or --admin)")

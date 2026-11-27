@@ -1030,7 +1030,57 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
     };
     body.appendChild(group("On-device dictation", [
       row("Speech engine", "Transcribed locally on this Mac.", engSel),
-      row("Voice models", (v.status && v.status.available ? v.status.available.join(", ") : "Ready when set up"), setupV),
+      row("Voice models", (v.status && v.status.engines && v.status.engines.length
+        ? v.status.engines.join(", ") : "Ready when set up"), setupV),
+    ]));
+
+    const omni = v.omni || {};
+    const omniBtn = el("button", "btn" + (omni.ready ? "" : " primary"), omni.ready ? "Remove" : "Set up");
+    omniBtn.type = "button";
+    omniBtn.onclick = async () => {
+      if (omni.ready) {
+        omniBtn.disabled = true; omniBtn.textContent = "Removing…";
+        try {
+          await api("/api/voice/settings", {method: "POST", body: JSON.stringify({action: "remove_omni"})});
+          select("voice");
+        } catch (err) { omniBtn.disabled = false; omniBtn.textContent = "Remove"; notice(err.message); }
+        return;
+      }
+      const accept = confirm("LFM3-Omni uses the LFM Open License v1.0. Continue and accept it?");
+      if (!accept) return;
+      omniBtn.disabled = true; omniBtn.textContent = "Setting up…";
+      try {
+        await api("/api/voice/settings", {method: "POST",
+          body: JSON.stringify({action: "setup_omni", accept_license: true})});
+        notice("LFM3-Omni is ready.");
+        select("voice");
+      } catch (err) { omniBtn.disabled = false; omniBtn.textContent = "Set up"; notice(err.message); }
+    };
+    const speakToggle = toggleSwitch(Boolean(v.speak_tasks), async (on) => {
+      await api("/api/voice/settings", {method: "POST", body: JSON.stringify({action: "config", speak_tasks: on})});
+    }, "Speak while working");
+    const voiceSeg = el("div", "set-seg");
+    for (const [val, lbl] of [["female", "Female"], ["male", "Male"]]) {
+      const b = el("button", "set-seg-btn" + ((v.voice || "female") === val ? " on" : ""), lbl);
+      b.type = "button";
+      b.onclick = async () => {
+        await api("/api/voice/settings", {method: "POST", body: JSON.stringify({action: "config", voice: val})});
+        select("voice");
+      };
+      voiceSeg.appendChild(b);
+    }
+    const langSel = el("select", "set-select");
+    for (const [val, lbl] of [["", "Automatic"], ["en", "English"], ["en-gb", "British English"],
+                              ["es", "Spanish"], ["fr", "French"], ["de", "German"], ["ja", "Japanese"],
+                              ["zh", "Chinese"], ["hi", "Hindi"]]) {
+      const o = el("option", "", lbl); o.value = val; o.selected = (v.language || "") === val; langSel.appendChild(o);
+    }
+    langSel.onchange = () => api("/api/voice/settings", {method: "POST", body: JSON.stringify({action: "config", language: langSel.value})});
+    body.appendChild(group("Live voice & spoken replies", [
+      row("LFM3-Omni 2B", omni.label || "Not installed", omniBtn),
+      row("Speak while working", "Short spoken asides while a task runs, then the answer.", speakToggle),
+      row("Voice", "Used for Talk and spoken replies.", voiceSeg),
+      row("Language", "Speech language for LFM3-Omni.", langSel),
     ]));
 
     // Remote device pairing (1-click inline SVG QR code for mobile PWA over Tailscale)

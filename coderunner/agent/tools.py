@@ -1075,7 +1075,7 @@ def plan_tools(svc) -> list[Tool]:
         ctx.told += 1
         ctx.found.append(text[:1200])
         ctx.said.append(text[:1200])
-        ctx.emit({"type": "note", "text": text[:1200]})
+        ctx.emit({"type": "note", "text": text[:1200], "tell_owner": True})
         return "Kept. Put it in your final answer too: that is all the owner reads."
 
     async def show(args, ctx):
