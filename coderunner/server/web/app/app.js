@@ -501,6 +501,7 @@ class TaskView {
       // Read by the task at its step: its line says so until its next step says what it does.
       case "steer_taken": if (this.now && e.ts && Date.now() / 1000 - e.ts < 5) this.now.what.textContent = "Got it"; break;
       case "steer_moved": this.steers?.get(e.id)?.remove(); this.steers?.delete(e.id); break;   // a task of its own now
+      case "talk": this.addTalk(e); break;
       case "voice_utterance":
         if (e.utterance) playUtterance(e.utterance);
         break;
@@ -521,6 +522,19 @@ class TaskView {
     if (e.text) box.appendChild(el("div", "bubble-user", e.text));
     this.steers.set(e.id, box);
     this.flow.appendChild(box);
+  }
+
+  // A Talk turn: what was said back out loud, under the owner's words (the request, their message to the task
+  // at work, or words that sent nothing, shown here with it).
+  addTalk(e) {
+    const said = e.say ? el("div", "say talk-said", e.say) : null;
+    if (e.steer) { if (said) this.steers?.get(e.steer)?.appendChild(said); return; }
+    if (e.heard) {
+      const box = el("div", "steer");
+      box.appendChild(el("div", "bubble-user", e.heard));
+      if (said) box.appendChild(said);
+      this.flow.appendChild(box);
+    } else if (said) this.say(said);
   }
 
   ask(e) {

@@ -31,6 +31,7 @@ NOT_FOUND_BODY = re.compile(
     r"\b(?:404\s+(?:error|not\s+found|page\s+not\s+found)|page\s+not\s+found|seite\s+nicht\s+gefunden|"
     r"this\s+page\s+(?:doesn.?t|does\s+not|cannot|could\s+not)\s+(?:exist|be\s+found)|"
     r"we\s+couldn.?t\s+find\s+(?:that|the)\s+page|sorry,?\s+we\s+can.?t\s+find\s+that\s+page|"
+    r"(?:page|product)\s+you\s+(?:are|were)\s+looking\s+for\s+(?:has\s+been|was|is)\s+(?:moved|removed|deleted)|"
     r"cette\s+page\s+n.?existe\s+pas|no\s+se\s+encontró\s+la\s+página|"
     r"undergoing\s+(?:a\s+)?maintenance|down\s+for\s+maintenance|maintenance\s+cycle|"
     r"temporarily\s+unavailable|service\s+unavailable)\b",
@@ -117,7 +118,8 @@ def _extract_headers(result: str) -> tuple[str, str, str]:
         if not in_body and s.startswith("title: "):
             title = s[7:].strip()
             continue
-        if not in_body and re.match(r"^(?:tab|navigated|note|list|dialog|new_tabs|picked|tab_note):\s", s):
+        if not in_body and re.match(r"^(?:tab|navigated|note|list|dialog|new_tabs|picked|tab_note|opened_instead):\s",
+                                    s):
             continue
         if s or in_body:
             in_body = True
@@ -173,6 +175,8 @@ def classify_dead_page(name: str, args: dict[str, Any], result: str) -> tuple[st
     url, title, body = _extract_headers(result)
     if not url and not title:
         return "", "", ""
+    if name == "browser_open" and re.search(r"^opened_instead: ", result, re.M):
+        return "", url, title          # a missing address already gave way to the site's home page (tools.open_)
     if is_search_url(url):
         return "", url, title
 

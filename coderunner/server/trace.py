@@ -411,6 +411,8 @@ def _task(number: int, task: dict, events: list[dict], records: list[dict]) -> d
         elif kind in ("steer", "steered", "steering"):
             info.setdefault("steers", []).append(_cut(e.get("text") or e.get("message") or "", TEXT_CHARS))
             add(ts, "steer", text=_cut(e.get("text") or e.get("message") or "", TEXT_CHARS))
+        elif kind == "talk":
+            add(ts, "talk", heard=_cut(e.get("heard") or "", TEXT_CHARS) or None, say=_cut(e.get("say") or "", LINE_CHARS))
         elif kind in ("queued", "resumed"):
             add(ts, kind, ahead=e.get("ahead"))
         elif kind == "note":
@@ -498,6 +500,13 @@ def _activity(e: dict, ts: float, add, approvals: dict) -> None:
             **{k: (_cut(v, LINE_CHARS) if isinstance(v, str) else v) for k, v in fields.items()})
 
 
+def _fields(r: dict) -> dict:
+    """An audit record's own fields for a timeline entry. Its "kind" (a policy decision's action, as
+    browser.navigate) is named action: passed as kind it clashed with the entry's own, and the export failed."""
+    return {("action" if k == "kind" else k): (_cut(v, LINE_CHARS) if isinstance(v, str) else v)
+            for k, v in r.items() if k not in ("ts", "event", "task", "conversation")}
+
+
 def _record(r: dict, add, approvals: dict, info: dict, totals: dict) -> None:
     event, ts = r.get("event", ""), r.get("ts") or 0
     if event == "agent.turn":
@@ -515,8 +524,7 @@ def _record(r: dict, add, approvals: dict, info: dict, totals: dict) -> None:
     elif event == "task.running":
         info["model"], info["slot"] = r.get("model") or None, r.get("slot")
     elif event.startswith(("decision.", "guard.", "egress.")) or event == "policy":
-        add(ts, "judge", event=event, **{k: (_cut(v, LINE_CHARS) if isinstance(v, str) else v)
-                                         for k, v in r.items() if k not in ("ts", "event", "task", "conversation")})
+        add(ts, "judge", event=event, **_fields(r))
     elif event.startswith("approval."):
         # The app's events have the approval itself; the audit adds who decided and for how long.
         known = approvals.get(r.get("id") or "", {})
@@ -539,8 +547,7 @@ def _record(r: dict, add, approvals: dict, info: dict, totals: dict) -> None:
     elif event in ("agent.start", "agent.finish"):
         add(ts, "agent", event=event, origin=r.get("origin"), tainted=r.get("tainted"))
     elif event.startswith(("agent.", "task.")):
-        add(ts, "agent", event=event, **{k: (_cut(v, LINE_CHARS) if isinstance(v, str) else v)
-                                         for k, v in r.items() if k not in ("ts", "event", "task", "conversation")})
+        add(ts, "agent", event=event, **_fields(r))
 
 
 # ---- writing ---------------------------------------------------------------------------------------------------
@@ -646,6 +653,9 @@ def _md_entry(e: dict) -> list[str]:
         return [head + "**Request**" + (f" with {len(e['attachments'])} attached" if e.get("attachments") else "")]
     if kind == "steer":
         return [head + "**Steer**", _block(e.get("text") or "")]
+    if kind == "talk":
+        return [head + "**Talk**"] + ([_block(e["heard"])] if e.get("heard") else []) + \
+            ([f"  Said back: {_inline(e.get('say'))}"] if e.get("say") else [])
     if kind == "status":
         return [head + "Status: " + _inline(e.get("text"))]
     if kind == "plan":

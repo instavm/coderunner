@@ -444,8 +444,9 @@ def admin_app(svc, daemon) -> Starlette:
                         headers={"Cache-Control": "no-store"})
 
     async def voice_turn(request: Request):
-        """One thing said in Talk (the recording as the body; ?conversation=). LFM3-Omni hears it and answers at
-        once; when there is work, it goes to the assistant as a task in this conversation (or to the task already
+        """One thing said in Talk (the recording as the body; ?conversation=). LFM3-Omni hears it (checked
+        against dictation of the same recording) and answers at once; the turn is kept in the thread (Tasks.talked).
+        When there is work, it goes to the assistant as a task in this conversation (or to the task already
         at work there), which is then narrated while it works. Returns {"heard", "say" (a speech clip for the
         page, or null), "task" (or null), "conversation"}. 503 where Talk cannot hear this way: the page then
         transcribes with dictation and sends a task itself."""
@@ -460,6 +461,13 @@ def admin_app(svc, daemon) -> Starlette:
         if not conversation.startswith("app:"):
             conversation = "app:" + secrets.token_hex(6)
         work = pathlib.Path(tempfile.mkdtemp(prefix="coderunner-talk-"))
+        dictation = None
+
+        async def dictate(path, light: bool) -> str:
+            try:
+                return (await voice.transcribe(path, light=light)).strip()
+            except Exception:                   # noqa: BLE001 - no dictation: Omni's words, if a transcript
+                return ""
         try:
             sound, size = work / "said", 0
             with open(sound, "wb") as handle:
@@ -472,16 +480,21 @@ def admin_app(svc, daemon) -> Starlette:
                 return JSONResponse({"error": "Nothing was heard."}, status_code=400)
             wav = work / "said.wav"
             await to_wav(converter, sound, wav)
+            # Dictation writes down the same recording meanwhile: the owner's words are Omni's only where Omni
+            # wrote a transcript, not an answer to them (voice.omni.pick_heard).
+            dictation = asyncio.ensure_future(dictate(wav, True))
             try:
-                heard, say, do = await speaker.talk_turn(wav.read_bytes(), conversation)
+                heard, say, do = await speaker.talk_turn(wav.read_bytes(), conversation, dictation)
             except VoiceBusy:
                 # The voice model is taking turns with the assistant's (it is working): dictation hears it, and
                 # it goes to the work as it is, without a reply now.
-                heard, say, do = (await voice.transcribe(wav)).strip(), "", True
+                heard, say, do = (await dictation or await dictate(wav, False)), "", True
         except Exception as exc:
             svc.audit.write("voice.talk_failed", error=f"{type(exc).__name__}: {exc}"[:300])
             return JSONResponse({"error": "That could not be heard. Try again."}, status_code=500)
         finally:
+            if dictation is not None and not dictation.done():
+                dictation.cancel()
             shutil.rmtree(work, ignore_errors=True)
         if not heard:
             return JSONResponse({"error": "Nothing was heard."}, status_code=400)
@@ -493,6 +506,10 @@ def admin_app(svc, daemon) -> Starlette:
             if say:
                 speaker.acknowledge(conversation, steer=busy)
             task = daemon.tasks.start(conversation, heard, principal(request))
+        # The turn in the thread, in order: the owner's words (the task's request, or the message to the task at
+        # work), then what was said back. Before it is spoken, so a thread opened now has it.
+        with contextlib.suppress(Exception):
+            daemon.tasks.talked(conversation, say, started=task, heard=heard)
         meta = None
         if say:
             with contextlib.suppress(Exception):

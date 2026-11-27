@@ -226,6 +226,43 @@ async def hear(runtime: VoiceRuntime, wav: bytes) -> str:
     return " ".join(text.split()).strip().strip('"')
 
 
+# LFM3-Omni is a chat model: asked for a transcript it sometimes answers instead ("Sure, I can check the quick
+# commerce websites for you. Which ones are you looking at?"). Words only the assistant would say to the owner:
+_REPLY = re.compile(
+    r"\bfor you\b|\bhow (?:can|may) i help\b|\bi can help\b|\bi(?:'d| would) be (?:happy|glad)\b|\bhappy to help\b"
+    r"|\bas an ai\b|\bi(?:'m| am) an ai\b|\bi (?:can't|cannot|couldn't) (?:hear|understand)\b|\bwould you like\b"
+    r"|\bwhich ones? are you\b|\bare you looking (?:at|for)\b|\bwhat would you like\b|\bis there anything else\b"
+    r"|(?:^|[.!?]\s+)(?:sure|certainly|of course|absolutely|no problem|okay|ok|alright|got it)[,!.]?\s+"
+    r"i(?:'ll| will| can|'m| am)\b",
+    re.I)
+_WORD = re.compile(r"[\w']+")
+
+
+def reply_shaped(text: str) -> bool:
+    """Whether a "transcript" reads as the assistant answering the owner rather than the owner's words."""
+    return bool(_REPLY.search(text or ""))
+
+
+def pick_heard(omni: str, dictated: str) -> str:
+    """The owner's words for a Talk turn, from what LFM3-Omni heard and what the dictation engine wrote of the
+    same recording. Omni's, which gets names of places and services right, when it is a transcript: it does not
+    read as a reply, and it says nearly what dictation heard (a few words apart, misheard names, not a sentence
+    more). Otherwise dictation's; with no dictation, Omni's unless it is a reply (then nothing: ask again)."""
+    omni, dictated = " ".join((omni or "").split()), " ".join((dictated or "").split())
+    if not omni:
+        return dictated
+    if not dictated:
+        return "" if reply_shaped(omni) else omni
+    if reply_shaped(omni):
+        return dictated
+    said, heard = _WORD.findall(omni.lower()), _WORD.findall(dictated.lower())
+    known = set(heard)
+    extra = sum(1 for word in said if word not in known)
+    if extra > max(2, len(said) // 3) or len(said) > len(heard) + max(3, len(heard) // 2):
+        return dictated
+    return omni
+
+
 async def talk_reply(runtime: VoiceRuntime, heard: str, status: str) -> tuple[str, bool]:
     """What to say back at once, and whether there is work for the assistant (a new task, or a change to the one
     at work); progress questions, thanks and small talk are answered here and go no further."""

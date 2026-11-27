@@ -14,7 +14,7 @@ const GROUP_TITLE = "CodeRunner";
 const NONE = -1;   // chrome.tabGroups.TAB_GROUP_ID_NONE
 // Protocol domains a tab session may use: what the assistant's broker needs. Nothing that reaches
 // other tabs, the profile's cookies and storage, or the browser itself.
-const DOMAINS = new Set(["Accessibility", "DOM", "Emulation", "Fetch", "Input", "Page", "Runtime"]);
+const DOMAINS = new Set(["Accessibility", "DOM", "DOMSnapshot", "Emulation", "Fetch", "Input", "Page", "Runtime"]);
 const BLOCKED = new Set(["Page.setDownloadBehavior"]);   // the extension decides where downloads go
 // Frames from other sites run in processes of their own: attach to them too, paused until their
 // document requests pass the same check as the tab's.

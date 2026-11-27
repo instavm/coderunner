@@ -328,6 +328,13 @@ def browser_tools(svc) -> list[Tool]:
             lines += ["", value["content"]]
         return "\n".join(lines)
 
+    def _search_box(content: str) -> str:
+        """The page's search field as the page text numbers it ('[7] searchbox "Search"'), or ''."""
+        fields = [line.split(" -> ")[0] for line in content.split("\n")
+                  if re.match(r'^\[\d+\] (searchbox|combobox|textbox)\b', line)]
+        named = [line for line in fields if "search" in line.lower()]
+        return (named or [line for line in fields if " searchbox" in line] or [""])[0][:120]
+
     async def _listed(result: Any, ctx) -> Any:
         """A whole page that holds a long list says so: told about browser_list in its instructions, the model
         still read Rotten Tomatoes' movie grid a snapshot at a time (80,000 tokens and the time limit)."""
@@ -376,11 +383,36 @@ def browser_tools(svc) -> list[Tool]:
         if batch_chars and isinstance(prev_chars, int) and batch_chars < prev_chars:
             b.page_chars = batch_chars
         try:
-            return _text(await _listed(_result(mark(ctx, "open", await b.navigate(args["url"], tainted=ctx.tainted))),
-                                       ctx))
+            opened = await _home_instead(str(args["url"]), await b.navigate(args["url"], tainted=ctx.tainted), ctx)
+            return _text(await _listed(_result(mark(ctx, "open", opened)), ctx))
         finally:
             if prev_chars is not None:
                 b.page_chars = prev_chars
+
+    async def _home_instead(asked: str, raw: Any, ctx) -> Any:
+        """An address on a site that is not there (a search or product address written from memory, as
+        zomato.com/search/monster) opens the site's home page instead, with its search box named: a person
+        searches a site with its search box, and the model otherwise guessed the next address."""
+        from .recovery import SEARCH_HOSTS, classify_dead_page, reg_host
+        if not (isinstance(raw, dict) and raw.get("ok") is not False and isinstance(raw.get("content"), str)):
+            return raw
+        parts = urllib.parse.urlsplit(str(raw.get("url") or asked))
+        if parts.scheme not in ("http", "https") or reg_host(asked) in SEARCH_HOSTS or \
+                not (urllib.parse.urlsplit(asked).path.strip("/") or urllib.parse.urlsplit(asked).query):
+            return raw
+        kind, _, _ = classify_dead_page("browser_open", {"url": asked}, _text(raw))
+        if kind not in ("not_found", "redirect_mismatch"):
+            return raw
+        home = f"{parts.scheme}://{parts.netloc}/"
+        page = raw
+        if parts.path.strip("/") or parts.query:          # still on the missing page, not bounced home
+            page = await b.navigate(home, tainted=ctx.tainted)
+            if not (isinstance(page, dict) and page.get("ok") is not False):
+                return raw
+        box = _search_box(str(page.get("content") or ""))
+        note = (f"{asked} is not a page on {parts.netloc}; this is its home page instead. Search the site with "
+                + (f"its search box {box}" if box else "its own search box") + ", not with an address.")
+        return {**page, "opened_instead": home, "note": " ".join(filter(None, [note, page.get("note")]))}
 
     async def snapshot(args, ctx):
         start = str(args.get("start") or "").strip()

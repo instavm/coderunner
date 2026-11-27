@@ -27,7 +27,7 @@ const PARTITION = "persist:coderunner-browser";
 const ORIGIN = "coderunner-app";
 // Protocol domains a tab session may use: what the broker needs, as for the extension. Nothing that reads the
 // session's cookies or storage, or reaches the app itself; of Network only the request events (readiness).
-const DOMAINS = new Set(["Accessibility", "DOM", "Emulation", "Fetch", "Input", "Page", "Runtime"]);
+const DOMAINS = new Set(["Accessibility", "DOM", "DOMSnapshot", "Emulation", "Fetch", "Input", "Page", "Runtime"]);
 const ALSO = new Set(["Network.enable", "Network.disable"]);
 const BLOCKED = new Set(["Page.setDownloadBehavior"]);
 const AUTO_ATTACH = {autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{type: "iframe"}]};

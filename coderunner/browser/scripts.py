@@ -98,6 +98,13 @@ SLIDER_JS = r"""function(value) {
           max: number(range ? (this.max || '100') : aria('valuemax')),
           text: aria('valuetext') || ''};
 }"""
+# The text of a field and of the focused element, to tell whether typed text went in anywhere.
+FIELD_TEXT_JS = r"""function() {
+  const read = e => !e ? '' : (typeof e.value === 'string' && /^(INPUT|TEXTAREA)$/.test(e.tagName) ? e.value : e.innerText || '');
+  let focused = document.activeElement;
+  while (focused && focused.shadowRoot && focused.shadowRoot.activeElement) focused = focused.shadowRoot.activeElement;
+  return read(this) + '\u0000' + (focused === this ? '' : read(focused));
+}"""
 SELECT_ALL_JS = r"""function() {
   try { if (typeof this.select === 'function') { this.select(); return; } } catch (e) {}
   const range = document.createRange(); range.selectNodeContents(this);

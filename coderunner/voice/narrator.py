@@ -16,6 +16,8 @@ import logging
 import re
 import time
 
+import httpx
+
 from ..agent.loop import FINDING
 from ..models.pool import ModelPool
 from collections import deque
@@ -31,6 +33,7 @@ from .omni import (
     looks_like_table,
     narrate,
     phrase,
+    pick_heard,
     speech_lang,
     synthesize,
     talk_reply,
@@ -136,10 +139,19 @@ class TaskSpeaker:
             return f"done. {self._answered[conversation]}"
         return "nothing in progress"
 
-    async def talk_turn(self, wav: bytes, conversation: str) -> tuple[str, str, bool]:
-        """One thing the owner said in Talk: what was heard, what to say back at once, whether there is work."""
+    async def talk_turn(self, wav: bytes, conversation: str, dictation=None) -> tuple[str, str, bool]:
+        """One thing the owner said in Talk: what was heard, what to say back at once, whether there is work.
+        dictation: the dictation engine's transcript of the same recording, being written meanwhile (an awaitable
+        of a string): the owner's words are Omni's only where they are a transcript, not an answer (pick_heard)."""
         async with self.slot.hold("talk"), self.turns.use():
-            heard = await hear(self.runtime, wav)
+            try:
+                omni = await hear(self.runtime, wav)
+            except (httpx.HTTPError, ValueError) as exc:
+                if dictation is None:
+                    raise
+                log.warning("talk: the voice model did not hear it (%s); dictation's words are used", exc)
+                omni = ""
+            heard = pick_heard(omni, await dictation if dictation is not None else "")
             if not heard:
                 return "", "", False
             say, do = await talk_reply(self.runtime, heard, self.status_for(conversation))

@@ -280,6 +280,8 @@ a.item:hover { transform: translateY(-1px); } a.item:focus-visible { outline: 2p
 .steer { margin: 6px 0 0; }
 .steer .bubble-user { font-size: .92em; padding: 6px 12px; border-radius: 12px 12px 4px 12px; }
 .steer .attached .att-image { max-height: 120px; }
+/* Said back in Talk: the assistant's line under the owner's words. */
+.talk-said { margin: 6px 0 0; }
 .routine-run .ico { width: 15px; height: 15px; flex: none; }
 
 .ask { margin: 12px 0; border: 1px solid var(--line-strong); border-left: 3px solid var(--warn); background: var(--surface); border-radius: 12px; padding: 13px 15px; box-shadow: var(--shadow-card); }

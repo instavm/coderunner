@@ -37,6 +37,8 @@ NEAR_CHARS = 1500           # at most, for the lines around the element last use
 LATER_CONTROLS = 400        # characters of controls (not links) past the cut, named after it
 MORE = ("browser_snapshot more=true reads on, start=<text> reads from a later line, browser_find searches the whole "
         "page, browser_list reads a list of results one line per item; scrolling does not change this text")
+DRAWN_TEXT = 300            # a pointer-cursor box with more text than this is a region, not a control
+DRAWN_NAME = 100            # a drawn control's name, taken from its text, is cut to this
 ELEMENT = re.compile(r'^\[(\d+)\] (\w+)(?: ("(?:[^"\\]|\\.)*"))?')
 
 
@@ -200,8 +202,43 @@ def _element_line(ref: int, role: str, name: str, node: dict, props: dict, page_
     return line
 
 
+def _subtree_text(by_id: dict, root: str, limit: int) -> str:
+    """The words inside an element as read out: its text and its pictures' alternative text, up to `limit`."""
+    words: list[str] = []
+    size, stack = 0, list(reversed(by_id[root].get("childIds") or []))
+    while stack and size <= limit:
+        node = by_id.get(stack.pop())
+        if node is None:
+            continue
+        role = str(ax_value(node.get("role")) or "")
+        if role == "StaticText" or role in IMAGES:
+            text = squash(str(ax_value(node.get("name")) or ""))
+            if text:
+                words.append(text)
+                size += len(text) + 1
+            if role == "StaticText":
+                continue
+        stack.extend(reversed(node.get("childIds") or []))
+    return " ".join(words)
+
+
+def _drawn_control(by_id: dict, node: dict, props: dict, clickable: frozenset | set) -> str | None:
+    """The role of a control the page draws without saying what it is, which the model could not act on: a box
+    typed into that is not a form field (a chat's message box, contenteditable), or a box the page makes
+    clickable with its own script and shows with a pointer (Flipkart's "Chat with us"). None for anything else.
+    A clickable box holding links or buttons of its own is a card, whose controls are numbered instead."""
+    if node.get("ignored"):
+        return None
+    if props.get("editable") in ("richtext", "plaintext") and props.get("focusable") in (True, "true"):
+        return "textbox"
+    if node.get("backendDOMNodeId") in clickable and not _count_controls(by_id, node["nodeId"]):
+        return "button"
+    return None
+
+
 def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = frozenset(),
-              numbers: dict | None = None, whole: bool = False, marks: dict | None = None) -> tuple[str, dict]:
+              numbers: dict | None = None, whole: bool = False, marks: dict | None = None,
+              clickable: frozenset | set = frozenset()) -> tuple[str, dict]:
     """Compact text for an Accessibility.getFullAXTree result.
 
     Headings become "# name", interactive elements "[N] role "name" ...", images
@@ -219,6 +256,10 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
 
     marks, when given, is filled with the lines of the main content and of menus: {"main": [(first line, line
     after it, name)], "navigation": [...]}, which fit() uses to put the main content first.
+
+    clickable holds the backendDOMNodeIds of boxes the page shows with a pointer cursor (the outermost of each):
+    those without controls of their own are numbered as buttons, named by their text. Boxes typed into that are
+    not form fields (contenteditable) are numbered as textboxes.
     """
     numbers = numbers if numbers is not None else {"next": 1, "ids": {}}
     by_id = {node["nodeId"]: node for node in nodes}
@@ -228,6 +269,14 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
     last = [""]                     # the text of the line above: an element's name or a text block
     parts: list[str] = []
     owner: list[Any] = [None]
+
+    def number(backend: int, role: str, name: str) -> int:
+        ref = numbers["ids"].get(backend)
+        if ref is None or ref in refs:
+            ref = numbers["ids"][backend] = numbers["next"]
+            numbers["next"] += 1
+        refs[ref] = {"backend": backend, "role": role, "name": name, "password": backend in secret}
+        return ref
 
     def emit(line: str, text: str) -> None:
         lines.append(line)
@@ -288,18 +337,21 @@ def render_ax(nodes: list[dict], page_url: str = "", secret: frozenset | set = f
         elif role in INTERACTIVE and node.get("backendDOMNodeId"):
             flush()
             props = {p.get("name"): ax_value(p.get("value")) for p in node.get("properties", [])}
-            backend = node["backendDOMNodeId"]
-            ref = numbers["ids"].get(backend)
-            if ref is None or ref in refs:
-                ref = numbers["ids"][backend] = numbers["next"]
-                numbers["next"] += 1
-            is_secret = backend in secret
-            refs[ref] = {"backend": backend, "role": role, "name": name, "password": is_secret}
+            ref = number(node["backendDOMNodeId"], role, name)
             if role == "link" and props.get("url"):
                 refs[ref]["url"] = str(props["url"])
-            emit(_element_line(ref, role, name, node, props, page_url, is_secret), name)
+            emit(_element_line(ref, role, name, node, props, page_url, node["backendDOMNodeId"] in secret), name)
             if role not in ("textbox", "searchbox") and not props.get("editable"):
                 descend(node_id, name)      # the value is already shown; skip editor internals
+        elif node.get("backendDOMNodeId") and role not in ("StaticText", "InlineTextBox", "RootWebArea") and \
+                (drawn := _drawn_control(by_id, node, {p.get("name"): ax_value(p.get("value"))
+                                                       for p in node.get("properties", [])}, clickable)) and \
+                (len(text := name or _subtree_text(by_id, node_id, DRAWN_TEXT)) <= DRAWN_TEXT or drawn == "textbox"):
+            flush()
+            text = text[:DRAWN_NAME]
+            ref = number(node["backendDOMNodeId"], drawn, text)
+            refs[ref]["drawn"] = True
+            emit(_element_line(ref, drawn, text, node, {}, page_url, False), text)   # its text is its name
         elif role in INLINE:
             descend(block, covered)
         elif role in REGIONS:

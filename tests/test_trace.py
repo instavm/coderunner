@@ -50,6 +50,8 @@ class TraceRouteTests(unittest.IsolatedAsyncioTestCase):
                 events({"type": "tool_done", "id": "c1", "name": "browser_open", "ok": True, "preview": "page " * 60,
                         "result": "Flights from ₹4,812. Call +44 20 7946 0958. " + "x" * 3000})
                 audit.write("decision.check", model="judge-small", p_commit=0.92, commits=True, seconds=0.4)
+                # A page found missing has a "kind" of its own: it clashed with the entry's, and the export failed.
+                audit.write("agent.dead_page", kind="not_found", url="https://fares.example/search/goa", step=1)
                 audit.write("approval.requested", id="ap1", kind="browser.click", target="Book now",
                             summary="Book the 07:10 flight for ₹4,812")
                 events({"type": "activity", "event": "approval.requested", "id": "ap1", "kind": "browser.click",
@@ -137,6 +139,8 @@ class TraceRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(times[0], 0)
         for entry in timeline:
             datetime.datetime.fromisoformat(entry["at"])                 # ISO, with the offset
+        self.assertIn(("agent", "agent.dead_page", "not_found"),
+                      [(e["kind"], e.get("event"), e.get("action")) for e in timeline])
         kinds = [e["kind"] for e in timeline]
         for kind in ("request", "status", "plan", "step", "turn", "judge", "approval", "interim", "end", "activity"):
             self.assertIn(kind, kinds)
