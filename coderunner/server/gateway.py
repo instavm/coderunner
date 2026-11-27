@@ -443,6 +443,62 @@ def admin_app(svc, daemon) -> Starlette:
         return Response(item["pcm"], media_type=f"audio/pcm;rate={rate};encoding=signed-int;bits=16",
                         headers={"Cache-Control": "no-store"})
 
+    async def voice_turn(request: Request):
+        """One thing said in Talk (the recording as the body; ?conversation=). LFM3-Omni hears it and answers at
+        once; when there is work, it goes to the assistant as a task in this conversation (or to the task already
+        at work there), which is then narrated while it works. Returns {"heard", "say" (a speech clip for the
+        page, or null), "task" (or null), "conversation"}. 503 where Talk cannot hear this way: the page then
+        transcribes with dictation and sends a task itself."""
+        from ..voice.common import to_wav
+        from ..voice.omni import VoiceBusy
+        speaker = getattr(daemon, "speaker", None) or getattr(svc, "speaker", None)
+        voice = getattr(svc, "voice", None)
+        converter = voice.ffmpeg() if voice is not None else None
+        if speaker is None or not converter or not (svc.config.get("voice.omni_model") and speaker.runtime.ready()):
+            return JSONResponse({"error": "Talk is not set up. Open Settings, Voice & Phone."}, status_code=503)
+        conversation = str(request.query_params.get("conversation") or "")
+        if not conversation.startswith("app:"):
+            conversation = "app:" + secrets.token_hex(6)
+        work = pathlib.Path(tempfile.mkdtemp(prefix="coderunner-talk-"))
+        try:
+            sound, size = work / "said", 0
+            with open(sound, "wb") as handle:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > VOICE_LIMIT:
+                        return JSONResponse({"error": "That was too long."}, status_code=413)
+                    handle.write(chunk)
+            if not size:
+                return JSONResponse({"error": "Nothing was heard."}, status_code=400)
+            wav = work / "said.wav"
+            await to_wav(converter, sound, wav)
+            try:
+                heard, say, do = await speaker.talk_turn(wav.read_bytes(), conversation)
+            except VoiceBusy:
+                # The voice model is taking turns with the assistant's (it is working): dictation hears it, and
+                # it goes to the work as it is, without a reply now.
+                heard, say, do = (await voice.transcribe(wav)).strip(), "", True
+        except Exception as exc:
+            svc.audit.write("voice.talk_failed", error=f"{type(exc).__name__}: {exc}"[:300])
+            return JSONResponse({"error": "That could not be heard. Try again."}, status_code=500)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        if not heard:
+            return JSONResponse({"error": "Nothing was heard."}, status_code=400)
+        task = None
+        if do:
+            speaker.follow(conversation)
+            steerable = getattr(daemon.tasks, "_steerable", None)
+            busy = steerable is not None and steerable(conversation) is not None   # goes to the task at work
+            if say:
+                speaker.acknowledge(conversation, steer=busy)
+            task = daemon.tasks.start(conversation, heard, principal(request))
+        meta = None
+        if say:
+            with contextlib.suppress(Exception):
+                meta = await speaker.say_now(say, conversation)
+        return JSONResponse({"heard": heard, "say": meta, "task": task, "conversation": conversation})
+
     async def voice_talk(request: Request):
         """Talk in the app: {"action": "open" | "close", "conversations": [...]}. While open, the tasks in those
         conversations are narrated aloud (voice/narrator.py) whether or not spoken replies are on."""
@@ -453,6 +509,8 @@ def admin_app(svc, daemon) -> Starlette:
         conversations = [str(c) for c in (body.get("conversations") or []) if str(c).startswith("app:")][:20]
         for conversation in conversations:
             (speaker.follow if body.get("action") == "open" else speaker.unfollow)(conversation)
+        if body.get("action") == "open":
+            speaker.warm()                  # the first reply should not wait for the model to load
         return JSONResponse({"ok": True})
 
     async def history(request: Request):
@@ -1101,6 +1159,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/voice/speak", voice_speak, methods=["POST"]),
         Route("/api/voice/speech/{id}", voice_speech, methods=["GET"]),
         Route("/api/voice/talk", voice_talk, methods=["POST"]),
+        Route("/api/voice/turn", voice_turn, methods=["POST"]),
         Route("/api/tools", tools, methods=["GET"]),
         Route("/api/tools/{name}", call_tool, methods=["POST"]),
         Route("/api/schedules", schedules, methods=["GET", "POST"]),

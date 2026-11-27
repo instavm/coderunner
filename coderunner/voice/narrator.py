@@ -18,6 +18,8 @@ import time
 
 from ..agent.loop import FINDING
 from ..models.pool import ModelPool
+from collections import deque
+
 from ..models.runtimes import VoiceRuntime
 from .omni import (
     OmniSlot,
@@ -25,20 +27,25 @@ from .omni import (
     VoiceBusy,
     VoiceTurns,
     clean_for_speech,
+    hear,
     looks_like_table,
+    narrate,
     phrase,
     speech_lang,
     synthesize,
+    talk_reply,
 )
 
 log = logging.getLogger("coderunner.voice.narrator")
 
 GAP_S = 10.0                    # at least this long between two progress lines
+QUIET_S = 15.0                  # this long without a word while it works: a short check-in
+QUIET_MAX = 2                   # at most this many check-ins in a row without real news
 FOLLOW_S = 30 * 60              # a Talk conversation is followed this long after its last word
 FINAL = frozenset({"done", "failed", "cancelled"})
 NEEDS_YOU = frozenset({"approval.requested", "browser.handoff"})
 ACTIVITY = NEEDS_YOU | {"agent.pivot"}
-SPOKEN = frozenset({"started", "note", "interim", "plan", "steer_taken", "activity"}) | FINAL
+SPOKEN = frozenset({"started", "note", "interim", "plan", "steer", "steer_taken", "activity"}) | FINAL
 STATUS = "_status"              # the narrator's own queued progress line
 
 
@@ -81,6 +88,13 @@ class TaskSpeaker:
         self._said: dict[str, tuple[float, str]] = {}   # conversation -> (when, what) it last said
         self._step: dict[str, str] = {}         # conversation -> the plan step last put in a line
         self._spoken: dict[str, str] = {}       # conversation -> answer text already said (interim)
+        self._request: dict[str, str] = {}      # conversation -> what the owner asked
+        self._recent: dict[str, deque] = {}     # conversation -> the last lines said, so the next is not alike
+        self._heard: dict[str, str] = {}        # conversation -> what the owner said while it works
+        self._quiet: dict[str, int] = {}        # conversation -> check-ins since the last real news
+        self._warming: asyncio.Task | None = None
+        self._answered: dict[str, str] = {}     # conversation -> the start of its last answer
+        self._acked: set[tuple[str, str]] = set()   # (conversation, "started" | "steer"): Talk already replied
         self._subs: set[asyncio.Queue] = set()
 
     def start(self) -> None:
@@ -107,6 +121,49 @@ class TaskSpeaker:
     def follow(self, conversation: str) -> None:
         if conversation:
             self.following[conversation] = time.time() + FOLLOW_S
+
+    def acknowledge(self, conversation: str, steer: bool) -> None:
+        """Talk has already answered this request out loud: no opening line (or "got it") for it as well."""
+        self._acked.add((conversation, "steer" if steer else "started"))
+
+    def status_for(self, conversation: str) -> str:
+        """Where the work in this conversation stands, in a line, for Talk to answer "how is it going"."""
+        request = first_sentence(self._request.get(conversation, ""), 160)
+        if conversation in self._running:
+            latest = self._status.get(conversation) or self._said.get(conversation, (0.0, ""))[1]
+            return f"working on {request}" + (f" Latest: {first_sentence(latest, 120)}" if latest else "")
+        if conversation in self._answered:
+            return f"done. {self._answered[conversation]}"
+        return "nothing in progress"
+
+    async def talk_turn(self, wav: bytes, conversation: str) -> tuple[str, str, bool]:
+        """One thing the owner said in Talk: what was heard, what to say back at once, whether there is work."""
+        async with self.slot.hold("talk"), self.turns.use():
+            heard = await hear(self.runtime, wav)
+            if not heard:
+                return "", "", False
+            say, do = await talk_reply(self.runtime, heard, self.status_for(conversation))
+        return heard, say, do
+
+    async def say_now(self, text: str, conversation: str, kind: str = "talk") -> dict | None:
+        """Speak a line for the page that asked (it plays it itself: no live event)."""
+        async with self.slot.hold(f"speaking:{kind}"), self.turns.use():
+            meta = await self._tts(text, conversation=conversation, kind=kind, announce=False)
+        self._said[conversation] = (time.time(), text)
+        self._recent.setdefault(conversation, deque(maxlen=3)).append(text)
+        return meta
+
+    def warm(self) -> None:
+        """Load the voice model ahead of the first line (Talk opened), where it can sit beside the assistant's:
+        otherwise that line waits for the load."""
+        if self._warming is not None and not self._warming.done():
+            return
+        if self.turns.exclusive() or not self.runtime.ready():
+            return
+        try:
+            self._warming = asyncio.get_running_loop().create_task(asyncio.to_thread(self.runtime.ensure))
+        except RuntimeError:
+            pass
 
     def unfollow(self, conversation: str) -> None:
         self.following.pop(conversation, None)
@@ -178,14 +235,21 @@ class TaskSpeaker:
                 elif now - self._said.get(conversation, (0.0, ""))[0] >= GAP_S and not self.slot.busy:
                     self._status.pop(conversation, None)
                     self._queue.put_nowait({"type": STATUS, "conversation": conversation, "text": text})
+            for conversation in list(self._running):
+                last = self._said.get(conversation, (0.0, ""))[0]
+                if (last and conversation not in self._status and now - last >= QUIET_S and not self.slot.busy
+                        and self._quiet.get(conversation, 0) < QUIET_MAX and self.wants(conversation)):
+                    self._quiet[conversation] = self._quiet.get(conversation, 0) + 1
+                    self._said[conversation] = (now, self._said[conversation][1])   # one check-in per quiet spell
+                    self._queue.put_nowait({"type": STATUS, "conversation": conversation, "waiting": True})
 
     async def _handle(self, event: dict) -> None:
         kind = event.get("type")
         conversation = str(event.get("conversation") or "")
         if kind in FINAL:
             self._running.discard(conversation)
-            self._status.pop(conversation, None)
-            self._step.pop(conversation, None)
+            for kept in (self._status, self._step, self._heard, self._quiet, self._recent):
+                kept.pop(conversation, None)
             try:
                 await self._final(conversation, event)
             finally:
@@ -194,26 +258,34 @@ class TaskSpeaker:
         if kind == "started":
             self._running.add(conversation)
             self._spoken.pop(conversation, None)
+            self._request[conversation] = str(event.get("prompt") or "")
+            self._quiet.pop(conversation, None)
+        if kind == "steer":
+            self._heard[conversation] = str(event.get("text") or "")[:300]
+            return
         if conversation in self.following:
             self.follow(conversation)       # still talking with it: followed on
         if not self._may_speak_mid_task():
             return
         if kind == "started":
-            prompt = str(event.get("prompt") or "")
-            if prompt:
-                await self._say(conversation, "opening", prompt=prompt)
+            if (conversation, "started") in self._acked:
+                self._acked.discard((conversation, "started"))
+            elif self._request.get(conversation):
+                await self._say(conversation, "opening", news="")
         elif kind == STATUS:
             if conversation in self._running and self.wants(conversation):
-                await self._say(conversation, "progress", text=str(event.get("text") or ""))
+                if event.get("waiting"):
+                    await self._say(conversation, "waiting", news="")
+                else:
+                    self._quiet.pop(conversation, None)
+                    await self._say(conversation, "progress", news=str(event.get("text") or ""))
         elif kind == "note":
             text = str(event.get("text") or "").strip()
             if not text:
                 return
             if event.get("tell_owner") or FINDING.search(text):
-                if len(text) > 200:
-                    await self._say(conversation, "finding", prompt=text[:800], context=f"Finding: {text[:800]}")
-                else:
-                    await self._say(conversation, "finding", text=text)
+                self._quiet.pop(conversation, None)
+                await self._say(conversation, "finding", news=text[:800], fallback=first_sentence(text, 200))
             else:
                 self._status[conversation] = first_sentence(text)
         elif kind == "plan":
@@ -222,19 +294,26 @@ class TaskSpeaker:
                 self._step[conversation] = step
                 self._status[conversation] = first_sentence(step)
         elif kind == "steer_taken":
-            await self._say(conversation, "heard", text="Got it.")
+            heard = self._heard.pop(conversation, "")
+            if (conversation, "steer") in self._acked:
+                self._acked.discard((conversation, "steer"))
+                return
+            await self._say(conversation, "heard", news=heard or "a change to the request", fallback="Got it.")
         elif kind == "interim":
             text = str(event.get("text") or "").strip()
             if text:
                 await self._answer(conversation, text, kind="interim")
         elif kind == "activity":
             name = event.get("event")
+            self._quiet.pop(conversation, None)
             if name == "approval.requested":
                 summary = first_sentence(str(event.get("summary") or "something"), 200)
-                await self._say(conversation, "needs_you", text=f"I need your OK. {summary}")
+                await self._say(conversation, "needs_you", news=f"approve this on the screen: {summary}",
+                                fallback=f"I need your OK on the screen. {summary}")
             elif name == "browser.handoff":
                 reason = first_sentence(str(event.get("reason") or "this page needs you"), 200)
-                await self._say(conversation, "needs_you", text=f"Over to you on the screen. {reason}")
+                await self._say(conversation, "needs_you", news=f"finish this on the screen: {reason}",
+                                fallback=f"Over to you on the screen. {reason}")
             elif name == "agent.pivot" and event.get("host"):
                 self._status[conversation] = f"{event['host']} is blocking me, so I am trying another way."
 
@@ -247,6 +326,7 @@ class TaskSpeaker:
             return
         if already and text.startswith(already):
             text = text[len(already):].strip()
+        self._answered[conversation] = first_sentence(text, 200)
         if text:
             await self._answer(conversation, text, kind=str(event.get("type") or "done"))
 
@@ -265,10 +345,12 @@ class TaskSpeaker:
         else:
             await self._say(conversation, kind, text=cleaned)
 
-    async def _say(self, conversation: str, kind: str, *, text: str = "", prompt: str = "",
-                   context: str = "") -> dict | None:
-        """One spoken line: phrased by the model from `prompt` when no `text` is given. A line that cannot be
-        said within a few seconds (Listen holds the model, or the assistant needs the memory) is dropped."""
+    async def _say(self, conversation: str, kind: str, *, text: str = "", prompt: str = "", context: str = "",
+                   news: str | None = None, fallback: str = "") -> dict | None:
+        """One spoken line. `text` is said as it is (answers); `news` is told to the voice model, which says it
+        the way a person would, knowing the request and the lines before it (a line it finds not worth saying is
+        skipped, or `fallback` said instead); `prompt` is phrased into one sentence (tables). A line that cannot
+        be said within a few seconds (Listen holds the model, or the assistant needs the memory) is dropped."""
         if text and text == self._said.get(conversation, (0.0, ""))[1]:
             return None                     # never the same line twice in a row
         for _ in range(40):
@@ -278,12 +360,21 @@ class TaskSpeaker:
         if self.slot.busy:
             return None
         async with self.slot.hold(f"speaking:{kind}"), self.turns.use():
-            if not text:
+            if news is not None:
+                recent = self._recent.setdefault(conversation, deque(maxlen=3))
+                try:
+                    text = await narrate(self.runtime, request=self._request.get(conversation, ""), kind=kind,
+                                         text=news, said=tuple(recent)) or fallback
+                except Exception as exc:
+                    log.info("narration skipped: %s", exc)
+                    text = fallback
+            elif not text:
                 text = await self._phrase(prompt=prompt, context=context) or ""
-                if not text:
-                    return None
+            if not text:
+                return None
             meta = await self._tts(text, conversation=conversation, kind=kind)
         self._said[conversation] = (time.time(), text)
+        self._recent.setdefault(conversation, deque(maxlen=3)).append(text)
         return meta
 
     async def _phrase(self, *, prompt: str, context: str = "") -> str | None:

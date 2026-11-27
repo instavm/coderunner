@@ -284,6 +284,14 @@ class TalkNarration(unittest.IsolatedAsyncioTestCase):
         patch = mock.patch("coderunner.voice.narrator.synthesize", synth)
         patch.start()
         self.addCleanup(patch.stop)
+        self.told = []
+
+        async def narrate(runtime, *, request, kind, text="", said=()):
+            self.told.append((kind, text, tuple(said)))
+            return f"({kind}) {text}".strip()       # stands in for the voice model's own wording
+        patch = mock.patch("coderunner.voice.narrator.narrate", narrate)
+        patch.start()
+        self.addCleanup(patch.stop)
         return speaker
 
     async def test_only_followed_threads_speak_when_spoken_replies_are_off(self):
@@ -306,9 +314,8 @@ class TalkNarration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.said, [])                 # notes wait for the pulse, not said one by one
         self.assertEqual(speaker._status["app:a"], "Searching trains from Delhi to Mumbai.")
         await speaker._handle({"type": narrator.STATUS, "conversation": "app:a", "text": speaker._status.pop("app:a")})
-        self.assertEqual(self.said, ["Searching trains from Delhi to Mumbai."])
-        # The same line is not said again, and a plan step only fills in when no note is waiting.
-        await speaker._handle({"type": narrator.STATUS, "conversation": "app:a", "text": "Searching trains from Delhi to Mumbai."})
+        self.assertEqual(self.said, ["(progress) Searching trains from Delhi to Mumbai."])
+        # A plan step only fills in when no note is waiting.
         await speaker._handle({"type": "plan", "conversation": "app:a",
                                "steps": "[{'step': 'Open irctc.co.in', 'status': 'done'}, {'step': 'Read the fares', 'status': 'doing'}]"})
         self.assertEqual(speaker._status["app:a"], "Read the fares")
@@ -337,9 +344,43 @@ class TalkNarration(unittest.IsolatedAsyncioTestCase):
         await speaker._handle({"type": "activity", "event": "browser.handoff", "conversation": "app:a",
                                "reason": "Enter the captcha on the IRCTC page."})
         await speaker._handle({"type": "steer_taken", "conversation": "app:a"})
-        self.assertEqual(self.said, ["I need your OK. irctc.co.in blocks the sandbox browser.",
-                                     "Over to you on the screen. Enter the captcha on the IRCTC page.",
-                                     "Got it."])
+        self.assertEqual([kind for kind, _, _ in self.told], ["needs_you", "needs_you", "heard"])
+        self.assertIn("irctc.co.in blocks the sandbox browser.", self.told[0][1])
+        self.assertIn("Enter the captcha on the IRCTC page.", self.told[1][1])
+        self.assertEqual(len(self.said), 3)
+        # Each line knows the ones before it, so it is not worded alike.
+        self.assertEqual(self.told[2][2], tuple(self.said[:2]))
+
+    async def test_what_the_owner_said_meanwhile_is_acknowledged_by_name(self):
+        speaker = self.speaker()
+        speaker.follow("app:a")
+        await speaker._handle({"type": "steer", "conversation": "app:a", "text": "It's Bangalore, not Bangladesh."})
+        await speaker._handle({"type": "steer_taken", "conversation": "app:a"})
+        self.assertEqual(self.told[-1][:2], ("heard", "It's Bangalore, not Bangladesh."))
+
+    async def test_needs_you_is_said_even_when_the_model_fails(self):
+        speaker = self.speaker()
+        speaker.follow("app:a")
+        with mock.patch("coderunner.voice.narrator.narrate", mock.AsyncMock(side_effect=RuntimeError("down"))):
+            await speaker._handle({"type": "activity", "event": "approval.requested", "conversation": "app:a",
+                                   "summary": "Continue on your Mac?"})
+        self.assertEqual(self.said, ["I need your OK on the screen. Continue on your Mac?"])
+
+    async def test_a_quiet_spell_gets_one_check_in(self):
+        speaker = self.speaker()
+        speaker.follow("app:a")
+        speaker._running.add("app:a")
+        speaker._said["app:a"] = (narrator.time.time() - narrator.QUIET_S - 1, "Opening IRCTC.")
+        for _ in range(3):
+            with mock.patch.object(narrator.asyncio, "sleep", mock.AsyncMock(side_effect=[None, asyncio.CancelledError])):
+                with self.assertRaises(asyncio.CancelledError):
+                    await speaker._pulse()
+            speaker._said["app:a"] = (narrator.time.time() - narrator.QUIET_S - 1, "x")
+        waits = []
+        while not speaker._queue.empty():
+            waits.append(speaker._queue.get_nowait())
+        self.assertEqual(len(waits), narrator.QUIET_MAX)          # then quiet until there is real news
+        self.assertTrue(all(w.get("waiting") for w in waits))
 
     async def test_answer_ends_the_narration(self):
         speaker = self.speaker()
@@ -355,6 +396,74 @@ class TalkNarration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(narrator.doing_step([{"step": "A", "status": "done"}, {"step": "B", "status": "doing"}]), "B")
         self.assertEqual(narrator.doing_step("[{'step': 'Open the site', 'status': 'doing'}]"), "Open the site")
         self.assertEqual(narrator.doing_step(None), "")
+
+
+class TalkTurn(unittest.IsolatedAsyncioTestCase):
+    """Talk: the voice model hears the owner and answers at once; work goes to the assistant."""
+
+    def speaker(self):
+        daemon = mock.Mock()
+        daemon.config = Config({"voice": {"omni_model": "lfm3-omni-2b"}, "models": {"chat": "qwen3.5-9b"}})
+        daemon.tasks = types.SimpleNamespace(running={}, waiting=[])
+        speaker = TaskSpeaker(daemon)
+        speaker.turns.runtime = speaker.runtime = mock.Mock(ensure=mock.Mock(), ready=mock.Mock(return_value=True))
+        speaker._queue = asyncio.Queue()
+        return speaker
+
+    async def test_reply_lines_are_parsed(self):
+        from coderunner.voice import omni
+        rt = mock.Mock(base_url="http://x", alias=mock.Mock(return_value="a"))
+        for text, want in [("SAY: Sure, checking IRCTC now.\nDO: yes", ("Sure, checking IRCTC now.", True)),
+                           ("SAY: You're welcome!\nDO: no", ("You're welcome!", False)),
+                           ("SAY: Yes, I'm here!\nDO: hi", ("Yes, I'm here!", False)),
+                           ("I'm on it.", ("", True))]:
+            with mock.patch.object(omni, "_complete", mock.AsyncMock(return_value=text)) as complete:
+                self.assertEqual(await omni.talk_reply(rt, "x", "nothing in progress"), want)
+            sent = complete.call_args[0][1]
+            self.assertEqual(sent[-1]["content"], "Status: nothing in progress\nThey said: x")
+            self.assertEqual(len(sent), 2 + 2 * len(omni.TALK_SHOTS))     # system, the examples, then this
+
+    def test_status_for_progress_questions(self):
+        speaker = self.speaker()
+        self.assertEqual(speaker.status_for("app:a"), "nothing in progress")
+        speaker._request["app:a"] = "Trains from Patna to Bangalore on 27 November. Thanks."
+        speaker._running.add("app:a")
+        speaker._said["app:a"] = (1.0, "Pulling up IRCTC now.")
+        self.assertEqual(speaker.status_for("app:a"),
+                         "working on Trains from Patna to Bangalore on 27 November. Latest: Pulling up IRCTC now.")
+        speaker._running.discard("app:a")
+        speaker._answered["app:a"] = "Three trains leave before 9."
+        self.assertEqual(speaker.status_for("app:a"), "done. Three trains leave before 9.")
+
+    async def test_a_turn_hears_then_replies_with_the_status(self):
+        speaker = self.speaker()
+        with mock.patch("coderunner.voice.narrator.hear", mock.AsyncMock(return_value="How is it going?")), \
+                mock.patch("coderunner.voice.narrator.talk_reply",
+                           mock.AsyncMock(return_value=("Nearly there.", False))) as reply:
+            self.assertEqual(await speaker.talk_turn(b"wav", "app:a"), ("How is it going?", "Nearly there.", False))
+        self.assertEqual(reply.call_args[0][2], "nothing in progress")
+        self.assertFalse(speaker.slot.busy)
+        with mock.patch("coderunner.voice.narrator.hear", mock.AsyncMock(return_value="")):
+            self.assertEqual(await speaker.talk_turn(b"wav", "app:a"), ("", "", False))
+
+    async def test_no_second_acknowledgement_after_talk_replied(self):
+        speaker = self.speaker()
+        said = []
+
+        async def synth(runtime, text, **kwargs):
+            said.append(text)
+            return b"\0\0", 24000
+        speaker.follow("app:a")
+        speaker.acknowledge("app:a", steer=False)
+        with mock.patch("coderunner.voice.narrator.synthesize", synth), \
+                mock.patch("coderunner.voice.narrator.narrate", mock.AsyncMock(return_value="Opening line.")):
+            await speaker._handle({"type": "started", "conversation": "app:a", "prompt": "Trains to Bangalore"})
+            speaker.acknowledge("app:a", steer=True)
+            await speaker._handle({"type": "steer", "conversation": "app:a", "text": "It's Bangalore."})
+            await speaker._handle({"type": "steer_taken", "conversation": "app:a"})
+            self.assertEqual(said, [])
+            await speaker._handle({"type": "started", "conversation": "app:a", "prompt": "Next thing"})
+        self.assertEqual(said, ["Opening line."])             # only the one Talk answered is skipped
 
 
 class VoiceFit(unittest.TestCase):

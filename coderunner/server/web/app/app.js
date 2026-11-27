@@ -1485,7 +1485,7 @@ const TALK_ICON = "M6 10v4 M9 7v10 M12 5v14 M15 8v8 M18 10v4";
 const SPEAKER_ICON = "M11 5L6 9H3v6h3l5 4V5z M16 9a4 4 0 0 1 0 6 M18.5 7a7 7 0 0 1 0 10";
 const SPEAKER_OFF_ICON = "M11 5L6 9H3v6h3l5 4V5z M16 9l5 6 M21 9l-5 6";
 const TALK_READY = "Hold to talk, or hold Space";
-const FINAL_SPEECH = new Set(["done", "failed", "cancelled", "listen", "interim"]);
+const FINAL_SPEECH = new Set(["done", "failed", "cancelled", "listen", "interim", "talk"]);
 const talk = {open: false, want: false, recorder: null, stream: null, chunks: [], meter: null, timer: null,
               sending: false, conversations: new Set(), base: ["Ready", TALK_READY]};
 const speechPlayer = {audio: null, source: null, id: "", queue: [], text: ""};
@@ -1614,23 +1614,44 @@ async function sendTalk(kind) {
   if (!talk.keep) { talk.sending = false; return; }
   const done = (label, caption) => { talk.sending = false; if (talk.open) setTalkUi(label, caption); };
   if (sound.size < 2000) { done(...talk.base); return; }        // a tap, not words
-  let said = "";
+  // LFM3-Omni hears it and answers at once; the work, if any, starts as a task in this thread.
+  let turn = null;
+  try {
+    const at = state.conversation ? `?conversation=${encodeURIComponent(state.conversation)}` : "";
+    const response = await fetch(`/api/voice/turn${at}`, {method: "POST", credentials: "same-origin", body: sound,
+                                                         headers: {"X-CodeRunner": "1", "Content-Type": sound.type}});
+    const data = await response.json().catch(() => ({}));
+    if (response.ok) turn = data;
+    else if (response.status !== 503) { done(...talk.base); notice(data.error || "That could not be heard. Try again."); return; }
+  } catch { done(...talk.base); notice("That could not be heard. Try again."); return; }
+  if (!turn) turn = await talkByDictation(sound);                  // where the voice model cannot hear
+  if (!turn) { done(...talk.base); return; }
+  if (turn.say) playUtterance({...turn.say, kind: "talk"});
+  const task = turn.task;
+  if (task) {
+    talk.conversations.add(task.conversation);
+    if (task.steer) state.views.get(task.id)?.addSteer({id: task.steer, text: turn.heard});
+    talk.base = ["Working", `“${trunc(turn.heard, 80)}”`];
+  } else if (!talk.base[0] || talk.base[0] === "Ready") talk.base = ["Ready", `“${trunc(turn.heard, 80)}”`];
+  const where = task?.conversation || turn.conversation;
+  if (task && where && where !== state.conversation) await openConversation(where, turn.heard);
+  done(...talk.base);
+  if (turn.say && talk.open && !talk.recorder) setTalkUi("Speaking", turn.say.text);
+}
+
+async function talkByDictation(sound) {
+  let heard = "";
   try {
     const response = await fetch("/api/voice", {method: "POST", credentials: "same-origin", body: sound,
                                                 headers: {"X-CodeRunner": "1", "Content-Type": sound.type}});
-    const data = await response.json().catch(() => ({}));
-    said = response.ok ? String(data.text || "").trim() : "";
+    heard = response.ok ? String((await response.json().catch(() => ({}))).text || "").trim() : "";
   } catch {}
-  if (!said) { done(...talk.base); notice("Nothing was heard. Hold the strip while you speak."); return; }
+  if (!heard) { notice("Nothing was heard. Hold the strip while you speak."); return null; }
   try {
     const task = await api("/api/tasks", {method: "POST",
-      body: JSON.stringify({message: said, conversation: state.conversation || "", talk: true})});
-    talk.conversations.add(task.conversation);
-    if (task.steer) state.views.get(task.id)?.addSteer({id: task.steer, text: said});
-    if (task.conversation !== state.conversation) await openConversation(task.conversation, said);
-    talk.base = ["Working", `“${trunc(said, 80)}”`];
-    done(...talk.base);
-  } catch (err) { done(...talk.base); notice(err.message); }
+      body: JSON.stringify({message: heard, conversation: state.conversation || "", talk: true})});
+    return {heard, say: null, task, conversation: task.conversation};
+  } catch (err) { notice(err.message); return null; }
 }
 
 // The open thread's events, as the strip shows them.

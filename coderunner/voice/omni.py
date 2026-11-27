@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import logging
 import re
@@ -147,6 +148,96 @@ async def phrase(runtime: VoiceRuntime, *, prompt: str, context: str = "",
     if not text or text.upper() == "NOTHING" or text.upper().startswith("NOTHING"):
         return None
     return text.split("\n")[0][:280]
+
+
+NARRATE_SYSTEM = (
+    "You are the owner's assistant. You are doing a task for them on the computer and talking with them while "
+    "you work, the way a helpful friend on a call would. Write the one thing you would say out loud now: first "
+    "person, warm and natural, contractions, at most 15 words. Vary your wording and never open the way your "
+    "earlier lines did. No quotes, markdown, lists, links or emoji, and no stock phrases like Certainly or "
+    "Great question. Use the language the request is in. If there is nothing worth saying, reply NOTHING."
+)
+
+NEWS = {
+    "opening": "You are starting now. Say briefly what you will look at first.",
+    "progress": "What you are doing now: {text}",
+    "finding": "You just found this: {text}. Tell them the key fact.",
+    "needs_you": "You need the owner to do something: {text}. Tell them plainly and kindly what to do.",
+    "heard": "The owner just told you: {text}. Acknowledge it in a few words.",
+    "waiting": "Nothing new to report yet; you are still on it. Reassure them in a few words, or reply NOTHING.",
+}
+
+
+async def narrate(runtime: VoiceRuntime, *, request: str, kind: str, text: str = "", said=(),
+                  max_tokens: int = 40) -> str | None:
+    """One natural spoken line about the task, knowing what was asked and what was already said; None when
+    there is nothing worth saying."""
+    await asyncio.to_thread(runtime.ensure)
+    earlier = " / ".join(said) if said else "nothing yet"
+    news = NEWS.get(kind, NEWS["progress"]).format(text=text[:400])
+    messages = [{"role": "system", "content": NARRATE_SYSTEM},
+                {"role": "user", "content": f"Request: {request[:400]}\nYou said so far: {earlier}\nNow: {news}"}]
+    async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+        response = await client.post(
+            f"{runtime.base_url}/chat/completions",
+            json={"model": runtime.alias(), "messages": messages, "max_tokens": max_tokens, "temperature": 0.7,
+                  "chat_template_kwargs": {"enable_thinking": False}},
+        )
+        response.raise_for_status()
+        line = ((response.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    line = clean_for_speech(line).strip().strip('"').strip("'").split("\n")[0].strip()
+    if not line or line.upper().startswith("NOTHING"):
+        return None
+    return line[:200]
+
+
+HEAR_SYSTEM = "Transcribe the user's speech exactly, word for word. Reply with the transcript only."
+TALK_SYSTEM = "You are the voice of the owner's assistant on a live call. Reply exactly like the examples: a SAY line and a DO line."
+# Worked examples rather than rules: a 2B model follows these closely (measured: right DO on every case tried,
+# corrections said the right way round, about 0.3 s a reply once this prefix is cached).
+TALK_SHOTS = [
+ ("Status: nothing in progress\nThey said: Find me a cheap flight from Delhi to Goa next Friday.", "SAY: Sure, looking for cheap flights from Delhi to Goa next Friday.\nDO: yes"),
+ ("Status: working on cheap flights from Delhi to Goa. Latest: comparing fares on MakeMyTrip.\nThey said: How's it going?", "SAY: Getting there, I'm comparing fares on MakeMyTrip right now.\nDO: no"),
+ ("Status: working on hotels in Jaipur. Latest: reading reviews.\nThey said: Actually, make it Udaipur.", "SAY: Got it, Udaipur instead of Jaipur.\nDO: yes"),
+ ("Status: working on a table at Olive in Bandra. Latest: opening the booking page.\nThey said: No, I said Colaba, not Bandra.", "SAY: Sorry about that, Colaba it is.\nDO: yes"),
+ ("Status: done. Found two hotels under 5,000 rupees.\nThey said: Thank you, that's all.", "SAY: You're welcome! Just say if you need anything else.\nDO: no"),
+ ("Status: nothing in progress\nThey said: Kal Mumbai ka mausam batao.", "SAY: Haan, Mumbai ka kal ka mausam dekh rahi hoon.\nDO: yes"),
+]
+
+
+async def _complete(runtime: VoiceRuntime, messages: list, max_tokens: int, temperature: float) -> str:
+    async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+        response = await client.post(
+            f"{runtime.base_url}/chat/completions",
+            json={"model": runtime.alias(), "messages": messages, "max_tokens": max_tokens,
+                  "temperature": temperature, "chat_template_kwargs": {"enable_thinking": False}},
+        )
+        response.raise_for_status()
+        return ((response.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+
+
+async def hear(runtime: VoiceRuntime, wav: bytes) -> str:
+    """What the owner said, heard by LFM3-Omni itself (16 kHz mono WAV): better on names of places and services
+    than the dictation engines (IRCTC, Indiranagar, Patna, measured on the same recordings)."""
+    await asyncio.to_thread(runtime.ensure)
+    audio = {"type": "input_audio", "input_audio": {"data": base64.b64encode(wav).decode(), "format": "wav"}}
+    text = await _complete(runtime, [{"role": "system", "content": HEAR_SYSTEM},
+                                     {"role": "user", "content": [audio]}], 120, 0.0)
+    return " ".join(text.split()).strip().strip('"')
+
+
+async def talk_reply(runtime: VoiceRuntime, heard: str, status: str) -> tuple[str, bool]:
+    """What to say back at once, and whether there is work for the assistant (a new task, or a change to the one
+    at work); progress questions, thanks and small talk are answered here and go no further."""
+    messages = [{"role": "system", "content": TALK_SYSTEM}]
+    for asked, answered in TALK_SHOTS:
+        messages += [{"role": "user", "content": asked}, {"role": "assistant", "content": answered}]
+    messages.append({"role": "user", "content": f"Status: {status}\nThey said: {heard}"})
+    text = await _complete(runtime, messages, 60, 0.4)
+    say = re.search(r"SAY:\s*(.+)", text)
+    do = re.search(r"DO:\s*(\w+)", text)
+    line = clean_for_speech(say.group(1)).strip() if say else ""
+    return line[:200], (do.group(1).lower() == "yes") if do else True
 
 
 async def synthesize(runtime: VoiceRuntime, text: str, *, voice: str = "female",
