@@ -370,6 +370,24 @@ class Tasks:
             emit.inbox.append({"id": item["id"], "text": prompt})
         return {**(self.get(emit.task) or {}), "steer": item["id"]}
 
+    def talked(self, conversation: str, say: str, started: dict | None = None, heard: str = "") -> None:
+        """A Talk turn in the thread, kept with its events so a reopened app shows it: what was said back, under
+        the request or message the turn sent (started: what start() returned), or, for a turn that sent nothing
+        (a question about the work, thanks), under the owner's words (heard) after the thread's latest task.
+        Nothing in a thread with no task yet."""
+        say, heard = (say or "").strip()[:400], (heard or "").strip()[:2000]
+        task = (started or {}).get("id")
+        if task:
+            if not say:
+                return
+            event = {"say": say, **({"steer": started["steer"]} if started.get("steer") else {})}
+        else:
+            rows = self.tasks(conversation) if heard else []
+            if not rows:
+                return
+            task, event = rows[-1]["id"], {"heard": heard, **({"say": say} if say else {})}
+        self.bus.publish({"task": task, "conversation": conversation, "type": "talk", **event})
+
     async def _post(self, emit, item: dict) -> None:
         """A message with files: the model is told where each is, and shown the pictures, as with a request."""
         from ..files import attached

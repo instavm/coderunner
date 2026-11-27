@@ -411,6 +411,8 @@ def _task(number: int, task: dict, events: list[dict], records: list[dict]) -> d
         elif kind in ("steer", "steered", "steering"):
             info.setdefault("steers", []).append(_cut(e.get("text") or e.get("message") or "", TEXT_CHARS))
             add(ts, "steer", text=_cut(e.get("text") or e.get("message") or "", TEXT_CHARS))
+        elif kind == "talk":
+            add(ts, "talk", heard=_cut(e.get("heard") or "", TEXT_CHARS) or None, say=_cut(e.get("say") or "", LINE_CHARS))
         elif kind in ("queued", "resumed"):
             add(ts, kind, ahead=e.get("ahead"))
         elif kind == "note":
@@ -646,6 +648,9 @@ def _md_entry(e: dict) -> list[str]:
         return [head + "**Request**" + (f" with {len(e['attachments'])} attached" if e.get("attachments") else "")]
     if kind == "steer":
         return [head + "**Steer**", _block(e.get("text") or "")]
+    if kind == "talk":
+        return [head + "**Talk**"] + ([_block(e["heard"])] if e.get("heard") else []) + \
+            ([f"  Said back: {_inline(e.get('say'))}"] if e.get("say") else [])
     if kind == "status":
         return [head + "Status: " + _inline(e.get("text"))]
     if kind == "plan":

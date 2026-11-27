@@ -24,6 +24,7 @@ from .tts import Speaker
 
 # Voice setup times Parakeet and Apple speech on this sentence, spoken by `say`, on the owner's Mac.
 CHECK_SENTENCE = "Please book a table for two at seven tonight, by the window."
+LIGHT_ENGINES = ("parakeet-coreml", "apple")    # off the GPU: run beside a model there
 NOTICEABLE_S = 0.5       # waiting this much longer for the words of a voice message is noticed
 
 
@@ -112,9 +113,13 @@ class Voice:
                 "language": self.language, "asr_model": self.qwen.model, "speaks_with": tts[0] if tts else None}
 
     # Transcription --------------------------------------------------------
-    async def segments(self, path) -> list[Segment]:
-        """What was said in an audio or video file, as timed segments (phrases, or pieces of about 30 s)."""
+    async def segments(self, path, light: bool = False) -> list[Segment]:
+        """What was said in an audio or video file, as timed segments (phrases, or pieces of about 30 s).
+        light: only engines that leave the GPU to a model already on it (Parakeet on the Neural Engine, Apple
+        speech)."""
         converter, engines = self.ffmpeg(), self.engines()
+        if light:
+            engines = [engine for engine in engines if engine.name in LIGHT_ENGINES]
         if not converter or not engines:
             raise VoiceUnavailable(STT_HINT)
         work = pathlib.Path(tempfile.mkdtemp(prefix="coderunner-stt-", dir=self.tmp_root))  # mode 0700
@@ -131,8 +136,8 @@ class Voice:
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
-    async def transcribe(self, path) -> str:
-        return joined(await self.segments(path))
+    async def transcribe(self, path, light: bool = False) -> str:
+        return joined(await self.segments(path, light))
 
     async def timed(self, path) -> list[tuple[float, str]]:
         """(start second, text) pieces for the file index; nothing while speech to text is not set up."""
