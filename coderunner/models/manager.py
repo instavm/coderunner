@@ -94,7 +94,8 @@ NAMES = {"embeddinggemma-2": "EmbeddingGemma 2", "embeddinggemma-300m": "Embeddi
          "ornith-1.5-122b": "Ornith 1.5 122B", "mimo-v2.6-flash-rl": "MiMo V2.6 Flash",
          "mimo-v2.6-distill-9b": "MiMo V2.6 Distill 9B", "glm-5.3-flash": "GLM 5.3 Flash",
          "deepseek-v4.1-flash-1017": "DeepSeek V4.1 Flash", "qwen3.8-flash-next": "Qwen3.8 Flash Next",
-         "qwen3.8-27b-q6": "Qwen3.8 27B Q6", "holo4-35b-a3b": "Holo 4 35B", "mage-vl-cowork": "Mage VL Cowork"}
+         "qwen3.8-27b-q6": "Qwen3.8 27B Q6", "holo4-35b-a3b": "Holo 4 35B", "mage-vl-cowork": "Mage VL Cowork",
+         "lfm3-omni-2b": "LFM3-Omni 2B"}
 
 
 def pretty(model_id: str) -> str:
@@ -102,8 +103,18 @@ def pretty(model_id: str) -> str:
     import re
     if model_id in NAMES:
         return NAMES[model_id]
+    name = model_id
+    if name.startswith("hf-"):
+        # A discovered model's id carries its publisher (hf-inclusionai-zwz2-4b): the owner reads the model's name.
+        from .discover import GGUF_PUBLISHERS, PUBLISHERS
+        name = name[3:]
+        for org in sorted(PUBLISHERS + GGUF_PUBLISHERS, key=len, reverse=True):
+            if name.lower().startswith(org.lower() + "-") and len(name) > len(org) + 1:
+                name = name[len(org) + 1:]
+                break
+        name = re.sub(r"-gguf$", "", name)
     words = []
-    for word in model_id.removeprefix("hf-").split("-"):
+    for word in name.split("-"):
         if re.fullmatch(r"[ae]?\d+(\.\d+)?[bm]", word):
             words.append(word.upper())                       # 27b, a3b, e4b
         elif re.fullmatch(r"\d+bit", word):
@@ -778,7 +789,7 @@ def setup(config, model_id: str | None = None, runtime: str | Runtime | None = N
             progress(f"{entry['id']}: its licence could not be read: {exc}")
             continue
         if verdict == "ask":
-            return {"ok": False, "needs_license": {"model": entry["id"], "reason": why, "link": link},
+            return {"ok": False, "needs_license": {"model": entry["id"], "name": pretty(entry["id"]), "reason": why, "link": link},
                     "attempts": attempts,
                     "error": f"{entry['id']} needs license acceptance: {why}. Re-run with accept_license=True."}
         if verdict == "block":

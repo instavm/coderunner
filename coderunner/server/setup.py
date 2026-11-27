@@ -124,6 +124,20 @@ class Job:
 CHOICES = 5          # how many fitting models the first screen lets the owner choose between
 
 
+def merge_presets(presets: list[dict]) -> list[dict]:
+    """One card per model: where the best that fits is both the balanced and the smartest choice (an 18 GB Mac),
+    the owner sees it once, as the best for this Mac, rather than the same model twice."""
+    from ..models import manager
+    out: list[dict] = []
+    for preset in presets:
+        same = next((kept for kept in out if kept["model"] == preset["model"]), None)
+        if same is None:
+            out.append({**preset, "name": manager.pretty(preset["model"])})
+        else:
+            same.update(label="Best for this Mac", summary="The most capable model that runs well here")
+    return out
+
+
 class SetupJob(Job):
     def __init__(self, config, audit=None, on_done: Callable[[dict], None] | None = None, plan=None, setup=None,
                  voice: bool = True):
@@ -210,7 +224,7 @@ class SetupJob(Job):
         swap = manager.hardware.swap_used_gb() if sys.platform == "darwin" else None
         need = float((model or {}).get("need_gb") or 0)
         total = round(sum(item["gb"] or 0 for item in items), 2)
-        presets = [{**p, "name": manager.pretty(p["model"])} for p in (planned.get("presets") or [])]
+        presets = merge_presets(planned.get("presets") or [])
         summary = {
             "hardware": {"chip": hw.get("chip") or "unknown chip", "ram_gb": round(hw.get("ram_gb") or 0),
                          "gpu": hw.get("gpu"), "budget_gb": round(hw.get("budget_gb") or 0, 1),

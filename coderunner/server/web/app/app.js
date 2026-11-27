@@ -464,7 +464,7 @@ class TaskView {
           entry.state = e.ok === false ? "err" : "ok";
           if (e.ts && entry.ts) entry.duration = Math.max(0.1, e.ts - entry.ts);
           entry.preview = rawPreview.slice(0, 400);
-          if (e.ok === false && rawPreview) entry.sub = trunc(rawPreview.split("\n")[0], 90);
+          if (e.ok === false && rawPreview) entry.sub = trunc(failureLine(rawPreview), 90);
           else if (titleMatch && !entry.sub) entry.sub = trunc(titleMatch[1].trim(), 90);
         }
         scheduleDeck();
@@ -675,6 +675,9 @@ class TaskView {
   finish(e) {
     this.status = e.type;
     this.finished = e.ts;
+    // Answered: the plan is done, whether or not the model ticked its last step (often "present the answer").
+    if (e.type === "done" && this.planSteps?.some((s) => s.status !== "done"))
+      this.showPlan(this.planSteps.map((s) => ({...s, status: "done"})));
     this.now?.row.remove();
     this.now = null;
     this.checkpoint?.remove();
@@ -691,11 +694,11 @@ class TaskView {
     const took = clock(elapsed);
     const metaParts = [e.type === "cancelled" ? `Stopped after ${took}` : e.type === "failed" ? `Failed after ${took}` : `Done in ${took}`];
     if (e.model) metaParts.push(modelName(e.model));
-    const stepCount = e.steps || this.steps;
+    const stepCount = this.steps || e.steps;      // the same count as "Step N" while it ran and the side panel
     if (stepCount > 0) metaParts.push(`${stepCount} ${stepCount === 1 ? "step" : "steps"}`);
     if (e.slowed) metaParts.push("memory was tight");
     const tookRow = el("div", "took-row");
-    tookRow.appendChild(el("div", "took muted small", metaParts.join(" · ")));
+    tookRow.appendChild(el("div", "took muted small", metaParts.join("\u00a0· ")));   // wraps after a dot, never before
     if (e.reply) {
       const acts = el("div", "ans-actions");
       const copy = el("button", "copy-btn", "Copy");
@@ -2122,7 +2125,8 @@ function refreshNow() {
 }
 
 // A model's id as an owner reads it: coderunner-bonsai-2-27b -> Bonsai 2 27B.
-const MODEL_NAMES = {"embeddinggemma-2": "EmbeddingGemma 2", "embeddinggemma-300m": "EmbeddingGemma 300M", "tev1-4b": "tev1 4B"};
+const MODEL_NAMES = {"embeddinggemma-2": "EmbeddingGemma 2", "embeddinggemma-300m": "EmbeddingGemma 300M", "tev1-4b": "tev1 4B",
+                     "lfm3-omni-2b": "LFM3-Omni 2B"};
 function modelName(id) {
   if (!id) return "";
   const claude = /^claude-([a-z]+)-(\d+)(?:-(\d+))?$/.exec(String(id));       // claude-haiku-5-5 -> Claude Haiku 5.5
@@ -2542,9 +2546,11 @@ function renderPlan(plan, problem) {
   tile(hw.chip, "Chip");
   tile(`${hw.ram_gb} GB`, "Memory", hw.budget_gb ? `${hw.budget_gb} GB of it can go to models` : "");
   const ane = plan.ane || {};
-  tile(hw.gpu === "apple" ? (ane.cores ? `GPU + ${ane.cores}-core ANE` : "Apple GPU & ANE") :
+  // Short enough for its tile; the Neural Engine's size is in the tile's hover text.
+  tile(hw.gpu === "apple" ? "GPU + ANE" :
        hw.gpu === "none" ? "None" : `${hw.gpu === "nvidia" ? "NVIDIA" : "AMD"} ${hw.vram_gb} GB`, "Graphics",
-       hw.gpu === "apple" ? "Apple GPU and Neural Engine, sharing unified memory" : hw.gpu === "none" ? "Models will run on the processor, slowly" : "");
+       hw.gpu === "apple" ? `Apple GPU and ${ane.cores ? `${ane.cores}-core ` : ""}Neural Engine, sharing unified memory`
+         : hw.gpu === "none" ? "Models will run on the processor, slowly" : "");
   if (speed) tile(`~${Math.round(speed.step_s)} s`, speed.measured ? "Per step, measured" : "Per step, estimated",
                   "How long each step of a task takes here");
   card.appendChild(tiles);
@@ -2570,6 +2576,7 @@ function renderPlan(plan, problem) {
   // Plain-English Fast / Balanced / Smartest presets (zero jargon)
   if ((plan.presets || []).length > 1) {
     const pGrid = el("div", "preset-grid");
+    pGrid.style.gridTemplateColumns = `repeat(${plan.presets.length}, minmax(0, 1fr))`;   // two cards fill the row
     for (const p of plan.presets) {
       const btn = el("button", "preset-card" + (p.model === plan.model.id ? " on" : ""));
       btn.type = "button";
@@ -2685,11 +2692,14 @@ function renderPlan(plan, problem) {
 function renderServerSetup(plan, problem) {
   const here = plan.hardware.os === "mac" ? "this Mac" : "this computer";
   const card = setupCard("Connect your own server", "Runs planning on your server; file search and voice stay on this computer.");
-  const form = el("form", "set-group");
+  const form = el("form", "set-group server-form");
   const urlIn = el("input", "set-input"); urlIn.placeholder = "http://100.64.0.5:8080/v1"; urlIn.style.maxWidth = "100%";
   const modIn = el("input", "set-input"); modIn.placeholder = "Model name (e.g. bonsai2.5-27b)"; modIn.style.maxWidth = "100%";
   const keyIn = el("input", "set-input"); keyIn.type = "password"; keyIn.placeholder = "API key (optional)"; keyIn.style.maxWidth = "100%";
+  urlIn.setAttribute("aria-label", "Server address"); modIn.setAttribute("aria-label", "Model name");
+  keyIn.setAttribute("aria-label", "API key");
   form.append(urlIn, modIn, keyIn);
+  form.onsubmit = (event) => { event.preventDefault(); go.click(); };     // Enter sends, never reloads the page
   card.appendChild(form);
   if (problem) card.appendChild(el("p", "setup-error", problem));
   const go = setupButton("Connect and start", async () => {
@@ -2797,7 +2807,10 @@ async function renderRemoteSetup(plan, problem) {
   const here = plan.hardware.os === "mac" ? "this Mac" : "this computer";
   const card = setupCard("Use Claude with your key", "Nothing to download. Tasks take a second or two a step.");
   let remote;
-  try { remote = await api("/api/remote"); } catch (err) { card.append(el("p", "setup-error", err.message), setupButton("Back", () => renderPlan(plan))); return; }
+  try {
+    remote = await api("/api/remote");
+    if (!remote?.models?.length) throw new Error("Claude is not available from here right now.");
+  } catch (err) { card.append(el("p", "setup-error", err.message), setupButton("Back", () => renderPlan(plan))); return; }
   const model = modelName(remote.models[0].id);
   card.appendChild(el("div", "setup-label", "With an Anthropic key"));
   const roles = el("div", "roles");
@@ -3086,7 +3099,7 @@ function renderProgress(job) {
 // Setup stopped at a model whose licence asks to be agreed to: say which and why, link to it, and go on from
 // here on a yes.
 function renderLicense(license) {
-  const card = setupCard("One thing to agree to", `${modelName(license.model)} comes with a licence that asks for your agreement.`);
+  const card = setupCard("One thing to agree to", `${license.name || modelName(license.model)} comes with a licence that asks for your agreement.`);
   const box = el("div", "roles license");
   const reason = (license.reason || "").replace(/;?\s*review \S+ and accept it once/, "");
   box.appendChild(el("div", "", reason ? `${reason}.` : "Its licence has terms to accept before it is downloaded."));
@@ -3217,7 +3230,8 @@ function drawBrowser(next) {
   const active = tabs.find((tab) => tab.active);
   $("browser").classList.toggle("single-tab", tabs.length <= 1);
   if ($("viewBrowserLabel")) {
-    const label = active && active.url !== "about:blank" ? (active.title || hostOf(active.url) || "Mac browser") : "Mac browser";
+    // The site, not the page's title: a blocked page would otherwise name the tab "Access Denied".
+    const label = active && active.url !== "about:blank" ? (hostOf(active.url) || "Mac browser") : "Mac browser";
     $("viewBrowserLabel").textContent = label;
   }
   if (document.activeElement !== $("bUrl")) $("bUrl").value = active && active.url !== "about:blank" ? active.url : "";
@@ -3561,6 +3575,15 @@ document.addEventListener("keydown", (e) => {
 loadThinkingLabel();
 
 // ---- Workspace Companion Deck (fills the space cleanly below the top-pinned VNC screen) ----
+
+// A failed step's own words: its error line, else its first line that is not one of the browser tools' headers
+// (tab, url, title), which mean nothing to the owner.
+function failureLine(preview) {
+  const lines = String(preview || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const said = lines.find((l) => /^(error|reason|failed)\s*:/i.test(l));
+  if (said) return said.replace(/^[^:]+:\s*/, "");
+  return lines.find((l) => !/^(tab|url|title|page|status|ok)\s*:/i.test(l)) || "That did not work";
+}
 
 function toolDetail(name, a, title = "") {
   if (!a || typeof a !== "object") return "";
