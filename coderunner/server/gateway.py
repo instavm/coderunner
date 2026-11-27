@@ -410,9 +410,11 @@ def admin_app(svc, daemon) -> Starlette:
 
     async def voice_speak(request: Request):
         """On-demand Listen: speak cleaned text through LFM3-Omni and return an ephemeral speech id."""
+        from ..voice.omni import VoiceBusy
         speaker = getattr(daemon, "speaker", None) or getattr(svc, "speaker", None)
         if speaker is None or not (svc.config.get("voice.omni_model") and speaker.runtime.ready()):
-            return JSONResponse({"error": "LFM3-Omni is not set up. Open Settings → Voice & Phone."}, status_code=503)
+            return JSONResponse({"error": "Spoken replies are not set up. Open Settings, Voice & Phone."},
+                                status_code=503)
         body = await request.json()
         text = str(body.get("text") or "").strip()
         if not text:
@@ -420,14 +422,17 @@ def admin_app(svc, daemon) -> Starlette:
         try:
             meta = await speaker.speak_text(text, conversation=str(body.get("conversation") or ""),
                                             kind=str(body.get("kind") or "listen"))
+        except VoiceBusy as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
         except Exception as exc:
-            return JSONResponse({"error": str(exc)[:300]}, status_code=500)
+            svc.audit.write("voice.speak_failed", error=f"{type(exc).__name__}: {exc}"[:300])
+            return JSONResponse({"error": "Could not speak this reply."}, status_code=500)
         if not meta:
             return JSONResponse({"error": "Nothing to speak."}, status_code=400)
         return JSONResponse(meta)
 
     async def voice_speech(request: Request):
-        """Stream ephemeral PCM16 for a spoken aside (never from SQLite)."""
+        """Ephemeral PCM16 for a spoken line (never from SQLite)."""
         speaker = getattr(daemon, "speaker", None) or getattr(svc, "speaker", None)
         if speaker is None:
             return JSONResponse({"error": "Voice is not ready."}, status_code=503)
@@ -436,70 +441,76 @@ def admin_app(svc, daemon) -> Starlette:
             return JSONResponse({"error": "That speech clip has expired."}, status_code=404)
         rate = int(item.get("rate") or 24000)
         return Response(item["pcm"], media_type=f"audio/pcm;rate={rate};encoding=signed-int;bits=16",
-                        headers={"Cache-Control": "no-store", "X-Speech-Text": urllib.parse.quote(item.get("text") or "")})
+                        headers={"Cache-Control": "no-store"})
 
     async def voice_realtime(websocket: WebSocket):
-        """Proxy authenticated live Talk to llama-server /v1/realtime (16 kHz in, 24 kHz out)."""
+        """Proxy authenticated live Talk to llama-server /v1/realtime (16 kHz in, 24 kHz out). The first message
+        to the app is {"type": "coderunner.talk.ready"} once the model is loaded; a close carries the reason."""
         from websockets.asyncio.client import connect
-        from ..models.runtimes import VoiceRuntime
+        from ..voice.omni import BUSY, VoiceBusy
         speaker = getattr(daemon, "speaker", None) or getattr(svc, "speaker", None)
-        runtime = VoiceRuntime(svc.config)
-        if not runtime.ready():
-            await websocket.close(code=1013, reason="LFM3-Omni is not set up")
-            return
-        slot = speaker.slot if speaker is not None else None
-        if slot is not None and slot.busy:
-            await websocket.close(code=1013, reason=slot.busy_reason or "The voice model is busy")
-            return
         await websocket.accept()
-        try:
-            if slot is not None:
-                await slot.acquire("talk")
-            runtime.ensure()
-            upstream = await connect(runtime.realtime_url(), max_size=None, open_timeout=30,
-                                     ping_interval=None, proxy=None)
-        except Exception as exc:
-            if slot is not None:
-                slot.release()
-            with contextlib.suppress(Exception):
-                await websocket.close(code=1011, reason=str(exc)[:100])
+        if speaker is None or not (svc.config.get("voice.omni_model") and speaker.runtime.ready()):
+            await websocket.close(code=1013, reason="Talk is not set up.")
             return
-        svc.audit.write("voice.talk_opened", by=websocket.scope.get("state", {}).get("principal", "?"))
+        slot, runtime = speaker.slot, speaker.runtime
+        try:
+            await slot.acquire("talk")
+        except VoiceBusy:
+            await websocket.close(code=1013, reason=BUSY)
+            return
+        try:
+            async with speaker.turns.use():
+                try:
+                    upstream = await connect(runtime.realtime_url(), max_size=None, open_timeout=30,
+                                             ping_interval=None, proxy=None)
+                except Exception as exc:
+                    svc.audit.write("voice.talk_failed", error=f"{type(exc).__name__}: {exc}"[:300])
+                    await websocket.close(code=1011, reason="Could not start the voice model.")
+                    return
+                svc.audit.write("voice.talk_opened", by=websocket.scope.get("state", {}).get("principal", "?"))
+                await websocket.send_text(json.dumps({"type": "coderunner.talk.ready"}))
 
-        async def up():
-            try:
-                while True:
-                    message = await websocket.receive()
-                    if message["type"] == "websocket.disconnect":
-                        return
-                    if message.get("text") is not None:
-                        await upstream.send(message["text"])
-                    elif message.get("bytes") is not None:
-                        await upstream.send(message["bytes"])
-            except (WebSocketDisconnect, ConnectionError, RuntimeError):
-                return
-            except Exception:
-                return
+                async def up():
+                    with contextlib.suppress(Exception):
+                        while True:
+                            message = await websocket.receive()
+                            if message["type"] == "websocket.disconnect":
+                                return
+                            if message.get("text") is not None:
+                                await upstream.send(message["text"])
+                            elif message.get("bytes") is not None:
+                                await upstream.send(message["bytes"])
 
-        async def down():
-            try:
-                async for data in upstream:
-                    if isinstance(data, bytes):
-                        await websocket.send_bytes(data)
+                async def down():
+                    with contextlib.suppress(Exception):
+                        async for data in upstream:
+                            if isinstance(data, bytes):
+                                await websocket.send_bytes(data)
+                            else:
+                                await websocket.send_text(data)
+
+                tasks = [asyncio.create_task(up()), asyncio.create_task(down()),
+                         asyncio.create_task(speaker.turns.yielding.wait())]
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                gave_way = tasks[2].done()
+                for task in tasks:
+                    task.cancel()
+                with contextlib.suppress(Exception):
+                    await upstream.close()
+                with contextlib.suppress(Exception):
+                    if gave_way:
+                        await websocket.close(code=1013, reason="Talk ended so the assistant can work.")
                     else:
-                        await websocket.send_text(data)
-            except Exception:
-                return
-
-        tasks = [asyncio.create_task(up()), asyncio.create_task(down())]
-        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in tasks:
-            task.cancel()
-        with contextlib.suppress(Exception):
-            await upstream.close()
-        with contextlib.suppress(Exception):
-            await websocket.close()
-        if slot is not None:
+                        await websocket.close()
+        except VoiceBusy as exc:
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1013, reason=str(exc)[:120])
+        except Exception as exc:
+            svc.audit.write("voice.talk_failed", error=f"{type(exc).__name__}: {exc}"[:300])
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1011, reason="Could not start the voice model.")
+        finally:
             slot.release()
 
     async def history(request: Request):

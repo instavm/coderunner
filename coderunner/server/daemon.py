@@ -463,6 +463,10 @@ class Daemon:
             return ("No local chat model is set up (search mode). Use the search tools from your own agent over "
                     "MCP (`coderunner mcp --tools search`), or run `coderunner setup` to add a model.")
         agent = await self.claude_agent() if remote else self.svc.agent
+        speaker = getattr(self, "speaker", None)
+        if speaker is not None and not remote:
+            # Where voice and the assistant's model take turns, voice ends now and the model is loaded again.
+            await speaker.turns.make_way()
         lock = self._locks.setdefault(conversation, asyncio.Lock())
         async with lock:
             ctx = RunContext(conversation=conversation, origin=origin or conversation, channel=channel,

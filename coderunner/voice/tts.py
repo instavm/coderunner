@@ -25,6 +25,9 @@ class Speaker:
         model = self._get("omni_model")
         if not model:
             return False
+        if self._get("omni_exclusive") and self.config is not None and self.config.get("models.chat") \
+                and not (self.config.get("models.remote") or {}).get("provider"):
+            return False    # takes turns with the assistant's model, which only the app's voice arranges
         try:
             from ..models.runtimes import VoiceRuntime
             return VoiceRuntime(self.config).ready() if self.config is not None else False

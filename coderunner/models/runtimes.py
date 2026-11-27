@@ -944,11 +944,13 @@ class VoiceRuntime(LlamaCppRuntime):
         if active.get("mmproj"):
             cmd += ["--mmproj", active["mmproj"]]
         idle = idle_seconds(self.config)
-        # Catalog server_args already include --reasoning off for LFM3-Omni; do not duplicate it.
+        args = list(active.get("args") or [])
+        if "--reasoning" not in args:
+            args += ["--reasoning", "off"]      # spoken lines come at once, never after a hidden think
         return cmd + ["--jinja", "-c", str(active.get("ctx") or self.VOICE_CTX),
                       "--host", "127.0.0.1", "--port", str(self.port), "--cache-ram", "0", "-np", "1",
                       "-ngl", "99", "--alias", active["alias"]] + (
-                          ["--sleep-idle-seconds", str(idle)] if idle else []) + (active.get("args") or [])
+                          ["--sleep-idle-seconds", str(idle)] if idle else []) + args
 
     def start(self, timeout: float = 300) -> None:
         if self.running():
@@ -979,9 +981,11 @@ class VoiceRuntime(LlamaCppRuntime):
             raise RuntimeError("LFM3-Omni is not set up; run coderunner voice omni")
         self.start(timeout)
 
+    def alias(self) -> str:
+        return (self._state().get("active") or {}).get("alias") or "lfm3-omni-2b"
+
     def realtime_url(self) -> str:
-        alias = (self._state().get("active") or {}).get("alias") or "lfm3-omni-2b"
-        return f"ws://127.0.0.1:{self.port}/v1/realtime?model={alias}"
+        return f"ws://127.0.0.1:{self.port}/v1/realtime?model={self.alias()}"
 
     def tts_url(self) -> str:
         return f"http://127.0.0.1:{self.port}/tts"
