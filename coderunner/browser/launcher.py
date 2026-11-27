@@ -76,9 +76,17 @@ def browser_args(profile_dir: pathlib.Path, headless: bool) -> list[str]:
         "--no-first-run",
         "--no-default-browser-check",
         "--hide-crash-restore-bubble",
+        "--lang=en-US",
+        "--disable-blink-features=AutomationControlled",
     ]
     if headless:
-        args += ["--headless=new", "--window-size=1280,900"]
+        args += [
+            "--headless=new",
+            "--window-size=1280,900",
+            "--disable-background-timer-throttling",
+            "--disable-renderer-backgrounding",
+            "--disable-backgrounding-occluded-windows",
+        ]
     return args + ["about:blank"]
 
 

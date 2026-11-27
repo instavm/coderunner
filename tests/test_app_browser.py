@@ -410,15 +410,24 @@ class SwitchTests(HomeCase):
         self.assertEqual(result["content"], "vm page")
         self.assertEqual(self.asked, [])
 
-    async def test_their_sign_in_is_offered_on_first_use_only(self):
-        bridge = mock.Mock(connected=lambda: True)
+    async def test_their_sign_in_is_offered_per_site_until_cookies_exist(self):
+        self.vm.walls.add("other.example")
+        stored = []
+        async def cookie_domains():
+            return list(stored)
+        bridge = mock.Mock(connected=lambda: True, cookie_domains=cookie_domains)
         self.switch.bridge = bridge
         with mock.patch.object(cookies, "installed", return_value=["chrome"]):
             await self.switch.navigate("https://shop.example/")
             self.assertEqual(self.asked[0].detail["sign_in"], "chrome")
+            # Once shop.example has cookies in the Mac browser, it is not re-offered; a new site still is.
+            stored.append({"domain": "shop.example", "count": 4})
             await self.switch.tidy(scope="c1")
             await self.switch.navigate("https://shop.example/")
             self.assertNotIn("sign_in", self.asked[1].detail)
+            await self.switch.tidy(scope="c1")
+            await self.switch.navigate("https://other.example/")
+            self.assertEqual(self.asked[2].detail["sign_in"], "chrome")
 
     async def test_whatever_else_is_asked_of_the_browser_is_the_sandboxs(self):
         self.vm.mode = "computer"
@@ -582,7 +591,10 @@ class BrowserTabTests(unittest.TestCase):
         shell = (self.ROOT / "app" / "browser.js").read_text()
         self.assertIn('const PARTITION = "persist:coderunner-browser";', shell)
         self.assertIn("banned.push(`${this.daemonOrigin}/*`", shell)
-        self.assertNotRegex(shell, r"setUserAgent|userAgent\s*=|webdriver|WEBGL|toDataURL\s*=")   # nothing disguised
+        # Strips CodeRunner/Electron tokens and aligns Sec-CH-UA to the real Chromium version without faking GPU/canvas.
+        self.assertIn("desktopChromeIdentity", shell)
+        self.assertIn("sec-ch-ua", shell)
+        self.assertNotRegex(shell, r"webdriver|WEBGL|toDataURL\s*=")
 
     def test_closing_a_tab_detaches_without_reattach_spin_loop(self):
         shell = (self.ROOT / "app" / "browser.js").read_text()

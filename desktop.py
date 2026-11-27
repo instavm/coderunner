@@ -56,9 +56,11 @@ def _env(account: pwd.struct_passwd) -> dict:
     runtime = f"/tmp/runtime-{account.pw_name}"
     os.makedirs(runtime, mode=0o700, exist_ok=True)
     os.chown(runtime, account.pw_uid, account.pw_gid)
+    raw_lang = (os.environ.get("LANG") or "").strip()
+    lang = raw_lang if raw_lang and raw_lang.upper() not in ("C", "POSIX", "C.UTF-8") else "en_US.UTF-8"
     return {"HOME": account.pw_dir, "USER": account.pw_name, "LOGNAME": account.pw_name, "SHELL": "/bin/bash",
             "PATH": "/usr/local/bin:/usr/bin:/bin", "DISPLAY": f":{DISPLAY_NUMBER}", "XDG_RUNTIME_DIR": runtime,
-            "LANG": os.environ.get("LANG", "C.UTF-8")}
+            "LANG": lang}
 
 
 def _as_user(argv: list[str], account: pwd.struct_passwd, **kwargs) -> subprocess.Popen:
@@ -210,11 +212,40 @@ class _PipeReader(asyncio.Protocol):
         self.relay.chrome_closed()
 
 
+_CACHED_UA: str | None = None
+
+
+def _desktop_user_agent() -> str:
+    """Match the installed Chrome major version with a regular desktop macOS Chrome User-Agent."""
+    global _CACHED_UA
+    if _CACHED_UA is not None:
+        return _CACHED_UA
+    major = "136"
+    try:
+        if os.path.exists(CHROME):
+            out = subprocess.check_output([CHROME, "--version"], text=True, timeout=5, stderr=subprocess.DEVNULL)
+            for token in out.split():
+                head = token.split(".", 1)[0]
+                if head.isdigit() and int(head) >= 100:
+                    major = head
+                    break
+    except Exception:
+        pass
+    _CACHED_UA = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
+    return _CACHED_UA
+
+
 def chrome_argv(profile: pathlib.Path) -> list[str]:
     """Chrome as the assistant runs it on the desktop, driven over its DevTools pipe (fds 3 and 4)."""
     return [CHROME, f"--user-data-dir={profile}", "--remote-debugging-pipe", "--no-first-run",
             "--no-default-browser-check", "--hide-crash-restore-bubble", "--password-store=basic",
             "--disable-dev-shm-usage", "--start-maximized", f"--disk-cache-size={DISK_CACHE_BYTES}",
+            "--lang=en-US", f"--user-agent={_desktop_user_agent()}",
+            "--disable-infobars", "--disable-background-timer-throttling",
+            "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows",
             # DevTools control otherwise sets navigator.webdriver, which sites read as a bot.
             "--disable-blink-features=AutomationControlled", "about:blank"]
 

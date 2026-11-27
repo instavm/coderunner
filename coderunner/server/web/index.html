@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/app/manifest.webmanifest">
 <title>CodeRunner</title>
 <style>
   :root { color-scheme: light dark; --b: #8884; --accent: #2f6fde; --danger: #c43c3c; }
@@ -71,8 +74,11 @@ $("pairForm").onsubmit = async (e) => {
   e.preventDefault();
   const r = await fetch("/pair", {method: "POST", headers: H, credentials: "same-origin",
     body: JSON.stringify({code: $("code").value, name: $("device").value})});
-  if (r.ok) location.href = "/"; else $("pairError").textContent = (await r.json()).error;
+  if (r.ok) location.href = "/app/"; else $("pairError").textContent = (await r.json()).error;
 };
+// Pre-fill pairing code from QR scan URL (?code=XXXXXXXX)
+const qrCode = new URLSearchParams(location.search).get("code");
+if (qrCode) { $("code").value = qrCode.trim().toUpperCase().slice(0, 8); showPair(); }
 
 function addMessage(role, text) {
   const div = document.createElement("div");

@@ -20,6 +20,7 @@ class SandboxClient:
     def __init__(self, base_url: str, token: str, timeout: float = EXEC_TIMEOUT + 30):
         self.base_url = base_url.rstrip("/")
         self.token = token
+        self.last_error: Exception | None = None
         self._client = httpx.AsyncClient(
             base_url=self.base_url, timeout=timeout, trust_env=False,
             headers={"Authorization": f"Bearer {token}"},
@@ -27,8 +28,12 @@ class SandboxClient:
 
     async def health(self) -> bool:
         try:
-            return (await self._client.get("/health", timeout=3)).status_code == 200
-        except httpx.HTTPError:
+            ok = (await self._client.get("/health", timeout=3)).status_code == 200
+            if ok:
+                self.last_error = None
+            return ok
+        except httpx.HTTPError as exc:
+            self.last_error = exc
             return False
 
     async def execute(self, code: str, session_id: str | None = None) -> dict:

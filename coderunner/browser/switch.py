@@ -183,13 +183,22 @@ class BrowserSwitch:
     async def _ask(self, name: str, url: str, wall: str, tainted: bool) -> str:
         """approved, denied or expired. A standing grant (Always for this site) answers without asking; a rule
         that denies browser.mac for the site answers no."""
-        from . import app
         detail: dict = {"url": url, "wall": wall, "site": name}
-        if self.bridge is not None and self.bridge.connected() and not app.used():
+        if self.bridge is not None and self.bridge.connected():
+            import inspect
             from . import cookies
             found = cookies.installed()
             if found:
-                detail["sign_in"] = found[0]        # first use: their sign-in for this site may come along
+                # Offer opt-in sign-in import on every site switch unless the Mac browser already holds cookies for it.
+                list_fn = getattr(self.bridge, "cookie_domains", None)
+                existing = await list_fn() if inspect.iscoroutinefunction(list_fn) else []
+                has_site = any(
+                    str(d.get("domain") or "") == name or str(d.get("domain") or "").endswith("." + name)
+                    for d in (existing or [])
+                )
+                if not has_site:
+                    detail["sign_in"] = found[0]
+                    detail["sign_in_browsers"] = found
         action = Action("browser.mac", name, QUESTION.format(site=name), detail, tainted)
         decision = self.policy.evaluate(action)
         if decision is not Decision.ASK:

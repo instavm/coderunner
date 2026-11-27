@@ -31,7 +31,9 @@ NOT_FOUND_BODY = re.compile(
     r"\b(?:404\s+(?:error|not\s+found|page\s+not\s+found)|page\s+not\s+found|seite\s+nicht\s+gefunden|"
     r"this\s+page\s+(?:doesn.?t|does\s+not|cannot|could\s+not)\s+(?:exist|be\s+found)|"
     r"we\s+couldn.?t\s+find\s+(?:that|the)\s+page|sorry,?\s+we\s+can.?t\s+find\s+that\s+page|"
-    r"cette\s+page\s+n.?existe\s+pas|no\s+se\s+encontró\s+la\s+página)\b",
+    r"cette\s+page\s+n.?existe\s+pas|no\s+se\s+encontró\s+la\s+página|"
+    r"undergoing\s+(?:a\s+)?maintenance|down\s+for\s+maintenance|maintenance\s+cycle|"
+    r"temporarily\s+unavailable|service\s+unavailable)\b",
     re.I,
 )
 

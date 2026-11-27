@@ -115,15 +115,79 @@ function rowCards(heads, rows) {
   return list;
 }
 
+function csvCell(s) {
+  const clean = String(s ?? "").replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)").replace(/\*\*|`/g, "").trim();
+  return /[",\n\r]/.test(clean) ? `"${clean.replace(/"/g, '""')}"` : clean;
+}
+
+function downloadCsv(heads, rows) {
+  const lines = [heads, ...rows].map((r) => r.map(csvCell).join(",")).join("\r\n");
+  const blob = new Blob([lines], {type: "text/csv;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = el("a");
+  a.href = url; a.download = "coderunner-table.csv";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function artifactToolbar(heads, rows) {
+  const bar = el("div", "art-bar");
+  const csv = el("button", "art-btn", "Export CSV");
+  csv.type = "button";
+  csv.onclick = () => downloadCsv(heads, rows);
+  const tsv = el("button", "art-btn", "Copy table");
+  tsv.type = "button";
+  tsv.onclick = () => {
+    const clean = (s) => String(s ?? "").replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1").replace(/\*\*|`/g, "").trim();
+    navigator.clipboard?.writeText([heads, ...rows].map((r) => r.map(clean).join("\t")).join("\n"));
+    tsv.textContent = "Copied"; setTimeout(() => { tsv.textContent = "Copy table"; }, 1200);
+  };
+  bar.append(csv, tsv);
+  return bar;
+}
+
+function parseSortable(text) {
+  const clean = String(text ?? "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/\*\*|`/g, "").trim();
+  const m = clean.match(/-?\d[\d,]*(?:\.\d+)?/);
+  if (m && /^[^\p{L}]*$/u.test(clean.replace(m[0], "").replace(/\b(?:USD|EUR|GBP|INR|JPY|Rs|km|m|GB|TB|mo|yr|pcm)\b/gi, ""))) {
+    return {num: true, val: parseFloat(m[0].replace(/,/g, ""))};
+  }
+  return {num: false, val: clean.toLowerCase()};
+}
+
 function table(heads, rows) {
   const made = el("table", "md-table"), head = made.appendChild(el("thead")).appendChild(el("tr"));
-  for (const cell of heads) inline(head.appendChild(el("th")), cell);
   const body = made.appendChild(el("tbody"));
-  for (const row of rows) {
-    const line = body.appendChild(el("tr"));
-    for (const cell of row) inline(line.appendChild(el("td")), cell);
-  }
+  const current = rows.map((r) => [...r]);
+  let sortCol = -1, sortAsc = true;
+  const drawBody = () => {
+    if (typeof body.replaceChildren === "function") body.replaceChildren();
+    else if (Array.isArray(body.children)) body.children.length = 0;
+    else body.textContent = "";
+    for (const row of current) {
+      const line = body.appendChild(el("tr"));
+      for (const cell of row) inline(line.appendChild(el("td")), cell);
+    }
+  };
+  const ths = heads.map((cell, idx) => {
+    const th = head.appendChild(el("th", "sortable"));
+    th.title = "Click to sort";
+    inline(th, cell);
+    th.onclick = () => {
+      if (sortCol === idx) sortAsc = !sortAsc; else { sortCol = idx; sortAsc = true; }
+      ths.forEach((n, i) => n.setAttribute("aria-sort", i === sortCol ? (sortAsc ? "ascending" : "descending") : "none"));
+      current.sort((a, b) => {
+        const ka = parseSortable(a[idx]), kb = parseSortable(b[idx]);
+        const cmp = ka.num && kb.num ? ka.val - kb.val : String(ka.val).localeCompare(String(kb.val));
+        return sortAsc ? cmp : -cmp;
+      });
+      drawBody();
+    };
+    return th;
+  });
+  drawBody();
   const wrap = el("div", "md-table-wrap");
+  if (rows.length >= 2) wrap.appendChild(artifactToolbar(heads, current));
   wrap.appendChild(made);
   return wrap;
 }

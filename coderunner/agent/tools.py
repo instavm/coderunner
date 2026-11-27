@@ -82,7 +82,7 @@ def progress_line(content: str | None, said: list[str]) -> str:
 # The tools that only read: run again after a restart that came while they ran. browser_open loads a page in a
 # new tab (the browser has moved on anyway); the run's own steps change nothing outside it.
 REPLAY_SAFE = frozenset({"browser_open", "browser_search", "browser_snapshot", "browser_list", "browser_find",
-                         "browser_tabs", "browser_screenshot", "files_search", "file_read", "file_view",
+                         "browser_tabs", "browser_screenshot", "web_read", "files_search", "file_read", "file_view",
                          "file_listen", "memory_search", "schedule_list", "plan_update", "tell_owner"})
 
 
@@ -609,6 +609,56 @@ def browser_tools(svc) -> list[Tool]:
              "to do, as a short sentence they read on the screen (\"Type the CAPTCHA, then click Go.\").",
              _params({"reason": STR}, ["reason"]), handoff),
     ]
+    async def web_read(args, ctx):
+        """Fast parallel HTTP clean reader for 1-4 static pages (articles, docs, Wikipedia, gov/news pages).
+        Falls back cleanly by flagging `needs_browser: true` for JS-rendered SPAs or bot-walled sites."""
+        from . import reader
+        from ..models import ane_llm
+        raw_urls = args.get("urls") or ([] if not args.get("url") else [args["url"]])
+        if isinstance(raw_urls, str):
+            raw_urls = [raw_urls]
+        focus = str(args.get("focus") or "").strip()
+        allow = list(svc.config.get("browser.allow") or [])
+        block = list(svc.config.get("browser.block") or [])
+        # Use Apple Intelligence FoundationModels when ready on macOS 26+ for zero-VRAM page distillation.
+        distiller = None
+        if focus and ane_llm.foundation_supported():
+            if getattr(svc, "_foundation_ready", None) is None:
+                svc._foundation_ready = bool(ane_llm.probe_foundation().get("available"))
+            if svc._foundation_ready:
+                distiller = ane_llm.distill_with_foundation
+        results = await reader.read_many(raw_urls, focus=focus, allow=allow, block=block, distiller=distiller)
+        if not results:
+            return "Error: pass 1 to 4 http(s) URLs in urls."
+        out_parts: list[str] = []
+        trail = getattr(ctx, "trail", None)
+        for item in results:
+            url = item.get("url") or ""
+            if item.get("ok"):
+                if isinstance(trail, list):
+                    trail.append({"action": "open", "url": url, "ok": True})
+                    del trail[:-200]
+                hdr = f"url: {url}" + (f"\ntitle: {item['title']}" if item.get("title") else "")
+                if item.get("distilled"):
+                    hdr += "\ndistilled: on-device"
+                out_parts.append(f"{hdr}\n\n{item['content']}")
+            else:
+                hint = " (use browser_open for this URL)" if item.get("needs_browser") else ""
+                out_parts.append(f"url: {url}\nError: {item.get('error', 'could not read')}{hint}")
+        return "\n\n---\n\n".join(out_parts)
+
+    tools.append(Tool(
+        "web_read",
+        "Fast parallel reader for 1-4 static web URLs (articles, Wikipedia, docs, news, official pages) in ~1s "
+        "without opening Chrome tabs. Pass optional focus= (what facts/figures to extract). If a page needs "
+        "JavaScript or is bot-blocked, the result says so — then use browser_open.",
+        _params({
+            "urls": {"type": "array", "items": STR, "description": "1 to 4 http(s) URLs to fetch in parallel"},
+            "focus": STR,
+        }, ["urls"]),
+        web_read,
+        True,
+    ))
     if getattr(svc, "driver", None) is not None:
         async def browser_task(args, ctx):
             return await svc.driver.run(str(args["goal"]), ctx)
@@ -656,6 +706,21 @@ def memory_tools(svc) -> list[Tool]:
         count = svc.memory.forget(id=args.get("id"), query=args.get("query"))
         return f"Forgot {count} memories."
 
+    async def update_profile(args, ctx):
+        from . import profile as owner_profile
+        updates = {k: v for k, v in args.items() if k in owner_profile.FIELD_KEYS}
+        if not updates:
+            return "Error: provide at least one profile field to update."
+        desc = ", ".join(f"{k}={v!r}" for k, v in updates.items())
+        if not await svc.policy.check(Action("profile.write", "profile", f"Update your profile ({desc})",
+                                             tainted=ctx.tainted), origin=ctx.origin):
+            return "Error: the owner did not approve updating their profile."
+        try:
+            saved = owner_profile.save(svc.store, updates, merge=True)
+        except ValueError as exc:
+            return f"Error: {exc}"
+        return f"Updated profile ({', '.join(sorted(saved))})."
+
     return [
         Tool("memory_save", "Remember a durable fact or preference the owner told you. Never store secrets. (How "
              "each site was used is kept for you as site notes.)",
@@ -664,6 +729,11 @@ def memory_tools(svc) -> list[Tool]:
                                                                                   ["query"]), search),
         Tool("memory_forget", "Forget memories by id or matching a query, when the owner asks.",
              _params({"id": INT, "query": STR}), forget),
+        Tool("profile_update", "Save durable owner preferences (city, home_airport, currency, dietary, travel_prefs, "
+             "shopping_sites, work_role, notes) to their editable About You profile. Always asks approval; never store secrets.",
+             _params({k: STR for k in ("name", "city", "home_airport", "currency", "dietary",
+                                       "travel_prefs", "shopping_sites", "work_role", "notes")}),
+             update_profile),
     ]
 
 
@@ -706,17 +776,19 @@ def schedule_tools(svc) -> list[Tool]:
             # A run of a routine never makes another routine: it would only repeat the one it is a run of.
             return "Error: this is a run of a routine that is already set up. Do its task now and answer."
         spec = canonical(args["spec"])          # an unclear spec is said before anyone is asked about it
-        summary = f"Set up the routine '{args['name']}' ({spec}) to run:\n{args['prompt']}"
+        on_change = bool(args.get("on_change"))
+        mode_note = " (only notify when it changes)" if on_change else ""
+        summary = f"Set up the routine '{args['name']}' ({spec}{mode_note}) to run:\n{args['prompt']}"
         tainted = steered(ctx)
         if not await svc.policy.check(Action("schedule.create", spec, summary, {**args, "spec": spec},
                                              tainted=tainted), origin=ctx.origin):
             return "Error: the owner did not approve this routine."
-        created = svc.scheduler.add(args["name"], spec, args["prompt"], ctx.channel, ctx.chat_id)
+        created = svc.scheduler.add(args["name"], spec, args["prompt"], ctx.channel, ctx.chat_id, on_change=on_change)
         if tainted:
             mark(created["id"], True)
         ctx.emit({"type": "routine", "action": "created", "id": created["id"], "name": created["name"],
-                  "spec": created["spec"]})
-        return (f"Created routine {created['id']} '{created['name']}' ({created['spec']}); first run "
+                  "spec": created["spec"], "on_change": on_change})
+        return (f"Created routine {created['id']} '{created['name']}' ({created['spec']}{mode_note}); first run "
                 f"{when(created['next_run'])}. Each run posts its results here.")
 
     async def update(args, ctx):
@@ -765,10 +837,11 @@ def schedule_tools(svc) -> list[Tool]:
     return [
         Tool("schedule_create", "Set up a routine: a task run later or repeatedly, each run's results posted in this "
              "conversation. spec: 'every 2h', 'daily 08:00', 'daily 09:00,14:00,20:00', 'weekdays 09:30', "
-             "'weekly mon 09:00', 'at 2026-10-12 18:00', 'in 30m'. prompt: the whole task, as each run should do "
+             "'weekly mon 09:00', 'at 2026-10-12 18:00', 'in 30m'. Set on_change=true for price/fee watches so "
+             "the owner is only notified when the answer changes. prompt: the whole task, as each run should do "
              "it. When the owner asks for something recurring, create it first; if they would want a result now, "
              "then do the task now and answer with it.",
-             _params({"name": STR, "spec": STR, "prompt": STR}, ["name", "spec", "prompt"]), create),
+             _params({"name": STR, "spec": STR, "prompt": STR, "on_change": BOOL}, ["name", "spec", "prompt"]), create),
         Tool("schedule_update", "Change a routine's spec, prompt or name (\"do it 3 times a day\": spec "
              "'daily 09:00,14:00,20:00'). Leave id out for this conversation's routine.",
              _params({"id": INT, "spec": STR, "prompt": STR, "name": STR}), update),

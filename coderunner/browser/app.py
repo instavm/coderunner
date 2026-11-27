@@ -139,6 +139,21 @@ class AppBridge(ChromeBridge):
         answer = await self.ask({"type": "cookies", "cookies": cookies})
         return {"set": int(answer.get("set") or 0), "failed": int(answer.get("failed") or 0)}
 
+    async def cookie_domains(self) -> list[dict]:
+        """Domain names and cookie counts currently stored in the app's Mac browser (never cookie values)."""
+        if not self.connected():
+            return []
+        try:
+            answer = await self.ask({"type": "cookie_domains"}, timeout=5.0)
+            return list(answer.get("domains") or [])
+        except CDPError:
+            return []
+
+    async def clear_site_cookies(self, domain: str) -> dict:
+        """Sign out of one site inside the app's Mac browser without touching other sites."""
+        answer = await self.ask({"type": "clear_site_cookies", "domain": domain}, timeout=10.0)
+        return {"domain": str(answer.get("domain") or domain), "removed": int(answer.get("removed") or 0)}
+
 
 class AppLauncher(ExtensionLauncher):
     """The broker's launcher for the app's browser: waits briefly for the app instead of starting a browser, and

@@ -7,7 +7,10 @@
 // views live here in the main process, where webContents.debugger is, and the page never reaches into a site.
 // The page only draws the tabs, the address field and the buttons, and says where the view goes.
 //
-// Nothing about the browser is disguised: Electron's own user agent, the Mac's real platform, GPU and fonts.
+// The Mac's real platform, GPU, fonts and timezone are left as-is; only Electron's custom app/runtime tokens
+// ("CodeRunner/..." and "Electron/...") are stripped from this session's User-Agent and Sec-CH-UA Client Hints are
+// aligned to standard desktop Chrome matching the real underlying Chromium version so Google Sign-In and bot checks
+// do not reject the embedded browser.
 //
 // The assistant drives it as it drives the owner's Chrome through the extension (extension/background.js): the
 // daemon's broker speaks the DevTools protocol over a unix socket in the owner's assistant folder (0600), the app
@@ -37,6 +40,59 @@ const SEARCH = "https://duckduckgo.com/?q=";
 // Mac's through on the strength of its cookies (Cloudflare's cf_clearance, DataDome's datadome), and the sign-ins
 // the owner chose to bring over are cookies too: cleared at every quit, each would be asked for again.
 const KEEP_DEFAULT = "always";
+const GREASE_BRANDS = [
+  ["Not(A:Brand", "99"],
+  ["Not/A)Brand", "8"],
+  ["Not;A=Brand", "24"],
+];
+
+// Strip Electron's app/runtime tokens ("CodeRunner/x.y.z", "Electron/x.y.z") and normalize Chrome/<major>.0.0.0
+// with matching Sec-CH-UA Client Hints derived from the actual running Chromium version.
+function desktopChromeIdentity(rawUA, chromeVersion = (process.versions && process.versions.chrome) || "") {
+  const fromUA = /Chrome\/(\d+)(?:\.(\d+\.\d+\.\d+))?/.exec(String(rawUA || ""));
+  const full = /^\d+\.\d+\.\d+\.\d+$/.test(chromeVersion)
+    ? chromeVersion
+    : (fromUA ? (fromUA[2] ? `${fromUA[1]}.${fromUA[2]}` : `${fromUA[1]}.0.0.0`) : "136.0.0.0");
+  const major = full.split(".")[0];
+  let ua = String(rawUA || "")
+    .replace(/\s+CodeRunner\/[^\s]+/gi, "")
+    .replace(/\s+Electron\/[^\s]+/gi, "")
+    .replace(/Chrome\/\d+\.\d+\.\d+\.\d+/g, `Chrome/${major}.0.0.0`)
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!ua || !/Chrome\/\d+/.test(ua)) {
+    ua = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+  }
+  const [greaseName, greaseVer] = GREASE_BRANDS[(parseInt(major, 10) || 0) % GREASE_BRANDS.length];
+  const secChUa = `"Chromium";v="${major}", "Google Chrome";v="${major}", "${greaseName}";v="${greaseVer}"`;
+  const secChUaFull = `"Chromium";v="${full}", "Google Chrome";v="${full}", "${greaseName}";v="${greaseVer}.0.0.0"`;
+  const cdpParams = {
+    userAgent: ua,
+    acceptLanguage: "en-US,en",
+    platform: "MacIntel",
+    userAgentMetadata: {
+      brands: [
+        {brand: "Chromium", version: major},
+        {brand: "Google Chrome", version: major},
+        {brand: greaseName, version: greaseVer},
+      ],
+      fullVersionList: [
+        {brand: "Chromium", version: full},
+        {brand: "Google Chrome", version: full},
+        {brand: greaseName, version: `${greaseVer}.0.0.0`},
+      ],
+      fullVersion: full,
+      platform: "macOS",
+      platformVersion: "15.4.0",
+      architecture: "arm",
+      model: "",
+      mobile: false,
+      bitness: "64",
+      wow64: false,
+    },
+  };
+  return {userAgent: ua, full, major, secChUa, secChUaFull, cdpParams};
+}
 
 class AppBrowser {
   // assistantDir: the daemon's assistant folder (its token and socket address are there); daemonOrigin: the
@@ -105,6 +161,32 @@ class AppBrowser {
 
   guardSession() {
     const ses = this.session;
+    // Strip "CodeRunner/..." and "Electron/..." from this browser session's User-Agent and align Sec-CH-UA Client
+    // Hints with the real underlying Chromium version so Google Sign-In and WAFs see standard desktop Chrome.
+    // Note: Electron's setUserAgent(ua, acceptLanguages) takes bare language codes ("en-US,en") and adds ;q= itself.
+    const identity = desktopChromeIdentity(typeof ses.getUserAgent === "function" ? ses.getUserAgent() : "");
+    this.chromeIdentity = identity;
+    if (typeof ses.setUserAgent === "function") ses.setUserAgent(identity.userAgent, "en-US,en");
+    if (ses.webRequest && typeof ses.webRequest.onBeforeSendHeaders === "function") {
+      ses.webRequest.onBeforeSendHeaders({urls: ["http://*/*", "https://*/*"]}, (details, callback) => {
+        const headers = {...details.requestHeaders};
+        const isHttps = String(details.url || "").startsWith("https://");
+        let hasChUa = false, hasChMob = false, hasChPlat = false;
+        for (const key of Object.keys(headers)) {
+          const low = key.toLowerCase();
+          if (low === "sec-ch-ua") { headers[key] = identity.secChUa; hasChUa = true; }
+          else if (low === "sec-ch-ua-mobile") { headers[key] = "?0"; hasChMob = true; }
+          else if (low === "sec-ch-ua-platform") { headers[key] = '"macOS"'; hasChPlat = true; }
+          else if (low === "sec-ch-ua-full-version-list") headers[key] = identity.secChUaFull;
+        }
+        if (isHttps) {
+          if (!hasChUa) headers["Sec-CH-UA"] = identity.secChUa;
+          if (!hasChMob) headers["Sec-CH-UA-Mobile"] = "?0";
+          if (!hasChPlat) headers["Sec-CH-UA-Platform"] = '"macOS"';
+        }
+        callback({requestHeaders: headers});
+      });
+    }
     // Fullscreen video and copy buttons; every other permission (camera, location, notifications...) is refused,
     // as the broker refuses them in the assistant's other browsers.
     const fine = new Set(["fullscreen", "clipboard-sanitized-write"]);
@@ -199,8 +281,11 @@ class AppBrowser {
     this.layout();
     this.announce(tab);
     // Even a blank tab gets its page loaded: until a view has loaded something it has no page process, and the
-    // protocol's page commands (Page.enable) wait for one.
+    // protocol's page commands (Page.enable, Emulation.setUserAgentOverride) wait for one.
     contents.loadURL(url || "about:blank").catch(() => {});
+    if (this.chromeIdentity) {
+      contents.debugger.sendCommand("Emulation.setUserAgentOverride", this.chromeIdentity.cdpParams).catch(() => {});
+    }
     this.changed();
     return tab;
   }
@@ -256,6 +341,9 @@ class AppBrowser {
       try {
         view.webContents.debugger.attach("1.3");
         tab.targetId = (await view.webContents.debugger.sendCommand("Target.getTargetInfo")).targetInfo.targetId;
+        if (this.chromeIdentity) {
+          view.webContents.debugger.sendCommand("Emulation.setUserAgentOverride", this.chromeIdentity.cdpParams).catch(() => {});
+        }
         this.announce(tab);
       } catch { /* closed already */ }
     })();
@@ -401,6 +489,12 @@ class AppBrowser {
   stop() {
     this.stopped = true;
     clearTimeout(this.retryTimer);
+    clearTimeout(this.stateTimer);
+    for (const id of [...this.tabs.keys()]) this.closeTab(id);
+    if (this.holder && !this.holder.isDestroyed()) {
+      try { this.holder.destroy(); } catch { /* gone */ }
+    }
+    this.holder = null;
     if (this.socket) this.socket.destroy();
   }
 
@@ -435,6 +529,8 @@ class AppBrowser {
     if (message.type === "welcome") this.setConnected(true);
     else if (message.type === "busy") this.socket?.destroy();         // another copy of the app has it
     else if (message.type === "cookies") this.setCookies(message);
+    else if (message.type === "cookie_domains") this.listCookieDomains(message);
+    else if (message.type === "clear_site_cookies") this.clearSiteCookies(message);
     else if (message.id !== undefined && message.method) this.run(message);
   }
 
@@ -454,6 +550,40 @@ class AppBrowser {
       try { await this.session.cookies.set(cookie); set += 1; } catch { failed += 1; }
     }
     this.send({type: "cookies-set", ref, set, failed});
+  }
+
+  // Return only domain names and cookie counts (never cookie names or values) for the Settings session vault.
+  async listCookieDomains({ref}) {
+    const counts = new Map();
+    try {
+      const all = await this.session.cookies.get({});
+      for (const c of all || []) {
+        const d = String(c.domain || "").replace(/^\./, "").replace(/^www\./, "").toLowerCase();
+        if (!d) continue;
+        counts.set(d, (counts.get(d) || 0) + 1);
+      }
+    } catch { /* empty */ }
+    const domains = [...counts.entries()].map(([domain, count]) => ({domain, count})).sort((a, b) => b.count - a.count);
+    this.send({type: "cookie-domains", ref, domains});
+  }
+
+  // Sign out of a single site in CodeRunner's built-in Mac browser (leaves all other sites untouched).
+  async clearSiteCookies({ref, domain}) {
+    const target = String(domain || "").replace(/^\./, "").replace(/^www\./, "").toLowerCase();
+    let removed = 0;
+    if (target) {
+      try {
+        const all = await this.session.cookies.get({});
+        for (const c of all || []) {
+          const d = String(c.domain || "").replace(/^\./, "").replace(/^www\./, "").toLowerCase();
+          if (d === target || d.endsWith("." + target)) {
+            const url = `${c.secure ? "https" : "http"}://${String(c.domain || "").replace(/^\./, "")}${c.path || "/"}`;
+            try { await this.session.cookies.remove(url, c.name); removed += 1; } catch { /* skip */ }
+          }
+        }
+      } catch { /* empty */ }
+    }
+    this.send({type: "site-cookies-cleared", ref, domain: target, removed});
   }
 
   // ---- the protocol ----------------------------------------------------------------------------------------
@@ -501,7 +631,12 @@ class AppBrowser {
       try {
         try { if (contents.debugger.isAttached()) contents.debugger.detach(); } catch { /* not attached */ }
         if (!contents.isDestroyed() && !tab.closing && this.tabs.has(tab.id)) {
-          try { contents.debugger.attach("1.3"); } catch { /* gone */ }
+          try {
+            contents.debugger.attach("1.3");
+            if (this.chromeIdentity) {
+              contents.debugger.sendCommand("Emulation.setUserAgentOverride", this.chromeIdentity.cdpParams).catch(() => {});
+            }
+          } catch { /* gone */ }
         }
       } finally {
         tab.releasing = false;
@@ -624,4 +759,4 @@ function addressOf(text) {
   return SEARCH + encodeURIComponent(typed);
 }
 
-module.exports = {AppBrowser, PARTITION, KEEP_DEFAULT, addressOf};
+module.exports = {AppBrowser, PARTITION, KEEP_DEFAULT, addressOf, desktopChromeIdentity};

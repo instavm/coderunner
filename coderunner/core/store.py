@@ -90,6 +90,9 @@ SCHEMA = [
 # Columns added after a table was first created; they fail harmlessly once present.
 MIGRATIONS = [
     "ALTER TABLE memories ADD COLUMN source TEXT DEFAULT ''",
+    "ALTER TABLE schedules ADD COLUMN on_change INTEGER DEFAULT 0",
+    "ALTER TABLE schedules ADD COLUMN last_digest TEXT DEFAULT ''",
+    "ALTER TABLE schedules ADD COLUMN last_reply TEXT DEFAULT ''",
     "ALTER TABLE file_chunks ADD COLUMN code BLOB",
     "ALTER TABLE file_chunks ADD COLUMN modality TEXT DEFAULT ''",
     "ALTER TABLE file_chunks ADD COLUMN loc REAL",

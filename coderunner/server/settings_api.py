@@ -567,6 +567,49 @@ def settings_routes(svc, daemon) -> list[Route]:
         ok = daemon.tasks.rename_conversation(name, str(body.get("title") or ""))
         return JSONResponse({"ok": ok}, status_code=200 if ok else 400)
 
+    async def profile_api(request: Request):
+        from ..agent import profile as owner_profile
+        if request.method == "PATCH":
+            body = await request.json()
+            try:
+                saved = owner_profile.save(svc.store, body if isinstance(body, dict) else {}, merge=True)
+            except ValueError as exc:
+                return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+            svc.audit.write("profile.updated", fields=sorted(saved))
+            return JSONResponse({"ok": True, "profile": saved})
+        return JSONResponse({
+            "profile": owner_profile.load(svc.store),
+            "fields": [{"key": k, "label": lbl, "desc": desc} for k, lbl, desc in owner_profile.FIELDS],
+        })
+
+    async def quick_action_api(request: Request):
+        """One-click native Mac actions triggered directly by the owner under an assistant answer."""
+        from ..connectors import macos as mac_conn
+        body = await request.json()
+        kind = str(body.get("kind") or "")
+        title = str(body.get("title") or "CodeRunner note").strip()[:160]
+        text = str(body.get("body") or "").strip()
+        if not text:
+            return JSONResponse({"ok": False, "error": "Nothing to save"}, status_code=400)
+        try:
+            if kind == "note":
+                res = await mac_conn.notes_create(title, text)
+                svc.audit.write("quick_action.note", title=title[:80])
+                return JSONResponse({"ok": True, "detail": res})
+            if kind == "mail_draft":
+                to = str(body.get("to") or "").strip()
+                res = await mac_conn.mail_draft(to, title, text)
+                svc.audit.write("quick_action.mail_draft", subject=title[:80])
+                return JSONResponse({"ok": True, "detail": res})
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)[:240]}, status_code=400)
+        return JSONResponse({"ok": False, "error": f"Unknown quick action {kind!r}"}, status_code=400)
+
+    async def ane_distiller_api(request: Request):
+        from ..models import ane_llm
+        info = await asyncio.to_thread(ane_llm.probe_foundation)
+        return JSONResponse({"foundation": info, "candidates": list(ane_llm.ANE_DISTILLER_CANDIDATES)})
+
     return [
         Route("/api/settings", settings_view, methods=["GET", "PATCH"]),
         Route("/api/restart", restart_daemon, methods=["POST"]),
@@ -582,4 +625,7 @@ def settings_routes(svc, daemon) -> list[Route]:
         Route("/api/memories", memories_api, methods=["GET"]),
         Route("/api/memories/{id:int}", delete_memory, methods=["DELETE"]),
         Route("/api/tasks/{id}/wrap", wrap_task, methods=["POST"]),
+        Route("/api/profile", profile_api, methods=["GET", "PATCH"]),
+        Route("/api/actions/quick", quick_action_api, methods=["POST"]),
+        Route("/api/ane/distiller", ane_distiller_api, methods=["GET"]),
     ]
