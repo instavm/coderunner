@@ -853,15 +853,23 @@ class BrowserBroker:
         with contextlib.suppress(RuntimeError):
             asyncio.get_running_loop().create_task(close())
 
+    def _prefer_app_over_fallback(self) -> bool:
+        """If mode='mac' fell back to Chrome while the CodeRunner app was closed, switch back once the app reconnects."""
+        launcher = self._launched_by
+        return (self.mode == "mac" and self.running() and not self._busy
+                and callable(getattr(launcher, "using_fallback", None)) and launcher.using_fallback()
+                and callable(getattr(launcher, "app_open", None)) and launcher.app_open())
+
     async def _ensure(self) -> CDPPipe:
-        if self.running():
+        if self.running() and not self._prefer_app_over_fallback():
             return self._cdp
         async with self._start_lock:
-            if self.running():
+            if self.running() and not self._prefer_app_over_fallback():
                 return self._cdp
-            if self._process is not None:          # closed by the owner, crashed or lost the pipe
+            if self._process is not None:          # closed by the owner, crashed, lost the pipe, or app reconnected
+                upgraded = self._prefer_app_over_fallback()
                 await self._shutdown()
-                self.audit.write("browser.restart")
+                self.audit.write("browser.switched_to_app" if upgraded else "browser.restart")
             launcher = self._launcher()
             executable = launcher.find_browser(self.config)
             if not executable:
@@ -1792,8 +1800,38 @@ class BrowserBroker:
         result["content"] = "\n".join(parts) or f"Nothing on this page mentions {text!r}."
         return result
 
-    async def _select(self, ref: int, option: str, tab: str | None, tainted: bool) -> dict:
+    async def _target_for_ref(self, tab: str | None, ref: Any) -> str:
+        """Resolve the tab for an element ref: when `tab` is unset and `ref` belongs uniquely to another open
+        tab explicitly owned by this same task (common after parallel browser_open calls), switch to that tab.
+        Never claims unowned tabs or tabs released by completed tasks."""
         target = await self._target(tab)
+        if tab is not None or ref is None:
+            return target
+        try:
+            ref_int = int(ref)
+        except (TypeError, ValueError):
+            return target
+        if ref_int in self._refs.get(target, {}) or self._rebound(target, ref_int) is not None:
+            return target
+        owner = self._scope()
+        if not owner:
+            return target
+        pages = self._visible(await self._pages())
+        matches = [info["targetId"] for info in pages
+                   if info["targetId"] != target
+                   and self._tab_owner.get(info["targetId"]) == owner
+                   and ref_int in self._refs.get(info["targetId"], {})]
+        if len(matches) == 1:
+            other = matches[0]
+            self._active = other
+            with contextlib.suppress(Exception):
+                await self._cdp.send("Target.activateTarget", {"targetId": other})
+            self.audit.write("browser.tab_switched", ref=ref_int, tab=self._tab_id(other))
+            return other
+        return target
+
+    async def _select(self, ref: int, option: str, tab: str | None, tainted: bool) -> dict:
+        target = await self._target_for_ref(tab, ref)
         url, host = await self._web_page(target)
         element = self._ref(target, ref)
         self._near[target] = element["backend"]
@@ -1850,7 +1888,9 @@ class BrowserBroker:
                     and str(n) != str(ref)]
             if len(like) == 1:
                 raise BrowserError(f"Unknown element [{ref}] in this tab; did you mean [{like[0]}]?") from None
-            raise BrowserError(f"Unknown element [{ref}] in this tab; take a new snapshot") from None
+            here = self._ref_urls.get(target) or self._read_urls.get(target) or ""
+            where = f" ({here[:72]})" if here else ""
+            raise BrowserError(f"Unknown element [{ref}] in this tab{where}; take a new snapshot") from None
 
     def _rebound(self, target: str, ref: Any) -> dict | None:
         """The element a retired number meant, where that is beyond doubt: still the same page, and exactly one
@@ -1873,7 +1913,7 @@ class BrowserBroker:
 
     async def _click(self, ref: int | None, tab: str | None, tainted: bool, element: dict | None = None,
                      clicks: int = 1) -> dict:
-        target = await self._target(tab)
+        target = await self._target(tab) if element is not None else await self._target_for_ref(tab, ref)
         url, host = await self._web_page(target)
         read = self._read_urls.get(target, "")      # the page as the model last saw it
         element = element or self._ref(target, ref)
@@ -2180,7 +2220,7 @@ class BrowserBroker:
     async def _type(self, ref: int, text: str, submit: bool, tab: str | None, tainted: bool, clear: bool,
                     keystrokes: bool = False) -> dict:
         text = str(text)
-        target = await self._target(tab)
+        target = await self._target_for_ref(tab, ref)
         url, host = await self._web_page(target)
         element = self._ref(target, ref)
         backend = self._near[target] = element["backend"]

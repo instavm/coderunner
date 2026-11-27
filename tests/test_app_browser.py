@@ -214,6 +214,40 @@ class BridgeTests(HomeCase):
         with self.assertRaises(Exception):
             await AppLauncher(self.bridge, wait=0.1).launch("coderunner-app", self.tmp)
 
+    async def test_mac_broker_switches_back_to_built_in_app_once_it_reconnects(self):
+        from test_browser import FakeLauncher
+        from coderunner.browser.broker import BrowserBroker
+        fallback = FakeLauncher()
+        app_launcher = FakeLauncher()
+
+        class SwitchableMacLauncher(MacLauncher):
+            def __init__(self, bridge):
+                super().__init__(bridge, fallback=fallback)
+                self._connected = False
+                self.app = app_launcher
+
+            def app_open(self) -> bool:
+                return self._connected
+
+        launcher = SwitchableMacLauncher(self.bridge)
+        cfg = Config({})
+        store = Store(self.tmp / "switchback.db")
+        audit = AuditLog(self.tmp / "switchback.jsonl")
+        broker = BrowserBroker(cfg, Policy(cfg, store, audit), audit, launcher=launcher, mode="mac")
+        # 1. App closed -> launches fallback Chrome.
+        await broker.start()
+        self.assertTrue(launcher.using_fallback())
+        self.assertEqual(len(fallback.browsers), 1)
+        self.assertEqual(len(app_launcher.browsers), 0)
+        # 2. App reconnects -> next _ensure() shuts down fallback Chrome and switches to built-in app browser.
+        launcher._connected = True
+        await broker.start()
+        self.assertFalse(launcher.using_fallback())
+        self.assertEqual(len(fallback.terminated), 1)
+        self.assertEqual(len(app_launcher.browsers), 1)
+        await broker.stop()
+        store.close()
+
 
 # ---- the switch -------------------------------------------------------------------------------------------
 
@@ -291,7 +325,7 @@ class SwitchTests(HomeCase):
     async def test_a_wall_asks_once_and_the_sites_steps_go_on_on_the_mac(self):
         moved = await self.switch.navigate("https://shop.example/item")
         self.assertEqual([a.summary for a in self.asked],
-                         ["shop.example blocks the sandbox browser. Continue in the browser on your Mac?"])
+                         ["shop.example blocks the sandbox browser. Continue in CodeRunner's built-in browser on your Mac?"])
         self.assertEqual((self.asked[0].kind, self.asked[0].target), ("browser.mac", "shop.example"))
         self.assertEqual(moved["content"], "mac page")
         self.assertIn(("open", "https://shop.example/item"), self.mac.calls)     # a tab of its own, never the owner's
@@ -549,6 +583,13 @@ class BrowserTabTests(unittest.TestCase):
         self.assertIn('const PARTITION = "persist:coderunner-browser";', shell)
         self.assertIn("banned.push(`${this.daemonOrigin}/*`", shell)
         self.assertNotRegex(shell, r"setUserAgent|userAgent\s*=|webdriver|WEBGL|toDataURL\s*=")   # nothing disguised
+
+    def test_closing_a_tab_detaches_without_reattach_spin_loop(self):
+        shell = (self.ROOT / "app" / "browser.js").read_text()
+        self.assertIn("tab.closing = true;", shell)
+        self.assertIn("contents.debugger.removeAllListeners()", shell)
+        self.assertIn('reason === "target closed"', shell)
+        self.assertIn("tab.reattachTimer = setTimeout(", shell)
 
 
 class PromptTests(unittest.TestCase):

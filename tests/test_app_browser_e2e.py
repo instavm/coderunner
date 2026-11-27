@@ -209,7 +209,7 @@ class AppBrowserEndToEnd(unittest.IsolatedAsyncioTestCase):
             moved = await switch.navigate(self.base + "/")
         finally:
             current_run.reset(token)
-        self.assertEqual(asked, ["127.0.0.1 blocks the sandbox browser. Continue in the browser on your Mac?"])
+        self.assertEqual(asked, ["127.0.0.1 blocks the sandbox browser. Continue in CodeRunner's built-in browser on your Mac?"])
         self.assertTrue(moved["ok"], moved)
         self.assertEqual(moved["title"], "Corner shop")
         self.assertIn("browser on their Mac", moved["note"])

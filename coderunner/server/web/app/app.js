@@ -113,28 +113,57 @@ function args(raw) {
   try { return JSON.parse(raw || "{}"); } catch { return {}; }
 }
 
+function codeSummaryLine(code) {
+  const lines = String(code || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  // Skip boilerplate imports/shebangs so Python/shell rows show what the script actually does.
+  const comment = lines.find((l) => l.startsWith("#") && !l.startsWith("#!") && l.length > 3);
+  if (comment) return trunc(comment.replace(/^#+\s*/, ""), 68);
+  const url = /https?:\/\/([^\s"'`]+)/.exec(String(code || ""));
+  if (url) return `Fetching ${trunc(url[1].replace(/^www\./, ""), 52)}`;
+  const body = lines.find((l) => !/^(?:import\s|from\s+\S+\s+import\b|set\s+-|export\s+|cd\s+)/.test(l));
+  return trunc(body || lines[0] || "", 68);
+}
+
+function toolSurface(name) {
+  if (name === "run_python" || name === "run_shell" || name === "shell_job") return "terminal";
+  if (String(name || "").startsWith("browser_")) return "screen";
+  if (name === "files_search" || String(name || "").startsWith("file_")) return "files";
+  if (String(name || "").startsWith("memory_")) return "memory";
+  return "";
+}
+
+function toolBadge(name) {
+  if (name === "run_python") return {label: "Python", cls: "terminal"};
+  if (name === "run_shell" || name === "shell_job") return {label: "Terminal", cls: "terminal"};
+  if (String(name || "").startsWith("browser_")) return {label: "Browser", cls: ""};
+  if (name === "files_search" || String(name || "").startsWith("file_")) return {label: "Files", cls: ""};
+  if (String(name || "").startsWith("memory_")) return {label: "Memory", cls: ""};
+  return null;
+}
+
 function describeTool(name, raw) {
   const a = args(raw);
+  const said = typeof a.say === "string" && a.say.trim() ? trunc(a.say.trim(), 72) : "";
   switch (name) {
     case "browser_open": case "browser_navigate": return `Opening ${host(a.url)}`;
     case "browser_search": return `Searching the web for “${String(a.query || "").slice(0, 60)}”`;
-    case "browser_snapshot": return "Reading the page";
-    case "browser_list": return "Reading the results on the page";
-    case "browser_click": return "Working on the page";
-    case "browser_type": return a.text ? `Typing “${trunc(a.text, 40)}”` : "Typing";
-    case "browser_batch": return "Filling in the page";
+    case "browser_snapshot": return said || "Reading the page";
+    case "browser_list": return said || "Reading the results on the page";
+    case "browser_click": return said || "Working on the page";
+    case "browser_type": return a.text ? `Typing “${trunc(a.text, 40)}”` : (said || "Typing");
+    case "browser_batch": return said || "Filling in the page";
     case "browser_find": return `Looking for “${trunc(a.text || a.query, 40)}” on the page`;
     case "browser_select": return `Choosing “${trunc(a.option, 40)}”`;
-    case "browser_press": return "Working on the page";
-    case "browser_scroll": return "Reading further down the page";
+    case "browser_press": return said || "Working on the page";
+    case "browser_scroll": return said || "Reading further down the page";
     case "browser_back": return "Going back";
     case "browser_tabs": return "Looking at the open pages";
     case "browser_screenshot": return "Looking at the screen";
     case "browser_handoff": return "Asking you to take over";
     case "browser_task": return `Working in the browser: ${trunc(a.goal || a.task || "", 90)}`;
-    case "run_shell": return "Working on the computer";
-    case "shell_job": return "Waiting for a job on the computer";
-    case "run_python": return "Working something out";
+    case "run_shell": return said || (a.command ? `Running in terminal` : "Working in terminal");
+    case "shell_job": return said || "Checking terminal job";
+    case "run_python": return said || (a.code ? codeSummaryLine(a.code) : "Running Python");
     case "files_search": return `Searching your files for “${trunc(a.query, 50)}”`;
     case "file_read": return `Reading ${base(a.path)}`;
     case "file_view": return `Looking at ${base(a.path)}`;
@@ -148,7 +177,7 @@ function describeTool(name, raw) {
     case "schedule_delete": return "Removing the routine";
     case "schedule_list": return "Looking at your routines";
     case "send_message": return "Sending a message";
-    default: return "Working";
+    default: return said || "Working";
   }
 }
 
@@ -186,6 +215,10 @@ const state = {
   remoteOn: false,              // remote mode: every task is on Claude already, so none is offered there again
   lastSeq: 0,
   developer: false,             // developer mode (the desktop app's Help menu): the thread's "Export trace"
+  deckTab: "activity",          // activity | pages | files (below the top-pinned VNC screen)
+  deckPlanOpen: false,
+  activeSurface: "",            // screen | terminal | browser | thinking (where the active tool is executing)
+  status: null,                 // latest /api/status snapshot for the idle companion deck
 };
 
 // ---- a task in the thread ----------------------------------------------------
@@ -214,6 +247,10 @@ class TaskView {
     this.status = task.status || "running";
     this.seq = 0;
     this.steps = 0;
+    this.feed = [];               // step-by-step entries for the Workspace Companion Deck
+    this.toolById = new Map();
+    this.pages = new Map();       // normalized url -> {url, host, path, title, status, visits}
+    this.planSteps = [];
     this.root = el("article", "task");
     this.prompt = task.prompt || "";
     this.bubble = el("div", "bubble-user", task.prompt);
@@ -254,13 +291,45 @@ class TaskView {
 
   showPlan(steps) {
     if (!Array.isArray(steps) || !steps.length) return;
+    this.planSteps = steps.map((item) => ({
+      step: item.step || item.content || "",
+      status: item.status === "done" ? "done" : ["doing", "in_progress", "active"].includes(item.status) ? "doing" : "todo",
+    }));
     if (!this.plan) this.plan = this.say(el("div", "plan"));
     this.plan.replaceChildren();
-    for (const item of steps) {
-      const state = item.status === "done" ? "done" : ["doing", "in_progress", "active"].includes(item.status) ? "doing" : "todo";
-      const row = el("div", "plan-step " + state);
-      row.append(el("span", "plan-mark", state === "done" ? "✓" : state === "doing" ? "•" : ""), el("span", "", item.step || item.content || ""));
+    for (const item of this.planSteps) {
+      const row = el("div", "plan-step " + item.status);
+      row.append(el("span", "plan-mark", item.status === "done" ? "✓" : item.status === "doing" ? "•" : ""), el("span", "", item.step));
       this.plan.appendChild(row);
+    }
+    scheduleDeck();
+  }
+
+  recordPage(rawUrl, title = "", status = "ok", fromPreview = false, countVisit = false) {
+    if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) return;
+    let parsed;
+    try { parsed = new URL(rawUrl); } catch { return; }
+    const h = parsed.hostname.replace(/^www\./, "");
+    if (/^(?:www\.)?(?:bing\.com|duckduckgo\.com|html\.duckduckgo\.com|google\.com)$/i.test(h) && /\/search|\/html/i.test(parsed.pathname)) return;
+    const key = `${parsed.origin}${parsed.pathname.replace(/\/$/, "")}${parsed.search}`.slice(0, 260);
+    // Avoid recording a mid-word truncated URL from a 300-char tool preview if the full URL is already known.
+    if (fromPreview) {
+      for (const [existingKey, existing] of this.pages) {
+        if (existingKey.startsWith(key) && existingKey.length > key.length) {
+          if (title && !existing.title) existing.title = title;
+          if (status !== "ok") existing.status = status;
+          return;
+        }
+      }
+    }
+    const prev = this.pages.get(key);
+    if (prev) {
+      if (countVisit) prev.visits += 1;
+      if (title && !prev.title) prev.title = title;
+      if (status !== "ok") prev.status = status;
+    } else {
+      const pathPart = (parsed.pathname === "/" ? "" : parsed.pathname) + (parsed.search ? parsed.search.slice(0, 40) : "");
+      this.pages.set(key, {url: rawUrl, host: h, path: pathPart || "/", title: title || "", status, visits: 1});
     }
   }
 
@@ -276,28 +345,32 @@ class TaskView {
   showAttached(files) {
     if (!Array.isArray(files) || !files.length || this.attached) return;
     this.attached = el("div", "attached");
-    this.threadFiles = [...(this.threadFiles || []), ...files.map((f) => ({name: f.name, url: `/api/uploads/${encodeURIComponent(f.id)}`}))];
+    this.threadFiles = [...(this.threadFiles || []), ...files.map((f) => ({name: f.name, url: `/api/uploads/${encodeURIComponent(f.id)}`, role: "Attached", kind: f.kind || "file"}))];
     for (const file of files) this.attached.appendChild(attachedFile(file));
     this.root.insertBefore(this.attached, this.bubble);
     refreshThreadFiles();
+    scheduleDeck();
   }
 
   // What the task made (a chart, a sheet, a document its code wrote), under its answer.
   showProduced(files) {
     if (!Array.isArray(files) || !files.length || this.produced) return;
     this.produced = el("div", "produced");
-    this.threadFiles = [...(this.threadFiles || []), ...files.map((f) => ({name: f.name, url: `/api/outputs/${encodeURIComponent(f.name)}`}))];
+    this.threadFiles = [...(this.threadFiles || []), ...files.map((f) => ({name: f.name, url: `/api/outputs/${encodeURIComponent(f.name)}`, role: "Output", kind: f.kind || "file"}))];
     for (const file of files) this.produced.appendChild(attachedFile(file));
     this.flow.insertBefore(this.produced, this.flow.querySelector(".took-row, .took"));
     refreshThreadFiles();
+    scheduleDeck();
   }
 
   showCheckpoint(reason) {
+    // Non-blocking progress notice: the task keeps running in the background without pausing.
     if (this.checkpoint || this.status !== "running") return;
     const card = el("div", "checkpoint");
-    const msg = el("span", "", reason || "This is taking longer than usual.");
+    const lead = el("div", "checkpoint-lead");
+    lead.append(el("span", "now-dot"), el("span", "", reason || "Still working in the background."));
     const actions = el("div", "checkpoint-actions");
-    const wrapBtn = el("button", "btn primary", "Answer with what you have");
+    const wrapBtn = el("button", "btn", "Answer with what you have");
     wrapBtn.type = "button";
     wrapBtn.onclick = async () => {
       wrapBtn.disabled = true; wrapBtn.textContent = "Wrapping up…";
@@ -306,11 +379,12 @@ class TaskView {
     const ctrlBtn = el("button", "btn", "Take control");
     ctrlBtn.type = "button";
     ctrlBtn.onclick = () => { showComputer(true); setView("screen", false); setControl(true); };
-    const keepBtn = el("button", "linkish small", "Keep going");
+    const keepBtn = el("button", "linkish small", "Dismiss");
     keepBtn.type = "button";
+    keepBtn.title = "Hide this notice — the task keeps running in the background";
     keepBtn.onclick = () => { card.remove(); this.checkpointDismissed = true; };
     actions.append(wrapBtn, ctrlBtn, keepBtn);
-    card.append(msg, actions);
+    card.append(lead, actions);
     this.checkpoint = this.say(card);
   }
 
@@ -329,6 +403,7 @@ class TaskView {
       case "note": this.setNow(trunc(String(e.text || "").split(/(?<=[.!?])\s/)[0], 90)); break;
       case "shot":
         if (e.name) this.lastShot = {name: e.name, url: e.url || ""};
+        if (e.url) { this.recordPage(e.url); scheduleDeck(); }
         break;
       case "slowdown":
         this.showCheckpoint(e.swap_used_gb >= 1.5
@@ -342,16 +417,73 @@ class TaskView {
         break;
       case "plan": this.showPlan(e.steps); break;
       case "routine": this.say(routineLine(e)); break;
-      case "tool":
+      case "tool": {
         if (e.name === "plan_update" || e.name === "tell_owner" || e.name === "show_items") break;
         this.steps += 1;
-        this.setNow(describeTool(e.name, e.arguments));
+        const label = describeTool(e.name, e.arguments);
+        const surf = toolSurface(e.name);
+        if (this.status === "running") state.activeSurface = surf || "thinking";
+        this.setNow(label);
+        const a = args(e.arguments);
+        if (a.url && (e.name === "browser_open" || e.name === "browser_navigate")) this.recordPage(a.url, "", "ok", false, true);
+        const entry = {
+          id: e.id || `step-${this.steps}`,
+          name: e.name,
+          title: label,
+          sub: toolDetail(e.name, a, label),
+          badge: toolBadge(e.name),
+          preview: "",
+          state: "running",
+          ts: e.ts || Date.now() / 1000,
+          duration: null,
+          step: this.steps,
+        };
+        this.feed.push(entry);
+        if (e.id) this.toolById.set(e.id, entry);
+        scheduleDeck();
         break;
-      case "tool_done": break;
+      }
+      case "tool_done": {
+        const entry = (e.id && this.toolById.get(e.id)) || [...this.feed].reverse().find((x) => x.state === "running" && x.name === e.name);
+        if (this.status === "running") { state.activeSurface = "thinking"; refreshNow(); }
+        const rawPreview = plain(e.preview || "");
+        const urlMatch = /^url:\s*(\S+)/m.exec(rawPreview);
+        const titleMatch = /^title:\s*(.+)$/m.exec(rawPreview);
+        if (urlMatch) {
+          const dead = /404|not found|fehler 404/i.test(rawPreview.slice(0, 220)) ? "404"
+            : /just a moment|access denied|bot check|captcha/i.test(rawPreview.slice(0, 220)) ? "blocked" : "ok";
+          this.recordPage(urlMatch[1], titleMatch ? titleMatch[1].trim() : "", dead, true);
+        }
+        if (entry) {
+          entry.state = e.ok === false ? "err" : "ok";
+          if (e.ts && entry.ts) entry.duration = Math.max(0.1, e.ts - entry.ts);
+          entry.preview = rawPreview.slice(0, 400);
+          if (e.ok === false && rawPreview) entry.sub = trunc(rawPreview.split("\n")[0], 90);
+          else if (titleMatch && !entry.sub) entry.sub = trunc(titleMatch[1].trim(), 90);
+        }
+        scheduleDeck();
+        break;
+      }
       case "activity":
-        if (e.event === "approval.requested") this.ask(e);
-        else if (e.event === "approval.decided") closeAsk(e.id, e.status === "approved" ? true : e.status === "denied" ? false : "late");
-        else if (e.ok !== false) this.setNow(describeActivity(e));
+        if (e.event === "approval.requested") {
+          this.ask(e);
+          this.feed.push({id: `appr-${e.id}`, name: "approval", title: "Requested your approval", sub: trunc(e.summary || e.kind || "", 90), state: "pivot", ts: e.ts || Date.now() / 1000, duration: null});
+          scheduleDeck();
+        } else if (e.event === "approval.decided") {
+          closeAsk(e.id, e.status === "approved" ? true : e.status === "denied" ? false : "late");
+          const item = this.feed.find((x) => x.id === `appr-${e.id}`);
+          if (item) item.state = e.status === "approved" ? "ok" : "err";
+          scheduleDeck();
+        } else if (e.event === "agent.pivot" || e.event === "agent.verify") {
+          this.feed.push({id: `piv-${this.feed.length}`, name: e.event, title: e.reason || "Adjusted strategy", sub: e.host || "", state: "pivot", ts: e.ts || Date.now() / 1000, duration: null});
+          scheduleDeck();
+        } else {
+          if ((e.event === "browser.open" || e.event === "browser.navigate") && (e.url || e.page)) {
+            this.recordPage(e.url || e.page, "", e.ok === false ? "blocked" : "ok");
+            scheduleDeck();
+          }
+          if (e.ok !== false) this.setNow(describeActivity(e));
+        }
         break;
       case "interim": this.showInterim(e.text, e.answer); break;
       case "done": case "failed": case "cancelled": this.finish(e); break;
@@ -568,15 +700,18 @@ class TaskView {
       this.flow.appendChild(recoveryCard(this.prompt, e));
     }
     state.running.delete(this.id);
+    for (const item of this.feed) if (item.state === "running") item.state = e.type === "done" ? "ok" : "err";
     refreshNow();
+    scheduleDeck();
   }
 
   tick() {
     if (!this.now) return;
     const elapsed = Date.now() / 1000 - this.started;
     this.now.time.textContent = (this.steps ? `Step ${this.steps} · ` : "") + clock(elapsed);
+    updateDeckClock(this, elapsed);
     if (elapsed >= 180 && !this.checkpoint && !this.checkpointDismissed) {
-      this.showCheckpoint(`Still working (${clock(elapsed)}${this.steps ? `, ${this.steps} steps` : ""}).`);
+      this.showCheckpoint(`Still working in the background (${clock(elapsed)}${this.steps ? ` · ${this.steps} steps` : ""}).`);
     }
   }
 }
@@ -694,6 +829,7 @@ async function loadConversations() {
   updateApprovalBar(list);
   refreshNow();
   drawConversations(list);
+  scheduleDeck();
 }
 $("convSearch")?.addEventListener("input", () => drawConversations(convCache));
 
@@ -783,7 +919,7 @@ async function openConversation(id, title, again) {
   refreshThreadFiles();
   $("thread").replaceChildren();
   $("title").textContent = id ? trunc(title || "Task", 90) : "New task";
-  if (!id) { state.loading = null; $("thread").appendChild(emptyState); refreshStarters(); updateScreenScope(null); loadConversations(); $("input").focus(); return; }
+  if (!id) { state.loading = null; $("thread").appendChild(emptyState); refreshStarters(); updateScreenScope(null); loadConversations(); setDeckTab("activity"); $("input").focus(); return; }
   // Live events for this thread that arrive while it is read are held, then applied after what was read:
   // drawn as they came, a task just started would be drawn twice.
   const loading = state.loading = {id, events: []};
@@ -799,6 +935,7 @@ async function openConversation(id, title, again) {
   refreshThreadFiles();
   updateScreenScope(await focusPromise);
   loadConversations();
+  scheduleDeck();
   scrollDown();
 }
 
@@ -950,11 +1087,19 @@ function listen() {
     const e = JSON.parse(message.data);
     state.lastSeq = Math.max(state.lastSeq, e.seq || 0);
     if (e.type === "started") state.running.set(e.task, {conversation: e.conversation, label: "", title: e.prompt || ""});
+    if (e.type === "tool" && e.name && !["plan_update", "tell_owner", "show_items"].includes(e.name)) {
+      const s = toolSurface(e.name);
+      if (s) state.activeSurface = s;
+    }
+    if (e.type === "tool_done" && state.running.size) state.activeSurface = "thinking";
     // Another thread's status line is kept, so the panel can say what that task is doing rather than only that it is.
     if ((e.type === "note" || e.type === "paused") && state.running.has(e.task))
       state.running.get(e.task).label = trunc(String(e.text || "").split(/(?<=[.!?])\s/)[0], 90);
     if (e.type === "resumed" && state.running.has(e.task)) state.running.get(e.task).label = "";
-    if (["done", "failed", "cancelled"].includes(e.type)) state.running.delete(e.task);
+    if (["done", "failed", "cancelled"].includes(e.type)) {
+      state.running.delete(e.task);
+      if (!state.running.size) state.activeSurface = "";
+    }
     if (e.conversation === state.conversation) {
       if (state.loading?.id === e.conversation) state.loading.events.push(e);
       else showEvent(e);
@@ -1330,8 +1475,9 @@ async function connectScreen() {
   const watchdog = setTimeout(() => { if (rfb === mine && !mine.connected) mine.disconnect(); }, 12000);
   rfb.addEventListener("connect", () => {
     clearTimeout(watchdog); mine.connected = true; clearTimeout(screenNoteTimer);
-    setNote(""); showSwitch(true); refreshNow();
+    setNote(""); showSwitch(true); refreshNow(); syncVncRatio(); scheduleDeck();
   });
+  rfb.addEventListener("desktopname", () => syncVncRatio());
   rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({password: info.password}));
   rfb.addEventListener("disconnect", () => {
     clearTimeout(watchdog);
@@ -1359,6 +1505,7 @@ function setControl(on) {
   $("screenWrap").classList.toggle("in-control", on);
   if (rfb) { rfb.viewOnly = !on; rfb.focusOnClick = on; if (on) rfb.focus(); }
   refreshNow();
+  scheduleDeck();
   tellControl(on);
 }
 // The daemon is told too: while the owner has the screen, the tasks' browser steps wait for them. If it does not
@@ -1597,8 +1744,26 @@ if (savedPanes().computer === false) showComputer(false);
 function setNow(text) { state.nowText = text; refreshNow(); }
 function refreshNow() {
   const busy = state.running.size > 0;
+  const macActive = (browserState.tabs || []).some((t) => t.assistant);
+  const surface = !busy ? "" : macActive && state.activeSurface === "screen" ? "browser" : (state.activeSurface || "thinking");
+  $("viewScreen")?.classList.toggle("working", busy && surface === "screen");
+  $("viewTerminal")?.classList.toggle("working", busy && surface === "terminal");
+  $("viewBrowser")?.classList.toggle("working", busy && surface === "browser");
+  const whereLabel = surface === "terminal" ? "In terminal"
+    : surface === "browser" ? "In Mac browser"
+    : surface === "screen" ? "In browser"
+    : "Thinking";
   // Without a screen the word is why (getting ready, unavailable, disk full), not "Connecting" every few seconds.
-  $("computerState").textContent = control ? "In control" : rfb ? (busy ? "Working" : "Idle") : screenWord || (busy ? "Working" : "Connecting");
+  $("computerState").textContent = control ? "In control" : rfb ? (busy ? whereLabel : "Idle") : screenWord || (busy ? whereLabel : "Connecting");
+  const statusWrap = $("computerState")?.parentElement;
+  if (statusWrap) {
+    const canJumpTerm = busy && surface === "terminal" && view !== "terminal";
+    const canJumpMac = busy && surface === "browser" && shellBrowser && view !== "browser";
+    statusWrap.classList.toggle("clickable", canJumpTerm || canJumpMac);
+    statusWrap.title = canJumpTerm ? "Running in the sandbox terminal — click to open Terminal"
+      : canJumpMac ? "Working in Mac browser — click to open" : "";
+    statusWrap.onclick = canJumpTerm ? () => setView("terminal") : canJumpMac ? () => setView("browser") : null;
+  }
   const cdot = $("computerDot");
   if (cdot) cdot.className = "status-dot" + (control ? " control" : busy ? " busy" : rfb ? " live" : "");
   // The line speaks for the open task while it runs; otherwise for the others (its last words went stale).
@@ -1647,6 +1812,8 @@ function offHost(url) {
 async function loadModels() {
   try {
     const status = await api("/api/status");
+    state.status = status;
+    scheduleDeck();
     $("mic").hidden = !(status.voice || []).length;      // dictation only where a voice engine is set up
     const models = status.models || {}, remote = status.remote;
     // On Claude every task is there already, so none is offered there again; on the owner's own server it is.
@@ -3028,6 +3195,317 @@ document.addEventListener("keydown", (e) => {
 });
 loadThinkingLabel();
 
+// ---- Workspace Companion Deck (fills the space cleanly below the top-pinned VNC screen) ----
+
+function toolDetail(name, a, title = "") {
+  if (!a || typeof a !== "object") return "";
+  let sub = "";
+  switch (name) {
+    case "browser_open": case "browser_navigate": sub = trunc(String(a.url || "").replace(/^https?:\/\/(www\.)?/, ""), 72); break;
+    case "browser_search": sub = trunc(String(a.query || ""), 72); break;
+    case "browser_batch": sub = Array.isArray(a.steps) ? `${a.steps.length} batched actions` : ""; break;
+    case "browser_find": sub = a.text ? `“${trunc(a.text, 50)}”` : ""; break;
+    case "browser_select": sub = a.option ? trunc(a.option, 50) : ""; break;
+    case "browser_type": sub = a.text ? `“${trunc(a.text, 44)}”` : ""; break;
+    case "run_python": sub = codeSummaryLine(a.code); break;
+    case "run_shell": sub = codeSummaryLine(a.command); break;
+    case "files_search": sub = trunc(String(a.query || ""), 60); break;
+    case "file_read": case "file_view": case "file_listen": sub = trunc(String(a.path || ""), 68); break;
+    case "browser_task": sub = trunc(String(a.goal || ""), 72); break;
+    default: sub = a.say ? trunc(String(a.say), 72) : ""; break;
+  }
+  return sub && sub !== title ? sub : "";
+}
+
+let vncRatioObserver = null;
+function syncVncRatio() {
+  const wrap = $("screenWrap"), scr = $("screen");
+  if (!wrap || !scr) return;
+  const apply = () => {
+    const cv = scr.querySelector("canvas");
+    if (cv && cv.width > 100 && cv.height > 100) {
+      wrap.style.setProperty("--vnc-ratio", `${cv.width} / ${cv.height}`);
+    }
+  };
+  apply();
+  if (!vncRatioObserver) {
+    vncRatioObserver = new MutationObserver(apply);
+    vncRatioObserver.observe(scr, {childList: true, subtree: true, attributes: true, attributeFilter: ["width", "height"]});
+  }
+}
+
+let deckScheduled = false;
+function scheduleDeck() {
+  if (deckScheduled) return;
+  deckScheduled = true;
+  requestAnimationFrame(() => { deckScheduled = false; renderDeck(); });
+}
+
+function activeDeckData() {
+  const views = [...state.views.values()];
+  const runningView = views.find((v) => v.status === "running") || null;
+  const latestView = views.length ? views[views.length - 1] : null;
+  const feed = [];
+  const pages = new Map();
+  const files = [];
+  let planSteps = [];
+  for (const v of views) {
+    for (const item of v.feed || []) feed.push(item);
+    for (const [k, p] of (v.pages || new Map())) {
+      const prev = pages.get(k);
+      if (prev) prev.visits += p.visits; else pages.set(k, {...p});
+    }
+    for (const f of v.threadFiles || []) files.push(f);
+    if (v.planSteps && v.planSteps.length) planSteps = v.planSteps;
+  }
+  return {views, runningView, latestView, feed, pages: [...pages.values()], files, planSteps};
+}
+
+function updateDeckClock(view, elapsed) {
+  const clk = $("deckLiveClock");
+  if (!clk || clk.dataset.task !== view.id) return;
+  clk.textContent = (view.steps ? `Step ${view.steps} · ` : "") + clock(elapsed);
+}
+
+function setDeckTab(tab) {
+  state.deckTab = ["activity", "pages", "files"].includes(tab) ? tab : "activity";
+  for (const [id, name] of [["deckTabActivity", "activity"], ["deckTabPages", "pages"], ["deckTabFiles", "files"]]) {
+    $(id)?.classList.toggle("on", state.deckTab === name);
+    $(id)?.setAttribute("aria-selected", String(state.deckTab === name));
+  }
+  renderDeck();
+}
+
+function renderDeck() {
+  const body = $("deckBody"), meta = $("deckMeta"), planBox = $("deckPlan");
+  if (!body || !meta || !planBox) return;
+  const {runningView, latestView, feed, pages, files, planSteps} = activeDeckData();
+
+  // Tab count badges
+  const setCount = (id, n) => { const node = $(id); if (!node) return; node.hidden = !n; node.textContent = String(n); };
+  setCount("deckCountActivity", feed.length);
+  setCount("deckCountPages", pages.length);
+  setCount("deckCountFiles", files.length);
+
+  // Header right meta: live clock + quick "Answer now" while running, or summary/Expand when idle
+  meta.replaceChildren();
+  if (runningView) {
+    const clk = el("span", "", (runningView.steps ? `Step ${runningView.steps} · ` : "") + clock(Date.now() / 1000 - runningView.started));
+    clk.id = "deckLiveClock";
+    clk.dataset.task = runningView.id;
+    const wrapBtn = el("button", "deck-wrap-btn", "Answer now");
+    wrapBtn.type = "button";
+    wrapBtn.title = "Ask the assistant to wrap up and answer with what it has found so far";
+    wrapBtn.onclick = async () => {
+      wrapBtn.disabled = true; wrapBtn.textContent = "Wrapping…";
+      await api(`/api/tasks/${runningView.id}/wrap`, {method: "POST", body: "{}"}).catch(() => { wrapBtn.disabled = false; wrapBtn.textContent = "Answer now"; });
+    };
+    meta.append(clk, wrapBtn);
+  } else if (latestView && latestView.finished) {
+    const took = clock(latestView.finished - latestView.started);
+    meta.append(el("span", "", latestView.steps ? `${latestView.steps} steps · ${took}` : took));
+  } else {
+    meta.append(el("span", "", rfb?.connected ? "Live screen" : "Workspace"));
+  }
+
+  // Compact expandable plan progress bar (only when this thread has a plan)
+  if (planSteps.length && state.conversation && state.conversation !== "check") {
+    const doneCount = planSteps.filter((s) => s.status === "done").length;
+    const doing = planSteps.find((s) => s.status === "doing");
+    const pct = Math.round((doneCount / planSteps.length) * 100);
+    const allDone = doneCount === planSteps.length;
+    planBox.hidden = false;
+    planBox.replaceChildren();
+    const top = el("div", "deck-plan-top");
+    top.title = "Click to expand or collapse plan steps";
+    top.append(
+      el("span", "deck-plan-label", doing ? doing.step : allDone ? "Plan complete" : planSteps[0].step),
+      el("span", "deck-plan-frac", `${doneCount}/${planSteps.length} steps`)
+    );
+    const bar = el("div", "deck-plan-bar" + (allDone ? " all-done" : ""));
+    const fill = el("i"); fill.style.width = `${Math.max(pct, doneCount ? 10 : 6)}%`;
+    bar.appendChild(fill);
+    const list = el("div", "deck-plan-steps");
+    list.hidden = !state.deckPlanOpen;
+    for (const s of planSteps) {
+      const item = el("div", "deck-plan-item " + s.status);
+      item.append(el("span", "deck-plan-mk", s.status === "done" ? "✓" : s.status === "doing" ? "•" : "○"), el("span", "", s.step));
+      list.appendChild(item);
+    }
+    top.onclick = () => { state.deckPlanOpen = !state.deckPlanOpen; list.hidden = !state.deckPlanOpen; };
+    planBox.append(top, bar, list);
+  } else {
+    planBox.hidden = true;
+    planBox.replaceChildren();
+  }
+
+  body.replaceChildren();
+  if (control) {
+    const note = el("div", "deck-control-note");
+    const back = el("button", "linkish small", "Hand back");
+    back.type = "button";
+    back.onclick = () => setControl(false);
+    note.append(el("span", "", "You have control — assistant browser steps pause until you hand back."), back);
+    body.appendChild(note);
+  }
+
+  // ---- Tab: Pages ----
+  if (state.deckTab === "pages") {
+    if (!pages.length) {
+      body.appendChild(el("div", "deck-empty", "Pages the assistant opens in this task appear here as clickable sources."));
+      return;
+    }
+    for (const p of [...pages].reverse()) {
+      const row = el("div", "deck-page");
+      row.appendChild(el("span", "site-mark", (p.host[0] || "W").toUpperCase()));
+      const info = el("div", "deck-page-info");
+      info.append(el("div", "deck-page-host", p.title || p.host), el("div", "deck-page-path", p.host + (p.path && p.path !== "/" ? p.path : "")));
+      info.title = p.url;
+      row.appendChild(info);
+      if (p.status === "404") row.appendChild(el("span", "deck-tag err", "404"));
+      else if (p.status === "blocked") row.appendChild(el("span", "deck-tag warn", "Blocked"));
+      else if (p.visits > 1) row.appendChild(el("span", "deck-tag", `×${p.visits}`));
+      const cp = el("button", "deck-copy", "Copy");
+      cp.type = "button";
+      cp.onclick = () => { navigator.clipboard?.writeText(p.url); cp.textContent = "Copied"; setTimeout(() => { cp.textContent = "Copy"; }, 1200); };
+      row.appendChild(cp);
+      body.appendChild(row);
+    }
+    return;
+  }
+
+  // ---- Tab: Files ----
+  if (state.deckTab === "files") {
+    if (!files.length) {
+      const empty = el("div", "deck-empty", "Attached files and outputs created by the assistant appear here.");
+      const row = el("div", "deck-empty-actions");
+      const attBtn = el("button", "btn", "Attach file");
+      attBtn.type = "button"; attBtn.onclick = () => $("filePick")?.click();
+      const foldBtn = el("button", "btn", "Shared folders");
+      foldBtn.type = "button"; foldBtn.onclick = () => settingsUI.open("files");
+      row.append(attBtn, foldBtn);
+      empty.appendChild(row);
+      body.appendChild(empty);
+      return;
+    }
+    for (const f of files) {
+      const a = el("a", "deck-file-row");
+      a.href = f.url; a.target = "_blank"; a.rel = "noopener";
+      if (f.kind === "image") { a.onclick = (ev) => { ev.preventDefault(); lightbox(f.url, f.name); }; }
+      a.append(el("span", "deck-file-name", f.name), el("span", "deck-tag", f.role || "File"));
+      body.appendChild(a);
+    }
+    return;
+  }
+
+  // ---- Tab: Activity ----
+  if (state.conversation && state.conversation !== "check" && (feed.length || runningView)) {
+    const list = el("div", "deck-feed");
+    for (const item of feed) {
+      const row = el("div", "deck-row " + item.state + (item.preview ? " clickable" : ""));
+      const glyph = el("span", "deck-glyph", item.state === "ok" ? "✓" : item.state === "err" ? "!" : item.state === "pivot" ? "↻" : "");
+      const main = el("div", "deck-row-main");
+      main.appendChild(el("div", "deck-row-title", item.title));
+      const subText = item.sub || (item.preview ? trunc(item.preview.split("\n")[0], 80) : "");
+      const sub = subText ? el("div", "deck-row-sub", subText) : null;
+      if (sub) main.appendChild(sub);
+      if (item.preview) {
+        row.title = "Click to inspect output";
+        row.onclick = () => {
+          const open = row.classList.toggle("open");
+          if (sub) sub.textContent = open ? item.preview : subText;
+          else if (open) main.appendChild(el("div", "deck-row-sub", item.preview));
+        };
+      }
+      const timeTxt = item.duration != null ? (item.duration < 10 ? `${item.duration.toFixed(1)}s` : clock(item.duration))
+        : item.step ? `#${item.step}` : "";
+      const right = el("span", "deck-row-time");
+      if (item.badge) right.appendChild(el("span", "deck-src" + (item.badge.cls ? " " + item.badge.cls : ""), item.badge.label));
+      if (timeTxt) right.appendChild(el("span", "", timeTxt));
+      row.append(glyph, main, right);
+      list.appendChild(row);
+    }
+    if (!feed.length && runningView) {
+      const row = el("div", "deck-row running");
+      const main = el("div", "deck-row-main");
+      main.append(el("div", "deck-row-title", state.nowText || "Thinking…"), el("div", "deck-row-sub", "Waiting for the first workspace action"));
+      row.append(el("span", "deck-glyph"), main, el("span", "deck-row-time", ""));
+      list.appendChild(row);
+    }
+    body.appendChild(list);
+    if (runningView) body.scrollTop = body.scrollHeight;
+    return;
+  }
+
+  // Idle or direct-answer thread: Workspace Overview + Quick Actions + Recent Runs (zero dead void!)
+  if (state.conversation && state.conversation !== "check" && latestView && !feed.length) {
+    const card = el("div", "deck-card");
+    const row1 = el("div", "deck-kv");
+    row1.append(el("span", "deck-kv-k", "Tools used"), el("span", "deck-kv-v", "Direct answer (no browser or code)"));
+    card.appendChild(row1);
+    body.appendChild(card);
+  }
+
+  const st = state.status || {};
+  const card = el("div", "deck-card");
+  const sb = st.sandbox || {};
+  const disk = diskLine(sb);
+  const vmRow = el("div", "deck-kv");
+  const vmLead = el("span", "deck-kv-k");
+  vmLead.append(el("span", "status-dot " + (sb.healthy ? "live" : "")), el("span", "", "Sandbox VM"));
+  vmRow.append(vmLead, el("span", "deck-kv-v", sb.healthy ? (disk ? `Running · ${disk}` : "Running") : "Starting…"));
+  card.appendChild(vmRow);
+
+  const modRow = el("div", "deck-kv");
+  const modName = modelName(st.remote?.model || st.models?.chat || st.model?.model) || "Local";
+  const where = st.remote?.provider === "openai" ? "Your server" : st.remote ? "Claude API" : "On this Mac";
+  const modBtn = el("button", "deck-kv-btn", `${modName} · ${where}`);
+  modBtn.type = "button";
+  modBtn.onclick = () => settingsUI.open("models");
+  modRow.append(el("span", "deck-kv-k", "Active model"), modBtn);
+  card.appendChild(modRow);
+
+  if (st.browser) {
+    const brRow = el("div", "deck-kv");
+    brRow.append(el("span", "deck-kv-k", "Browser"), el("span", "deck-kv-v", st.browser.running ? "Chrome ready" : "On demand"));
+    card.appendChild(brRow);
+  }
+  body.appendChild(card);
+
+  const acts = el("div", "deck-actions");
+  const addAct = (icoKey, label, fn) => {
+    const b = el("button", "deck-act");
+    b.type = "button";
+    b.append(icon(NAV_ICONS[icoKey] || NAV_ICONS.monitor), el("span", "", label));
+    b.onclick = fn;
+    acts.appendChild(b);
+  };
+  addAct("monitor", control ? "Watch screen" : "Take control", () => { if (rfb?.connected) setControl(!control); else notice("Waiting for screen connection…"); });
+  addAct("term", "Open terminal", () => setView("terminal"));
+  addAct("chip", "Benchmarks", () => settingsUI.open("bench"));
+  addAct("customize", "Test this Mac", () => showCheck());
+  body.appendChild(acts);
+
+  const recent = (convCache || []).filter((c) => !c.conversation.startsWith("app:check-") && c.conversation !== state.conversation).slice(0, 4);
+  if (recent.length) {
+    body.appendChild(el("div", "deck-sec-lbl", "Recent tasks"));
+    const rec = el("div", "deck-recent");
+    for (const c of recent) {
+      const b = el("button", "deck-rec-item");
+      b.type = "button";
+      const stCls = ["running", "waiting", "queued", "failed", "done"].includes(c.status) ? c.status : "done";
+      b.append(el("span", "dot " + stCls), el("span", "deck-rec-title", trunc(c.title || c.prompt || "Task", 46)));
+      b.onclick = () => openConversation(c.conversation, c.title || "Task");
+      rec.appendChild(b);
+    }
+    body.appendChild(rec);
+  }
+}
+
+$("deckTabActivity")?.addEventListener("click", () => setDeckTab("activity"));
+$("deckTabPages")?.addEventListener("click", () => setDeckTab("pages"));
+$("deckTabFiles")?.addEventListener("click", () => setDeckTab("files"));
+
 const settingsUI = createSettings({
   api,
   modelName,
@@ -3035,6 +3513,7 @@ const settingsUI = createSettings({
   onRestart: () => whenDaemonReturns(() => location.reload()),
   onRunCheck: () => showCheck(),
   onReloadModels: () => { checkSetup(); loadModels(); },
+  onOpenMacBrowser: () => { showComputer(true); setView("browser"); },
 });
 $("modelsLine")?.addEventListener("click", () => settingsUI.open("models"));
 $("panelModelsBtn")?.addEventListener("click", () => settingsUI.open("models"));

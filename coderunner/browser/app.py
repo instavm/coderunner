@@ -169,6 +169,9 @@ class MacLauncher:
     def app_open(self) -> bool:
         return self.app is not None and self.app.bridge.connected()
 
+    def using_fallback(self) -> bool:
+        return self._used is self.fallback
+
     def available(self, config) -> bool:
         return self.app_open() or bool(self.fallback.find_browser(config))
 
@@ -183,4 +186,6 @@ class MacLauncher:
         return await self.fallback.launch(executable, profile_dir, False)    # a window the owner can see
 
     def terminate(self, process) -> None:
-        (self._used or self.fallback).terminate(process)
+        used = self._used or self.fallback
+        self._used = None
+        used.terminate(process)

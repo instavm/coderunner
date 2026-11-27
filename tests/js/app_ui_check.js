@@ -17,7 +17,7 @@ fs.mkdirSync(OUT, {recursive: true});
 
 const now = () => Date.now() / 1000;
 const ASK = {id: "a1", kind: "browser.mac", target: "shop.example", risk: "medium", status: "pending", origin: "agent",
-             summary: "shop.example blocks the sandbox browser. Continue in the browser on your Mac?",
+             summary: "shop.example blocks the sandbox browser. Continue in CodeRunner's built-in browser on your Mac?",
              detail: {site: "shop.example", wall: "Cloudflare", sign_in: "chrome"}};
 const ANSWERS = {
   "/health": {status: "ok"},

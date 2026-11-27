@@ -371,13 +371,23 @@ def browser_tools(svc) -> list[Tool]:
         return raw
 
     async def open_(args, ctx):
-        return _text(await _listed(_result(mark(ctx, "open", await b.navigate(args["url"], tainted=ctx.tainted))),
-                                   ctx))
+        batch_chars = int(getattr(ctx, "_batch_page_chars", 0) or 0)
+        prev_chars = getattr(b, "page_chars", None)
+        if batch_chars and isinstance(prev_chars, int) and batch_chars < prev_chars:
+            b.page_chars = batch_chars
+        try:
+            return _text(await _listed(_result(mark(ctx, "open", await b.navigate(args["url"], tainted=ctx.tainted))),
+                                       ctx))
+        finally:
+            if prev_chars is not None:
+                b.page_chars = prev_chars
 
     async def snapshot(args, ctx):
         start = str(args.get("start") or "").strip()
         more = bool(args.get("more")) and not start
-        result = _result(await b.snapshot(tainted=ctx.tainted, **({"start": start} if start else {}),
+        tab = str(args.get("tab") or "").strip() or None
+        result = _result(await b.snapshot(tainted=ctx.tainted, **({"tab": tab} if tab else {}),
+                                          **({"start": start} if start else {}),
                                           **({"more": True} if more else {})))
         if isinstance(result, dict) and result.get("changed") is False:
             result["note"] = "Page unchanged since you last saw it."
@@ -399,7 +409,8 @@ def browser_tools(svc) -> list[Tool]:
                                   key=str(args["key"]))))
 
     async def find(args, ctx):
-        result = _result(await b.find(args["text"], tainted=ctx.tainted))
+        tab = str(args.get("tab") or "").strip() or None
+        result = _result(await b.find(args["text"], tainted=ctx.tainted, **({"tab": tab} if tab else {})))
         if isinstance(result, dict) and result.get("matches") == 0 and svc.vision:
             result["content"] += (" The page text leaves out what is only drawn (prices or names shown as "
                                   "images, for example): browser_screenshot shows the page as it looks.")
@@ -407,7 +418,8 @@ def browser_tools(svc) -> list[Tool]:
 
     async def list_(args, ctx):
         start = max(int(args.get("start") or 0), 0)
-        result = _result(await b.items(start=start, tainted=ctx.tainted))
+        tab = str(args.get("tab") or "").strip() or None
+        result = _result(await b.items(start=start, tainted=ctx.tainted, **({"tab": tab} if tab else {})))
         if isinstance(result, str):
             return result
         items, total = result.get("items") or [], int(result.get("total") or 0)
@@ -475,6 +487,11 @@ def browser_tools(svc) -> list[Tool]:
         parts, address = [], ""
         for i, step in enumerate(steps, 1):
             action = str(step.get("action", ""))
+            # Auto-recover common local-model batch schema slips (e.g., action="type" with "option" for a <select>).
+            if action == "type" and "option" in step and "text" not in step:
+                action = "select"
+            elif action == "select" and "text" in step and "option" not in step:
+                step = {**step, "option": step["text"]}
             name = element(step.get("ref"))
             try:
                 if action == "click":
@@ -549,12 +566,12 @@ def browser_tools(svc) -> list[Tool]:
         Tool("browser_search", "Search the web and get the results, one line each with its link. This is how to "
              "find a page: an address written from memory is often not there.",
              _params({"query": STR}, ["query"]), search, True),
-        Tool("browser_snapshot", "Read the current page again as text with numbered elements [N], its main content "
+        Tool("browser_snapshot", "Read the current page (or another open tab via tab='t1') again as text with numbered elements [N], its main content "
              "first. Other browser actions already return what they changed, so use this only when you need the full "
              "page. A long page is cut: more=true reads on from the cut, and start=<text> reads it from the first line "
              "mentioning that text (a heading, \"properties found\", a result's name). fresh=true reads again a page "
              "read before.",
-             _params({"start": STR, "more": BOOL, "fresh": BOOL}), snapshot, True),
+             _params({"start": STR, "more": BOOL, "fresh": BOOL, "tab": STR}), snapshot, True),
         Tool("browser_batch", "Several steps on the current page in one call, such as every field of a form and then "
              "its search button: steps is a list of {action: click|type|select|press, ref, text, submit, option, "
              "key}. They run in order with the same checks as the single tools; it stops at the first error or when "
@@ -565,7 +582,7 @@ def browser_tools(svc) -> list[Tool]:
              batch, True),
         Tool("browser_list", "Read the page's main list (search results, products, flights, hotels, movies, table "
              "rows) as one line per item with its link: quicker than reading or scrolling a long page. start= "
-             "goes on through a long list.", _params({"start": INT}), list_, True),
+             "goes on through a long list; tab= selects another open tab (e.g. 't1').", _params({"start": INT, "tab": STR}), list_, True),
         Tool("browser_click", "Click element [ref]. Returns what changed on the page (a new page in full).",
              _params({"ref": INT}, ["ref"]), click, True),
         Tool("browser_type", "Type text into element [ref] (it focuses the field: no click first) and return what "
@@ -574,9 +591,9 @@ def browser_tools(svc) -> list[Tool]:
              "pick=false keeps only the typed text. A slider (a price range, say) is set by typing the number it "
              "should move to. Never use for passwords or one-time codes; use browser_handoff instead.",
              _params({"ref": INT, "text": STR, "submit": BOOL, "pick": BOOL}, ["ref", "text"]), type_, True),
-        Tool("browser_find", "Find where the current page mentions some text (the whole page, also beyond what a "
+        Tool("browser_find", "Find where the current page (or another open tab via tab='t1') mentions some text (the whole page, also beyond what a "
              "snapshot shows) and get those lines with their element refs. Cheaper than reading the whole page.",
-             _params({"text": STR}, ["text"]), find, True),
+             _params({"text": STR, "tab": STR}, ["text"]), find, True),
         Tool("browser_select", "Choose an option in a dropdown list [ref] (a <select>, shown as a combobox with a "
              "value, as in many date and number fields) by its visible text.",
              _params({"ref": INT, "option": STR}, ["ref", "option"]), select, True),

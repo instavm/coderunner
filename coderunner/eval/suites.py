@@ -317,7 +317,7 @@ async def tier2_combo_tasks(config, names: list[str] | None = None, visible: boo
         cfg_file = tmp_dir / "config.json"
         out_file = tmp_dir / "result.json"
         cfg_file.write_text(json.dumps(config.data, ensure_ascii=False))
-        cmd = [sys.executable, "-m", "coderunner.eval.suites",
+        cmd = [sys.executable, "-W", "ignore::RuntimeWarning", "-m", "coderunner.eval.suites",
                "--config", str(cfg_file), "--out", str(out_file)]
         if visible:
             cmd.append("--visible")

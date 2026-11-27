@@ -360,7 +360,7 @@ def settings_routes(svc, daemon) -> list[Route]:
                 return JSONResponse({"ok": True, "enabled": enabled, "send": send_enabled, "restart_required": True})
             if action == "test":
                 try:
-                    detail = await asyncio.to_thread(mac_conn.check, name)
+                    detail = await mac_conn.check(name)
                     return JSONResponse({"ok": True, "name": name, "detail": detail})
                 except Exception as exc:
                     return JSONResponse({"ok": False, "name": name, "error": str(exc)}, status_code=200)
@@ -402,7 +402,8 @@ def settings_routes(svc, daemon) -> list[Route]:
                 return JSONResponse({"ok": True, "mode": mode, "restart_required": True})
             if action == "connect_chrome":
                 try:
-                    info = await asyncio.to_thread(ext.install, browser=body.get("browser"))
+                    br = body.get("browser")
+                    info = await asyncio.to_thread(ext.install, browsers=[br] if br else None)
                     cfg.set("browser.mode", "chrome")
                     cfg.save()
                     return JSONResponse({"ok": True, "installed": info, "extension_dir": str(ext.extension_dir()),
@@ -482,23 +483,33 @@ def settings_routes(svc, daemon) -> list[Route]:
     async def tailscale_api(request: Request):
         from . import remote as ts_remote
         cfg = svc.config
+        port = int(cfg.get("gateway.admin_port") or 8224)
         if request.method == "POST":
             body = await request.json()
             action = str(body.get("action") or "")
             try:
                 if action == "enable":
+                    url = await asyncio.to_thread(ts_remote.enable, port)
+                    cfg.set("remote.provider", "tailscale")
                     owner = str(body.get("owner") or "").strip()
-                    res = await asyncio.to_thread(ts_remote.enable, cfg, owner=owner or None)
-                    return JSONResponse({"ok": True, **res})
+                    if owner:
+                        owners = list(cfg.get("remote.owners") or [])
+                        if owner not in owners:
+                            owners.append(owner)
+                        cfg.set("remote.owners", owners)
+                    cfg.save()
+                    return JSONResponse({"ok": True, "url": url})
                 if action == "disable":
-                    res = await asyncio.to_thread(ts_remote.disable, cfg)
-                    return JSONResponse({"ok": True, **(res if isinstance(res, dict) else {})})
+                    detail = await asyncio.to_thread(ts_remote.disable, admin_port=port)
+                    cfg.set("remote.provider", "")
+                    cfg.save()
+                    return JSONResponse({"ok": True, "detail": detail})
             except Exception as exc:
                 return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
             return JSONResponse({"error": f"unknown action {action!r}"}, status_code=400)
         st = {}
         with contextlib.suppress(Exception):
-            st = await asyncio.to_thread(ts_remote.status, cfg)
+            st = await asyncio.to_thread(ts_remote.status, port)
         return JSONResponse({"status": st, "owners": cfg.get("remote.owners") or []})
 
     async def channels_api(request: Request):

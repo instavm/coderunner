@@ -176,6 +176,34 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("candidates", rbench.json())
             self.assertIn("history", rbench.json())
 
+            # Connector test awaits async macos.check (must return JSON string, not coroutine error)
+            from unittest import mock
+            async def fake_check(name):
+                return f"{name} ok"
+            with mock.patch("coderunner.connectors.macos.check", side_effect=fake_check):
+                rtest = await c.post("/api/connectors", headers=self.headers, json={"action": "test", "name": "calendar"})
+                self.assertEqual(rtest.status_code, 200)
+                self.assertEqual(rtest.json(), {"ok": True, "name": "calendar", "detail": "calendar ok"})
+
+            # Tailscale status/enable/disable pass integer admin_port and align remote.provider
+            seen_ports = []
+            def fake_ts_status(port):
+                seen_ports.append(port)
+                return {"installed": False, "running": False, "serving": False}
+            with mock.patch("coderunner.server.remote.status", side_effect=fake_ts_status):
+                rts = await c.get("/api/tailscale", headers=self.headers)
+                self.assertEqual(rts.status_code, 200)
+                self.assertEqual(seen_ports, [int(self.svc.config.get("gateway.admin_port") or 8224)])
+            with mock.patch("coderunner.server.remote.enable", return_value="https://mac.ts.net/"), \
+                 mock.patch("coderunner.server.remote.disable", return_value="Remote access disabled."):
+                ren = await c.post("/api/tailscale", headers=self.headers, json={"action": "enable", "owner": "me@example.com"})
+                self.assertTrue(ren.json()["ok"])
+                self.assertEqual(self.svc.config.get("remote.provider"), "tailscale")
+                self.assertIn("me@example.com", self.svc.config.get("remote.owners"))
+                rdis = await c.post("/api/tailscale", headers=self.headers, json={"action": "disable"})
+                self.assertTrue(rdis.json()["ok"])
+                self.assertEqual(self.svc.config.get("remote.provider"), "")
+
 
 if __name__ == "__main__":
     unittest.main()
