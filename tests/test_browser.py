@@ -1152,6 +1152,12 @@ class BrowserToolTextTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('its search box [3] textbox "Search for restaurant, cuisine or a dish"', text)
         self.assertIn("Get the App", text)
         self.assertEqual(classify_dead_page("browser_open", args, text)[0], "")     # not counted against the site
+        # Flipkart's missing page has no 404 in its title: its words say so.
+        opened.clear()
+        flipkart = "Unfortunately the page you are looking for has been moved or deleted\n[52] link \"GO TO HOMEPAGE\" -> /"
+        self.assertEqual(classify_dead_page("browser_open", {"url": "https://www.flipkart.com/monster-energy-350ml-can"},
+                                            "url: https://www.flipkart.com/monster-energy-350ml-can\ntitle: Online "
+                                            "Shopping India\n\n" + flipkart)[0], "not_found")
         # An address that is there is left as it is.
         opened.clear()
         text = await tools["browser_open"].handler({"url": "https://www.swiggy.com/search?query=monster"}, ctx)
