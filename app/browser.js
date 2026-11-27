@@ -489,6 +489,12 @@ class AppBrowser {
   stop() {
     this.stopped = true;
     clearTimeout(this.retryTimer);
+    clearTimeout(this.stateTimer);
+    for (const id of [...this.tabs.keys()]) this.closeTab(id);
+    if (this.holder && !this.holder.isDestroyed()) {
+      try { this.holder.destroy(); } catch { /* gone */ }
+    }
+    this.holder = null;
     if (this.socket) this.socket.destroy();
   }
 

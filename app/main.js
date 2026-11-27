@@ -100,6 +100,7 @@ function startDaemon() {
   if (!command) return false;
   if (starting) return true;
   starting = true;
+  failure = "";
   const tools = ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), ".local", "bin")];   // container, docker
   const env = {...process.env, CODERUNNER_HOME: HOME, PATH: [...tools, process.env.PATH || "/usr/bin:/bin"].join(":")};
   execFile(command, ["up"], {env, timeout: 180000}, (error, stdout, stderr) => {
@@ -170,6 +171,7 @@ function createWindow(open = "") {
   win.pending = open;
 
   let shown = "";
+  let failSeen = 0;
   const show = (title, message) => {
     if (shown !== title + message) win.loadURL(waitingPage(title, message));
     shown = title + message;
@@ -178,15 +180,20 @@ function createWindow(open = "") {
     const up = await daemonUp();
     if (win.isDestroyed()) return;              // closed while the daemon was starting
     if (up) {
+      failure = "";
+      failSeen = 0;
       win.loadURL(`${ORIGIN}/app/` + (win.pending ? `#${win.pending}` : ""));
       win.pending = "";
       return;
     }
     if (!startDaemon()) {
       show("CodeRunner is not installed yet", "Run ./install.sh from the CodeRunner checkout, then open this app again.");
-    } else if (failure) {
-      show("The assistant did not start", `${failure} Run \`coderunner up\` in a terminal to see more.`);
+    } else if (failure && !starting) {
+      failSeen += 1;
+      if (failSeen >= 2) show("The assistant did not start", `${failure} Run \`coderunner up\` in a terminal to see more.`);
+      else show("CodeRunner is starting", "");
     } else {
+      failSeen = 0;
       show("CodeRunner is starting", "");
     }
     setTimeout(load, 400);
@@ -700,6 +707,7 @@ app.whenReady().then(() => {
 
 app.on("will-quit", () => globalShortcut.unregisterAll());
 app.on("will-quit", () => appBrowser?.stop());
+process.on("SIGTERM", () => app.quit());
 // Keep cookies "until quit": the Browser tab's cookies go as the app quits (and, should that not finish, when it
 // next starts, before any page loads).
 let cookiesCleared = false;

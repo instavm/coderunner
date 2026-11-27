@@ -116,7 +116,7 @@ def cmd_up(args, config: Config) -> int:
         process = subprocess.Popen([sys.executable, "-m", "coderunner", "daemon"], stdout=log, stderr=log,
                                    stdin=subprocess.DEVNULL, start_new_session=True)
         _pidfile().write_text(str(process.pid))
-    for _ in range(60):
+    for _ in range(150):
         if _daemon_up(config):
             print(f"✅ CodeRunner is running. Owner UI: http://127.0.0.1:{config.get('gateway.admin_port')}/ "
                   "(pair a browser with `coderunner remote pair`).")

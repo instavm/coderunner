@@ -1514,6 +1514,9 @@ async function connectScreen() {
   rfb.addEventListener("connect", () => {
     clearTimeout(watchdog); mine.connected = true; clearTimeout(screenNoteTimer);
     setNote(""); showSwitch(true); refreshNow(); syncVncRatio(); scheduleDeck();
+    api("/api/status").then((st) => {
+      if (st && typeof st === "object") { state.status = st; scheduleDeck(); }
+    }).catch(() => {});
   });
   rfb.addEventListener("desktopname", () => syncVncRatio());
   rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({password: info.password}));
@@ -3504,10 +3507,11 @@ function renderDeck() {
   const card = el("div", "deck-card");
   const sb = st.sandbox || {};
   const disk = diskLine(sb);
+  const vmLive = Boolean(sb.healthy || (rfb && rfb.connected));
   const vmRow = el("div", "deck-kv");
   const vmLead = el("span", "deck-kv-k");
-  vmLead.append(el("span", "status-dot " + (sb.healthy ? "live" : "")), el("span", "", "Sandbox VM"));
-  vmRow.append(vmLead, el("span", "deck-kv-v", sb.healthy ? (disk ? `Running · ${disk}` : "Running") : "Starting…"));
+  vmLead.append(el("span", "status-dot " + (vmLive ? "live" : "")), el("span", "", "Sandbox VM"));
+  vmRow.append(vmLead, el("span", "deck-kv-v", vmLive ? (disk ? `Running · ${disk}` : "Running") : "Starting…"));
   card.appendChild(vmRow);
 
   const modRow = el("div", "deck-kv");
