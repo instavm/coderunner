@@ -390,8 +390,7 @@ def browser_tools(svc) -> list[Tool]:
                 b.page_chars = prev_chars
 
     async def _home_instead(asked: str, raw: Any, ctx) -> Any:
-        """An address on a site that is not there (a search or product address written from memory, as
-        zomato.com/search/monster) opens the site's home page instead, with its search box named: a person
+        """An address on a site that is not there (a search or product address written from memory) opens the site's home page instead, with its search box named: a person
         searches a site with its search box, and the model otherwise guessed the next address."""
         from .recovery import SEARCH_HOSTS, classify_dead_page, reg_host
         if not (isinstance(raw, dict) and raw.get("ok") is not False and isinstance(raw.get("content"), str)):

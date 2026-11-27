@@ -29,7 +29,7 @@ class PickHeard(unittest.TestCase):
         self.assertTrue(reply_shaped(ANSWERED))
         self.assertEqual(pick_heard(ANSWERED, SAID), SAID)
         # A transcript with an answer after it is not a transcript either.
-        self.assertEqual(pick_heard("Check Zepto too. Sure, I'll check Zepto.", "check zepto too"), "check zepto too")
+        self.assertEqual(pick_heard("Check the other shop too. Sure, I'll check it.", "check the other shop too"), "check the other shop too")
         self.assertEqual(pick_heard("Hello! How can I help you today?", "hey"), "hey")
 
     def test_omni_keeps_the_names_dictation_mishears(self):
@@ -41,7 +41,7 @@ class PickHeard(unittest.TestCase):
                          "It's Bangalore, not Bangladesh.")
 
     def test_owner_words_that_only_look_like_a_reply_cost_nothing(self):
-        for owner in ("Sorry, I meant Colaba.", "Okay, check Blinkit too.", "Can you tell me the weather?",
+        for owner in ("Sorry, I meant Colaba.", "Okay, check the other shop too.", "Can you tell me the weather?",
                       "Let me know when it's done."):
             self.assertFalse(reply_shaped(owner), owner)
             self.assertEqual(pick_heard(owner, owner.lower().rstrip(".?")), owner)
@@ -70,11 +70,11 @@ class TalkTurn(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_reply_is_made_to_the_owners_words_not_to_omnis_answer(self):
         speaker = self.speaker()
-        reply = mock.AsyncMock(return_value=("Sure, checking Zepto and Blinkit too.", True))
+        reply = mock.AsyncMock(return_value=("Sure, checking the other two shops too.", True))
         with mock.patch("coderunner.voice.narrator.hear", mock.AsyncMock(return_value=ANSWERED)), \
                 mock.patch("coderunner.voice.narrator.talk_reply", reply):
             heard, say, do = await speaker.talk_turn(b"RIFF", "app:a", self.ready(SAID))
-        self.assertEqual((heard, say, do), (SAID, "Sure, checking Zepto and Blinkit too.", True))
+        self.assertEqual((heard, say, do), (SAID, "Sure, checking the other two shops too.", True))
         self.assertEqual(reply.call_args[0][1], SAID)
         self.assertFalse(speaker.slot.busy)
 
@@ -165,20 +165,20 @@ class TalkInTheThread(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.voice.light, [True])         # beside the voice model: off the GPU only
 
             # Said while it works: the message to the task, then the reply under it.
-            self.voice.text = "make it Zepto and Blinkit"
-            second = await self.turn(c, "Make it Zepto and Blinkit.", "Got it, Zepto and Blinkit.", True)
+            self.voice.text = "make it the other two shops"
+            second = await self.turn(c, "Make it the other two shops.", "Got it, the other two shops.", True)
             self.assertTrue(second["task"]["steer"])
 
             # Words that send nothing (how is it going) are kept too, with their answer.
             self.voice.text = "how is it going"
-            third = await self.turn(c, "How is it going?", "Still comparing prices on Zepto.", False)
+            third = await self.turn(c, "How is it going?", "Still comparing prices on the second shop.", False)
             self.assertIsNone(third["task"])
 
             loaded = (await c.get("/api/conversations/app:t", headers=ADMIN)).json()
         self.assertEqual(self.thread(), [
             ("owner", SAID), ("assistant", "Sure, checking the quick commerce sites too."),
-            ("owner", "Make it Zepto and Blinkit."), ("assistant", "Got it, Zepto and Blinkit."),
-            ("owner", "How is it going?"), ("assistant", "Still comparing prices on Zepto."),
+            ("owner", "Make it the other two shops."), ("assistant", "Got it, the other two shops."),
+            ("owner", "How is it going?"), ("assistant", "Still comparing prices on the second shop."),
         ])
         talk = [e for e in loaded["events"] if e["type"] == "talk"]
         self.assertEqual([e["task"] for e in talk], [first["task"]["id"]] * 3)
