@@ -9,6 +9,7 @@ CODERUNNER_HOME/runtime. Opening the app therefore needs no Node.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import pathlib
 import platform
@@ -123,7 +124,7 @@ def install(progress: Callable[[str], None] | None = None) -> str:
 
 NAME = "CodeRunner"
 BUNDLE_ID = "io.instavm.coderunner"
-BUNDLE_VERSION = 1           # raise when what is written into the bundle changes
+BUNDLE_VERSION = 2           # raise when what is written into the bundle changes
 
 
 def bundle_dir() -> pathlib.Path:
@@ -134,15 +135,20 @@ def bundled(binary: str, app: pathlib.Path | None = None) -> str:
     """On a Mac, the app as CodeRunner rather than Electron: Electron.app copied (an APFS clone, so it takes
     next to no disk) with CodeRunner's name, identifier and icon in its Info.plist, signed again on this Mac
     (changing Info.plist breaks Electron's signature, and macOS will not start an app whose signature is broken).
-    Without it the menu bar, the Dock and the app switcher said "Electron". Made once per Electron version; on any
-    failure the plain Electron binary is used."""
+    Without it the menu bar, the Dock and the app switcher said "Electron". It also carries a small entry point
+    (opener) so that macOS opening it on its own (the Dock, Spotlight, Finder) starts CodeRunner rather than
+    Electron's default page. Made once per Electron version and app folder; on any failure the plain Electron
+    binary is used."""
     import plistlib
     source = pathlib.Path(binary).resolve().parents[2]          # .../Electron.app/Contents/MacOS/Electron
     if source.suffix != ".app":
         return binary
     target = bundle_dir()
-    icon = (app or app_dir() or pathlib.Path()) / "icon.icns"
-    stamp = f"{ELECTRON}:{BUNDLE_VERSION}:{hashlib.sha256(icon.read_bytes()).hexdigest()[:12] if icon.is_file() else ''}"
+    app = (app or app_dir() or pathlib.Path()).resolve()
+    icon = app / "icon.icns"
+    where = hashlib.sha256(f"{app}\0{paths.home()}".encode()).hexdigest()[:12]
+    stamp = (f"{ELECTRON}:{BUNDLE_VERSION}:{hashlib.sha256(icon.read_bytes()).hexdigest()[:12] if icon.is_file() else ''}"
+             f":{where}")
     executable = target / "Contents" / "MacOS" / "Electron"
     marker = target.with_suffix(".stamp")          # beside it: a file added inside would break its signature
     if executable.is_file() and marker.is_file() and marker.read_text() == stamp:
@@ -162,6 +168,7 @@ def bundled(binary: str, app: pathlib.Path | None = None) -> str:
             shutil.copyfile(icon, target / "Contents" / "Resources" / "coderunner.icns")
             info["CFBundleIconFile"] = "coderunner.icns"
         info_path.write_bytes(plistlib.dumps(info))
+        opener(target / "Contents" / "Resources" / "app", app)
         subprocess.run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(target)], check=True,
                        capture_output=True, timeout=300)
         marker.write_text(stamp)
@@ -169,6 +176,28 @@ def bundled(binary: str, app: pathlib.Path | None = None) -> str:
     except (OSError, subprocess.SubprocessError, ValueError):
         shutil.rmtree(target, ignore_errors=True)
         return binary
+
+
+def opener(folder: pathlib.Path, app: pathlib.Path) -> None:
+    """Electron runs Resources/app ahead of its default page. This one runs the app folder given on the command
+    line (as launch() starts it), else this checkout's, with this home: what macOS starts when the owner opens
+    CodeRunner from the Dock, Spotlight or Finder. Its name is the app's own, so its settings, cookies and
+    sign-ins are the same ones."""
+    meta = json.loads((app / "package.json").read_text()) if (app / "package.json").is_file() else {}
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "package.json").write_text(json.dumps({
+        "name": meta.get("name") or "coderunner-app", "productName": meta.get("productName") or NAME,
+        "version": meta.get("version") or "0.1.0", "private": True, "main": "main.js"}, indent=2) + "\n")
+    (folder / "main.js").write_text(f"""\
+// Started by macOS without arguments (the Dock, Spotlight, Finder): the CodeRunner app, not Electron's own page.
+"use strict";
+const fs = require("fs");
+const path = require("path");
+const APP = {json.dumps(str(app))};
+const given = process.argv.slice(1).find((arg) => !arg.startsWith("-") && fs.existsSync(path.join(arg, "main.js")));
+if (!process.env.CODERUNNER_HOME) process.env.CODERUNNER_HOME = {json.dumps(str(paths.home()))};
+require(path.join(given ? path.resolve(given) : APP, "main.js"));
+""")
 
 
 def launch(progress: Callable[[str], None] | None = None) -> subprocess.Popen:

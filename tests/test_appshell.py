@@ -270,6 +270,13 @@ console.log(JSON.stringify([
         self.assertEqual((info["CFBundleName"], info["CFBundleDisplayName"], info["CFBundleIdentifier"],
                           info["CFBundleIconFile"]), ("CodeRunner", "CodeRunner", "io.instavm.coderunner", "coderunner.icns"))
         self.assertTrue((target / "Contents" / "Resources" / "coderunner.icns").is_file())
+        # Opened by macOS without arguments (the Dock, Spotlight), it starts CodeRunner, under the app's own name
+        # (the same settings and cookies), not Electron's default page.
+        opener = target / "Contents" / "Resources" / "app"
+        meta = json.loads((opener / "package.json").read_text())
+        own = json.loads((appshell.app_dir() / "package.json").read_text())
+        self.assertEqual((meta["name"], meta["productName"], meta["main"]), (own["name"], own["productName"], "main.js"))
+        self.assertIn(json.dumps(str(appshell.app_dir().resolve())), (opener / "main.js").read_text())
         self.assertEqual(again, made)
         self.assertEqual(len(signed), 1)                        # made once, signed again on this Mac once
         # Signing that fails: the plain Electron is used rather than an app macOS would refuse to start.
@@ -282,6 +289,31 @@ console.log(JSON.stringify([
         with mock.patch.object(appshell.subprocess, "run", refuse):
             self.assertEqual(appshell.bundled(binary, appshell.app_dir()), binary)
         self.assertFalse(target.exists())
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_the_opener_runs_the_app_given_else_its_own_with_this_home(self):
+        def fake_app(name):
+            folder = self.home / name
+            folder.mkdir()
+            (folder / "main.js").write_text(
+                'require("fs").writeFileSync(process.env.OUT, JSON.stringify({app: __dirname, '
+                'home: process.env.CODERUNNER_HOME}));')
+            return folder
+        own, other = fake_app("own"), fake_app("other")
+        opener = self.home / "opener"
+        appshell.opener(opener, own)
+        out = self.home / "out.json"
+
+        def run(*args, home=None):
+            env = {k: v for k, v in os.environ.items() if k != "CODERUNNER_HOME"}
+            env["OUT"] = str(out)
+            if home:
+                env["CODERUNNER_HOME"] = home
+            subprocess.run(["node", str(opener / "main.js"), *args], env=env, check=True, timeout=30)
+            return json.loads(out.read_text())
+        self.assertEqual(run(), {"app": str(own.resolve()), "home": str(appshell.paths.home())})
+        self.assertEqual(run(str(other)), {"app": str(other.resolve()), "home": str(appshell.paths.home())})
+        self.assertEqual(run("--hidden", home="/elsewhere")["home"], "/elsewhere")
 
     def test_a_zip_is_unpacked_with_its_links_and_executable_bits(self):
         import stat
