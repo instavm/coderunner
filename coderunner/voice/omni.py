@@ -58,7 +58,7 @@ class VoiceBusy(RuntimeError):
 
 
 class OmniSlot:
-    """One at a time on the voice server's single llama.cpp slot (Talk vs TTS)."""
+    """One spoken line at a time on the voice server's single llama.cpp slot."""
 
     def __init__(self):
         self._lock = asyncio.Lock()
@@ -226,7 +226,7 @@ class VoiceTurns:
 
     @contextlib.asynccontextmanager
     async def use(self):
-        """Hold the voice model for one use (a spoken reply, or a whole Talk session)."""
+        """Hold the voice model for one use (one spoken line, or a phrased line and its speech)."""
         if not self.exclusive():
             await asyncio.to_thread(self.runtime.ensure)
             yield self

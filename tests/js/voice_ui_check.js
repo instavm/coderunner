@@ -34,10 +34,16 @@ const ANSWERS = {
   "/api/voice/settings": {stt: "auto", language: "en-IN", speak_tasks: false, voice: "female",
                           status: {ready: true, engines: ["parakeet-coreml"]}, omni: OMNI},
   "/api/voice/speak": {id: "s1", text: "Your electricity bill for October is ₹2,140.", rate: 24000, kind: "listen"},
+  "/api/voice": {text: "Check trains from Delhi to Mumbai tomorrow morning on IRCTC"},
+  "/api/tasks": {id: "t2", conversation: "c1", status: "running"},
+  "/api/voice/talk": {ok: true},
   "/api/tailscale": {}, "/api/devices": [], "/api/channels": [],
 };
 const TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml"};
 const posted = [];
+const streams = [];
+let seq = 10;
+const push = (event) => { for (const s of streams) s.write(`data: ${JSON.stringify({seq: ++seq, ts: Date.now() / 1000, ...event})}\n\n`); };
 
 const server = http.createServer((request, response) => {
   const url = new URL(request.url, "http://x");
@@ -47,7 +53,9 @@ const server = http.createServer((request, response) => {
     response.writeHead(200, {"Content-Type": TYPES[path.extname(file)] || "application/octet-stream"});
     return response.end(fs.readFileSync(file));
   }
-  if (url.pathname === "/api/events") { response.writeHead(200, {"Content-Type": "text/event-stream"}); return; }   // held open
+  if (url.pathname === "/api/events") {      // held open; push() sends live events to the page
+    response.writeHead(200, {"Content-Type": "text/event-stream"}); streams.push(response); return;
+  }
   if (url.pathname.startsWith("/api/voice/speech/")) {
     // Two seconds of quiet, so a clip "plays" long enough to be seen.
     response.writeHead(200, {"Content-Type": "audio/pcm;rate=24000;encoding=signed-int;bits=16"});
@@ -74,24 +82,14 @@ const step = (text) => process.stderr.write(`step: ${text}\n`);
 setTimeout(() => { step("gave up"); process.kill(process.pid, "SIGKILL"); }, 90000);
 process.on("unhandledRejection", (error) => { step(`failed: ${error?.message || error}`); process.kill(process.pid, "SIGKILL"); });
 
-// The voice model's socket, as the daemon's proxy speaks it, and a microphone made in the page: the real one is
-// never asked for (macOS would show its own prompt even for a hidden window).
-const FAKE_SOCKET = `
+// A microphone made in the page: the real one is never asked for (macOS would show its own prompt even for a
+// hidden window).
+const FAKE_MIC = `
   navigator.mediaDevices.getUserMedia = async () => {
     const ctx = new AudioContext(), tone = ctx.createOscillator(), out = ctx.createMediaStreamDestination();
     tone.connect(out); tone.start();
     return out.stream;
   };
-  window.__sockets = [];
-  window.WebSocket = class {
-    constructor(url) { this.url = url; this.readyState = 0; this.sent = []; window.__sockets.push(this);
-                       setTimeout(() => { this.readyState = 1; this.onopen?.(); }, 50); }
-    send(message) { try { this.sent.push(JSON.parse(message).type); } catch { this.sent.push("?"); } }
-    close(code = 1000, reason = "") { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.({code, reason}); }
-    serverSays(message) { this.onmessage?.({data: JSON.stringify(message)}); }
-    serverCloses(code, reason) { this.readyState = 3; this.onclose?.({code, reason}); }
-  };
-  window.__ws = () => window.__sockets[window.__sockets.length - 1];
   true`;
 
 server.listen(port, "127.0.0.1", () => {
@@ -123,7 +121,7 @@ server.listen(port, "127.0.0.1", () => {
       nativeTheme.themeSource = "light";
     };
     const said = {};
-    await js(FAKE_SOCKET);
+    await js(FAKE_MIC);
     await js(`location.hash = "#c=c1"; true`);
     await wait(2000);
     said.composer = await js(`[...document.querySelectorAll(".composer-bar button:not([hidden])")].map((b) => b.getAttribute("aria-label") || b.textContent.trim() || b.title)`);
@@ -137,32 +135,40 @@ server.listen(port, "127.0.0.1", () => {
     await picture("2-listen");
     await wait(2500);
 
-    // Talk: starting, ready, listening, speaking, then closed by the daemon with a reason.
+    // Talk: ready, listening, then the spoken request runs as a task: working, needs you, speaking, ready.
     await js(`document.getElementById("talkBtn").click(); true`);
-    await wait(30);
-    said.starting = await js(`document.getElementById("talkStrip").innerText`);
-    await picture("3-talk-starting");
     await wait(300);
-    await js(`__ws().serverSays({type: "coderunner.talk.ready"}); true`);
-    await wait(200);
     said.ready = await js(`document.getElementById("talkStrip").innerText`);
-    await picture("4-talk-ready");
+    await picture("3-talk-ready");
     await js(`document.getElementById("talkHold").dispatchEvent(new PointerEvent("pointerdown", {bubbles: true, pointerId: 1})); true`);
-    await wait(400);
+    await wait(1500);
     said.held = await js(`document.getElementById("talkStrip").innerText`);
-    await picture("5-talk-listening");
+    await picture("4-talk-listening");
     await js(`document.getElementById("talkHold").dispatchEvent(new PointerEvent("pointerup", {bubbles: true, pointerId: 1})); true`);
-    await wait(100);
-    await js(`__ws().serverSays({type: "response.output_text.delta", delta: "It is ₹2,140, due on the fifth."}); true`);
-    await wait(200);
+    await wait(1200);
+    said.sent = await js(`document.getElementById("talkStrip").innerText`);
+    push({type: "started", task: "t2", conversation: "c1", prompt: "Check trains from Delhi to Mumbai tomorrow morning on IRCTC"});
+    push({type: "note", task: "t2", conversation: "c1", text: "Opening IRCTC to look for trains. Then the fares."});
+    await wait(500);
+    said.working = await js(`document.getElementById("talkStrip").innerText`);
+    await picture("5-talk-working");
+    push({type: "activity", event: "approval.requested", task: "t2", conversation: "c1", id: "a9", kind: "browser.mac",
+          summary: "irctc.co.in blocks the sandbox browser. Continue in the browser on your Mac?", status: "pending"});
+    await wait(500);
+    said.needsYou = await js(`document.getElementById("talkStrip").innerText`);
+    await picture("6-talk-needs-you");
+    push({type: "activity", event: "approval.decided", task: "t2", conversation: "c1", id: "a9", status: "approved"});
+    push({type: "voice_utterance", conversation: "c1", live: true, seq: 0,
+          utterance: {id: "u1", text: "Searching trains from New Delhi to Mumbai Central.", rate: 24000, kind: "progress"}});
+    await wait(700);
     said.speaking = await js(`document.getElementById("talkStrip").innerText`);
-    said.sent = await js(`[...new Set(__ws().sent)]`);
-    await picture("6-talk-speaking");
-    await js(`__ws().serverSays({type: "response.done"}); true`);
-    await js(`__ws().serverCloses(1013, "Talk ended so the assistant can work."); true`);
+    await picture("7-talk-speaking");
+    await wait(2500);
+    push({type: "done", task: "t2", conversation: "c1", reply: "Three trains leave before 9."});
+    await wait(500);
+    said.after = await js(`document.getElementById("talkStrip").innerText`);
+    await js(`document.getElementById("talkEnd").click(); true`);
     await wait(300);
-    said.closed = await js(`({strip: document.getElementById("talkStrip").hidden, toast: document.querySelector(".notice, #notice, .toast")?.innerText || ""})`);
-    await picture("7-talk-closed");
 
     // Settings, Voice & Phone.
     await js(`document.getElementById("modelsLine")?.click() || document.getElementById("panelModelsBtn")?.click(); true`);
@@ -180,7 +186,7 @@ server.listen(port, "127.0.0.1", () => {
     await wait(1000);
     said.notInstalled = await js(`[...document.querySelectorAll(".set-group")].find((g) => g.innerText.startsWith("TALK") || g.innerText.startsWith("Talk"))?.innerText`);
     await picture("9-settings-not-installed");
-    said.posted = posted.map((p) => `${p.path} ${p.body}`).filter((line) => line.startsWith("/api/voice"));
+    said.posted = posted.map((p) => `${p.path} ${p.body.slice(0, 140)}`).filter((line) => /^\/api\/(voice|tasks)/.test(line));
     console.log(JSON.stringify(said, null, 1));
     server.close();
     fs.rmSync(HOME, {recursive: true, force: true});

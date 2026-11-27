@@ -443,75 +443,17 @@ def admin_app(svc, daemon) -> Starlette:
         return Response(item["pcm"], media_type=f"audio/pcm;rate={rate};encoding=signed-int;bits=16",
                         headers={"Cache-Control": "no-store"})
 
-    async def voice_realtime(websocket: WebSocket):
-        """Proxy authenticated live Talk to llama-server /v1/realtime (16 kHz in, 24 kHz out). The first message
-        to the app is {"type": "coderunner.talk.ready"} once the model is loaded; a close carries the reason."""
-        from websockets.asyncio.client import connect
-        from ..voice.omni import BUSY, VoiceBusy
+    async def voice_talk(request: Request):
+        """Talk in the app: {"action": "open" | "close", "conversations": [...]}. While open, the tasks in those
+        conversations are narrated aloud (voice/narrator.py) whether or not spoken replies are on."""
         speaker = getattr(daemon, "speaker", None) or getattr(svc, "speaker", None)
-        await websocket.accept()
         if speaker is None or not (svc.config.get("voice.omni_model") and speaker.runtime.ready()):
-            await websocket.close(code=1013, reason="Talk is not set up.")
-            return
-        slot, runtime = speaker.slot, speaker.runtime
-        try:
-            await slot.acquire("talk")
-        except VoiceBusy:
-            await websocket.close(code=1013, reason=BUSY)
-            return
-        try:
-            async with speaker.turns.use():
-                try:
-                    upstream = await connect(runtime.realtime_url(), max_size=None, open_timeout=30,
-                                             ping_interval=None, proxy=None)
-                except Exception as exc:
-                    svc.audit.write("voice.talk_failed", error=f"{type(exc).__name__}: {exc}"[:300])
-                    await websocket.close(code=1011, reason="Could not start the voice model.")
-                    return
-                svc.audit.write("voice.talk_opened", by=websocket.scope.get("state", {}).get("principal", "?"))
-                await websocket.send_text(json.dumps({"type": "coderunner.talk.ready"}))
-
-                async def up():
-                    with contextlib.suppress(Exception):
-                        while True:
-                            message = await websocket.receive()
-                            if message["type"] == "websocket.disconnect":
-                                return
-                            if message.get("text") is not None:
-                                await upstream.send(message["text"])
-                            elif message.get("bytes") is not None:
-                                await upstream.send(message["bytes"])
-
-                async def down():
-                    with contextlib.suppress(Exception):
-                        async for data in upstream:
-                            if isinstance(data, bytes):
-                                await websocket.send_bytes(data)
-                            else:
-                                await websocket.send_text(data)
-
-                tasks = [asyncio.create_task(up()), asyncio.create_task(down()),
-                         asyncio.create_task(speaker.turns.yielding.wait())]
-                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                gave_way = tasks[2].done()
-                for task in tasks:
-                    task.cancel()
-                with contextlib.suppress(Exception):
-                    await upstream.close()
-                with contextlib.suppress(Exception):
-                    if gave_way:
-                        await websocket.close(code=1013, reason="Talk ended so the assistant can work.")
-                    else:
-                        await websocket.close()
-        except VoiceBusy as exc:
-            with contextlib.suppress(Exception):
-                await websocket.close(code=1013, reason=str(exc)[:120])
-        except Exception as exc:
-            svc.audit.write("voice.talk_failed", error=f"{type(exc).__name__}: {exc}"[:300])
-            with contextlib.suppress(Exception):
-                await websocket.close(code=1011, reason="Could not start the voice model.")
-        finally:
-            slot.release()
+            return JSONResponse({"error": "Talk is not set up. Open Settings, Voice & Phone."}, status_code=503)
+        body = await request.json()
+        conversations = [str(c) for c in (body.get("conversations") or []) if str(c).startswith("app:")][:20]
+        for conversation in conversations:
+            (speaker.follow if body.get("action") == "open" else speaker.unfollow)(conversation)
+        return JSONResponse({"ok": True})
 
     async def history(request: Request):
         conversation = f"web:{request.path_params['conversation']}"  # matches handle_message("web", ...)
@@ -741,6 +683,9 @@ def admin_app(svc, daemon) -> Starlette:
         conversation = str(body.get("conversation") or "")
         if not conversation.startswith("app:"):
             conversation = "app:" + secrets.token_hex(6)
+        speaker = getattr(daemon, "speaker", None)
+        if body.get("talk") and speaker is not None:
+            speaker.follow(conversation)    # said in Talk: narrated from its first line
         return JSONResponse(daemon.tasks.start(conversation, message, principal(request), attachments=files,
                                                **({"remote": on_claude} if on_claude else {})))
 
@@ -1155,6 +1100,7 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/voice", voice_message, methods=["POST"]),
         Route("/api/voice/speak", voice_speak, methods=["POST"]),
         Route("/api/voice/speech/{id}", voice_speech, methods=["GET"]),
+        Route("/api/voice/talk", voice_talk, methods=["POST"]),
         Route("/api/tools", tools, methods=["GET"]),
         Route("/api/tools/{name}", call_tool, methods=["POST"]),
         Route("/api/schedules", schedules, methods=["GET", "POST"]),
@@ -1186,7 +1132,6 @@ def admin_app(svc, daemon) -> Starlette:
         *settings_routes(svc, daemon),
         WebSocketRoute("/api/computer/screen", computer_screen),
         WebSocketRoute("/api/computer/terminal", computer_terminal),
-        WebSocketRoute("/api/voice/realtime", voice_realtime),
     ])
     return OwnerAuth(app, svc)
 

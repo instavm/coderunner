@@ -13,6 +13,7 @@ from coderunner.models import catalog, licenses
 from coderunner.models.pool import ModelPool
 from coderunner.models.runtimes import VoiceRuntime
 from coderunner.voice.omni import OmniSlot, SpeechStore, VoiceBusy, VoiceTurns, clean_for_speech, looks_like_table
+from coderunner.voice import narrator
 from coderunner.voice.narrator import TaskSpeaker
 from coderunner.voice.tts import Speaker
 
@@ -262,6 +263,98 @@ class SlotAndSpeaker(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(speaker._lfm_ready())
             cfg.set("voice.omni_exclusive", False)
             self.assertTrue(speaker._lfm_ready())
+
+
+class TalkNarration(unittest.IsolatedAsyncioTestCase):
+    """Talk: what the owner hears while a task they asked for by voice works."""
+
+    def speaker(self, speak_tasks=False):
+        daemon = mock.Mock()
+        daemon.config = Config({"voice": {"speak_tasks": speak_tasks, "omni_model": "lfm3-omni-2b"},
+                                "models": {"chat": "qwen3.5-9b"}})
+        daemon.tasks = types.SimpleNamespace(running={}, waiting=[])
+        speaker = TaskSpeaker(daemon)
+        speaker.turns.runtime = speaker.runtime = mock.Mock(ensure=mock.Mock(), ready=mock.Mock(return_value=True))
+        speaker._queue = asyncio.Queue()
+        self.said = []
+
+        async def synth(runtime, text, **kwargs):
+            self.said.append(text)
+            return b"\0\0", 24000
+        patch = mock.patch("coderunner.voice.narrator.synthesize", synth)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return speaker
+
+    async def test_only_followed_threads_speak_when_spoken_replies_are_off(self):
+        speaker = self.speaker()
+        speaker.on_event({"type": "note", "conversation": "app:a", "text": "Opening IRCTC."})
+        self.assertTrue(speaker._queue.empty())
+        speaker.follow("app:a")
+        speaker.on_event({"type": "note", "conversation": "app:a", "text": "Opening IRCTC."})
+        speaker.on_event({"type": "note", "conversation": "app:b", "text": "Other thread."})
+        self.assertEqual(speaker._queue.qsize(), 1)
+        speaker.unfollow("app:a")
+        self.assertFalse(speaker.wants("app:a"))
+
+    async def test_status_lines_are_spaced_and_the_latest_wins(self):
+        speaker = self.speaker()
+        speaker.follow("app:a")
+        speaker._running.add("app:a")
+        await speaker._handle({"type": "note", "conversation": "app:a", "text": "Opening IRCTC. Then more."})
+        await speaker._handle({"type": "note", "conversation": "app:a", "text": "Searching trains from Delhi to Mumbai."})
+        self.assertEqual(self.said, [])                 # notes wait for the pulse, not said one by one
+        self.assertEqual(speaker._status["app:a"], "Searching trains from Delhi to Mumbai.")
+        await speaker._handle({"type": narrator.STATUS, "conversation": "app:a", "text": speaker._status.pop("app:a")})
+        self.assertEqual(self.said, ["Searching trains from Delhi to Mumbai."])
+        # The same line is not said again, and a plan step only fills in when no note is waiting.
+        await speaker._handle({"type": narrator.STATUS, "conversation": "app:a", "text": "Searching trains from Delhi to Mumbai."})
+        await speaker._handle({"type": "plan", "conversation": "app:a",
+                               "steps": "[{'step': 'Open irctc.co.in', 'status': 'done'}, {'step': 'Read the fares', 'status': 'doing'}]"})
+        self.assertEqual(speaker._status["app:a"], "Read the fares")
+        self.assertEqual(len(self.said), 1)
+
+    async def test_pulse_waits_for_the_gap(self):
+        speaker = self.speaker()
+        speaker._running.add("app:a")
+        speaker._status["app:a"] = "Reading the fares."
+        speaker._said["app:a"] = (narrator.time.time(), "Opening IRCTC.")
+        with mock.patch.object(narrator.asyncio, "sleep", mock.AsyncMock(side_effect=[None, asyncio.CancelledError])):
+            with self.assertRaises(asyncio.CancelledError):
+                await speaker._pulse()
+        self.assertTrue(speaker._queue.empty())         # said a moment ago: waits
+        speaker._said["app:a"] = (narrator.time.time() - narrator.GAP_S - 1, "Opening IRCTC.")
+        with mock.patch.object(narrator.asyncio, "sleep", mock.AsyncMock(side_effect=[None, asyncio.CancelledError])):
+            with self.assertRaises(asyncio.CancelledError):
+                await speaker._pulse()
+        self.assertEqual(speaker._queue.get_nowait()["text"], "Reading the fares.")
+
+    async def test_needs_you_and_follow_ups_are_said_at_once(self):
+        speaker = self.speaker()
+        speaker.follow("app:a")
+        await speaker._handle({"type": "activity", "event": "approval.requested", "conversation": "app:a",
+                               "summary": "irctc.co.in blocks the sandbox browser. Continue on your Mac?"})
+        await speaker._handle({"type": "activity", "event": "browser.handoff", "conversation": "app:a",
+                               "reason": "Enter the captcha on the IRCTC page."})
+        await speaker._handle({"type": "steer_taken", "conversation": "app:a"})
+        self.assertEqual(self.said, ["I need your OK. irctc.co.in blocks the sandbox browser.",
+                                     "Over to you on the screen. Enter the captcha on the IRCTC page.",
+                                     "Got it."])
+
+    async def test_answer_ends_the_narration(self):
+        speaker = self.speaker()
+        speaker.follow("app:a")
+        speaker._running.add("app:a")
+        speaker._status["app:a"] = "Reading the fares."
+        await speaker._handle({"type": "done", "conversation": "app:a", "reply": "Three trains leave before 9."})
+        self.assertEqual(self.said, ["Three trains leave before 9."])
+        self.assertNotIn("app:a", speaker._running)
+        self.assertNotIn("app:a", speaker._status)
+
+    def test_doing_step(self):
+        self.assertEqual(narrator.doing_step([{"step": "A", "status": "done"}, {"step": "B", "status": "doing"}]), "B")
+        self.assertEqual(narrator.doing_step("[{'step': 'Open the site', 'status': 'doing'}]"), "Open the site")
+        self.assertEqual(narrator.doing_step(None), "")
 
 
 class VoiceFit(unittest.TestCase):

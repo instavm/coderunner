@@ -1140,7 +1140,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_find)
 
-    p = sub.add_parser("voice", help="On-device speech: dictation (Parakeet / Apple / Qwen3-ASR) and LFM3-Omni Talk")
+    p = sub.add_parser("voice", help="On-device speech: dictation (Parakeet / Apple / Qwen3-ASR) and LFM3-Omni spoken replies")
     p.add_argument("action", choices=["status", "setup", "transcribe", "omni", "omni-remove"], nargs="?",
                    default="status")
     p.add_argument("file", nargs="?", help="audio file to transcribe")

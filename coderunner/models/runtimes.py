@@ -920,7 +920,7 @@ class JudgeRuntime(LlamaCppRuntime):
 
 
 class VoiceRuntime(LlamaCppRuntime):
-    """A loopback llama.cpp server for LFM3-Omni: live Talk (/v1/realtime) and spoken replies (POST /tts).
+    """A loopback llama.cpp server for LFM3-Omni: spoken lines while tasks work and spoken replies (POST /tts).
 
     Keeps its own port and state so the planner's chat model and KV cache stay untouched. On tight Macs it
     takes turns with chat (voice.omni_exclusive); otherwise it idle-unloads beside chat.
@@ -983,9 +983,6 @@ class VoiceRuntime(LlamaCppRuntime):
 
     def alias(self) -> str:
         return (self._state().get("active") or {}).get("alias") or "lfm3-omni-2b"
-
-    def realtime_url(self) -> str:
-        return f"ws://127.0.0.1:{self.port}/v1/realtime?model={self.alias()}"
 
     def tts_url(self) -> str:
         return f"http://127.0.0.1:{self.port}/tts"

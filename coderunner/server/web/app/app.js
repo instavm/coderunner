@@ -710,7 +710,8 @@ class TaskView {
         try {
           const meta = await api("/api/voice/speak", {method: "POST", body: JSON.stringify({
             text: String(e.reply || ""), conversation: state.conversation, kind: "listen"})});
-          await playUtterance(meta);
+          clearSpeech();
+          playUtterance(meta);
         } catch (err) { notice(err.message); }
         listen.disabled = false; listen.textContent = "Listen";
       };
@@ -1154,6 +1155,7 @@ function listen() {
       state.running.delete(e.task);
       if (!state.running.size) state.activeSurface = "";
     }
+    talkSees(e);
     if (e.type === "voice_utterance" && e.utterance) {
       if (!e.conversation || e.conversation === state.conversation) playUtterance(e.utterance);
     } else if (e.conversation === state.conversation) {
@@ -1474,27 +1476,34 @@ async function finishDictation(kind) {
 
 $("mic").onclick = () => { if (dictation.recorder) stopDictation(true); else if (!dictation.busy) startDictation(); };
 
-// ---- live Talk and spoken replies (LFM3-Omni) ---------------------------------------------
+// ---- Talk and spoken replies ---------------------------------------------------------------
+// Talk: hold the strip (or Space) and speak. The words are transcribed on this computer (POST /api/voice) and
+// sent as a task in the open thread, as if typed: the assistant does the work with its tools. While it works,
+// the daemon says what it is doing (voice/narrator.py), and the strip shows the same: working, needs you,
+// speaking. Speaking again while it works goes to the task, as a typed message would.
 const TALK_ICON = "M6 10v4 M9 7v10 M12 5v14 M15 8v8 M18 10v4";
 const SPEAKER_ICON = "M11 5L6 9H3v6h3l5 4V5z M16 9a4 4 0 0 1 0 6 M18.5 7a7 7 0 0 1 0 10";
 const SPEAKER_OFF_ICON = "M11 5L6 9H3v6h3l5 4V5z M16 9l5 6 M21 9l-5 6";
 const TALK_READY = "Hold to talk, or hold Space";
-const talk = {ws: null, stream: null, ctx: null, processor: null, playing: [], nextAt: 0, listening: false,
-              ready: false, ending: false, caption: ""};
-const speechPlayer = {audio: null, source: null, id: ""};
+const FINAL_SPEECH = new Set(["done", "failed", "cancelled", "listen", "interim"]);
+const talk = {open: false, want: false, recorder: null, stream: null, chunks: [], meter: null, timer: null,
+              sending: false, conversations: new Set(), base: ["Ready", TALK_READY]};
+const speechPlayer = {audio: null, source: null, id: "", queue: [], text: ""};
 
 function setTalkUi(label, caption) {
   const strip = $("talkStrip");
-  if (!strip) return;
-  strip.dataset.state = (label || "Ready").toLowerCase();
+  strip.dataset.state = label.toLowerCase().replace(/\s+/g, "-");
   $("talkState").textContent = label;
-  if (caption != null) {
-    $("talkCaption").textContent = caption;
-    $("talkCaption").classList.toggle("reply", label === "Speaking");
-  }
-  $("talkHold").disabled = label === "Starting";
-  $("talkHold").setAttribute("aria-label",
-    label === "Listening" ? "Release to send" : label === "Speaking" ? "Hold to interrupt" : "Hold to talk");
+  $("talkCaption").textContent = caption || "";
+  $("talkCaption").classList.toggle("reply", label === "Speaking");
+  $("talkHold").disabled = talk.sending;
+  $("talkHold").setAttribute("aria-label", label === "Listening" ? "Release to send" : "Hold to talk");
+}
+
+// What the task is doing; shown whenever nothing is being said or heard.
+function talkBase(label, caption) {
+  talk.base = [label, caption];
+  if (talk.open && !talk.recorder && !talk.sending && !speechPlayer.source) setTalkUi(label, caption);
 }
 
 function setTalkLevel(level) {
@@ -1522,188 +1531,157 @@ function drawSpeakToggle() {
   }
 }
 
-function pcm16ToBase64(int16) {
-  const bytes = new Uint8Array(int16.buffer, int16.byteOffset, int16.byteLength);
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
+function talkFollow(action, conversations) {
+  const list = [...conversations].filter((c) => String(c).startsWith("app:"));
+  if (!list.length) return;
+  api("/api/voice/talk", {method: "POST", body: JSON.stringify({action, conversations: list})}).catch(() => {});
 }
 
-function downsampleTo16k(float32, inRate) {
-  const ratio = inRate / 16000, outLen = Math.floor(float32.length / ratio);
-  const out = new Int16Array(outLen);
-  for (let i = 0; i < outLen; i++) {
-    const v = float32[Math.floor(i * ratio)] || 0;
-    out[i] = Math.max(-32768, Math.min(32767, v * 32767));
-  }
-  return out;
-}
-
-function playPcm16Chunk(base64, rate = 24000) {
-  if (!talk.ctx) return;
-  const raw = atob(base64), bytes = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-  const samples = new Int16Array(bytes.buffer, 0, bytes.length >> 1);
-  const buf = talk.ctx.createBuffer(1, samples.length, rate);
-  const ch = buf.getChannelData(0);
-  for (let i = 0; i < samples.length; i++) ch[i] = samples[i] / 32768;
-  const src = talk.ctx.createBufferSource();
-  src.buffer = buf;
-  src.connect(talk.ctx.destination);
-  const start = Math.max(talk.ctx.currentTime, talk.nextAt || 0);
-  src.start(start);
-  talk.nextAt = start + buf.duration;
-  talk.playing.push(src);
-  src.onended = () => { talk.playing = talk.playing.filter((s) => s !== src); };
-}
-
-function stopTalkPlayback() {
-  for (const src of talk.playing) { try { src.stop(); } catch {} }
-  talk.playing = [];
-  talk.nextAt = 0;
-}
-
-async function openTalk() {
-  if (talk.ws || talk.stream) { closeTalk(); return; }
-  stopUtterance();
-  talk.ending = false; talk.ready = false; talk.caption = "";
+function openTalk() {
+  if (talk.open) { closeTalk(); return; }
+  talk.open = true;
   $("talkStrip").hidden = false;
   $("talkBtn").classList.add("on");
-  setTalkUi("Starting", "Loading the voice model…");
+  const busy = [...state.running.values()].some((r) => r.conversation === state.conversation);
+  talk.base = busy ? ["Working", "…"] : ["Ready", TALK_READY];
+  setTalkUi(...talk.base);
   setTalkLevel(0.18);
-  let stream;
-  try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); }
-  catch (err) {
-    closeTalk();
-    notice(err?.name === "NotFoundError" ? "No microphone was found on this computer." : NO_MICROPHONE);
-    return;
-  }
-  if ($("talkStrip").hidden) { stream.getTracks().forEach((t) => t.stop()); return; }   // ended meanwhile
-  talk.stream = stream;
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${location.host}/api/voice/realtime`);
-  talk.ws = ws;
-  ws.onopen = () => {
-    ws.send(JSON.stringify({
-      type: "session.update",
-      session: {
-        instructions: "Respond with interleaved text and audio.",
-        output_modalities: ["text", "audio"],
-        modalities: ["text", "audio"],
-      },
-    }));
-  };
-  ws.onmessage = (ev) => {
-    let msg; try { msg = JSON.parse(ev.data); } catch { return; }
-    const type = msg.type || "";
-    if (type === "coderunner.talk.ready") {
-      talk.ready = true;
-      setTalkUi("Ready", TALK_READY);
-    } else if (type.endsWith("audio.delta") && (msg.delta || msg.audio)) {
-      setTalkUi("Speaking");
-      playPcm16Chunk(msg.delta || msg.audio, msg.sample_rate || 24000);
-    } else if (type === "response.output_text.delta" || type === "response.text.delta"
-               || type === "response.audio_transcript.delta" || type === "response.output_audio_transcript.delta") {
-      talk.caption = (talk.caption || "") + (msg.delta || msg.text || "");
-      setTalkUi("Speaking", talk.caption);
-    } else if (type === "response.done" || type === "response.completed") {
-      setTalkUi("Ready", talk.caption || TALK_READY);
-      setTalkLevel(0.18);
-      talk.caption = "";
-    } else if (type === "error") {
-      notice(msg.error?.message || msg.message || "Talk stopped working.");
-    }
-  };
-  ws.onclose = (ev) => {
-    if (talk.ws !== ws) return;
-    const said = talk.ending ? "" : ev?.reason || (talk.ready ? "" : "Could not start Talk.");
-    closeTalk();
-    if (said) notice(said);
-  };
-  const audio = new AudioContext();
-  talk.ctx = audio;
-  const source = audio.createMediaStreamSource(stream);
-  const processor = audio.createScriptProcessor(4096, 1, 1);
-  talk.processor = processor;
-  const meter = audio.createAnalyser();
-  meter.fftSize = 512;
-  source.connect(meter);
-  source.connect(processor);
-  processor.connect(audio.destination);
-  const heard = new Uint8Array(512);
-  processor.onaudioprocess = (e) => {
-    if (!talk.listening || !talk.ws || talk.ws.readyState !== 1) return;
-    meter.getByteTimeDomainData(heard);
-    let sum = 0; for (const v of heard) sum += (v - 128) * (v - 128);
-    setTalkLevel(Math.min(1, Math.sqrt(sum / heard.length) / 40));
-    const pcm = downsampleTo16k(e.inputBuffer.getChannelData(0), audio.sampleRate);
-    talk.ws.send(JSON.stringify({type: "input_audio_buffer.append", audio: pcm16ToBase64(pcm)}));
-  };
+  if (state.conversation) { talk.conversations.add(state.conversation); talkFollow("open", [state.conversation]); }
 }
 
 function closeTalk() {
-  talk.ending = true;
-  talk.listening = false;
-  talk.ready = false;
-  talk.caption = "";
-  stopTalkPlayback();
-  talk.processor?.disconnect();
-  talk.stream?.getTracks().forEach((t) => t.stop());
-  const ws = talk.ws;
-  talk.ws = null; talk.stream = null; talk.processor = null;
-  if (ws && ws.readyState <= 1) ws.close();
-  talk.ctx?.close().catch(() => {});
-  talk.ctx = null;
+  talk.want = false;
+  stopTalkRecording(false);
+  talk.open = false;
+  talkFollow("close", talk.conversations);
+  talk.conversations.clear();
   $("talkStrip").hidden = true;
   $("talkBtn")?.classList.remove("on");
-  setTalkUi("Ready", TALK_READY);
+}
+
+async function talkHold(start) {
+  if (!talk.open) return;
+  if (!start) { talk.want = false; stopTalkRecording(true); return; }
+  if (talk.recorder || talk.sending || talk.want) return;
+  talk.want = true;
+  clearSpeech();                                    // the owner talks: the assistant stops
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); }
+  catch (err) {
+    talk.want = false;
+    notice(err?.name === "NotFoundError" ? "No microphone was found on this computer." : NO_MICROPHONE);
+    return;
+  }
+  if (!talk.want || !talk.open) { stream.getTracks().forEach((t) => t.stop()); return; }   // let go meanwhile
+  const recorder = new MediaRecorder(stream);
+  Object.assign(talk, {recorder, stream, chunks: [], started: Date.now()});
+  recorder.ondataavailable = (e) => { if (e.data.size) talk.chunks.push(e.data); };
+  recorder.onstop = () => sendTalk(recorder.mimeType);
+  recorder.start(250);
+  try {
+    const audio = new AudioContext(), meter = audio.createAnalyser(), heard = new Uint8Array(512);
+    meter.fftSize = 512;
+    audio.createMediaStreamSource(stream).connect(meter);
+    talk.meter = audio;
+    talk.timer = setInterval(() => {
+      meter.getByteTimeDomainData(heard);
+      let sum = 0; for (const v of heard) sum += (v - 128) * (v - 128);
+      setTalkLevel(Math.min(1, Math.sqrt(sum / heard.length) / 40));
+      if (Date.now() - talk.started > DICTATION_S * 1000) talkHold(false);
+    }, 80);
+  } catch {}
+  setTalkUi("Listening", "Release to send");
+}
+
+function stopTalkRecording(keep) {
+  clearInterval(talk.timer); talk.timer = null;
+  talk.meter?.close().catch(() => {}); talk.meter = null;
+  const recorder = talk.recorder;
+  talk.recorder = null;
+  if (!recorder) return;
+  talk.keep = keep;
+  talk.sending = keep;
+  if (keep) setTalkUi("Sending", "…");
+  recorder.stop();                                  // onstop sends it, when kept
+  talk.stream?.getTracks().forEach((t) => t.stop());
+  talk.stream = null;
   setTalkLevel(0.18);
 }
 
-function talkHold(start) {
-  if (!talk.ready || !talk.ws || talk.ws.readyState !== 1) return;
-  if (start) {
-    if (talk.listening) return;
-    stopTalkPlayback();
-    talk.listening = true;
-    talk.caption = "";
-    setTalkUi("Listening", "Release to send");
-    setTalkLevel(0.35);
-    talk.ws.send(JSON.stringify({type: "input_audio_buffer.clear"}));
-  } else if (talk.listening) {
-    talk.listening = false;
-    setTalkUi("Thinking", "…");
-    setTalkLevel(0.2);
-    talk.ws.send(JSON.stringify({type: "input_audio_buffer.commit"}));
-    talk.ws.send(JSON.stringify({type: "response.create"}));
-  }
+async function sendTalk(kind) {
+  const sound = new Blob(talk.chunks, {type: kind || "audio/webm"});
+  talk.chunks = [];
+  if (!talk.keep) { talk.sending = false; return; }
+  const done = (label, caption) => { talk.sending = false; if (talk.open) setTalkUi(label, caption); };
+  if (sound.size < 2000) { done(...talk.base); return; }        // a tap, not words
+  let said = "";
+  try {
+    const response = await fetch("/api/voice", {method: "POST", credentials: "same-origin", body: sound,
+                                                headers: {"X-CodeRunner": "1", "Content-Type": sound.type}});
+    const data = await response.json().catch(() => ({}));
+    said = response.ok ? String(data.text || "").trim() : "";
+  } catch {}
+  if (!said) { done(...talk.base); notice("Nothing was heard. Hold the strip while you speak."); return; }
+  try {
+    const task = await api("/api/tasks", {method: "POST",
+      body: JSON.stringify({message: said, conversation: state.conversation || "", talk: true})});
+    talk.conversations.add(task.conversation);
+    if (task.steer) state.views.get(task.id)?.addSteer({id: task.steer, text: said});
+    if (task.conversation !== state.conversation) await openConversation(task.conversation, said);
+    talk.base = ["Working", `“${trunc(said, 80)}”`];
+    done(...talk.base);
+  } catch (err) { done(...talk.base); notice(err.message); }
+}
+
+// The open thread's events, as the strip shows them.
+function talkSees(e) {
+  if (!talk.open || e.conversation !== state.conversation) return;
+  if (e.type === "started" || e.type === "resumed") talkBase("Working", talk.base[0] === "Working" ? talk.base[1] : "…");
+  else if (e.type === "note" && e.text) talkBase("Working", trunc(String(e.text).split(/(?<=[.!?])\s/)[0], 90));
+  else if (e.type === "activity" && e.event === "approval.requested") talkBase("Needs you", trunc(e.summary || "Waiting for your OK", 90));
+  else if (e.type === "activity" && e.event === "browser.handoff") talkBase("Needs you", trunc(e.reason || "Finish this on the screen", 90));
+  else if (e.type === "activity" && e.event === "approval.decided") talkBase("Working", "…");
+  else if (["done", "failed", "cancelled"].includes(e.type)) talkBase("Ready", TALK_READY);
 }
 
 $("talkBtn").replaceChildren(icon(TALK_ICON));
 $("talkBtn").onclick = () => openTalk();
 $("talkHold").onpointerdown = (e) => { e.preventDefault(); $("talkHold").setPointerCapture?.(e.pointerId); talkHold(true); };
 $("talkHold").onpointerup = (e) => { e.preventDefault(); talkHold(false); };
-$("talkHold").onpointercancel = () => { if (talk.listening) talkHold(false); };
+$("talkHold").onpointercancel = () => talkHold(false);
 $("talkEnd").onclick = () => closeTalk();
 const typing = (target) => target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
 document.addEventListener("keydown", (e) => {
   if ($("talkStrip").hidden || typing(e.target)) return;
-  if (e.code === "Space" && !e.repeat) { e.preventDefault(); talkHold(true); }
+  if (e.code === "Space") { e.preventDefault(); if (!e.repeat) talkHold(true); }
   else if (e.key === "Escape" && !document.querySelector(".set-backdrop")) closeTalk();
 });
 document.addEventListener("keyup", (e) => {
-  if ($("talkStrip").hidden || e.code !== "Space") return;
-  if (talk.listening) { e.preventDefault(); talkHold(false); }
+  if ($("talkStrip").hidden || e.code !== "Space" || typing(e.target)) return;
+  e.preventDefault(); talkHold(false);
 });
 
-async function playUtterance(meta) {
-  if (!meta?.id || meta.id === speechPlayer.id || talk.ws) return;   // once each; never over Talk
-  stopUtterance();
+// Spoken lines play one after another; a newer progress line replaces one still waiting, answers always wait
+// their turn. Nothing plays over the owner while they talk.
+function playUtterance(meta) {
+  if (!meta?.id || meta.id === speechPlayer.id || speechPlayer.queue.some((m) => m.id === meta.id)) return;
+  if (!FINAL_SPEECH.has(meta.kind)) speechPlayer.queue = speechPlayer.queue.filter((m) => FINAL_SPEECH.has(m.kind));
+  speechPlayer.queue.push(meta);
+  if (!speechPlayer.source && !talk.recorder && !talk.want) playNext();
+}
+
+async function playNext() {
+  const meta = speechPlayer.queue.shift();
+  if (!meta) { setSpeaking(false); return; }
   speechPlayer.id = meta.id;
-  const res = await fetch(`/api/voice/speech/${meta.id}`, {credentials: "same-origin", headers: {"X-CodeRunner": "1"}});
-  if (!res.ok || speechPlayer.id !== meta.id) return;
-  const buf = await res.arrayBuffer();
-  const rate = Number((/rate=(\d+)/.exec(res.headers.get("content-type") || "") || [])[1] || meta.rate || 24000);
+  let buf, rate = meta.rate || 24000;
+  try {
+    const res = await fetch(`/api/voice/speech/${meta.id}`, {credentials: "same-origin", headers: {"X-CodeRunner": "1"}});
+    if (!res.ok) throw new Error("gone");
+    buf = await res.arrayBuffer();
+    rate = Number((/rate=(\d+)/.exec(res.headers.get("content-type") || "") || [])[1] || rate);
+  } catch { playNext(); return; }
+  if (speechPlayer.id !== meta.id || talk.recorder || talk.want) return;      // stopped meanwhile
   const ctx = new AudioContext({sampleRate: rate});
   const samples = new Int16Array(buf, 0, buf.byteLength >> 1);
   const audioBuf = ctx.createBuffer(1, Math.max(1, samples.length), rate);
@@ -1712,9 +1690,14 @@ async function playUtterance(meta) {
   const src = ctx.createBufferSource();
   src.buffer = audioBuf;
   src.connect(ctx.destination);
-  speechPlayer.audio = ctx; speechPlayer.source = src;
+  speechPlayer.audio = ctx; speechPlayer.source = src; speechPlayer.text = meta.text || "";
   setSpeaking(true);
-  src.onended = () => { if (speechPlayer.source === src) stopUtterance(); };
+  src.onended = () => {
+    if (speechPlayer.source !== src) return;
+    speechPlayer.source = null; speechPlayer.audio = null;
+    ctx.close().catch(() => {});
+    playNext();
+  };
   src.start();
 }
 
@@ -1723,19 +1706,26 @@ function stopUtterance() {
   speechPlayer.source = null; speechPlayer.audio = null;
   try { source?.stop(); } catch {}
   audio?.close().catch(() => {});
+}
+
+function clearSpeech() {
+  speechPlayer.queue = [];
+  stopUtterance();
   setSpeaking(false);
 }
 
 function setSpeaking(on) {
   const btn = $("speakToggle");
   btn.classList.toggle("playing", on);
-  if (on) btn.hidden = false;
-  else btn.hidden = !state.voiceOmni?.ready;
+  btn.hidden = on ? false : !state.voiceOmni?.ready;
   drawSpeakToggle();
+  if (!talk.open || talk.recorder || talk.sending) return;
+  if (on) setTalkUi("Speaking", speechPlayer.text);
+  else setTalkUi(...talk.base);
 }
 
 async function toggleSpeakTasks() {
-  if ($("speakToggle").classList.contains("playing")) { stopUtterance(); return; }
+  if ($("speakToggle").classList.contains("playing")) { clearSpeech(); return; }
   const on = !$("speakToggle").classList.contains("on");
   try {
     await api("/api/voice/settings", {method: "POST", body: JSON.stringify({action: "config", speak_tasks: on})});
@@ -2148,8 +2138,8 @@ async function loadModels() {
     $("mic").hidden = !(status.voice || []).length;      // dictation only where a voice engine is set up
     const omni = status.voice_omni || {};
     state.voiceOmni = omni;
-    $("talkBtn").hidden = !omni.ready;
-    if (!omni.ready && talk.ws) closeTalk();
+    $("talkBtn").hidden = !(omni.ready && (status.voice || []).length);   // hears with dictation, speaks with LFM3-Omni
+    if ($("talkBtn").hidden && talk.open) closeTalk();
     $("speakToggle").hidden = !omni.ready && !speechPlayer.source;
     syncSpeakToggle(Boolean(omni.speak_tasks));
     document.querySelectorAll(".listen-btn").forEach((b) => { b.hidden = !omni.ready; });
