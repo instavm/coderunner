@@ -225,7 +225,7 @@ def _subtree_text(by_id: dict, root: str, limit: int) -> str:
 def _drawn_control(by_id: dict, node: dict, props: dict, clickable: frozenset | set) -> str | None:
     """The role of a control the page draws without saying what it is, which the model could not act on: a box
     typed into that is not a form field (a chat's message box, contenteditable), or a box the page makes
-    clickable with its own script and shows with a pointer (Flipkart's "Chat with us"). None for anything else.
+    clickable with its own script and shows with a pointer (a support page's "Chat with us"). None for anything else.
     A clickable box holding links or buttons of its own is a card, whose controls are numbered instead."""
     if node.get("ignored"):
         return None

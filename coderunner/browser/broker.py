@@ -1694,7 +1694,7 @@ class BrowserBroker:
         """The outermost elements the page shows with a pointer cursor (whose parent shows another), by backend
         node id: what a person sees as clickable. Pages built with React and the like make boxes clickable with
         one listener at their root, so the box itself has no role and no listener of its own; the pointer is the
-        sign left (Flipkart's "Chat with us"). Native controls are numbered already and are left out."""
+        sign left (a support page's "Chat with us"). Native controls are numbered already and are left out."""
         try:
             snap = await self._send(sid, "DOMSnapshot.captureSnapshot", {"computedStyles": ["cursor"]}, timeout=15)
         except (CDPError, asyncio.TimeoutError):
@@ -2373,7 +2373,7 @@ class BrowserBroker:
             if field_obj and isinstance(before, str):
                 after = await self._call(sid, field_obj, FIELD_TEXT_JS)
                 if after == before and not (clear and before.split("\0")[0] == text):   # retyped as it was
-                    # Reported as typed, the model sent the same text again and again (a Flipkart chat).
+                    # Reported as typed, the model sent the same text again and again (a chat's box).
                     raise BrowserError(f"The text did not go into [{ref}] {label}; nothing on the page changed. "
                                        + self._not_a_field(target, ref, label, lead=False))
             navigated = False

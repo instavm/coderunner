@@ -325,6 +325,38 @@ class ThreadTests(unittest.IsolatedAsyncioTestCase):
                          "Stopped before I found anything.")
         self.assertEqual(stopped_reply(None), "Stopped before I found anything.")
 
+    def test_a_stopped_task_keeps_the_priced_results_it_read_that_match_its_request(self):
+        # Stopped after twenty minutes of reading prices it never put in a status line: "found nothing".
+        from coderunner.agent.loop import stopped_reply
+        ctx = RunContext(conversation="t", request="On the shop, find the cheapest Cola Zero 300ml can",
+                         said=["Opening the shop", "Sorting by price, low to high"],
+                         read=["Cola Zero 500 ml ₹40 ₹45 11% off (https://shop.example/p/1)",
+                               "Lemon Fizz 300 ml ₹25 (https://shop.example/p/2)",            # not what was asked
+                               "Cola Zero Sugar Free 500 ml, pack of 6 (https://shop.example/p/3)",   # no price
+                               "Cola Zero 500 ml ₹40 ₹45 11% off (https://shop.example/p/1)"])        # read twice
+        self.assertEqual(stopped_reply(ctx), "I stopped here. What I had found so far:\n"
+                                             "- Cola Zero 500 ml ₹40 ₹45 11% off (https://shop.example/p/1)")
+        ctx.read += [f"Cola Zero pack {n} ₹{n}0 (https://shop.example/p/{n})" for n in range(10, 30)]
+        lines = stopped_reply(ctx).split("\n")[1:]
+        self.assertEqual(len(lines), 6)                                      # the latest few, not all of them
+        self.assertEqual(lines[-1], "- Cola Zero pack 29 ₹290 (https://shop.example/p/29)")
+
+    async def test_the_result_list_tool_keeps_what_it_read_for_an_answer_cut_short(self):
+        from types import SimpleNamespace
+        from coderunner.agent.tools import browser_tools
+
+        class Broker:
+            async def items(self, **options):
+                return {"ok": True, "url": "https://shop.example/search?q=cola", "total": 2,
+                        "items": [{"text": "Cola Zero  500 ml\n₹40", "href": "https://shop.example/p/1", "ref": 4},
+                                  {"text": "Lemon Fizz ₹25", "href": ""}]}
+        tools = {tool.name: tool for tool in browser_tools(SimpleNamespace(browser=Broker(), vision=False, driver=None))}
+        ctx = SimpleNamespace(tainted=False, read=[])
+        await tools["browser_list"].handler({}, ctx)
+        self.assertEqual(ctx.read, ["Cola Zero 500 ml ₹40 (https://shop.example/p/1)", "Lemon Fizz ₹25"])
+        from coderunner.agent.journal import CTX_FIELDS
+        self.assertEqual(CTX_FIELDS["read"], 40)                             # kept over a restart
+
     async def test_a_tool_that_fails_and_a_model_that_stops_answering_are_said_without_plumbing(self):
         with FakeOpenAI() as fake:
             class Broken:

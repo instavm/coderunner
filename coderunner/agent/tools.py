@@ -390,8 +390,7 @@ def browser_tools(svc) -> list[Tool]:
                 b.page_chars = prev_chars
 
     async def _home_instead(asked: str, raw: Any, ctx) -> Any:
-        """An address on a site that is not there (a search or product address written from memory, as
-        zomato.com/search/monster) opens the site's home page instead, with its search box named: a person
+        """An address on a site that is not there (a search or product address written from memory) opens the site's home page instead, with its search box named: a person
         searches a site with its search box, and the model otherwise guessed the next address."""
         from .recovery import SEARCH_HOSTS, classify_dead_page, reg_host
         if not (isinstance(raw, dict) and raw.get("ok") is not False and isinstance(raw.get("content"), str)):
@@ -467,6 +466,11 @@ def browser_tools(svc) -> list[Tool]:
             return _short_address(href)
         lines = [(f"[{item['ref']}] " if item.get("ref") else "- ") + item.get("text", "")
                  + (f" -> {link(item['href'])}" if item.get("href") else "") for item in items]
+        read = getattr(ctx, "read", None)
+        if isinstance(read, list):              # kept for an answer cut short (agent.loop.findings)
+            read += [" ".join(str(item.get("text", "")).split())[:160] + (f" ({item['href']})" if item.get("href")
+                                                                           else "") for item in items]
+            del read[:-40]
         shown = start + len(items)
         more = f"\n{total - shown} more: browser_list start={shown}" if shown < total else ""
         return (f"url: {_short_address(result.get('url', ''))}\nThe page's main list, items {start + 1}-{shown} of "
