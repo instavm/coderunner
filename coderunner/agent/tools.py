@@ -466,6 +466,11 @@ def browser_tools(svc) -> list[Tool]:
             return _short_address(href)
         lines = [(f"[{item['ref']}] " if item.get("ref") else "- ") + item.get("text", "")
                  + (f" -> {link(item['href'])}" if item.get("href") else "") for item in items]
+        read = getattr(ctx, "read", None)
+        if isinstance(read, list):              # kept for an answer cut short (agent.loop.findings)
+            read += [" ".join(str(item.get("text", "")).split())[:160] + (f" ({item['href']})" if item.get("href")
+                                                                           else "") for item in items]
+            del read[:-40]
         shown = start + len(items)
         more = f"\n{total - shown} more: browser_list start={shown}" if shown < total else ""
         return (f"url: {_short_address(result.get('url', ''))}\nThe page's main list, items {start + 1}-{shown} of "

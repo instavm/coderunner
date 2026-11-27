@@ -204,7 +204,8 @@ class Tasks:
             elif kept["stopped"]:
                 found = (kept["state"] or {}).get("ctx") or {}
                 status, reply = "cancelled", stopped_reply(types.SimpleNamespace(found=found.get("found") or [],
-                                                                                 said=found.get("said") or []))
+                                                                                 said=found.get("said") or [],
+                                                                                 read=found.get("read") or []))
             else:
                 status, reply = "failed", GAVE_UP
                 daemon.svc.audit.write("task.failed", task=row["id"], error=f"restarted {kept['restarts']} times")

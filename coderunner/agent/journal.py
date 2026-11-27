@@ -24,7 +24,7 @@ BROWSER_MOVED = ("[Not a new request] The assistant restarted while you worked o
                  "you left it: look at the page again before acting on it.")
 # The run's own state kept with its conversation: sets as lists, the long lists cut to their latest entries.
 CTX_FIELDS = {"tainted": None, "content_tainted": None, "private_sources": set, "shared": set, "plan": None,
-              "shown": None, "told": None, "found": None, "said": 60, "unanswered": None, "known": set,
+              "shown": None, "told": None, "found": None, "said": 60, "read": 40, "unanswered": None, "known": set,
               "found_files": 100, "interim": None, "trail": 100, "sites_noted": set, "heard": None}
 
 

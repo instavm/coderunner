@@ -69,6 +69,30 @@ GENERIC_SLUG_TOKENS = frozenset({
 })
 
 OWN_TOOLS = frozenset({"plan_update", "tell_owner", "show_items"})
+# Query keys that number a page of results, and the pages of one list after which the run is told to answer.
+PAGE_KEYS = frozenset({"page", "p", "pg", "pageno", "page_no", "pagenum", "start", "offset"})
+RESULT_PAGES_ENOUGH = 4
+PAGED_NOTE = ("\nNote: you have now read {pages} pages of these results. If what you are looking for (a size, a "
+              "variant) is not on them, this site most likely does not sell it: answer now with the closest match "
+              "you found (its size or variant, price and link) and say the exact one was not there.")
+
+
+def result_list(url: str) -> tuple[str, str] | None:
+    """(the list, the page number) for an address that is one page of a list of results, else None: the same
+    list is the same host, path and query, its page number and sort order aside."""
+    parts = urllib.parse.urlsplit(url)
+    query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    number = next((v for k, v in query if k.lower() in PAGE_KEYS and v.isdigit()), None)
+    path = parts.path
+    if number is None:
+        found = re.search(r"/(?:page|p)/(\d+)/?$", path)
+        if not found:
+            return None
+        number, path = found.group(1), path[:found.start()]
+    rest = sorted((k, v) for k, v in query if k.lower() not in PAGE_KEYS and k.lower() not in ("sort", "order"))
+    return f"{reg_host(url)}{path}?{urllib.parse.urlencode(rest)}", number
+
+
 BROWSER_PAGE_TOOLS = frozenset({
     "browser_open", "browser_navigate", "browser_snapshot", "browser_click",
     "browser_batch", "browser_back", "browser_type", "browser_select",
@@ -222,6 +246,8 @@ class RunMonitor:
     last_replan_turn: int = 0
     pivots: list[dict[str, Any]] = field(default_factory=list)
     tools_used: set[str] = field(default_factory=set)
+    result_pages: dict[str, set[str]] = field(default_factory=dict)   # a list of results -> its pages read
+    paged_noted: set[str] = field(default_factory=set)
 
     def precheck_open(self, url: str) -> str:
         """If the exact URL already returned a 404/wall twice, short-circuit instead of wasting a reload."""
@@ -297,6 +323,17 @@ class RunMonitor:
                     f"\nNote: {host} returned an empty page. Try browser_search or another site."
                 )
             return out
+
+        # A list of results read page after page (page 2, 3, ... of one search): what is wanted is most likely
+        # not sold there. A run read nine pages, and the size it looked for was not on any of them.
+        listed = result_list(url) if url and not is_search_url(url) else None
+        if listed:
+            pages = self.result_pages.setdefault(listed[0], {"1"})
+            pages.add(listed[1])
+            if len(pages) >= RESULT_PAGES_ENOUGH and listed[0] not in self.paged_noted:
+                self.paged_noted.add(listed[0])
+                out["note"] = PAGED_NOTE.format(pages=len(pages))
+                out["needs_think"] = True
 
         # Healthy page read: record its exact full URL in our verified opened-pages ledger.
         if url and url.startswith(("http://", "https://")) and not is_search_url(url):
