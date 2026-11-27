@@ -347,73 +347,47 @@ a.att-file:hover { border-color: var(--accent); }
 .attach:disabled { opacity: .45; cursor: default; }
 .mic.recording { background: var(--danger); color: #fff; } .mic.recording .ico { stroke: #fff; fill: #fff; }
 .mic.recording:hover { background: var(--danger); filter: brightness(1.08); }
-.talk.on { background: var(--surface-active); color: var(--text); }
+.talk.on { background: var(--surface-active); color: var(--accent); }
 .mic-state { flex: none; align-self: center; display: inline-flex; align-items: center; gap: 8px; margin: 0 6px; font-size: 12.5px;
   color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mic-level { width: 36px; height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
 .mic-level i { display: block; height: 100%; background: var(--danger); transform-origin: left; transform: scaleX(.06); transition: transform .1s linear; }
 .mic-state.working .mic-level { display: none; }
 
-/* Live Talk strip: one hold pad + End, with a small wave that tracks state. */
-.talk-strip { display: flex; align-items: stretch; gap: 4px; padding: 6px 6px 6px 8px; border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface-2) 88%, var(--accent) 12%); border-radius: 16px 16px 0 0;
-  --talk-level: 0.12; transition: background .2s var(--ease); }
+/* Talk: one strip above the input. Hold the pad (or Space) to speak; End closes it. Bars follow the voice. */
+.talk-strip { display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px 8px; border-bottom: 1px solid var(--line);
+  background: var(--surface-2); border-radius: 16px 16px 0 0; --talk-level: 0.18; }
 .talk-strip[hidden] { display: none; }
-.talk-strip[data-state="listening"] { background: color-mix(in srgb, var(--surface-2) 78%, var(--accent) 22%); }
-.talk-strip[data-state="speaking"] { background: color-mix(in srgb, var(--surface-2) 82%, var(--ok) 18%); }
-.talk-strip[data-state="thinking"] { background: var(--surface-2); }
 .talk-pad { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; border: 0; background: none;
   text-align: left; padding: 6px 8px; border-radius: 10px; cursor: pointer; color: inherit; font: inherit;
   -webkit-user-select: none; user-select: none; touch-action: none; }
-.talk-pad:hover { background: rgb(127 127 127 / 6%); }
-.talk-pad:active, .talk-strip[data-state="listening"] .talk-pad { background: rgb(127 127 127 / 10%); }
+.talk-pad:disabled { cursor: progress; }
+.talk-pad:not(:disabled):hover, .talk-strip[data-state="listening"] .talk-pad { background: var(--surface-hover); }
 .talk-wave { flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 2.5px; width: 22px; height: 18px; }
-.talk-wave i { display: block; width: 2px; height: 100%; border-radius: 1px; background: var(--accent);
-  transform-origin: center; transform: scaleY(var(--talk-level)); opacity: .85; }
-.talk-strip[data-state="ready"] .talk-wave i { animation: talk-breathe 1.8s ease-in-out infinite; background: var(--muted); }
-.talk-strip[data-state="ready"] .talk-wave i:nth-child(1) { animation-delay: 0s; }
-.talk-strip[data-state="ready"] .talk-wave i:nth-child(2) { animation-delay: .12s; }
-.talk-strip[data-state="ready"] .talk-wave i:nth-child(3) { animation-delay: .24s; }
-.talk-strip[data-state="ready"] .talk-wave i:nth-child(4) { animation-delay: .12s; }
-.talk-strip[data-state="ready"] .talk-wave i:nth-child(5) { animation-delay: 0s; }
-.talk-strip[data-state="listening"] .talk-wave i { background: var(--accent); transform: scaleY(calc(var(--talk-level) * (0.45 + 0.55 * var(--i, .7))));
-  transition: transform .08s linear; animation: none; }
-.talk-strip[data-state="listening"] .talk-wave i:nth-child(1) { --i: .55; }
-.talk-strip[data-state="listening"] .talk-wave i:nth-child(2) { --i: .85; }
-.talk-strip[data-state="listening"] .talk-wave i:nth-child(3) { --i: 1; }
-.talk-strip[data-state="listening"] .talk-wave i:nth-child(4) { --i: .8; }
-.talk-strip[data-state="listening"] .talk-wave i:nth-child(5) { --i: .5; }
-.talk-strip[data-state="thinking"] .talk-wave i { background: var(--muted); animation: talk-think .9s ease-in-out infinite; }
-.talk-strip[data-state="thinking"] .talk-wave i:nth-child(2) { animation-delay: .1s; }
-.talk-strip[data-state="thinking"] .talk-wave i:nth-child(3) { animation-delay: .2s; }
-.talk-strip[data-state="thinking"] .talk-wave i:nth-child(4) { animation-delay: .3s; }
-.talk-strip[data-state="thinking"] .talk-wave i:nth-child(5) { animation-delay: .4s; }
-.talk-strip[data-state="speaking"] .talk-wave i { background: var(--ok); animation: talk-speak .7s ease-in-out infinite; }
-.talk-strip[data-state="speaking"] .talk-wave i:nth-child(1) { animation-delay: 0s; }
-.talk-strip[data-state="speaking"] .talk-wave i:nth-child(2) { animation-delay: .08s; }
-.talk-strip[data-state="speaking"] .talk-wave i:nth-child(3) { animation-delay: .16s; }
-.talk-strip[data-state="speaking"] .talk-wave i:nth-child(4) { animation-delay: .24s; }
-.talk-strip[data-state="speaking"] .talk-wave i:nth-child(5) { animation-delay: .32s; }
-@keyframes talk-breathe { 0%, 100% { transform: scaleY(.22); opacity: .45; } 50% { transform: scaleY(.55); opacity: .9; } }
-@keyframes talk-think { 0%, 100% { transform: scaleY(.2); opacity: .35; } 50% { transform: scaleY(.7); opacity: .85; } }
+.talk-wave i { display: block; width: 2px; height: 100%; border-radius: 1px; background: var(--muted);
+  transform: scaleY(.22); transition: transform .08s linear; }
+.talk-strip[data-state="listening"] .talk-wave i { background: var(--accent);
+  transform: scaleY(calc(var(--talk-level) * (0.45 + 0.55 * var(--i, .7)))); }
+.talk-wave i:nth-child(1) { --i: .55; } .talk-wave i:nth-child(2) { --i: .85; } .talk-wave i:nth-child(3) { --i: 1; }
+.talk-wave i:nth-child(4) { --i: .8; } .talk-wave i:nth-child(5) { --i: .5; }
+.talk-strip[data-state="speaking"] .talk-wave i { background: var(--accent); animation: talk-speak .7s ease-in-out infinite; }
+.talk-strip[data-state="starting"] .talk-wave i, .talk-strip[data-state="thinking"] .talk-wave i { animation: talk-think .9s ease-in-out infinite; }
+.talk-wave i:nth-child(2) { animation-delay: .1s; } .talk-wave i:nth-child(3) { animation-delay: .2s; }
+.talk-wave i:nth-child(4) { animation-delay: .3s; } .talk-wave i:nth-child(5) { animation-delay: .4s; }
+@keyframes talk-think { 0%, 100% { transform: scaleY(.2); opacity: .4; } 50% { transform: scaleY(.6); opacity: .9; } }
 @keyframes talk-speak { 0%, 100% { transform: scaleY(.28); } 50% { transform: scaleY(.95); } }
+@media (prefers-reduced-motion: reduce) { .talk-wave i { animation: none !important; } }
 .talk-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.talk-state { font-size: 12px; font-weight: 520; color: var(--text); letter-spacing: .01em; line-height: 1.2; }
-.talk-caption { font-size: 12px; line-height: 1.3; color: var(--muted); max-height: 2.6em; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
-.talk-caption.reply { color: var(--text); white-space: normal; display: -webkit-box; -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical; }
-.talk-end { flex: none; align-self: center; border: 0; background: none; color: var(--muted); font: inherit;
-  font-size: 12px; font-weight: 480; height: 28px; padding: 0 10px; border-radius: 7px; cursor: pointer; }
+.talk-state { font-size: 12px; font-weight: 520; color: var(--text); line-height: 1.2; }
+.talk-caption { font-size: 12px; line-height: 1.3; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.talk-caption.reply { color: var(--text); white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.talk-end { flex: none; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: 480;
+  height: 28px; padding: 0 10px; border-radius: 7px; cursor: pointer; }
 .talk-end:hover { background: var(--surface-hover); color: var(--text); }
 
-.meta-btn.on { color: var(--text); background: var(--surface-hover); }
-.speak-toggle .ico { width: 13px; height: 13px; opacity: .8; }
-.speak-toggle:not(.on) .ico { opacity: .45; }
-.speak-toggle.on { color: var(--text); background: var(--surface-hover); }
-.speak-toggle .speak-label { font-variant: normal; }
-.speak-now { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; font-size: 12px; color: var(--muted); }
-.speak-now .ico { width: 13px; height: 13px; stroke: currentColor; }
+.speak-toggle .ico { width: 15px; height: 15px; opacity: .8; }
+.speak-toggle.on, .speak-toggle.playing { color: var(--accent); }
+.speak-toggle.playing .speak-label { color: var(--text); }
 .attach .ico { width: 17px; height: 17px; stroke: currentColor; stroke-width: 1.65; }
 .send { flex: none; width: 30px; height: 30px; border-radius: 9px; border: 0; background: var(--send-bg); color: var(--send-fg);
   display: grid; place-items: center; margin-left: 2px; opacity: .34; }
@@ -1111,6 +1085,8 @@ button.setup-other:hover { color: var(--accent); }
 .set-row-text { min-width: 0; flex: 1; }
 .set-row-label { font-weight: 500; line-height: 1.3; }
 .set-row-desc { margin-top: 2px; line-height: 1.4; overflow-wrap: anywhere; }
+.set-row-desc a { color: var(--accent); text-decoration: none; }
+.set-row-desc a:hover { text-decoration: underline; }
 .set-row-ctrl { display: flex; align-items: center; gap: 8px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
 .set-row-ctrl .btn { height: 28px; padding: 0 11px; font-size: 12px; border-radius: 7px; }
 .set-note { margin: 2px 2px 0; }

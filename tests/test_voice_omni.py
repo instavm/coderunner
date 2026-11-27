@@ -264,6 +264,17 @@ class SlotAndSpeaker(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(speaker._lfm_ready())
 
 
+class VoiceFit(unittest.TestCase):
+    def test_audio_projector_counts_toward_memory(self):
+        from coderunner.models import fit, hardware
+        entry = catalog.get("lfm3-omni-2b")
+        hw = hardware.Hardware("darwin", "arm64", budget_gb=12, bandwidth_gbs=150)
+        with_projector = fit.estimate(entry, hw, ctx=8192, runtime="voice")["need_gb"]
+        art = dict(entry["artifacts"]["gguf"], mmproj_required=False)
+        without = fit.estimate(dict(entry, artifacts={"gguf": art}), hw, ctx=8192, runtime="voice")["need_gb"]
+        self.assertGreater(with_projector, without)
+
+
 class VoiceCommandArgs(unittest.TestCase):
     def test_reasoning_off_once(self):
         rt = VoiceRuntime(Config({}))

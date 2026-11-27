@@ -702,20 +702,19 @@ class TaskView {
       copy.type = "button";
       copy.onclick = () => { navigator.clipboard?.writeText(String(e.reply || "")); copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1400); };
       acts.appendChild(copy);
-      if (state.voiceOmni?.ready) {
-        const listen = el("button", "copy-btn", "Listen");
-        listen.type = "button";
-        listen.onclick = async () => {
-          listen.disabled = true; listen.textContent = "…";
-          try {
-            const meta = await api("/api/voice/speak", {method: "POST", body: JSON.stringify({
-              text: String(e.reply || ""), conversation: state.conversation, kind: "listen"})});
-            await playUtterance(meta);
-            listen.textContent = "Listen"; listen.disabled = false;
-          } catch (err) { listen.disabled = false; listen.textContent = "Listen"; notice(err.message); }
-        };
-        acts.appendChild(listen);
-      }
+      const listen = el("button", "copy-btn listen-btn", "Listen");
+      listen.type = "button";
+      listen.hidden = !state.voiceOmni?.ready;
+      listen.onclick = async () => {
+        listen.disabled = true; listen.textContent = "Preparing…";
+        try {
+          const meta = await api("/api/voice/speak", {method: "POST", body: JSON.stringify({
+            text: String(e.reply || ""), conversation: state.conversation, kind: "listen"})});
+          await playUtterance(meta);
+        } catch (err) { notice(err.message); }
+        listen.disabled = false; listen.textContent = "Listen";
+      };
+      acts.appendChild(listen);
       const saveNote = el("button", "copy-btn", "Save to Notes");
       saveNote.type = "button";
       saveNote.onclick = async () => {
@@ -1475,32 +1474,31 @@ async function finishDictation(kind) {
 
 $("mic").onclick = () => { if (dictation.recorder) stopDictation(true); else if (!dictation.busy) startDictation(); };
 
-// ---- live Talk (LFM3-Omni) ------------------------------------------------------------
+// ---- live Talk and spoken replies (LFM3-Omni) ---------------------------------------------
 const TALK_ICON = "M6 10v4 M9 7v10 M12 5v14 M15 8v8 M18 10v4";
 const SPEAKER_ICON = "M11 5L6 9H3v6h3l5 4V5z M16 9a4 4 0 0 1 0 6 M18.5 7a7 7 0 0 1 0 10";
-const talk = {ws: null, stream: null, ctx: null, processor: null, worklet: null, playing: [], nextAt: 0, listening: false, caption: ""};
-const speechPlayer = {audio: null, source: null, stopBtn: null};
+const SPEAKER_OFF_ICON = "M11 5L6 9H3v6h3l5 4V5z M16 9l5 6 M21 9l-5 6";
+const TALK_READY = "Hold to talk, or hold Space";
+const talk = {ws: null, stream: null, ctx: null, processor: null, playing: [], nextAt: 0, listening: false,
+              ready: false, ending: false, caption: ""};
+const speechPlayer = {audio: null, source: null, id: ""};
 
-function setTalkUi(state, caption) {
-  const strip = $("talkStrip"), label = $("talkState"), cap = $("talkCaption"), hold = $("talkHold");
+function setTalkUi(label, caption) {
+  const strip = $("talkStrip");
   if (!strip) return;
-  const key = (state || "Ready").toLowerCase();
-  strip.dataset.state = key;
-  if (state) label.textContent = state;
+  strip.dataset.state = (label || "Ready").toLowerCase();
+  $("talkState").textContent = label;
   if (caption != null) {
-    cap.textContent = caption;
-    cap.classList.toggle("reply", state === "Speaking");
+    $("talkCaption").textContent = caption;
+    $("talkCaption").classList.toggle("reply", label === "Speaking");
   }
-  if (hold) {
-    hold.setAttribute("aria-label",
-      state === "Listening" ? "Release to send" :
-      state === "Speaking" ? "Hold to interrupt" : "Hold to talk");
-  }
+  $("talkHold").disabled = label === "Starting";
+  $("talkHold").setAttribute("aria-label",
+    label === "Listening" ? "Release to send" : label === "Speaking" ? "Hold to interrupt" : "Hold to talk");
 }
 
 function setTalkLevel(level) {
-  const strip = $("talkStrip");
-  if (strip) strip.style.setProperty("--talk-level", Math.max(0.12, Math.min(1, level)).toFixed(3));
+  $("talkStrip")?.style.setProperty("--talk-level", Math.max(0.12, Math.min(1, level)).toFixed(3));
 }
 
 function syncSpeakToggle(on) {
@@ -1508,11 +1506,20 @@ function syncSpeakToggle(on) {
   if (!btn) return;
   btn.classList.toggle("on", Boolean(on));
   btn.setAttribute("aria-pressed", on ? "true" : "false");
-  btn.title = on
-    ? "Spoken replies on — short asides and the answer while a task runs. Click to silence."
-    : "Spoken replies off. Click to hear short asides and answers while a task runs.";
-  const label = btn.querySelector(".speak-label");
-  if (label) label.textContent = "Spoken replies";
+  if (!btn.classList.contains("playing")) drawSpeakToggle();
+}
+
+function drawSpeakToggle() {
+  const btn = $("speakToggle"), on = btn.classList.contains("on");
+  if (btn.classList.contains("playing")) {
+    btn.replaceChildren(icon(SPEAKER_ICON), el("span", "speak-label", "Stop"));
+    btn.title = "Stop speaking";
+    btn.setAttribute("aria-label", "Stop speaking");
+  } else {
+    btn.replaceChildren(icon(on ? SPEAKER_ICON : SPEAKER_OFF_ICON));
+    btn.title = on ? "Spoken replies are on" : "Spoken replies are off";
+    btn.setAttribute("aria-label", "Spoken replies");
+  }
 }
 
 function pcm16ToBase64(int16) {
@@ -1523,11 +1530,6 @@ function pcm16ToBase64(int16) {
 }
 
 function downsampleTo16k(float32, inRate) {
-  if (inRate === 16000) {
-    const out = new Int16Array(float32.length);
-    for (let i = 0; i < float32.length; i++) out[i] = Math.max(-32768, Math.min(32767, float32[i] * 32767));
-    return out;
-  }
   const ratio = inRate / 16000, outLen = Math.floor(float32.length / ratio);
   const out = new Int16Array(outLen);
   for (let i = 0; i < outLen; i++) {
@@ -1538,10 +1540,10 @@ function downsampleTo16k(float32, inRate) {
 }
 
 function playPcm16Chunk(base64, rate = 24000) {
-  if (!talk.ctx) talk.ctx = new AudioContext({sampleRate: rate});
+  if (!talk.ctx) return;
   const raw = atob(base64), bytes = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-  const samples = new Int16Array(bytes.buffer);
+  const samples = new Int16Array(bytes.buffer, 0, bytes.length >> 1);
   const buf = talk.ctx.createBuffer(1, samples.length, rate);
   const ch = buf.getChannelData(0);
   for (let i = 0; i < samples.length; i++) ch[i] = samples[i] / 32768;
@@ -1562,17 +1564,25 @@ function stopTalkPlayback() {
 }
 
 async function openTalk() {
-  if (talk.ws && talk.ws.readyState <= 1) { closeTalk(); return; }
-  let stream;
-  try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); }
-  catch (err) { notice(err?.name === "NotFoundError" ? "No microphone was found on this computer." : NO_MICROPHONE); return; }
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${location.host}/api/voice/realtime`);
-  talk.ws = ws; talk.stream = stream;
+  if (talk.ws || talk.stream) { closeTalk(); return; }
+  stopUtterance();
+  talk.ending = false; talk.ready = false; talk.caption = "";
   $("talkStrip").hidden = false;
   $("talkBtn").classList.add("on");
-  setTalkUi("Ready", "Hold to talk · Space");
+  setTalkUi("Starting", "Loading the voice model…");
   setTalkLevel(0.18);
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); }
+  catch (err) {
+    closeTalk();
+    notice(err?.name === "NotFoundError" ? "No microphone was found on this computer." : NO_MICROPHONE);
+    return;
+  }
+  if ($("talkStrip").hidden) { stream.getTracks().forEach((t) => t.stop()); return; }   // ended meanwhile
+  talk.stream = stream;
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${location.host}/api/voice/realtime`);
+  talk.ws = ws;
   ws.onopen = () => {
     ws.send(JSON.stringify({
       type: "session.update",
@@ -1586,28 +1596,30 @@ async function openTalk() {
   ws.onmessage = (ev) => {
     let msg; try { msg = JSON.parse(ev.data); } catch { return; }
     const type = msg.type || "";
-    if (type === "response.output_audio.delta" && (msg.delta || msg.audio)) {
+    if (type === "coderunner.talk.ready") {
+      talk.ready = true;
+      setTalkUi("Ready", TALK_READY);
+    } else if (type.endsWith("audio.delta") && (msg.delta || msg.audio)) {
       setTalkUi("Speaking");
       playPcm16Chunk(msg.delta || msg.audio, msg.sample_rate || 24000);
-    } else if (type.includes("audio.delta") && msg.delta) {
-      setTalkUi("Speaking");
-      playPcm16Chunk(msg.delta, 24000);
-    } else if (type === "response.output_text.delta" || type === "response.text.delta") {
+    } else if (type === "response.output_text.delta" || type === "response.text.delta"
+               || type === "response.audio_transcript.delta" || type === "response.output_audio_transcript.delta") {
       talk.caption = (talk.caption || "") + (msg.delta || msg.text || "");
       setTalkUi("Speaking", talk.caption);
-    } else if (type === "response.audio_transcript.delta") {
-      talk.caption = (talk.caption || "") + (msg.delta || "");
-      setTalkUi("Speaking", talk.caption);
     } else if (type === "response.done" || type === "response.completed") {
-      setTalkUi("Ready", talk.caption || "Hold to talk · Space");
+      setTalkUi("Ready", talk.caption || TALK_READY);
       setTalkLevel(0.18);
       talk.caption = "";
     } else if (type === "error") {
-      notice(msg.error?.message || msg.message || "Talk failed.");
+      notice(msg.error?.message || msg.message || "Talk stopped working.");
     }
   };
-  ws.onclose = () => { closeTalk(true); };
-  ws.onerror = () => notice("Could not reach the voice model.");
+  ws.onclose = (ev) => {
+    if (talk.ws !== ws) return;
+    const said = talk.ending ? "" : ev?.reason || (talk.ready ? "" : "Could not start Talk.");
+    closeTalk();
+    if (said) notice(said);
+  };
   const audio = new AudioContext();
   talk.ctx = audio;
   const source = audio.createMediaStreamSource(stream);
@@ -1620,33 +1632,38 @@ async function openTalk() {
   processor.connect(audio.destination);
   const heard = new Uint8Array(512);
   processor.onaudioprocess = (e) => {
+    if (!talk.listening || !talk.ws || talk.ws.readyState !== 1) return;
     meter.getByteTimeDomainData(heard);
     let sum = 0; for (const v of heard) sum += (v - 128) * (v - 128);
-    const level = Math.min(1, Math.sqrt(sum / heard.length) / 40);
-    if (talk.listening) setTalkLevel(level);
-    if (!talk.listening || !talk.ws || talk.ws.readyState !== 1) return;
-    const input = e.inputBuffer.getChannelData(0);
-    const pcm = downsampleTo16k(input, audio.sampleRate);
+    setTalkLevel(Math.min(1, Math.sqrt(sum / heard.length) / 40));
+    const pcm = downsampleTo16k(e.inputBuffer.getChannelData(0), audio.sampleRate);
     talk.ws.send(JSON.stringify({type: "input_audio_buffer.append", audio: pcm16ToBase64(pcm)}));
   };
 }
 
-function closeTalk(fromClose) {
+function closeTalk() {
+  talk.ending = true;
   talk.listening = false;
+  talk.ready = false;
+  talk.caption = "";
   stopTalkPlayback();
   talk.processor?.disconnect();
   talk.stream?.getTracks().forEach((t) => t.stop());
-  if (talk.ws && talk.ws.readyState <= 1 && !fromClose) talk.ws.close();
+  const ws = talk.ws;
   talk.ws = null; talk.stream = null; talk.processor = null;
+  if (ws && ws.readyState <= 1) ws.close();
+  talk.ctx?.close().catch(() => {});
+  talk.ctx = null;
   $("talkStrip").hidden = true;
   $("talkBtn")?.classList.remove("on");
-  setTalkUi("Ready", "Hold to talk · Space");
+  setTalkUi("Ready", TALK_READY);
   setTalkLevel(0.18);
 }
 
 function talkHold(start) {
-  if (!talk.ws || talk.ws.readyState !== 1) return;
+  if (!talk.ready || !talk.ws || talk.ws.readyState !== 1) return;
   if (start) {
+    if (talk.listening) return;
     stopTalkPlayback();
     talk.listening = true;
     talk.caption = "";
@@ -1655,7 +1672,7 @@ function talkHold(start) {
     talk.ws.send(JSON.stringify({type: "input_audio_buffer.clear"}));
   } else if (talk.listening) {
     talk.listening = false;
-    setTalkUi("Thinking", "Working it out…");
+    setTalkUi("Thinking", "…");
     setTalkLevel(0.2);
     talk.ws.send(JSON.stringify({type: "input_audio_buffer.commit"}));
     talk.ws.send(JSON.stringify({type: "response.create"}));
@@ -1668,72 +1685,65 @@ $("talkHold").onpointerdown = (e) => { e.preventDefault(); $("talkHold").setPoin
 $("talkHold").onpointerup = (e) => { e.preventDefault(); talkHold(false); };
 $("talkHold").onpointercancel = () => { if (talk.listening) talkHold(false); };
 $("talkEnd").onclick = () => closeTalk();
+const typing = (target) => target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
 document.addEventListener("keydown", (e) => {
-  if ($("talkStrip")?.hidden) return;
-  if (e.code === "Space" && !e.repeat && (e.target === document.body || e.target === $("talkHold"))) {
-    e.preventDefault(); talkHold(true);
-  }
-  if (e.key === "Escape") closeTalk();
+  if ($("talkStrip").hidden || typing(e.target)) return;
+  if (e.code === "Space" && !e.repeat) { e.preventDefault(); talkHold(true); }
+  else if (e.key === "Escape" && !document.querySelector(".set-backdrop")) closeTalk();
 });
 document.addEventListener("keyup", (e) => {
-  if ($("talkStrip")?.hidden) return;
-  if (e.code === "Space") talkHold(false);
+  if ($("talkStrip").hidden || e.code !== "Space") return;
+  if (talk.listening) { e.preventDefault(); talkHold(false); }
 });
 
 async function playUtterance(meta) {
-  if (!meta?.id) return;
+  if (!meta?.id || meta.id === speechPlayer.id || talk.ws) return;   // once each; never over Talk
   stopUtterance();
+  speechPlayer.id = meta.id;
   const res = await fetch(`/api/voice/speech/${meta.id}`, {credentials: "same-origin", headers: {"X-CodeRunner": "1"}});
-  if (!res.ok) return;
+  if (!res.ok || speechPlayer.id !== meta.id) return;
   const buf = await res.arrayBuffer();
   const rate = Number((/rate=(\d+)/.exec(res.headers.get("content-type") || "") || [])[1] || meta.rate || 24000);
   const ctx = new AudioContext({sampleRate: rate});
-  const samples = new Int16Array(buf);
-  const audioBuf = ctx.createBuffer(1, samples.length, rate);
+  const samples = new Int16Array(buf, 0, buf.byteLength >> 1);
+  const audioBuf = ctx.createBuffer(1, Math.max(1, samples.length), rate);
   const ch = audioBuf.getChannelData(0);
   for (let i = 0; i < samples.length; i++) ch[i] = samples[i] / 32768;
   const src = ctx.createBufferSource();
   src.buffer = audioBuf;
   src.connect(ctx.destination);
   speechPlayer.audio = ctx; speechPlayer.source = src;
-  showSpeakNow(meta.text, () => stopUtterance());
-  src.onended = () => { hideSpeakNow(); speechPlayer.source = null; };
+  setSpeaking(true);
+  src.onended = () => { if (speechPlayer.source === src) stopUtterance(); };
   src.start();
 }
 
 function stopUtterance() {
-  try { speechPlayer.source?.stop(); } catch {}
-  try { speechPlayer.audio?.close(); } catch {}
+  const {source, audio} = speechPlayer;
   speechPlayer.source = null; speechPlayer.audio = null;
-  hideSpeakNow();
+  try { source?.stop(); } catch {}
+  audio?.close().catch(() => {});
+  setSpeaking(false);
 }
 
-function showSpeakNow(text, onStop) {
-  hideSpeakNow();
-  const row = el("div", "speak-now");
-  row.append(icon(SPEAKER_ICON), el("span", "", trunc(text || "Speaking…", 60)));
-  const stop = el("button", "linkish small", "Stop");
-  stop.type = "button";
-  stop.onclick = onStop;
-  row.appendChild(stop);
-  speechPlayer.stopBtn = row;
-  const host = document.querySelector(".task .now") || $("tookRow") || $("thread");
-  host?.appendChild?.(row) || $("thread").appendChild(row);
-}
-
-function hideSpeakNow() {
-  speechPlayer.stopBtn?.remove();
-  speechPlayer.stopBtn = null;
+function setSpeaking(on) {
+  const btn = $("speakToggle");
+  btn.classList.toggle("playing", on);
+  if (on) btn.hidden = false;
+  else btn.hidden = !state.voiceOmni?.ready;
+  drawSpeakToggle();
 }
 
 async function toggleSpeakTasks() {
+  if ($("speakToggle").classList.contains("playing")) { stopUtterance(); return; }
   const on = !$("speakToggle").classList.contains("on");
   try {
     await api("/api/voice/settings", {method: "POST", body: JSON.stringify({action: "config", speak_tasks: on})});
     syncSpeakToggle(on);
+    if (state.voiceOmni) state.voiceOmni.speak_tasks = on;
   } catch (err) { notice(err.message); }
 }
-$("speakToggle").replaceChildren(icon(SPEAKER_ICON), Object.assign(el("span", "speak-label"), {textContent: "Spoken replies"}));
+drawSpeakToggle();
 $("speakToggle").onclick = () => toggleSpeakTasks();
 
 document.querySelectorAll(".example").forEach((b) => b.onclick = () => { $("input").value = b.textContent; grow(); $("input").focus(); });
@@ -2139,8 +2149,10 @@ async function loadModels() {
     const omni = status.voice_omni || {};
     state.voiceOmni = omni;
     $("talkBtn").hidden = !omni.ready;
-    $("speakToggle").hidden = !omni.ready;
+    if (!omni.ready && talk.ws) closeTalk();
+    $("speakToggle").hidden = !omni.ready && !speechPlayer.source;
     syncSpeakToggle(Boolean(omni.speak_tasks));
+    document.querySelectorAll(".listen-btn").forEach((b) => { b.hidden = !omni.ready; });
     const models = status.models || {}, remote = status.remote;
     // On Claude every task is there already, so none is offered there again; on the owner's own server it is.
     const server = remote?.provider === "openai";

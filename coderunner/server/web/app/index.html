@@ -75,15 +75,15 @@
     <div class="composer-shell">
       <div id="quickModelPop" class="quick-pop" role="menu" hidden></div>
       <form id="composer" autocomplete="off">
-        <div id="talkStrip" class="talk-strip" data-state="ready" hidden>
+        <div id="talkStrip" class="talk-strip" data-state="ready" role="group" aria-label="Talk" hidden>
           <button id="talkHold" class="talk-pad" type="button" aria-label="Hold to talk">
             <span class="talk-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
             <span class="talk-copy">
               <span id="talkState" class="talk-state">Ready</span>
-              <span id="talkCaption" class="talk-caption">Hold to talk · Space</span>
+              <span id="talkCaption" class="talk-caption" aria-live="polite">Hold to talk, or hold Space</span>
             </span>
           </button>
-          <button id="talkEnd" class="talk-end" type="button" title="End talk">End</button>
+          <button id="talkEnd" class="talk-end" type="button">End</button>
         </div>
         <div id="attachments" class="attachments" hidden></div>
         <textarea id="input" rows="1" placeholder="Describe a task…" aria-label="Task"></textarea>
@@ -92,16 +92,12 @@
             <button id="attach" class="attach" type="button" title="Attach files" aria-label="Attach files"></button>
             <button id="mic" class="attach mic" type="button" hidden title="Dictate. macOS dictation also works here: Edit, Start Dictation."
                     aria-label="Dictate"></button>
-            <button id="talkBtn" class="attach talk" type="button" hidden title="Talk with LFM3-Omni"
-                    aria-label="Talk"></button>
+            <button id="talkBtn" class="attach talk" type="button" hidden title="Talk" aria-label="Talk"></button>
             <span id="micState" class="mic-state" role="status" hidden><span class="mic-level"><i id="micLevel"></i></span><span id="micTime">0:00</span></span>
           </div>
           <div class="composer-right">
-            <button id="speakToggle" class="meta-btn speak-toggle" type="button" hidden
-                    title="Spoken replies off. Click to hear short asides and answers while a task runs."
-                    aria-pressed="false">
-              <span class="speak-label">Spoken replies</span>
-            </button>
+            <button id="speakToggle" class="meta-btn speak-toggle" type="button" hidden aria-pressed="false"
+                    aria-label="Spoken replies"></button>
             <button id="quickModelBtn" class="meta-btn" type="button" title="Switch model">Local</button>
             <button id="quickThinkBtn" class="meta-btn" type="button" title="Thinking mode">Auto</button>
             <button id="send" class="send" type="submit" aria-label="Start task"></button>

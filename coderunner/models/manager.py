@@ -1195,7 +1195,7 @@ def voice_omni_status(config) -> dict:
         "speak_tasks": bool(config.get("voice.speak_tasks")),
         "voice": config.get("voice.voice") or "female",
         "language": config.get("voice.language") or "",
-        "label": ("Ready, turns with chat" if exclusive else "Ready") if ready else "Not installed",
+        "label": ("Ready. Speaks when the assistant is idle." if exclusive else "Ready") if ready else "Not installed",
     }
 
 

@@ -65,7 +65,7 @@ def _good_ceiling(budget_gb: float) -> float:
 def estimate(entry: dict, hw: Hardware, ctx: int = 32768, runtime: str | None = None) -> dict:
     art = catalog.artifact(entry, runtime) or {}
     weights = art.get("size_gb", 0.0)
-    mmproj = art.get("mmproj_gb", 0.0) if catalog.has_vision(entry, runtime) else 0.0
+    mmproj = art.get("mmproj_gb", 0.0) if catalog.needs_mmproj(entry, runtime) else 0.0
     kv_bytes = art.get("kv_bytes", 1 if (runtime == "llama.cpp" and ctx >= 65536) else 2)
     kv = kv_gib(entry, ctx) * kv_bytes / 2
     need = (weights + mmproj) * GB + kv + _overhead_gib(weights, ctx)

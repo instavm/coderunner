@@ -1414,8 +1414,8 @@
         "gguf": {
           "repo": "LiquidAI/LFM3-Omni-2B-GGUF",
           "quant": "Q4_K_M",
-          "size_gb": 1.4,
-          "mmproj_gb": 0.9,
+          "size_gb": 1.1,
+          "mmproj_gb": 0.3,
           "mmproj_required": true,
           "vision": false,
           "server_args": ["--reasoning", "off"]
