@@ -501,6 +501,9 @@ class TaskView {
       // Read by the task at its step: its line says so until its next step says what it does.
       case "steer_taken": if (this.now && e.ts && Date.now() / 1000 - e.ts < 5) this.now.what.textContent = "Got it"; break;
       case "steer_moved": this.steers?.get(e.id)?.remove(); this.steers?.delete(e.id); break;   // a task of its own now
+      case "voice_utterance":
+        if (e.utterance) playUtterance(e.utterance);
+        break;
     }
     this.tick();
   }
@@ -699,6 +702,20 @@ class TaskView {
       copy.type = "button";
       copy.onclick = () => { navigator.clipboard?.writeText(String(e.reply || "")); copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1400); };
       acts.appendChild(copy);
+      const listen = el("button", "copy-btn listen-btn", "Listen");
+      listen.type = "button";
+      listen.hidden = !state.voiceOmni?.ready;
+      listen.onclick = async () => {
+        listen.disabled = true; listen.textContent = "Preparing…";
+        try {
+          const meta = await api("/api/voice/speak", {method: "POST", body: JSON.stringify({
+            text: String(e.reply || ""), conversation: state.conversation, kind: "listen"})});
+          clearSpeech();
+          playUtterance(meta);
+        } catch (err) { notice(err.message); }
+        listen.disabled = false; listen.textContent = "Listen";
+      };
+      acts.appendChild(listen);
       const saveNote = el("button", "copy-btn", "Save to Notes");
       saveNote.type = "button";
       saveNote.onclick = async () => {
@@ -1138,7 +1155,10 @@ function listen() {
       state.running.delete(e.task);
       if (!state.running.size) state.activeSurface = "";
     }
-    if (e.conversation === state.conversation) {
+    talkSees(e);
+    if (e.type === "voice_utterance" && e.utterance) {
+      if (!e.conversation || e.conversation === state.conversation) playUtterance(e.utterance);
+    } else if (e.conversation === state.conversation) {
       if (state.loading?.id === e.conversation) state.loading.events.push(e);
       else showEvent(e);
     } else if (e.type === "activity" && e.event === "approval.requested") {
@@ -1455,6 +1475,287 @@ async function finishDictation(kind) {
 }
 
 $("mic").onclick = () => { if (dictation.recorder) stopDictation(true); else if (!dictation.busy) startDictation(); };
+
+// ---- Talk and spoken replies ---------------------------------------------------------------
+// Talk: hold the strip (or Space) and speak. The words are transcribed on this computer (POST /api/voice) and
+// sent as a task in the open thread, as if typed: the assistant does the work with its tools. While it works,
+// the daemon says what it is doing (voice/narrator.py), and the strip shows the same: working, needs you,
+// speaking. Speaking again while it works goes to the task, as a typed message would.
+const TALK_ICON = "M6 10v4 M9 7v10 M12 5v14 M15 8v8 M18 10v4";
+const SPEAKER_ICON = "M11 5L6 9H3v6h3l5 4V5z M16 9a4 4 0 0 1 0 6 M18.5 7a7 7 0 0 1 0 10";
+const SPEAKER_OFF_ICON = "M11 5L6 9H3v6h3l5 4V5z M16 9l5 6 M21 9l-5 6";
+const TALK_READY = "Hold to talk, or hold Space";
+const FINAL_SPEECH = new Set(["done", "failed", "cancelled", "listen", "interim", "talk"]);
+const talk = {open: false, want: false, recorder: null, stream: null, chunks: [], meter: null, timer: null,
+              sending: false, conversations: new Set(), base: ["Ready", TALK_READY]};
+const speechPlayer = {audio: null, source: null, id: "", queue: [], text: ""};
+
+function setTalkUi(label, caption) {
+  const strip = $("talkStrip");
+  strip.dataset.state = label.toLowerCase().replace(/\s+/g, "-");
+  $("talkState").textContent = label;
+  $("talkCaption").textContent = caption || "";
+  $("talkCaption").classList.toggle("reply", label === "Speaking");
+  $("talkHold").disabled = talk.sending;
+  $("talkHold").setAttribute("aria-label", label === "Listening" ? "Release to send" : "Hold to talk");
+}
+
+// What the task is doing; shown whenever nothing is being said or heard.
+function talkBase(label, caption) {
+  talk.base = [label, caption];
+  if (talk.open && !talk.recorder && !talk.sending && !speechPlayer.source) setTalkUi(label, caption);
+}
+
+function setTalkLevel(level) {
+  $("talkStrip")?.style.setProperty("--talk-level", Math.max(0.12, Math.min(1, level)).toFixed(3));
+}
+
+function syncSpeakToggle(on) {
+  const btn = $("speakToggle");
+  if (!btn) return;
+  btn.classList.toggle("on", Boolean(on));
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  if (!btn.classList.contains("playing")) drawSpeakToggle();
+}
+
+function drawSpeakToggle() {
+  const btn = $("speakToggle"), on = btn.classList.contains("on");
+  if (btn.classList.contains("playing")) {
+    btn.replaceChildren(icon(SPEAKER_ICON), el("span", "speak-label", "Stop"));
+    btn.title = "Stop speaking";
+    btn.setAttribute("aria-label", "Stop speaking");
+  } else {
+    btn.replaceChildren(icon(on ? SPEAKER_ICON : SPEAKER_OFF_ICON));
+    btn.title = on ? "Spoken replies are on" : "Spoken replies are off";
+    btn.setAttribute("aria-label", "Spoken replies");
+  }
+}
+
+function talkFollow(action, conversations) {
+  const list = [...conversations].filter((c) => String(c).startsWith("app:"));
+  if (!list.length) return;
+  api("/api/voice/talk", {method: "POST", body: JSON.stringify({action, conversations: list})}).catch(() => {});
+}
+
+function openTalk() {
+  if (talk.open) { closeTalk(); return; }
+  talk.open = true;
+  $("talkStrip").hidden = false;
+  $("talkBtn").classList.add("on");
+  const busy = [...state.running.values()].some((r) => r.conversation === state.conversation);
+  talk.base = busy ? ["Working", "…"] : ["Ready", TALK_READY];
+  setTalkUi(...talk.base);
+  setTalkLevel(0.18);
+  if (state.conversation) { talk.conversations.add(state.conversation); talkFollow("open", [state.conversation]); }
+}
+
+function closeTalk() {
+  talk.want = false;
+  stopTalkRecording(false);
+  talk.open = false;
+  talkFollow("close", talk.conversations);
+  talk.conversations.clear();
+  $("talkStrip").hidden = true;
+  $("talkBtn")?.classList.remove("on");
+}
+
+async function talkHold(start) {
+  if (!talk.open) return;
+  if (!start) { talk.want = false; stopTalkRecording(true); return; }
+  if (talk.recorder || talk.sending || talk.want) return;
+  talk.want = true;
+  clearSpeech();                                    // the owner talks: the assistant stops
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); }
+  catch (err) {
+    talk.want = false;
+    notice(err?.name === "NotFoundError" ? "No microphone was found on this computer." : NO_MICROPHONE);
+    return;
+  }
+  if (!talk.want || !talk.open) { stream.getTracks().forEach((t) => t.stop()); return; }   // let go meanwhile
+  const recorder = new MediaRecorder(stream);
+  Object.assign(talk, {recorder, stream, chunks: [], started: Date.now()});
+  recorder.ondataavailable = (e) => { if (e.data.size) talk.chunks.push(e.data); };
+  recorder.onstop = () => sendTalk(recorder.mimeType);
+  recorder.start(250);
+  try {
+    const audio = new AudioContext(), meter = audio.createAnalyser(), heard = new Uint8Array(512);
+    meter.fftSize = 512;
+    audio.createMediaStreamSource(stream).connect(meter);
+    talk.meter = audio;
+    talk.timer = setInterval(() => {
+      meter.getByteTimeDomainData(heard);
+      let sum = 0; for (const v of heard) sum += (v - 128) * (v - 128);
+      setTalkLevel(Math.min(1, Math.sqrt(sum / heard.length) / 40));
+      if (Date.now() - talk.started > DICTATION_S * 1000) talkHold(false);
+    }, 80);
+  } catch {}
+  setTalkUi("Listening", "Release to send");
+}
+
+function stopTalkRecording(keep) {
+  clearInterval(talk.timer); talk.timer = null;
+  talk.meter?.close().catch(() => {}); talk.meter = null;
+  const recorder = talk.recorder;
+  talk.recorder = null;
+  if (!recorder) return;
+  talk.keep = keep;
+  talk.sending = keep;
+  if (keep) setTalkUi("Sending", "…");
+  recorder.stop();                                  // onstop sends it, when kept
+  talk.stream?.getTracks().forEach((t) => t.stop());
+  talk.stream = null;
+  setTalkLevel(0.18);
+}
+
+async function sendTalk(kind) {
+  const sound = new Blob(talk.chunks, {type: kind || "audio/webm"});
+  talk.chunks = [];
+  if (!talk.keep) { talk.sending = false; return; }
+  const done = (label, caption) => { talk.sending = false; if (talk.open) setTalkUi(label, caption); };
+  if (sound.size < 2000) { done(...talk.base); return; }        // a tap, not words
+  // LFM3-Omni hears it and answers at once; the work, if any, starts as a task in this thread.
+  let turn = null;
+  try {
+    const at = state.conversation ? `?conversation=${encodeURIComponent(state.conversation)}` : "";
+    const response = await fetch(`/api/voice/turn${at}`, {method: "POST", credentials: "same-origin", body: sound,
+                                                         headers: {"X-CodeRunner": "1", "Content-Type": sound.type}});
+    const data = await response.json().catch(() => ({}));
+    if (response.ok) turn = data;
+    else if (response.status !== 503) { done(...talk.base); notice(data.error || "That could not be heard. Try again."); return; }
+  } catch { done(...talk.base); notice("That could not be heard. Try again."); return; }
+  if (!turn) turn = await talkByDictation(sound);                  // where the voice model cannot hear
+  if (!turn) { done(...talk.base); return; }
+  if (turn.say) playUtterance({...turn.say, kind: "talk"});
+  const task = turn.task;
+  if (task) {
+    talk.conversations.add(task.conversation);
+    if (task.steer) state.views.get(task.id)?.addSteer({id: task.steer, text: turn.heard});
+    talk.base = ["Working", `“${trunc(turn.heard, 80)}”`];
+  } else if (!talk.base[0] || talk.base[0] === "Ready") talk.base = ["Ready", `“${trunc(turn.heard, 80)}”`];
+  const where = task?.conversation || turn.conversation;
+  if (task && where && where !== state.conversation) await openConversation(where, turn.heard);
+  done(...talk.base);
+  if (turn.say && talk.open && !talk.recorder) setTalkUi("Speaking", turn.say.text);
+}
+
+async function talkByDictation(sound) {
+  let heard = "";
+  try {
+    const response = await fetch("/api/voice", {method: "POST", credentials: "same-origin", body: sound,
+                                                headers: {"X-CodeRunner": "1", "Content-Type": sound.type}});
+    heard = response.ok ? String((await response.json().catch(() => ({}))).text || "").trim() : "";
+  } catch {}
+  if (!heard) { notice("Nothing was heard. Hold the strip while you speak."); return null; }
+  try {
+    const task = await api("/api/tasks", {method: "POST",
+      body: JSON.stringify({message: heard, conversation: state.conversation || "", talk: true})});
+    return {heard, say: null, task, conversation: task.conversation};
+  } catch (err) { notice(err.message); return null; }
+}
+
+// The open thread's events, as the strip shows them.
+function talkSees(e) {
+  if (!talk.open || e.conversation !== state.conversation) return;
+  if (e.type === "started" || e.type === "resumed") talkBase("Working", talk.base[0] === "Working" ? talk.base[1] : "…");
+  else if (e.type === "note" && e.text) talkBase("Working", trunc(String(e.text).split(/(?<=[.!?])\s/)[0], 90));
+  else if (e.type === "activity" && e.event === "approval.requested") talkBase("Needs you", trunc(e.summary || "Waiting for your OK", 90));
+  else if (e.type === "activity" && e.event === "browser.handoff") talkBase("Needs you", trunc(e.reason || "Finish this on the screen", 90));
+  else if (e.type === "activity" && e.event === "approval.decided") talkBase("Working", "…");
+  else if (["done", "failed", "cancelled"].includes(e.type)) talkBase("Ready", TALK_READY);
+}
+
+$("talkBtn").replaceChildren(icon(TALK_ICON));
+$("talkBtn").onclick = () => openTalk();
+$("talkHold").onpointerdown = (e) => { e.preventDefault(); $("talkHold").setPointerCapture?.(e.pointerId); talkHold(true); };
+$("talkHold").onpointerup = (e) => { e.preventDefault(); talkHold(false); };
+$("talkHold").onpointercancel = () => talkHold(false);
+$("talkEnd").onclick = () => closeTalk();
+const typing = (target) => target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
+document.addEventListener("keydown", (e) => {
+  if ($("talkStrip").hidden || typing(e.target)) return;
+  if (e.code === "Space") { e.preventDefault(); if (!e.repeat) talkHold(true); }
+  else if (e.key === "Escape" && !document.querySelector(".set-backdrop")) closeTalk();
+});
+document.addEventListener("keyup", (e) => {
+  if ($("talkStrip").hidden || e.code !== "Space" || typing(e.target)) return;
+  e.preventDefault(); talkHold(false);
+});
+
+// Spoken lines play one after another; a newer progress line replaces one still waiting, answers always wait
+// their turn. Nothing plays over the owner while they talk.
+function playUtterance(meta) {
+  if (!meta?.id || meta.id === speechPlayer.id || speechPlayer.queue.some((m) => m.id === meta.id)) return;
+  if (!FINAL_SPEECH.has(meta.kind)) speechPlayer.queue = speechPlayer.queue.filter((m) => FINAL_SPEECH.has(m.kind));
+  speechPlayer.queue.push(meta);
+  if (!speechPlayer.source && !talk.recorder && !talk.want) playNext();
+}
+
+async function playNext() {
+  const meta = speechPlayer.queue.shift();
+  if (!meta) { setSpeaking(false); return; }
+  speechPlayer.id = meta.id;
+  let buf, rate = meta.rate || 24000;
+  try {
+    const res = await fetch(`/api/voice/speech/${meta.id}`, {credentials: "same-origin", headers: {"X-CodeRunner": "1"}});
+    if (!res.ok) throw new Error("gone");
+    buf = await res.arrayBuffer();
+    rate = Number((/rate=(\d+)/.exec(res.headers.get("content-type") || "") || [])[1] || rate);
+  } catch { playNext(); return; }
+  if (speechPlayer.id !== meta.id || talk.recorder || talk.want) return;      // stopped meanwhile
+  const ctx = new AudioContext({sampleRate: rate});
+  const samples = new Int16Array(buf, 0, buf.byteLength >> 1);
+  const audioBuf = ctx.createBuffer(1, Math.max(1, samples.length), rate);
+  const ch = audioBuf.getChannelData(0);
+  for (let i = 0; i < samples.length; i++) ch[i] = samples[i] / 32768;
+  const src = ctx.createBufferSource();
+  src.buffer = audioBuf;
+  src.connect(ctx.destination);
+  speechPlayer.audio = ctx; speechPlayer.source = src; speechPlayer.text = meta.text || "";
+  setSpeaking(true);
+  src.onended = () => {
+    if (speechPlayer.source !== src) return;
+    speechPlayer.source = null; speechPlayer.audio = null;
+    ctx.close().catch(() => {});
+    playNext();
+  };
+  src.start();
+}
+
+function stopUtterance() {
+  const {source, audio} = speechPlayer;
+  speechPlayer.source = null; speechPlayer.audio = null;
+  try { source?.stop(); } catch {}
+  audio?.close().catch(() => {});
+}
+
+function clearSpeech() {
+  speechPlayer.queue = [];
+  stopUtterance();
+  setSpeaking(false);
+}
+
+function setSpeaking(on) {
+  const btn = $("speakToggle");
+  btn.classList.toggle("playing", on);
+  btn.hidden = on ? false : !state.voiceOmni?.ready;
+  drawSpeakToggle();
+  if (!talk.open || talk.recorder || talk.sending) return;
+  if (on) setTalkUi("Speaking", speechPlayer.text);
+  else setTalkUi(...talk.base);
+}
+
+async function toggleSpeakTasks() {
+  if ($("speakToggle").classList.contains("playing")) { clearSpeech(); return; }
+  const on = !$("speakToggle").classList.contains("on");
+  try {
+    await api("/api/voice/settings", {method: "POST", body: JSON.stringify({action: "config", speak_tasks: on})});
+    syncSpeakToggle(on);
+    if (state.voiceOmni) state.voiceOmni.speak_tasks = on;
+  } catch (err) { notice(err.message); }
+}
+drawSpeakToggle();
+$("speakToggle").onclick = () => toggleSpeakTasks();
 
 document.querySelectorAll(".example").forEach((b) => b.onclick = () => { $("input").value = b.textContent; grow(); $("input").focus(); });
 $("newTask").onclick = () => openConversation(null);
@@ -1856,6 +2157,13 @@ async function loadModels() {
     state.status = status;
     scheduleDeck();
     $("mic").hidden = !(status.voice || []).length;      // dictation only where a voice engine is set up
+    const omni = status.voice_omni || {};
+    state.voiceOmni = omni;
+    $("talkBtn").hidden = !(omni.ready && (status.voice || []).length);   // hears with dictation, speaks with LFM3-Omni
+    if ($("talkBtn").hidden && talk.open) closeTalk();
+    $("speakToggle").hidden = !omni.ready && !speechPlayer.source;
+    syncSpeakToggle(Boolean(omni.speak_tasks));
+    document.querySelectorAll(".listen-btn").forEach((b) => { b.hidden = !omni.ready; });
     const models = status.models || {}, remote = status.remote;
     // On Claude every task is there already, so none is offered there again; on the owner's own server it is.
     const server = remote?.provider === "openai";

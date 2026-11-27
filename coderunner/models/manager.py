@@ -25,6 +25,7 @@ from .runtimes import (
     OllamaRuntime,
     PrismRuntime,
     Runtime,
+    VoiceRuntime,
     choose_runtime,
     install_hint,
     models_dir,
@@ -1119,6 +1120,83 @@ def setup_driver(config, model_id: str | None = None, progress: Callable[[str], 
     config.save()
     progress(f"browser driver: {entry['id']} ({pick['reason']})")
     return {"ok": True, "driver": entry["id"], "alias": alias, "base_url": runtime.base_url, **pick}
+
+
+VOICE_CTX = VoiceRuntime.VOICE_CTX
+VOICE_MODEL = "lfm3-omni-2b"
+
+
+def setup_voice_omni(config, progress: Callable[[str], None] = print, hub: Hub | None = None,
+                     *, accept_license: bool = False, off: bool = False) -> dict:
+    """Download and configure LFM3-Omni as a llama.cpp voice sidecar, or remove it."""
+    if off:
+        rt = VoiceRuntime(config, hub=hub)
+        try:
+            entry = catalog.get(config.get("voice.omni_model") or VOICE_MODEL)
+            if rt.installed(entry):
+                rt.remove(entry)
+        except KeyError:
+            pass
+        rt.stop()
+        config.set("voice.omni_model", "")
+        config.set("voice.omni_exclusive", False)
+        config.save()
+        return {"ok": True, "omni": None}
+    entry = catalog.get(VOICE_MODEL)
+    verdict, reason, link = licenses.check(entry, config, hub=hub)
+    if verdict == "ask":
+        if not accept_license:
+            return {"ok": False, "error": reason, "license": "ask", "link": link,
+                    "license_name": (entry.get("license") or {}).get("name") or "LFM Open License v1.0"}
+        key = licenses.key((entry.get("license") or {}).get("spdx"),
+                           (entry.get("license") or {}).get("name"))
+        accepted = list(config.get("models.accepted_licenses") or [])
+        if key and key not in {str(x).lower() for x in accepted}:
+            accepted.append(key)
+            config.set("models.accepted_licenses", accepted)
+    elif verdict == "block":
+        return {"ok": False, "error": reason, "license": "block", "link": link}
+    hw = _hardware(config, None)
+    used = _chat_need(config, hw)
+    # Remote chat (Claude / owner's server) leaves the local GPU free for voice.
+    rem = config.get("models.remote") or {}
+    if rem.get("provider"):
+        used = 0.0
+    need = fit.estimate(entry, hw, ctx=VOICE_CTX, runtime="voice")["need_gb"]
+    exclusive = used is None or used + need > hw.budget_gb
+    runtime = VoiceRuntime(config, hub=hub, hw=hw)
+    if not runtime.available():
+        runtime.install(progress)
+    if not runtime.installed(entry):
+        runtime.pull(entry, progress)
+    alias = runtime.prepare(entry, VOICE_CTX)
+    record = (runtime._state().get("models") or {}).get(entry["id"]) or {}
+    if not record.get("mmproj"):
+        return {"ok": False, "error": "LFM3-Omni needs its audio projector; the download was incomplete."}
+    config.set("voice.omni_model", entry["id"])
+    config.set("voice.omni_exclusive", exclusive)
+    config.save()
+    progress(f"voice: {entry['id']}" + (" (takes turns with the assistant's model)" if exclusive else ""))
+    return {"ok": True, "omni": entry["id"], "alias": alias, "base_url": runtime.base_url,
+            "exclusive": exclusive, "need_gb": need}
+
+
+def voice_omni_status(config) -> dict:
+    """Readiness of the LFM3-Omni sidecar for the app and Settings."""
+    model = config.get("voice.omni_model") or ""
+    rt = VoiceRuntime(config)
+    ready = bool(model) and rt.ready()
+    exclusive = bool(config.get("voice.omni_exclusive"))
+    return {
+        "model": model or None,
+        "ready": ready,
+        "running": rt.running() if ready else False,
+        "exclusive": exclusive,
+        "speak_tasks": bool(config.get("voice.speak_tasks")),
+        "voice": config.get("voice.voice") or "female",
+        "language": config.get("voice.language") or "",
+        "label": ("Ready. Speaks when the assistant is idle." if exclusive else "Ready") if ready else "Not installed",
+    }
 
 
 def bench_here(config, model: str | None = None, measure=None, hw: hardware.Hardware | None = None) -> dict:

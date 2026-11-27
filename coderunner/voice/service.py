@@ -58,7 +58,7 @@ class Voice:
     def __init__(self, config=None, tmp_root: str | None = None):
         self.config = config
         self.tmp_root = tmp_root
-        self.speaker = Speaker(self._get, tmp_root)
+        self.speaker = Speaker(self._get, tmp_root, config=config)
 
     def _get(self, key: str, default=None):
         return self.config.get(f"voice.{key}", default) if self.config is not None else default

@@ -22,6 +22,8 @@ class RolePlan:
     decision: str = "self"
     embedding: str = "coreml"
     voice: str = "auto"
+    omni: str = ""
+    omni_exclusive: bool = False
     yield_indexing: bool = False
     tier_gb: int = 16
 
@@ -48,6 +50,7 @@ class ModelPool:
         esc = str(self.config.get("models.escalator") or "")
         dec = str(self.config.get("models.decision") or "") or "self"
         emb = "gpu" if self.config.get("models.embedding_runtime") == "gpu" else "coreml"
+        omni = str(self.config.get("voice.omni_model") or "")
         return RolePlan(
             planner=manager.entry_id(self.config),
             escalator=esc,
@@ -56,9 +59,22 @@ class ModelPool:
             decision=dec,
             embedding=emb,
             voice=str(self.config.get("voice.stt") or "auto"),
+            omni=omni,
+            omni_exclusive=bool(self.config.get("voice.omni_exclusive")) if omni else False,
             yield_indexing=self.should_yield_indexing(llm_busy=True),
             tier_gb=int(tier["tier_gb"]),
         )
+
+    def can_speak_during_task(self) -> bool:
+        """Whether LFM3-Omni may load beside the planner without wiping its KV cache."""
+        plan = self.role_plan()
+        if not plan.omni:
+            return False
+        if not plan.omni_exclusive:
+            return True
+        # Exclusive: only speak mid-task when chat is remote (local GPU free).
+        rem = self.config.get("models.remote") or {}
+        return bool(rem.get("provider"))
 
     def should_escalate(self, *, stuck: int = 0, failed: bool = False, step: int = 0) -> bool:
         """Whether a Fast+Deep combo should hand this turn to the configured escalator model."""

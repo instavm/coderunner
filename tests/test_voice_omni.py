@@ -1,0 +1,488 @@
+"""LFM3-Omni voice sidecar: runtime command, catalog mmproj, phrasing filters, speech store."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import types
+import unittest
+from unittest import mock
+
+from coderunner.core.config import Config
+from coderunner.models import catalog, licenses
+from coderunner.models.pool import ModelPool
+from coderunner.models.runtimes import VoiceRuntime
+from coderunner.voice.omni import OmniSlot, SpeechStore, VoiceBusy, VoiceTurns, clean_for_speech, looks_like_table
+from coderunner.voice import narrator
+from coderunner.voice.narrator import TaskSpeaker
+from coderunner.voice.tts import Speaker
+
+
+class VoiceOmniCatalog(unittest.TestCase):
+    def test_catalog_entry(self):
+        entry = catalog.get("lfm3-omni-2b")
+        self.assertIn("voice", entry["roles"])
+        self.assertNotIn("chat", entry["roles"])
+        art = entry["artifacts"]["gguf"]
+        self.assertTrue(art.get("mmproj_required"))
+        self.assertTrue(catalog.needs_mmproj(entry, "voice"))
+        self.assertFalse(catalog.has_vision(entry, "voice"))
+
+    def test_license_asks(self):
+        entry = catalog.get("lfm3-omni-2b")
+        cfg = Config({})
+        verdict, reason, _ = licenses.check(entry, cfg)
+        self.assertEqual(verdict, "ask")
+        self.assertIn("LFM", reason)
+
+
+class VoiceRuntimeCommand(unittest.TestCase):
+    def test_command_flags(self):
+        cfg = Config({"models": {"port_base": 8081}})
+        rt = VoiceRuntime(cfg)
+        self.assertEqual(rt.port, 8087)
+        cmd = rt.command({"model": "/tmp/m.gguf", "mmproj": "/tmp/mm.gguf", "ctx": 8192, "alias": "lfm3-omni-2b"})
+        self.assertIn("--mmproj", cmd)
+        self.assertIn("--reasoning", cmd)
+        self.assertIn("off", cmd)
+        self.assertIn("--jinja", cmd)
+        self.assertIn("-np", cmd)
+        self.assertEqual(cmd[cmd.index("-np") + 1], "1")
+        self.assertEqual(cmd[cmd.index("--port") + 1], "8087")
+        self.assertEqual(cmd[cmd.index("--host") + 1], "127.0.0.1")
+
+
+class SpeechHelpers(unittest.TestCase):
+    def test_clean_markdown(self):
+        text = clean_for_speech("You paid **₹1,240** at [Sagar](https://example.com).")
+        self.assertIn("₹1,240", text)
+        self.assertIn("Sagar", text)
+        self.assertNotIn("**", text)
+        self.assertNotIn("http", text)
+
+    def test_table_detect(self):
+        table = "| Name | Price |\n| --- | --- |\n| A | 1 |\n| B | 2 |"
+        self.assertTrue(looks_like_table(table))
+        self.assertFalse(looks_like_table("Just a sentence."))
+
+    def test_speech_store_ephemeral(self):
+        store = SpeechStore()
+        sid = store.put(text="hi", pcm=b"\0\0", rate=24000, conversation="web:1")
+        self.assertEqual(store.get(sid)["text"], "hi")
+        self.assertEqual(store.pop(sid)["pcm"], b"\0\0")
+        self.assertIsNone(store.get(sid))
+
+
+class NarratorFilter(unittest.TestCase):
+    def test_skips_when_speak_off(self):
+        daemon = mock.Mock()
+        daemon.config = Config({"voice": {"speak_tasks": False, "omni_model": "lfm3-omni-2b"}})
+        speaker = TaskSpeaker(daemon)
+        speaker._queue = mock.Mock()
+        speaker.on_event({"type": "started", "prompt": "Book a table"})
+        speaker._queue.put_nowait.assert_not_called()
+
+    def test_queues_started_when_on(self):
+        daemon = mock.Mock()
+        daemon.config = Config({"voice": {"speak_tasks": True, "omni_model": "lfm3-omni-2b"}})
+        speaker = TaskSpeaker(daemon)
+        with mock.patch.object(speaker.runtime, "ready", return_value=True):
+            speaker._queue = mock.Mock()
+            speaker.on_event({"type": "started", "prompt": "Book a table", "conversation": "web:1"})
+            speaker._queue.put_nowait.assert_called_once()
+
+    def test_ignores_activity(self):
+        daemon = mock.Mock()
+        daemon.config = Config({"voice": {"speak_tasks": True, "omni_model": "lfm3-omni-2b"}})
+        speaker = TaskSpeaker(daemon)
+        with mock.patch.object(speaker.runtime, "ready", return_value=True):
+            speaker._queue = mock.Mock()
+            speaker.on_event({"type": "activity", "event": "browser.open"})
+            speaker._queue.put_nowait.assert_not_called()
+
+
+class ModelPoolOmni(unittest.TestCase):
+    def test_exclusive_blocks_mid_task(self):
+        cfg = Config({"voice": {"omni_model": "lfm3-omni-2b", "omni_exclusive": True},
+                      "models": {"chat": "qwen3.5-9b", "remote": {}}})
+        pool = ModelPool(cfg)
+        self.assertTrue(pool.role_plan().omni_exclusive)
+        self.assertFalse(pool.can_speak_during_task())
+
+    def test_remote_allows_mid_task(self):
+        cfg = Config({"voice": {"omni_model": "lfm3-omni-2b", "omni_exclusive": True},
+                      "models": {"chat": "qwen3.5-9b", "remote": {"provider": "openai", "model": "x"}}})
+        pool = ModelPool(cfg)
+        self.assertTrue(pool.can_speak_during_task())
+
+
+class FakeRuntime:
+    def __init__(self, log, name):
+        self.log, self.name, self.up = log, name, True
+
+    def running(self):
+        return self.up
+
+    def ensure(self):
+        self.log.append(f"{self.name}.ensure")
+
+    def start(self):
+        self.log.append(f"{self.name}.start")
+        self.up = True
+
+    def stop(self):
+        self.log.append(f"{self.name}.stop")
+        self.up = False
+
+
+def fake_daemon(config, running=()):
+    tasks = types.SimpleNamespace(running=dict.fromkeys(running), waiting=[])
+    return types.SimpleNamespace(config=config, tasks=tasks, svc=types.SimpleNamespace(llm=None, turns=None))
+
+
+TIGHT = {"voice": {"omni_model": "lfm3-omni-2b", "omni_exclusive": True},
+         "models": {"chat": "qwen3.5-9b", "runtime": "llama.cpp", "remote": {}}}
+
+
+class TakingTurns(unittest.IsolatedAsyncioTestCase):
+    def turns(self, config, running=()):
+        log = []
+        voice, planner = FakeRuntime(log, "voice"), FakeRuntime(log, "planner")
+        turns = VoiceTurns(fake_daemon(Config(config), running), voice)
+        patch = mock.patch("coderunner.models.runtimes.choose_runtime", return_value=planner)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return turns, log
+
+    async def test_side_by_side_only_starts_voice(self):
+        turns, log = self.turns({"voice": {"omni_model": "lfm3-omni-2b", "omni_exclusive": False},
+                                 "models": {"chat": "qwen3.5-9b"}})
+        async with turns.use():
+            pass
+        self.assertEqual(log, ["voice.ensure"])
+
+    async def test_tight_memory_unloads_the_assistant_first_and_loads_it_after(self):
+        turns, log = self.turns(TIGHT)
+        async with turns.use():
+            self.assertEqual(log, ["planner.stop", "voice.ensure"])
+        self.assertEqual(log, ["planner.stop", "voice.ensure", "voice.stop", "planner.start"])
+
+    async def test_tight_memory_waits_while_the_assistant_works(self):
+        turns, log = self.turns(TIGHT, running=["t1"])
+        with self.assertRaises(VoiceBusy):
+            async with turns.use():
+                pass
+        self.assertEqual(log, [])
+
+    async def test_remote_chat_leaves_room(self):
+        config = json.loads(json.dumps(TIGHT))
+        config["models"]["remote"] = {"provider": "anthropic"}
+        turns, log = self.turns(config)
+        async with turns.use():
+            pass
+        self.assertEqual(log, ["voice.ensure"])
+
+    async def test_a_message_ends_voice_and_gets_the_model_back(self):
+        turns, log = self.turns(TIGHT)
+        held, done = asyncio.Event(), asyncio.Event()
+
+        async def talk():
+            async with turns.use():
+                held.set()
+                await turns.yielding.wait()     # as the Talk proxy does
+            done.set()
+
+        session = asyncio.create_task(talk())
+        await held.wait()
+        await asyncio.wait_for(turns.make_way(), 2)
+        self.assertTrue(done.is_set())
+        self.assertEqual(log[-2:], ["voice.stop", "planner.start"])
+        self.assertFalse(turns.yielding.is_set())
+        await session
+
+    async def test_make_way_is_free_when_voice_is_idle(self):
+        turns, log = self.turns(TIGHT)
+        await asyncio.wait_for(turns.make_way(), 1)
+        self.assertEqual(log, [])
+
+
+class SlotAndSpeaker(unittest.IsolatedAsyncioTestCase):
+    async def test_busy_slot_says_so_in_plain_words(self):
+        slot = OmniSlot()
+        await slot.acquire("talk")
+        with self.assertRaises(VoiceBusy) as caught:
+            await slot.acquire("speaking:done")
+        self.assertNotIn("speaking", str(caught.exception))
+        self.assertTrue(slot.busy)          # the holder still has it
+
+    def speaker(self, config=None):
+        daemon = mock.Mock()
+        daemon.config = Config(config or {"voice": {"speak_tasks": True, "omni_model": "lfm3-omni-2b"},
+                                          "models": {"chat": "qwen3.5-9b"}})
+        daemon.tasks = types.SimpleNamespace(running={}, waiting=[])
+        speaker = TaskSpeaker(daemon)
+        speaker.turns.runtime = speaker.runtime = mock.Mock(ensure=mock.Mock(), ready=mock.Mock(return_value=True))
+        return speaker, daemon
+
+    async def test_listen_is_not_announced_twice(self):
+        speaker, daemon = self.speaker()
+        with mock.patch("coderunner.voice.narrator.synthesize", mock.AsyncMock(return_value=(b"\0\0", 24000))):
+            meta = await speaker.speak_text("**Done.** You paid 40.", conversation="web:1", kind="listen")
+        self.assertEqual(meta["text"], "Done. You paid 40.")
+        daemon.bus.notify_live.assert_not_called()
+        self.assertFalse(speaker.slot.busy)
+
+    async def test_final_reply_is_announced(self):
+        speaker, daemon = self.speaker()
+        with mock.patch("coderunner.voice.narrator.synthesize", mock.AsyncMock(return_value=(b"\0\0", 24000))):
+            await speaker._handle({"type": "done", "conversation": "web:1", "reply": "All set."})
+        daemon.bus.notify_live.assert_called_once()
+        self.assertEqual(daemon.bus.notify_live.call_args[0][0]["utterance"]["kind"], "done")
+
+    async def test_line_dropped_while_talk_holds_the_model(self):
+        speaker, daemon = self.speaker()
+        await speaker.slot.acquire("talk")
+        synth = mock.AsyncMock(return_value=(b"\0\0", 24000))
+        with mock.patch("coderunner.voice.narrator.synthesize", synth), \
+                mock.patch("coderunner.voice.narrator.asyncio.sleep", mock.AsyncMock()):
+            self.assertIsNone(await speaker._say("web:1", "done", text="Hi"))
+        synth.assert_not_called()
+        self.assertTrue(speaker.slot.busy)  # Talk keeps it
+
+    def test_activity_events_are_ignored_cheaply(self):
+        speaker, _ = self.speaker()
+        speaker._queue = mock.Mock()
+        speaker.on_event({"type": "activity", "event": "browser.open"})
+        speaker.runtime.ready.assert_not_called()
+        speaker._queue.put_nowait.assert_not_called()
+
+    def test_channel_replies_do_not_use_lfm_when_it_takes_turns(self):
+        cfg = Config(TIGHT)
+        speaker = Speaker(lambda key, default=None: cfg.get(f"voice.{key}", default), config=cfg)
+        with mock.patch("coderunner.models.runtimes.VoiceRuntime.ready", return_value=True):
+            self.assertFalse(speaker._lfm_ready())
+            cfg.set("voice.omni_exclusive", False)
+            self.assertTrue(speaker._lfm_ready())
+
+
+class TalkNarration(unittest.IsolatedAsyncioTestCase):
+    """Talk: what the owner hears while a task they asked for by voice works."""
+
+    def speaker(self, speak_tasks=False):
+        daemon = mock.Mock()
+        daemon.config = Config({"voice": {"speak_tasks": speak_tasks, "omni_model": "lfm3-omni-2b"},
+                                "models": {"chat": "qwen3.5-9b"}})
+        daemon.tasks = types.SimpleNamespace(running={}, waiting=[])
+        speaker = TaskSpeaker(daemon)
+        speaker.turns.runtime = speaker.runtime = mock.Mock(ensure=mock.Mock(), ready=mock.Mock(return_value=True))
+        speaker._queue = asyncio.Queue()
+        self.said = []
+
+        async def synth(runtime, text, **kwargs):
+            self.said.append(text)
+            return b"\0\0", 24000
+        patch = mock.patch("coderunner.voice.narrator.synthesize", synth)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.told = []
+
+        async def narrate(runtime, *, request, kind, text="", said=()):
+            self.told.append((kind, text, tuple(said)))
+            return f"({kind}) {text}".strip()       # stands in for the voice model's own wording
+        patch = mock.patch("coderunner.voice.narrator.narrate", narrate)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return speaker
+
+    async def test_only_followed_threads_speak_when_spoken_replies_are_off(self):
+        speaker = self.speaker()
+        speaker.on_event({"type": "note", "conversation": "app:a", "text": "Opening IRCTC."})
+        self.assertTrue(speaker._queue.empty())
+        speaker.follow("app:a")
+        speaker.on_event({"type": "note", "conversation": "app:a", "text": "Opening IRCTC."})
+        speaker.on_event({"type": "note", "conversation": "app:b", "text": "Other thread."})
+        self.assertEqual(speaker._queue.qsize(), 1)
+        speaker.unfollow("app:a")
+        self.assertFalse(speaker.wants("app:a"))
+
+    async def test_status_lines_are_spaced_and_the_latest_wins(self):
+        speaker = self.speaker()
+        speaker.follow("app:a")
+        speaker._running.add("app:a")
+        await speaker._handle({"type": "note", "conversation": "app:a", "text": "Opening IRCTC. Then more."})
+        await speaker._handle({"type": "note", "conversation": "app:a", "text": "Searching trains from Delhi to Mumbai."})
+        self.assertEqual(self.said, [])                 # notes wait for the pulse, not said one by one
+        self.assertEqual(speaker._status["app:a"], "Searching trains from Delhi to Mumbai.")
+        await speaker._handle({"type": narrator.STATUS, "conversation": "app:a", "text": speaker._status.pop("app:a")})
+        self.assertEqual(self.said, ["(progress) Searching trains from Delhi to Mumbai."])
+        # A plan step only fills in when no note is waiting.
+        await speaker._handle({"type": "plan", "conversation": "app:a",
+                               "steps": "[{'step': 'Open irctc.co.in', 'status': 'done'}, {'step': 'Read the fares', 'status': 'doing'}]"})
+        self.assertEqual(speaker._status["app:a"], "Read the fares")
+        self.assertEqual(len(self.said), 1)
+
+    async def test_pulse_waits_for_the_gap(self):
+        speaker = self.speaker()
+        speaker._running.add("app:a")
+        speaker._status["app:a"] = "Reading the fares."
+        speaker._said["app:a"] = (narrator.time.time(), "Opening IRCTC.")
+        with mock.patch.object(narrator.asyncio, "sleep", mock.AsyncMock(side_effect=[None, asyncio.CancelledError])):
+            with self.assertRaises(asyncio.CancelledError):
+                await speaker._pulse()
+        self.assertTrue(speaker._queue.empty())         # said a moment ago: waits
+        speaker._said["app:a"] = (narrator.time.time() - narrator.GAP_S - 1, "Opening IRCTC.")
+        with mock.patch.object(narrator.asyncio, "sleep", mock.AsyncMock(side_effect=[None, asyncio.CancelledError])):
+            with self.assertRaises(asyncio.CancelledError):
+                await speaker._pulse()
+        self.assertEqual(speaker._queue.get_nowait()["text"], "Reading the fares.")
+
+    async def test_needs_you_and_follow_ups_are_said_at_once(self):
+        speaker = self.speaker()
+        speaker.follow("app:a")
+        await speaker._handle({"type": "activity", "event": "approval.requested", "conversation": "app:a",
+                               "summary": "irctc.co.in blocks the sandbox browser. Continue on your Mac?"})
+        await speaker._handle({"type": "activity", "event": "browser.handoff", "conversation": "app:a",
+                               "reason": "Enter the captcha on the IRCTC page."})
+        await speaker._handle({"type": "steer_taken", "conversation": "app:a"})
+        self.assertEqual([kind for kind, _, _ in self.told], ["needs_you", "needs_you", "heard"])
+        self.assertIn("irctc.co.in blocks the sandbox browser.", self.told[0][1])
+        self.assertIn("Enter the captcha on the IRCTC page.", self.told[1][1])
+        self.assertEqual(len(self.said), 3)
+        # Each line knows the ones before it, so it is not worded alike.
+        self.assertEqual(self.told[2][2], tuple(self.said[:2]))
+
+    async def test_what_the_owner_said_meanwhile_is_acknowledged_by_name(self):
+        speaker = self.speaker()
+        speaker.follow("app:a")
+        await speaker._handle({"type": "steer", "conversation": "app:a", "text": "It's Bangalore, not Bangladesh."})
+        await speaker._handle({"type": "steer_taken", "conversation": "app:a"})
+        self.assertEqual(self.told[-1][:2], ("heard", "It's Bangalore, not Bangladesh."))
+
+    async def test_needs_you_is_said_even_when_the_model_fails(self):
+        speaker = self.speaker()
+        speaker.follow("app:a")
+        with mock.patch("coderunner.voice.narrator.narrate", mock.AsyncMock(side_effect=RuntimeError("down"))):
+            await speaker._handle({"type": "activity", "event": "approval.requested", "conversation": "app:a",
+                                   "summary": "Continue on your Mac?"})
+        self.assertEqual(self.said, ["I need your OK on the screen. Continue on your Mac?"])
+
+    async def test_a_quiet_spell_gets_one_check_in(self):
+        speaker = self.speaker()
+        speaker.follow("app:a")
+        speaker._running.add("app:a")
+        speaker._said["app:a"] = (narrator.time.time() - narrator.QUIET_S - 1, "Opening IRCTC.")
+        for _ in range(3):
+            with mock.patch.object(narrator.asyncio, "sleep", mock.AsyncMock(side_effect=[None, asyncio.CancelledError])):
+                with self.assertRaises(asyncio.CancelledError):
+                    await speaker._pulse()
+            speaker._said["app:a"] = (narrator.time.time() - narrator.QUIET_S - 1, "x")
+        waits = []
+        while not speaker._queue.empty():
+            waits.append(speaker._queue.get_nowait())
+        self.assertEqual(len(waits), narrator.QUIET_MAX)          # then quiet until there is real news
+        self.assertTrue(all(w.get("waiting") for w in waits))
+
+    async def test_answer_ends_the_narration(self):
+        speaker = self.speaker()
+        speaker.follow("app:a")
+        speaker._running.add("app:a")
+        speaker._status["app:a"] = "Reading the fares."
+        await speaker._handle({"type": "done", "conversation": "app:a", "reply": "Three trains leave before 9."})
+        self.assertEqual(self.said, ["Three trains leave before 9."])
+        self.assertNotIn("app:a", speaker._running)
+        self.assertNotIn("app:a", speaker._status)
+
+    def test_doing_step(self):
+        self.assertEqual(narrator.doing_step([{"step": "A", "status": "done"}, {"step": "B", "status": "doing"}]), "B")
+        self.assertEqual(narrator.doing_step("[{'step': 'Open the site', 'status': 'doing'}]"), "Open the site")
+        self.assertEqual(narrator.doing_step(None), "")
+
+
+class TalkTurn(unittest.IsolatedAsyncioTestCase):
+    """Talk: the voice model hears the owner and answers at once; work goes to the assistant."""
+
+    def speaker(self):
+        daemon = mock.Mock()
+        daemon.config = Config({"voice": {"omni_model": "lfm3-omni-2b"}, "models": {"chat": "qwen3.5-9b"}})
+        daemon.tasks = types.SimpleNamespace(running={}, waiting=[])
+        speaker = TaskSpeaker(daemon)
+        speaker.turns.runtime = speaker.runtime = mock.Mock(ensure=mock.Mock(), ready=mock.Mock(return_value=True))
+        speaker._queue = asyncio.Queue()
+        return speaker
+
+    async def test_reply_lines_are_parsed(self):
+        from coderunner.voice import omni
+        rt = mock.Mock(base_url="http://x", alias=mock.Mock(return_value="a"))
+        for text, want in [("SAY: Sure, checking IRCTC now.\nDO: yes", ("Sure, checking IRCTC now.", True)),
+                           ("SAY: You're welcome!\nDO: no", ("You're welcome!", False)),
+                           ("SAY: Yes, I'm here!\nDO: hi", ("Yes, I'm here!", False)),
+                           ("I'm on it.", ("", True))]:
+            with mock.patch.object(omni, "_complete", mock.AsyncMock(return_value=text)) as complete:
+                self.assertEqual(await omni.talk_reply(rt, "x", "nothing in progress"), want)
+            sent = complete.call_args[0][1]
+            self.assertEqual(sent[-1]["content"], "Status: nothing in progress\nThey said: x")
+            self.assertEqual(len(sent), 2 + 2 * len(omni.TALK_SHOTS))     # system, the examples, then this
+
+    def test_status_for_progress_questions(self):
+        speaker = self.speaker()
+        self.assertEqual(speaker.status_for("app:a"), "nothing in progress")
+        speaker._request["app:a"] = "Trains from Patna to Bangalore on 27 November. Thanks."
+        speaker._running.add("app:a")
+        speaker._said["app:a"] = (1.0, "Pulling up IRCTC now.")
+        self.assertEqual(speaker.status_for("app:a"),
+                         "working on Trains from Patna to Bangalore on 27 November. Latest: Pulling up IRCTC now.")
+        speaker._running.discard("app:a")
+        speaker._answered["app:a"] = "Three trains leave before 9."
+        self.assertEqual(speaker.status_for("app:a"), "done. Three trains leave before 9.")
+
+    async def test_a_turn_hears_then_replies_with_the_status(self):
+        speaker = self.speaker()
+        with mock.patch("coderunner.voice.narrator.hear", mock.AsyncMock(return_value="How is it going?")), \
+                mock.patch("coderunner.voice.narrator.talk_reply",
+                           mock.AsyncMock(return_value=("Nearly there.", False))) as reply:
+            self.assertEqual(await speaker.talk_turn(b"wav", "app:a"), ("How is it going?", "Nearly there.", False))
+        self.assertEqual(reply.call_args[0][2], "nothing in progress")
+        self.assertFalse(speaker.slot.busy)
+        with mock.patch("coderunner.voice.narrator.hear", mock.AsyncMock(return_value="")):
+            self.assertEqual(await speaker.talk_turn(b"wav", "app:a"), ("", "", False))
+
+    async def test_no_second_acknowledgement_after_talk_replied(self):
+        speaker = self.speaker()
+        said = []
+
+        async def synth(runtime, text, **kwargs):
+            said.append(text)
+            return b"\0\0", 24000
+        speaker.follow("app:a")
+        speaker.acknowledge("app:a", steer=False)
+        with mock.patch("coderunner.voice.narrator.synthesize", synth), \
+                mock.patch("coderunner.voice.narrator.narrate", mock.AsyncMock(return_value="Opening line.")):
+            await speaker._handle({"type": "started", "conversation": "app:a", "prompt": "Trains to Bangalore"})
+            speaker.acknowledge("app:a", steer=True)
+            await speaker._handle({"type": "steer", "conversation": "app:a", "text": "It's Bangalore."})
+            await speaker._handle({"type": "steer_taken", "conversation": "app:a"})
+            self.assertEqual(said, [])
+            await speaker._handle({"type": "started", "conversation": "app:a", "prompt": "Next thing"})
+        self.assertEqual(said, ["Opening line."])             # only the one Talk answered is skipped
+
+
+class VoiceFit(unittest.TestCase):
+    def test_audio_projector_counts_toward_memory(self):
+        from coderunner.models import fit, hardware
+        entry = catalog.get("lfm3-omni-2b")
+        hw = hardware.Hardware("darwin", "arm64", budget_gb=12, bandwidth_gbs=150)
+        with_projector = fit.estimate(entry, hw, ctx=8192, runtime="voice")["need_gb"]
+        art = dict(entry["artifacts"]["gguf"], mmproj_required=False)
+        without = fit.estimate(dict(entry, artifacts={"gguf": art}), hw, ctx=8192, runtime="voice")["need_gb"]
+        self.assertGreater(with_projector, without)
+
+
+class VoiceCommandArgs(unittest.TestCase):
+    def test_reasoning_off_once(self):
+        rt = VoiceRuntime(Config({}))
+        cmd = rt.command({"model": "m", "mmproj": "p", "alias": "a", "args": ["--reasoning", "off"]})
+        self.assertEqual(cmd.count("--reasoning"), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

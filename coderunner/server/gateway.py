@@ -408,6 +408,111 @@ def admin_app(svc, daemon) -> Starlette:
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
+    async def voice_speak(request: Request):
+        """On-demand Listen: speak cleaned text through LFM3-Omni and return an ephemeral speech id."""
+        from ..voice.omni import VoiceBusy
+        speaker = getattr(daemon, "speaker", None) or getattr(svc, "speaker", None)
+        if speaker is None or not (svc.config.get("voice.omni_model") and speaker.runtime.ready()):
+            return JSONResponse({"error": "Spoken replies are not set up. Open Settings, Voice & Phone."},
+                                status_code=503)
+        body = await request.json()
+        text = str(body.get("text") or "").strip()
+        if not text:
+            return JSONResponse({"error": "Nothing to speak."}, status_code=400)
+        try:
+            meta = await speaker.speak_text(text, conversation=str(body.get("conversation") or ""),
+                                            kind=str(body.get("kind") or "listen"))
+        except VoiceBusy as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except Exception as exc:
+            svc.audit.write("voice.speak_failed", error=f"{type(exc).__name__}: {exc}"[:300])
+            return JSONResponse({"error": "Could not speak this reply."}, status_code=500)
+        if not meta:
+            return JSONResponse({"error": "Nothing to speak."}, status_code=400)
+        return JSONResponse(meta)
+
+    async def voice_speech(request: Request):
+        """Ephemeral PCM16 for a spoken line (never from SQLite)."""
+        speaker = getattr(daemon, "speaker", None) or getattr(svc, "speaker", None)
+        if speaker is None:
+            return JSONResponse({"error": "Voice is not ready."}, status_code=503)
+        item = speaker.speech.get(request.path_params["id"])
+        if not item:
+            return JSONResponse({"error": "That speech clip has expired."}, status_code=404)
+        rate = int(item.get("rate") or 24000)
+        return Response(item["pcm"], media_type=f"audio/pcm;rate={rate};encoding=signed-int;bits=16",
+                        headers={"Cache-Control": "no-store"})
+
+    async def voice_turn(request: Request):
+        """One thing said in Talk (the recording as the body; ?conversation=). LFM3-Omni hears it and answers at
+        once; when there is work, it goes to the assistant as a task in this conversation (or to the task already
+        at work there), which is then narrated while it works. Returns {"heard", "say" (a speech clip for the
+        page, or null), "task" (or null), "conversation"}. 503 where Talk cannot hear this way: the page then
+        transcribes with dictation and sends a task itself."""
+        from ..voice.common import to_wav
+        from ..voice.omni import VoiceBusy
+        speaker = getattr(daemon, "speaker", None) or getattr(svc, "speaker", None)
+        voice = getattr(svc, "voice", None)
+        converter = voice.ffmpeg() if voice is not None else None
+        if speaker is None or not converter or not (svc.config.get("voice.omni_model") and speaker.runtime.ready()):
+            return JSONResponse({"error": "Talk is not set up. Open Settings, Voice & Phone."}, status_code=503)
+        conversation = str(request.query_params.get("conversation") or "")
+        if not conversation.startswith("app:"):
+            conversation = "app:" + secrets.token_hex(6)
+        work = pathlib.Path(tempfile.mkdtemp(prefix="coderunner-talk-"))
+        try:
+            sound, size = work / "said", 0
+            with open(sound, "wb") as handle:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > VOICE_LIMIT:
+                        return JSONResponse({"error": "That was too long."}, status_code=413)
+                    handle.write(chunk)
+            if not size:
+                return JSONResponse({"error": "Nothing was heard."}, status_code=400)
+            wav = work / "said.wav"
+            await to_wav(converter, sound, wav)
+            try:
+                heard, say, do = await speaker.talk_turn(wav.read_bytes(), conversation)
+            except VoiceBusy:
+                # The voice model is taking turns with the assistant's (it is working): dictation hears it, and
+                # it goes to the work as it is, without a reply now.
+                heard, say, do = (await voice.transcribe(wav)).strip(), "", True
+        except Exception as exc:
+            svc.audit.write("voice.talk_failed", error=f"{type(exc).__name__}: {exc}"[:300])
+            return JSONResponse({"error": "That could not be heard. Try again."}, status_code=500)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        if not heard:
+            return JSONResponse({"error": "Nothing was heard."}, status_code=400)
+        task = None
+        if do:
+            speaker.follow(conversation)
+            steerable = getattr(daemon.tasks, "_steerable", None)
+            busy = steerable is not None and steerable(conversation) is not None   # goes to the task at work
+            if say:
+                speaker.acknowledge(conversation, steer=busy)
+            task = daemon.tasks.start(conversation, heard, principal(request))
+        meta = None
+        if say:
+            with contextlib.suppress(Exception):
+                meta = await speaker.say_now(say, conversation)
+        return JSONResponse({"heard": heard, "say": meta, "task": task, "conversation": conversation})
+
+    async def voice_talk(request: Request):
+        """Talk in the app: {"action": "open" | "close", "conversations": [...]}. While open, the tasks in those
+        conversations are narrated aloud (voice/narrator.py) whether or not spoken replies are on."""
+        speaker = getattr(daemon, "speaker", None) or getattr(svc, "speaker", None)
+        if speaker is None or not (svc.config.get("voice.omni_model") and speaker.runtime.ready()):
+            return JSONResponse({"error": "Talk is not set up. Open Settings, Voice & Phone."}, status_code=503)
+        body = await request.json()
+        conversations = [str(c) for c in (body.get("conversations") or []) if str(c).startswith("app:")][:20]
+        for conversation in conversations:
+            (speaker.follow if body.get("action") == "open" else speaker.unfollow)(conversation)
+        if body.get("action") == "open":
+            speaker.warm()                  # the first reply should not wait for the model to load
+        return JSONResponse({"ok": True})
+
     async def history(request: Request):
         conversation = f"web:{request.path_params['conversation']}"  # matches handle_message("web", ...)
         rows = svc.store.query("SELECT role, content, created FROM messages WHERE conversation = ? "
@@ -636,6 +741,9 @@ def admin_app(svc, daemon) -> Starlette:
         conversation = str(body.get("conversation") or "")
         if not conversation.startswith("app:"):
             conversation = "app:" + secrets.token_hex(6)
+        speaker = getattr(daemon, "speaker", None)
+        if body.get("talk") and speaker is not None:
+            speaker.follow(conversation)    # said in Talk: narrated from its first line
         return JSONResponse(daemon.tasks.start(conversation, message, principal(request), attachments=files,
                                                **({"remote": on_claude} if on_claude else {})))
 
@@ -842,6 +950,9 @@ def admin_app(svc, daemon) -> Starlette:
                     except asyncio.TimeoutError:
                         yield ": keep-alive\n\n"
                         continue
+                    if event.get("live"):
+                        yield f"data: {json.dumps(event, default=str)}\n\n"
+                        continue
                     if event["seq"] <= last:
                         continue
                     last = event["seq"]
@@ -1045,6 +1156,10 @@ def admin_app(svc, daemon) -> Starlette:
         Route("/api/chat", chat, methods=["POST"]),
         Route("/api/chat/{conversation}", history, methods=["GET"]),
         Route("/api/voice", voice_message, methods=["POST"]),
+        Route("/api/voice/speak", voice_speak, methods=["POST"]),
+        Route("/api/voice/speech/{id}", voice_speech, methods=["GET"]),
+        Route("/api/voice/talk", voice_talk, methods=["POST"]),
+        Route("/api/voice/turn", voice_turn, methods=["POST"]),
         Route("/api/tools", tools, methods=["GET"]),
         Route("/api/tools/{name}", call_tool, methods=["POST"]),
         Route("/api/schedules", schedules, methods=["GET", "POST"]),

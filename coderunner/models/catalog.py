@@ -10,7 +10,7 @@ from ..core import paths
 
 PATH = pathlib.Path(__file__).with_name("catalog.json")
 ARTIFACT = {"ollama": "ollama", "llama.cpp": "gguf", "mlx": "mlx", "prism": "prism",
-            "driver": "gguf", "judge": "gguf"}  # runtime -> artifact key
+            "driver": "gguf", "judge": "gguf", "voice": "gguf"}  # runtime -> artifact key
 
 
 @functools.lru_cache(maxsize=1)
@@ -89,3 +89,9 @@ def artifact(entry: dict, runtime: str | None) -> dict | None:
 def has_vision(entry: dict, runtime: str | None = None) -> bool:
     art = artifact(entry, runtime) or {}
     return "vision" in entry["roles"] and art.get("vision", True)
+
+
+def needs_mmproj(entry: dict, runtime: str | None = None) -> bool:
+    """Whether the GGUF pull must fetch the multimodal projector (vision, or voice codec/encoder)."""
+    art = artifact(entry, runtime) or {}
+    return has_vision(entry, runtime) or bool(art.get("mmproj_required"))

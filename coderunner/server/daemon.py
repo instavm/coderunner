@@ -463,6 +463,10 @@ class Daemon:
             return ("No local chat model is set up (search mode). Use the search tools from your own agent over "
                     "MCP (`coderunner mcp --tools search`), or run `coderunner setup` to add a model.")
         agent = await self.claude_agent() if remote else self.svc.agent
+        speaker = getattr(self, "speaker", None)
+        if speaker is not None and not remote:
+            # Where voice and the assistant's model take turns, voice ends now and the model is loaded again.
+            await speaker.turns.make_way()
         lock = self._locks.setdefault(conversation, asyncio.Lock())
         async with lock:
             ctx = RunContext(conversation=conversation, origin=origin or conversation, channel=channel,
@@ -555,6 +559,10 @@ class Daemon:
         elif self.config.get("owner.desktop_notifications", True):
             await notify_desktop(f"CodeRunner: {schedule.get('name', 'task')}", text)
 
+    def _voice_omni_status(self) -> dict:
+        from ..models import manager
+        return manager.voice_omni_status(self.config)
+
     # ---- status ------------------------------------------------------------
 
     async def status(self) -> dict:
@@ -579,6 +587,7 @@ class Daemon:
             "channels": sorted(svc.channels),
             "connectors": sorted({c.connector for c in svc.connectors}),
             "voice": [engine.name for engine in svc.voice.engines()] if svc.voice is not None else [],
+            "voice_omni": self._voice_omni_status(),
             "pending_approvals": len(svc.policy.pending()),
             "tools": sorted(svc.registry.tools),
             "browser": {"mode": svc.browser.mode, "running": svc.browser.running(),
@@ -649,6 +658,11 @@ class Daemon:
         from .tasks import EventBus, Tasks
         self.bus = EventBus(svc.store)
         self.tasks = Tasks(self, self.bus)
+        from ..voice.narrator import TaskSpeaker, attach_bus
+        self.speaker = TaskSpeaker(self)
+        attach_bus(self.bus, self.speaker)
+        self.speaker.start()
+        svc.speaker = self.speaker
         admin = admin_app(svc, self)
         self._tasks.append(asyncio.create_task(self._serve_with_retry(
             admin, lambda: cfg.get("gateway.admin_bind", "127.0.0.1"), int(cfg.get("gateway.admin_port")), "admin")))
@@ -686,6 +700,13 @@ class Daemon:
 
         await stop.wait()
         svc.audit.write("daemon.stopping")
+        speaker = getattr(self, "speaker", None)
+        if speaker is not None:
+            with contextlib.suppress(Exception):
+                speaker.stop()
+        from ..models.runtimes import VoiceRuntime
+        with contextlib.suppress(Exception):
+            VoiceRuntime(cfg).stop()
         # Running tasks stop where they are and keep their journals, before the browser and servers go under them.
         self.tasks.shutdown()
         if self.tasks.running:

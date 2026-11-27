@@ -74,7 +74,8 @@ function row(label, desc, control) {
   const r = el("div", "set-row");
   const left = el("div", "set-row-text");
   left.appendChild(el("div", "set-row-label", label));
-  if (desc) left.appendChild(el("div", "set-row-desc muted small", desc));
+  if (desc instanceof Node) { const d = el("div", "set-row-desc muted small"); d.appendChild(desc); left.appendChild(d); }
+  else if (desc) left.appendChild(el("div", "set-row-desc muted small", desc));
   const right = el("div", "set-row-ctrl");
   if (Array.isArray(control)) {
     for (const c of control) if (c) right.appendChild(c);
@@ -1030,8 +1031,79 @@ export function createSettings({api, modelName, notice, onRestart, onRunCheck, o
     };
     body.appendChild(group("On-device dictation", [
       row("Speech engine", "Transcribed locally on this Mac.", engSel),
-      row("Voice models", (v.status && v.status.available ? v.status.available.join(", ") : "Ready when set up"), setupV),
+      row("Voice models", (v.status && v.status.engines && v.status.engines.length
+        ? v.status.engines.join(", ") : "Ready when set up"), setupV),
     ]));
+
+    const omni = v.omni || {};
+    const voiceChanged = () => onReloadModels?.();     // the composer's Talk and spoken-reply buttons follow
+    const omniBtn = el("button", "btn" + (omni.ready ? "" : " primary"), omni.ready ? "Remove" : "Set up");
+    omniBtn.type = "button";
+    let removeArmed = null;
+    omniBtn.onclick = async () => {
+      if (omni.ready) {
+        if (!removeArmed) {               // a second click removes the downloaded model
+          omniBtn.textContent = "Remove model?";
+          removeArmed = setTimeout(() => { removeArmed = null; omniBtn.textContent = "Remove"; }, 4000);
+          return;
+        }
+        clearTimeout(removeArmed);
+        omniBtn.disabled = true; omniBtn.textContent = "Removing…";
+        try {
+          await api("/api/voice/settings", {method: "POST", body: JSON.stringify({action: "remove_omni"})});
+          voiceChanged();
+          select("voice");
+        } catch (err) { omniBtn.disabled = false; omniBtn.textContent = "Remove"; removeArmed = null; notice(err.message); }
+        return;
+      }
+      omniBtn.disabled = true; omniBtn.textContent = "Setting up…";
+      try {
+        await api("/api/voice/settings", {method: "POST",
+          body: JSON.stringify({action: "setup_omni", accept_license: true})});
+        notice("Talk is ready.");
+        voiceChanged();
+        select("voice");
+      } catch (err) { omniBtn.disabled = false; omniBtn.textContent = "Set up"; notice(err.message); }
+    };
+    let omniDesc = omni.label || "Not installed";
+    if (!omni.ready) {
+      omniDesc = el("span", "", "About 1.4 GB. Setting up accepts the ");
+      const lic = el("a", "", "LFM Open License v1.0");
+      lic.href = "https://huggingface.co/LiquidAI/LFM3-Omni-2B"; lic.target = "_blank"; lic.rel = "noopener";
+      omniDesc.append(lic, ".");
+    }
+    const speakToggle = toggleSwitch(Boolean(v.speak_tasks), async (on) => {
+      await api("/api/voice/settings", {method: "POST", body: JSON.stringify({action: "config", speak_tasks: on})});
+      voiceChanged();
+    }, "Spoken replies");
+    const voiceSeg = el("div", "set-seg");
+    for (const [val, lbl] of [["female", "Female"], ["male", "Male"]]) {
+      const b = el("button", "set-seg-btn" + ((v.voice || "female") === val ? " on" : ""), lbl);
+      b.type = "button";
+      b.onclick = async () => {
+        await api("/api/voice/settings", {method: "POST", body: JSON.stringify({action: "config", voice: val})});
+        select("voice");
+      };
+      voiceSeg.appendChild(b);
+    }
+    const langSel = el("select", "set-select");
+    const langs = [["", "Automatic"], ["en", "English"], ["en-gb", "British English"], ["es", "Spanish"],
+                   ["fr", "French"], ["de", "German"], ["ja", "Japanese"], ["zh", "Chinese"], ["hi", "Hindi"]];
+    const current = v.language || "";
+    if (!langs.some(([val]) => val === current)) langs.push([current, current]);   // set elsewhere, e.g. "en-IN"
+    for (const [val, lbl] of langs) {
+      const o = el("option", "", lbl); o.value = val; o.selected = current === val; langSel.appendChild(o);
+    }
+    langSel.onchange = () => api("/api/voice/settings", {method: "POST", body: JSON.stringify({action: "config", language: langSel.value})})
+      .catch((err) => notice(err.message));
+    const rows = [row("LFM3-Omni 2B", omniDesc, omniBtn)];
+    if (omni.ready) {
+      rows.push(
+        row("Spoken replies", omni.exclusive ? "Says the answer when a task ends." : "Short asides while a task works, then the answer.", speakToggle),
+        row("Voice", null, voiceSeg));
+    }
+    rows.push(row("Language", "For dictation and speech.", langSel));
+    body.appendChild(group("Talk and spoken replies", rows));
 
     // Remote device pairing (1-click inline SVG QR code for mobile PWA over Tailscale)
     const pairCode = el("span", "set-code-inline");

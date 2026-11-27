@@ -39,6 +39,9 @@ LIVE_SETTINGS = {
     "agent.thinking": str,
     "models.discover": bool,
     "models.idle_unload_minutes": int,
+    "voice.speak_tasks": bool,
+    "voice.voice": str,
+    "voice.language": str,
 }
 
 RESTART_SETTINGS = {
@@ -453,6 +456,7 @@ def settings_routes(svc, daemon) -> list[Route]:
         return JSONResponse({"error": "task runner unavailable"}, status_code=503)
 
     async def voice_api(request: Request):
+        from ..models import manager as model_manager
         from ..voice import Voice
         cfg = svc.config
         voice = Voice(cfg)
@@ -464,20 +468,47 @@ def settings_routes(svc, daemon) -> list[Route]:
                     cfg.set("voice.stt", str(body["stt"]))
                 if "language" in body:
                     cfg.set("voice.language", str(body["language"]))
+                if "speak_tasks" in body:
+                    cfg.set("voice.speak_tasks", bool(body["speak_tasks"]))
+                if "voice" in body and str(body["voice"]) in ("female", "male"):
+                    cfg.set("voice.voice", str(body["voice"]))
                 cfg.save()
-                return JSONResponse({"ok": True, "status": voice.status()})
+                return JSONResponse({"ok": True, "status": voice.status(), "omni": model_manager.voice_omni_status(cfg)})
             if action == "setup":
                 try:
                     lines: list[str] = []
                     res = await voice.setup(progress=lines.append)
-                    return JSONResponse({"ok": True, "result": res, "lines": lines[-20:], "status": voice.status()})
+                    return JSONResponse({"ok": True, "result": res, "lines": lines[-20:], "status": voice.status(),
+                                        "omni": model_manager.voice_omni_status(cfg)})
+                except Exception as exc:
+                    return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+            if action == "setup_omni":
+                try:
+                    lines: list[str] = []
+                    res = await asyncio.to_thread(
+                        model_manager.setup_voice_omni, cfg, lines.append, None,
+                        accept_license=bool(body.get("accept_license")), off=False)
+                    if not res.get("ok"):
+                        return JSONResponse(res, status_code=400 if res.get("license") != "ask" else 409)
+                    return JSONResponse({"ok": True, "result": res, "lines": lines[-20:],
+                                        "omni": model_manager.voice_omni_status(cfg)})
+                except Exception as exc:
+                    return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+            if action == "remove_omni":
+                try:
+                    res = await asyncio.to_thread(model_manager.setup_voice_omni, cfg, lambda *_: None, None,
+                                                  accept_license=False, off=True)
+                    return JSONResponse({"ok": True, "result": res, "omni": model_manager.voice_omni_status(cfg)})
                 except Exception as exc:
                     return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
             return JSONResponse({"error": f"unknown action {action!r}"}, status_code=400)
         return JSONResponse({
             "stt": cfg.get("voice.stt") or "auto",
             "language": cfg.get("voice.language") or "",
+            "speak_tasks": bool(cfg.get("voice.speak_tasks")),
+            "voice": cfg.get("voice.voice") or "female",
             "status": voice.status(),
+            "omni": model_manager.voice_omni_status(cfg),
         })
 
     async def tailscale_api(request: Request):

@@ -6,14 +6,17 @@ Audio never leaves this computer. Modules:
   apple      Apple's on-device speech model (macOS 26+), through apple_speech.swift
   qwen       Qwen3-ASR on llama.cpp's official build, everywhere else and for languages the others lack
   installed  whisper-cli, parakeet-mlx and mlx_whisper when the owner installed them
-  tts        say, piper and kokoro
+  tts        lfm (LFM3-Omni), say, piper and kokoro
+  omni       LFM3-Omni llama.cpp helpers (phrasing, TTS, slot lock)
+  narrator   TaskSpeaker: spoken asides while a task runs
   common     errors, timed transcript segments, audio conversion
 
 Voice.segments(path) gives timed segments (for search); Voice.transcribe(path) the text. Config keys
 (all optional) under `voice`: stt (auto|parakeet-coreml|apple|qwen3-asr|whisper-cli|parakeet-mlx|mlx_whisper),
 language, asr_model (qwen3-asr-1.7b|qwen3-asr-0.6b), whisper_model, ffmpeg, whisper_cli, parakeet_mlx,
-parakeet_model, mlx_whisper, mlx_whisper_model, tts (say|piper|kokoro), say_voice, piper,
-piper_model, kokoro, kokoro_voice, timeout. Binary keys take a path when the tool is not on PATH.
+parakeet_model, mlx_whisper, mlx_whisper_model, tts (lfm|say|piper|kokoro), say_voice, piper,
+piper_model, kokoro, kokoro_voice, speak_tasks, voice (female|male), omni_model, omni_exclusive, timeout.
+Binary keys take a path when the tool is not on PATH.
 """
 
 from ..core.process import find_binary, run, terminate

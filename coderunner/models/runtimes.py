@@ -532,12 +532,15 @@ class LlamaCppRuntime(Runtime):
         self.state_path = self.root / "llama.cpp.json"
 
     def binary(self) -> str | None:
-        found = shutil.which("llama-server")
-        if found:
-            return found
-        # llama.cpp's official build in CODERUNNER_HOME, as install() (and voice setup) puts it there.
-        builds = sorted((paths.assistant_dir() / "runtimes").glob("llama-b*/**/llama-server"))
-        return str(builds[-1]) if builds else None
+        # Prefer the pinned managed build over PATH. Homebrew's llama-server is often older than
+        # LLAMA_RELEASE and cannot load LFM3 (unknown architecture: 'lfm3').
+        managed = list((paths.assistant_dir() / "runtimes").glob("llama-b*/**/llama-server"))
+        pinned = [path for path in managed if f"llama-{LLAMA_RELEASE}" in path.parts]
+        if pinned:
+            return str(sorted(pinned)[-1])
+        if managed:
+            return str(sorted(managed)[-1])
+        return shutil.which("llama-server")
 
     def available(self) -> bool:
         return self.binary() is not None
@@ -571,7 +574,7 @@ class LlamaCppRuntime(Runtime):
             folder = self.root / art["folder"]
             record = {"repo": art["folder"], "commit": art["sha256"][:12], "mmproj": None, "model": str(hub.fetch(
                 art["url"], folder / art["file"], art["sha256"], art.get("bytes"), progress, art.get("streams")))}
-            if art.get("mmproj") and catalog.has_vision(entry, self.name):
+            if art.get("mmproj") and catalog.needs_mmproj(entry, self.name):
                 record["mmproj"] = str(hub.download(art["mmproj_repo"], art["mmproj"], folder / art["mmproj"],
                                                     sha256=art.get("mmproj_sha256"), progress=progress))
             state = self._state()
@@ -584,7 +587,7 @@ class LlamaCppRuntime(Runtime):
             record = {"repo": art["repo"], "commit": "main", "mmproj": None, "model": str(hub.download(
                 art["repo"], art["file"], folder / art["file"], sha256=art["sha256"],
                 size=art.get("bytes"), progress=progress))}
-            if art.get("mmproj") and catalog.has_vision(entry, self.name):
+            if art.get("mmproj") and catalog.needs_mmproj(entry, self.name):
                 record["mmproj"] = str(hub.download(art.get("mmproj_repo") or art["repo"], art["mmproj"],
                                                     folder / art["mmproj"], sha256=art.get("mmproj_sha256"),
                                                     progress=progress))
@@ -593,7 +596,7 @@ class LlamaCppRuntime(Runtime):
             self._save(state)
             return
         commit = hub.model_info(art["repo"]).get("sha") or "main"
-        files = hub.gguf_files(art["repo"], art["quant"], vision=catalog.has_vision(entry, self.name))
+        files = hub.gguf_files(art["repo"], art["quant"], vision=catalog.needs_mmproj(entry, self.name))
         folder = self.root / art["repo"].replace("/", "--")
         record = {"repo": art["repo"], "commit": commit, "model": None, "mmproj": None}
         for f in files:
@@ -914,6 +917,75 @@ class JudgeRuntime(LlamaCppRuntime):
 
     def stop(self) -> None:
         _terminate("llama-judge", "llama-server")
+
+
+class VoiceRuntime(LlamaCppRuntime):
+    """A loopback llama.cpp server for LFM3-Omni: spoken lines while tasks work and spoken replies (POST /tts).
+
+    Keeps its own port and state so the planner's chat model and KV cache stay untouched. On tight Macs it
+    takes turns with chat (voice.omni_exclusive); otherwise it idle-unloads beside chat.
+    """
+
+    name = "voice"
+    PORT_OFFSET = 6
+    VOICE_CTX = 8192
+
+    def __init__(self, config=None, port: int | None = None, hub: Hub | None = None, hw: Hardware | None = None):
+        super().__init__(config, port, hub, hw)
+        self.state_path = self.root / "voice.json"
+
+    def binary(self) -> str | None:
+        """LFM3 needs the pinned release; never fall back to an older PATH binary."""
+        pinned = sorted(llama_dir().glob("**/llama-server"))
+        return str(pinned[-1]) if pinned else None
+
+    def command(self, active: dict) -> list[str]:
+        cmd = [self.binary() or "llama-server", "-m", active["model"]]
+        if active.get("mmproj"):
+            cmd += ["--mmproj", active["mmproj"]]
+        idle = idle_seconds(self.config)
+        args = list(active.get("args") or [])
+        if "--reasoning" not in args:
+            args += ["--reasoning", "off"]      # spoken lines come at once, never after a hidden think
+        return cmd + ["--jinja", "-c", str(active.get("ctx") or self.VOICE_CTX),
+                      "--host", "127.0.0.1", "--port", str(self.port), "--cache-ram", "0", "-np", "1",
+                      "-ngl", "99", "--alias", active["alias"]] + (
+                          ["--sleep-idle-seconds", str(idle)] if idle else []) + args
+
+    def start(self, timeout: float = 300) -> None:
+        if self.running():
+            return
+        if not self.available():
+            self.install()
+        active = self._state().get("active")
+        if not active:
+            raise RuntimeError("No voice model is set up; run coderunner voice omni")
+        if not active.get("mmproj"):
+            raise RuntimeError("The voice model is missing its audio projector; run coderunner voice omni again")
+        proc = _spawn("llama-voice", self.command(active))
+        _wait_ready(self.running, proc, timeout, "the voice model",
+                    str(paths.assistant_dir() / "logs" / "llama-voice.log"))
+
+    def stop(self) -> None:
+        _terminate("llama-voice", "llama-server")
+
+    def ready(self) -> bool:
+        """Weights prepared and a process can be started (or is already up)."""
+        active = self._state().get("active") or {}
+        return bool(active.get("model") and active.get("mmproj") and os.path.exists(active["model"])
+                    and os.path.exists(active["mmproj"]))
+
+    def ensure(self, timeout: float = 300) -> None:
+        """Lazy-start the server when weights are ready."""
+        if not self.ready():
+            raise RuntimeError("LFM3-Omni is not set up; run coderunner voice omni")
+        self.start(timeout)
+
+    def alias(self) -> str:
+        return (self._state().get("active") or {}).get("alias") or "lfm3-omni-2b"
+
+    def tts_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/tts"
 
 
 class OpenAIRuntime(Runtime):

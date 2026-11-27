@@ -99,6 +99,14 @@ DEFAULTS: dict[str, Any] = {
                    "send": []},      # connectors that may send for the owner, each message approved: ["mail"]
     "channels": {},                  # per-channel settings, see coderunner/channels
     "remote": {"provider": "", "owners": []},
+    "voice": {
+        "stt": "auto",               # auto | parakeet-coreml | apple | qwen3-asr | …
+        "language": "",              # empty: auto / system
+        "speak_tasks": False,        # speak natural asides and final replies while a task runs
+        "voice": "female",           # female | male (LFM3-Omni TTS)
+        "omni_model": "",            # catalog id when LFM3-Omni is set up (lfm3-omni-2b)
+        "omni_exclusive": False,     # true: takes turns with chat (tight memory); no mid-task asides
+    },
 }
 
 

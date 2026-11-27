@@ -12,7 +12,7 @@ from .hub import Hub, token
 
 ALLOW = {"apache-2.0", "mit", "bsd-2-clause", "bsd-3-clause", "isc", "cc0-1.0", "cc-by-4.0", "unlicense"}
 ASK = ("gemma", "llama", "openrail", "creativeml-openrail", "bigscience-openrail", "bigcode-openrail",
-       "nvidia-open", "qwen-community", "minimax-community", "tencent-hy", "openmdw")
+       "nvidia-open", "qwen-community", "minimax-community", "tencent-hy", "openmdw", "lfm")
 BLOCK = ("cc-by-nc", "research", "apple-amlr", "non-commercial", "noncommercial")
 
 
