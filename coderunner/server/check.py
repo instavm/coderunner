@@ -507,11 +507,13 @@ class CheckJob:
             if passed and check.tool and check.tool not in run.tools:
                 passed, why = False, f"answered without using {check.tool}"
             return ("passed" if passed else "failed"), why, {}
-        visited = [e.get("url") or e.get("page") or "" for e in events if e.get("type") in ("activity", "shot")]
+        visited = [e.get("page") or e.get("url") or "" for e in events if e.get("type") == "shot" or
+                   (e.get("type") == "activity" and e.get("ok") is not False
+                    and e.get("event", "").startswith("browser.") and e["event"] != "browser.blocked")]
         clicked = [str(e.get("label") or e.get("text") or e.get("name") or "") for e in events
-                   if e.get("type") == "activity" and str(e.get("event", "")).startswith("browser.")]
+                   if e.get("type") == "activity" and e.get("event") in ("browser.click", "browser.click_at") and e.get("ok") is not False]
         filled = [str(e.get("option") or e.get("text") or "") for e in events if e.get("type") == "activity"
-                  and e.get("event") in ("browser.select", "browser.type")]
+                  and e.get("event") in ("browser.select", "browser.type") and e.get("ok") is not False]
         if check.chose:
             # What the form holds at the end counts too: a site that remembers the last state and
             # district shows them chosen already, and nothing is chosen again.
@@ -519,7 +521,7 @@ class CheckJob:
                 shown = await asyncio.wait_for(self.daemon.svc.browser.snapshot(), 20)
                 filled += re.findall(r'value="([^"]*)"', str(shown.get("content") or ""))
         state, why, figures = realworld.grade(check, answer, visited, self._approvals, run.tools, clicked, filled,
-                                              self._routines(conversation))
+                                              self._routines(conversation), events=events)
         if check.chose:
             figures["filled"] = [value[:60] for value in filled if value][:40]      # what the form was given
         return state, why, figures

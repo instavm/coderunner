@@ -45,7 +45,7 @@ from ..safety.policy import Action, Decision, _matches, current_run
 from . import identity as browser_identity
 from . import launcher as default_launcher
 from .cdp import CDPError, CDPPipe
-from .errors import BrowserError
+from .errors import HEADLESS_HANDOFF, BrowserError
 from .links import plain_link
 from .page import PAGE_CHARS, ax_value, cut, fit, page_changes, render_ax, short_url, squash
 from .scripts import (ANCESTORS_JS, CONTAINS_JS, DESCRIBE_JS, FIELD_TEXT_JS, FOCUSED_JS, LIST_JS, OPTIONS_JS,
@@ -2609,8 +2609,7 @@ class BrowserBroker:
 
     async def _handoff_to_owner(self, reason: str, tab: str | None, tainted: bool) -> dict:
         if self.headless:
-            raise BrowserError("The browser is headless, so the owner cannot take over; "
-                               "set browser.headless to false")
+            raise BrowserError(HEADLESS_HANDOFF)
         target = await self._target(tab)
         info = await self._info(target)
         url = info.get("url", "")

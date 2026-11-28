@@ -1057,7 +1057,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--report", action="store_true", help="bench: print a summary to share (no names or paths)")
     p.add_argument("--tasks", action="store_true",
                    help="bench: run sample tasks end to end (local test sites and documents) with the served model")
-    p.add_argument("--only", action="append", help="bench --tasks: run only this task (flights, evening, library, documents, appliance)")
+    p.add_argument("--only", action="append", help="bench --tasks: run only this task (flights, evening, library, documents, "
+                   "appliance, groceries, rewards-chat, rewards-draft)")
     p.add_argument("--visible", action="store_true", help="bench --tasks: show the browser window")
     p.add_argument("--embedding", action="store_true",
                    help="bench: time text embeddings on the Neural Engine (Core ML) against the GPU and use the faster")

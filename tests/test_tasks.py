@@ -1,3 +1,4 @@
+import contextlib
 import datetime
 import os
 import pathlib
@@ -104,6 +105,185 @@ class Checks(unittest.TestCase):
         self.assertFalse(tasks.check_documents("Until March 2030; call 1800 555 0177", self.site)[0])
 
 
+class ShoppingAndSupport(unittest.TestCase):
+    def setUp(self):
+        self.site = sites.Sites(TODAY)
+        self.client = TestClient(self.site.app)
+        self.message = f"Why is my {self.site.points:,}-point AirMiles transfer still pending?"
+
+    def test_compare_requires_all_three_local_inventories_and_delivered_price(self):
+        offers = sites.drink_offers(TODAY)
+        total, winner = min((p + fee, name) for name, (p, fee, available) in offers.items() if available)
+        answer = f"{winner} — ₹{total}"
+        for i in range(len(sites.STORES)):
+            url = f"/grocers/{i}"
+            self.assertNotIn("Volt", self.client.get(url, params={"pin": sites.DELIVERY_PIN}).text)
+            self.assertNotIn("Volt", self.client.post(url, data={"pin": sites.DELIVERY_PIN}).text)
+            self.assertNotIn("Volt", self.client.post(url, data={"pin": "999999", "action": "stock"}).text)
+        self.assertFalse(self.site.stock_checked)
+        self.assertFalse(tasks.check_groceries(answer, self.site)[0])
+        for i, name in enumerate(sites.STORES):
+            page = self.client.post(f"/grocers/{i}", data={"pin": sites.DELIVERY_PIN, "action": "stock"}).text
+            item, fee, available = offers[name]
+            self.assertIn(f"350 ml — ₹{item} — {'in stock' if available else 'sold out'}", page)
+            self.assertIn(f"fee per order: ₹{fee}", page)
+            self.assertIn("Volt Zero Sugar", page)
+            self.assertIn("250 ml", page)
+            self.assertEqual(tasks.check_groceries(answer, self.site)[0], i == len(sites.STORES) - 1)
+        for wrong in (f"{winner} ₹{offers[winner][0]}", f"{winner} ₹{total}1",
+                      f"{winner} ₹{total}.50", f"{winner} ₹49", f"{winner} ₹54"):
+            self.assertFalse(tasks.check_groceries(wrong, self.site)[0], wrong)
+        for name, (item, fee, available) in offers.items():
+            if name != winner:
+                self.assertFalse(tasks.check_groceries(f"{name} ₹{item + fee}", self.site)[0])
+        for formatted in (answer + ".", f"{winner}, {total} rupees", f"{winner} Rs. {total}.00"):
+            self.assertTrue(tasks.check_groceries(formatted, self.site)[0], formatted)
+        self.site.reset()
+        self.assertFalse(self.site.stock_checked)
+
+    def test_case_requires_one_correct_delivery_and_matching_receipt(self):
+        self.client.get("/rewards/activity")
+        self.client.get("/rewards/chat")
+        receipt = self.site.ticket
+        self.assertFalse(tasks.check_rewards_chat(receipt, self.site)[0])
+        self.assertEqual(self.client.post("/rewards/chat", data={"message": "  "}).status_code, 400)
+        sent = self.client.post("/rewards/chat", data={"message": self.message})
+        self.assertIn(receipt, sent.text)
+        self.assertFalse(tasks.check_rewards_chat("I wrote a complaint.", self.site)[0])
+        self.assertFalse(tasks.check_rewards_chat(receipt + "1", self.site)[0])
+        self.assertTrue(tasks.check_rewards_chat(receipt, self.site)[0])
+        self.client.post("/rewards/chat", data={"message": self.message})
+        self.assertFalse(tasks.check_rewards_chat(receipt, self.site)[0])
+
+    def test_draft_and_send_have_opposite_side_effect_requirements(self):
+        self.assertFalse(tasks.check_rewards_draft(self.message, self.site)[0])
+        self.client.get("/rewards/activity")
+        self.assertTrue(tasks.check_rewards_draft(self.message, self.site)[0])
+        wrong = self.message.replace(f"{self.site.points:,}", "800")
+        self.assertFalse(tasks.check_rewards_draft(wrong, self.site)[0])
+        self.client.post("/rewards/chat", data={"message": wrong})
+        self.assertFalse(tasks.check_rewards_draft(self.message, self.site)[0])
+        self.assertFalse(tasks.check_rewards_chat(self.site.ticket, self.site)[0])
+        self.site.reset()
+        self.assertFalse(self.site.visits)
+        self.assertFalse(self.site.complaints)
+
+    def test_data_varies_with_the_date_and_has_both_price_traps(self):
+        winners = set()
+        for day in range(12):
+            offers = sites.drink_offers(TODAY + datetime.timedelta(days=day))
+            available = [k for k, (_, _, stock) in offers.items() if stock]
+            winner = min(available, key=lambda k: sum(offers[k][:2]))
+            winners.add(winner)
+            self.assertNotEqual(winner, min(available, key=lambda k: offers[k][0]))
+            self.assertFalse(offers[min(offers, key=lambda k: offers[k][0])][2])
+        self.assertEqual(winners, set(sites.STORES))
+
+
+@unittest.skipIf(os.environ.get("CODERUNNER_SKIP_BROWSER") == "1", "CODERUNNER_SKIP_BROWSER=1")
+class RenderedButtons(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from coderunner.browser import BrowserBroker, launcher
+        from coderunner.core.audit import AuditLog
+        from coderunner.core.config import Config
+        from coderunner.safety.policy import Policy
+        from coderunner.core.store import Store
+
+        cfg = Config({"browser": {"headless": True, "allow": ["127.0.0.1"]}})
+        if not launcher.find_browser(cfg):
+            self.skipTest("no Chromium-family browser installed")
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        tmp = stack.enter_context(tempfile.TemporaryDirectory())
+        stack.enter_context(tasks._home(pathlib.Path(tmp)))
+        self.site = sites.Sites(TODAY)
+        server, serving = await self.site.start()
+
+        async def stop_site():
+            server.should_exit = True
+            await serving
+
+        self.addAsyncCleanup(stop_site)
+        audit = AuditLog()
+        policy = Policy(cfg, Store(":memory:"), audit)
+        policy.add_listener(lambda a: policy.decide(a.id, True, decided_by="fixture test"))
+        self.browser = BrowserBroker(cfg, policy, audit)
+        self.addAsyncCleanup(self.browser.stop)
+        self.clicks = []
+
+    async def open(self, path):
+        result = await self.browser.navigate(self.site.base + path)
+        self.assertTrue(result["ok"], result)
+
+    async def ref(self, role, name):
+        content = (await self.browser.snapshot())["content"]
+        match = re.search(r'\[(\d+)\] ' + re.escape(f'{role} "{name}"'), content)
+        self.assertIsNotNone(match, content)
+        return int(match[1])
+
+    async def click(self, name):
+        ref = await self.ref("button", name)
+        result = await self.browser.click(ref)
+        self.assertTrue(result["ok"], result)
+        self.clicks.append({"name": name, "ref": ref})
+
+    def assert_dynamic_source(self, path, label):
+        with TestClient(sites.Sites(TODAY).app) as client:
+            source = client.get(path).text
+        self.assertNotIn("<button", source)
+        self.assertNotIn(label, source)
+        self.assertIn('src="/demo-controls.js"', source)
+
+    def assert_grade(self, name, answer):
+        task = next(t for t in tasks.TASKS if t.name == name)
+        passed, reason = task.grade(answer, self.site, self.clicks)
+        self.assertTrue(passed, reason)
+        self.assertFalse(task.grade(answer, self.site, self.clicks[:-1])[0])
+
+    async def test_stock_buttons_appear_after_pin_and_open_each_stores_inventory(self):
+        offers = sites.drink_offers(TODAY)
+        for i, store in enumerate(sites.STORES):
+            label = f"Check stock at {store}"
+            self.assert_dynamic_source(f"/grocers/{i}", label)
+            await self.open(f"/grocers/{i}")
+            self.assertNotIn(label, (await self.browser.snapshot())["content"])
+            typed = await self.browser.type(await self.ref("textbox", "Delivery PIN"), sites.DELIVERY_PIN, submit=True)
+            self.assertTrue(typed["ok"], typed)
+            self.assertNotIn(store, self.site.stock_checked)
+            self.assertNotIn("Volt", (await self.browser.snapshot())["content"])
+            await self.click(label)
+            price, fee, available = offers[store]
+            content = (await self.browser.snapshot())["content"]
+            self.assertIn(f"350 ml — ₹{price} — {'in stock' if available else 'sold out'}", content)
+            self.assertIn(f"Delivery fee per order: ₹{fee}", content)
+        total, winner = min((price + fee, store) for store, (price, fee, stock) in offers.items() if stock)
+        self.assert_grade("groceries", f"{winner} ₹{total}")
+
+    async def test_rewards_chat_reveals_send_after_typing_and_delivers_once(self):
+        self.assert_dynamic_source("/rewards/chat", "Send message")
+        await self.open("/rewards/")
+        await self.click("Points activity")
+        await self.click("Chat with us")
+        self.assertNotIn('button "Send message"', (await self.browser.snapshot())["content"])
+        message = f"Why is my {self.site.points:,}-point AirMiles transfer still pending?"
+        typed = await self.browser.type(await self.ref("textbox", "Write a message"), message)
+        self.assertTrue(typed["ok"], typed)
+        await self.click("Send message")
+        self.assertEqual(self.site.complaints, [message])
+        self.assertIn(self.site.ticket, (await self.browser.snapshot())["content"])
+        self.assert_grade("rewards-chat", self.site.ticket)
+
+    async def test_draft_reads_activity_through_its_rendered_button_and_leaves_inbox_empty(self):
+        self.assert_dynamic_source("/rewards/", "Points activity")
+        await self.open("/rewards/")
+        await self.click("Points activity")
+        content = (await self.browser.snapshot())["content"]
+        self.assertIn(f"{self.site.points:,} points", content)
+        self.assertIn("Pending", content)
+        self.assertEqual(self.site.complaints, [])
+        self.assert_grade("rewards-draft", f"Why is my {self.site.points:,}-point AirMiles transfer pending?")
+
+
 class MeterTests(unittest.IsolatedAsyncioTestCase):
     async def test_generation_speed_from_the_runtime_timings(self):
         class LLM:
@@ -139,6 +319,43 @@ if __name__ == "__main__":
 
 class Harness(unittest.IsolatedAsyncioTestCase):
     """The whole run against a scripted model: no browser, files or real model needed."""
+
+    async def test_a_claude_benchmark_with_no_key_cannot_fall_back_to_a_local_model(self):
+        from coderunner.core.config import Config
+        from coderunner.models import manager
+        with tempfile.TemporaryDirectory() as home, tasks._home(pathlib.Path(home)), \
+                mock.patch.object(manager, "ensure_running") as local:
+            config = Config({"models": {"chat": "local", "remote": {"provider": "anthropic"}}})
+            result = await tasks.run(config, names=["library"])
+            self.assertFalse(result["ok"])
+            local.assert_not_called()
+
+    async def test_native_claude_uses_the_private_benchmark_home_and_records_its_model(self):
+        from coderunner.core.claude import Claude
+        from coderunner.core.config import Config
+        from coderunner.models import manager, remote
+        if not remote.sdk_installed():
+            self.skipTest("Claude extra is optional")
+        test_key = "sk-ant-" + "fixture" * 5
+        with tempfile.TemporaryDirectory() as home, tasks._home(pathlib.Path(home)):
+            remote.keep_key(test_key)
+            owner_path = remote.key_path()
+            used = []
+
+            async def reply(client, *args, **kwargs):
+                used.append(remote.key_path())
+                self.assertNotEqual(used[-1], owner_path)
+                self.assertEqual(remote.key(), test_key)
+                return {"content": "Sunday closing time 14:00, DVD fee ₹15 per day.", "tool_calls": []}
+
+            config = Config({"models": {"remote": {"provider": "anthropic", "model": remote.DEFAULT}}})
+            with mock.patch.object(Claude, "chat", reply), mock.patch.object(manager, "ensure_running") as local:
+                result = await tasks.run(config, names=["library"], progress=lambda s: None)
+            self.assertEqual((result["model"], result["runtime"], result["passed"]), (remote.DEFAULT, "anthropic", 1))
+            self.assertTrue(used and all(not p.exists() for p in used))
+            self.assertNotIn(test_key, str(result))
+            self.assertTrue(owner_path.exists())
+            local.assert_not_called()
 
     async def test_answers_are_checked_and_a_slow_task_is_stopped(self):
         from coderunner.core.config import Config

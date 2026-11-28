@@ -17,10 +17,11 @@ import random
 import re
 import socket
 from typing import Callable
+from urllib.parse import parse_qs
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 AIRPORTS = [  # code, city, airport, other names
@@ -251,12 +252,83 @@ def _fare(f: dict, query: dict) -> int:
     return round(price * CABINS[query["cabin"]][1]) * query["adults"]
 
 
+STORES = ("Maple Mart", "Corner Cart", "Dash Grocer")
+DELIVERY_PIN = "560095"
+
+# Loaded after the HTML is parsed. The stock and send actions appear when their inputs are ready.
+CONTROLS_TAG = '<script defer src="/demo-controls.js"></script>'
+CONTROLS_JS = """
+function addButton(parent, label, activate) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.addEventListener("click", activate);
+  parent.append(button);
+  return button;
+}
+
+const delivery = document.querySelector("#delivery");
+if (delivery) {
+  const pin = delivery.querySelector("input");
+  const inventory = document.getElementById("inventory");
+  const stock = addButton(delivery, "Check stock at " + delivery.dataset.store, async () => {
+    const response = await fetch(location.pathname, {
+      method: "POST",
+      body: new URLSearchParams({pin: pin.value, action: "stock"})
+    });
+    const quote = await response.json();
+    const summary = document.createElement("p");
+    summary.textContent = quote.message;
+    const list = document.createElement("ul");
+    for (const item of quote.items) {
+      const row = document.createElement("li");
+      row.textContent = item;
+      list.append(row);
+    }
+    inventory.replaceChildren(summary, list);
+  });
+  const update = () => { stock.hidden = !/^[0-9]{6}$/.test(pin.value); };
+  pin.addEventListener("input", update);
+  update();
+}
+
+const nav = document.querySelector("#rewards-actions");
+if (nav) {
+  addButton(nav, "Points activity", () => location.assign("/rewards/activity"));
+  addButton(nav, "Chat with us", () => location.assign("/rewards/chat"));
+}
+
+const chat = document.querySelector("#complaint");
+if (chat) {
+  const editor = chat.querySelector('[contenteditable="true"]');
+  const send = addButton(chat, "Send message", () => {
+    chat.elements.message.value = editor.innerText;
+    chat.requestSubmit();
+  });
+  const update = () => { send.hidden = !editor.innerText.trim(); };
+  editor.addEventListener("input", update);
+  update();
+}
+"""
+
+
+def drink_offers(day: datetime.date) -> dict[str, tuple[int, int, bool]]:
+    """(Item price, delivery fee, available). The lowest sticker price loses after delivery."""
+    shops = list(STORES)
+    rng = random.Random(day.isoformat())
+    rng.shuffle(shops)
+    price = rng.randrange(82, 98)
+    return dict(zip(shops, ((price, 29, True), (price + 8, 5, True), (price - 14, 0, False))))
+
+
 class Sites:
     """The test sites, served on 127.0.0.1. `visits` records which pages were opened, for the checks."""
 
     def __init__(self, today: datetime.date | None = None):
         self.today = today or datetime.date.today()
         self.visits: list[str] = []
+        self.complaints: list[str] = []
+        self.stock_checked: set[str] = set()
         self.host = "127.0.0.1"         # the address they are served on (the sandbox's gateway, for its browser)
         self.port = 0
         self.app = Starlette(routes=[
@@ -264,6 +336,10 @@ class Sites:
             Route("/flights/", self.flight_home), Route("/flights/results", self.flight_results),
             Route("/flights/checkout", self.flight_checkout), Route("/flights/payment", self.flight_payment),
             Route("/flights/{other}", self.flight_other),
+            Route("/grocers/", self.grocers), Route("/grocers/{store:int}", self.grocers, methods=["GET", "POST"]),
+            Route("/demo-controls.js", self.controls),
+            Route("/rewards/", self.rewards), Route("/rewards/activity", self.rewards),
+            Route("/rewards/chat", self.rewards, methods=["GET", "POST"]),
             Route("/library/", self.library), Route("/library/{page}", self.library),
             Route("/kelvin/", self.kelvin), Route("/kelvin/search", self.kelvin_search),
             Route("/kelvin/guide/{model}", self.kelvin_guide), Route("/kelvin/{page}", self.kelvin),
@@ -294,6 +370,66 @@ class Sites:
 
     def _visit(self, request: Request) -> None:
         self.visits.append(request.url.path + (f"?{request.url.query}" if request.url.query else ""))
+
+    def reset(self) -> None:
+        self.visits.clear()
+        self.complaints.clear()
+        self.stock_checked.clear()
+
+    @property
+    def points(self) -> int:
+        return 2500 + (self.today.toordinal() % 19) * 100
+
+    @property
+    def ticket(self) -> str:
+        return f"RW-{10000 + self.today.toordinal() % 90000}"
+
+    async def controls(self, request: Request):
+        return Response(CONTROLS_JS, media_type="application/javascript")
+
+    async def grocers(self, request: Request):
+        self._visit(request)
+        index = request.path_params.get("store")
+        if index is None:
+            links = "".join(f'<li><a href="/grocers/{i}">{store}</a></li>' for i, store in enumerate(STORES))
+            return _page("Local grocers", f"<main><h1>Delivery stores</h1><ul>{links}</ul></main>")
+        if index >= len(STORES):
+            return HTMLResponse("Unknown store", status_code=404)
+        store = STORES[index]
+        if request.method == "POST":
+            data = parse_qs((await request.body()).decode())
+            if data.get("pin") != [DELIVERY_PIN] or data.get("action") != ["stock"]:
+                return JSONResponse({"message": "No delivery to this PIN.", "items": []})
+            self.stock_checked.add(store)
+            price, fee, available = drink_offers(self.today)[store]
+            items = [f"Volt Original 350 ml — ₹{price} — {'in stock' if available else 'sold out'}",
+                     "Volt Zero Sugar 350 ml — ₹54 — in stock", "Volt Original 250 ml — ₹49 — in stock"]
+            return JSONResponse({"message": f"Delivery fee per order: ₹{fee}", "items": items})
+        body = (f'<main><h1>{store}</h1><div id="delivery" data-store="{html.escape(store, quote=True)}">'
+                '<label>Delivery PIN <input name="pin" inputmode="numeric"></label></div>'
+                '<section id="inventory" aria-live="polite"></section><a href="/grocers/">All stores</a></main>')
+        return _page(store, body + CONTROLS_TAG)
+
+    async def rewards(self, request: Request):
+        self._visit(request)
+        nav = '<nav id="rewards-actions" aria-label="Rewards account"></nav>'
+        if request.method == "POST":
+            message = parse_qs((await request.body()).decode()).get("message", [""])[0].strip()
+            if not message:
+                return HTMLResponse("Write a message first", status_code=400)
+            self.complaints.append(message)
+            body = f"<h1>Message received</h1><p>Case number {self.ticket}</p>"
+        elif request.url.path.endswith("/activity"):
+            body = (f"<h1>Points activity</h1><p>AirMiles transfer · {self.points:,} points · Pending</p>"
+                    "<p>Gift card · 900 points · Complete</p><p>AirMiles transfer · 800 points · Complete</p>")
+        elif request.url.path.endswith("/chat"):
+            body = """<h1>Rewards support</h1><form id="complaint" method="post">
+<label id="caption">Write a message</label>
+<div contenteditable="true" role="textbox" aria-labelledby="caption" style="border:1px solid;padding:12px"></div>
+<input type="hidden" name="message"></form>"""
+        else:
+            body = "<h1>Rewards account</h1><p>Transfers usually complete in 24 hours.</p>"
+        return _page("Rewards support", f"<main>{nav}{body}</main>{CONTROLS_TAG}")
 
     # ---- flights
 

@@ -118,8 +118,11 @@ declares success. If a model fails the test, the next candidate is tried.
    flight; two facts from two pages of a library website; a warranty date
    that needs two of the owner's documents; and a care instruction that
    needs the appliance's model from the documents, then the maker's support
-   site. Answers are generated from the date and route, so the checker knows
-   them and no model can have learned them. Each result records whether each
+   site. Three more tasks compare an in-stock can across three stores including delivery, submit a
+   complaint about a pending rewards transfer and report the receipt, and draft an inquiry without sending it.
+   JavaScript creates the stock, account navigation and send buttons. The benchmark records the numbered
+   buttons the assistant clicked. Stock appears after a six-digit PIN and Send appears after typing.
+   The support site records each message it receives. Fares and grocery offers vary by date. Each result records whether each
    task passed, its time, model requests and tokens, keyed by machine profile
    (chip, memory, GPU), model build (file or tag and quantization) and
    runtime version, in `assistant/models/tasks.json`. Speed per step alone
@@ -1069,12 +1072,13 @@ to the step before sign-in or payment; a recipe turned into a priced shopping li
 attached documents (a letter drafted from a lease and a receipt, a chart drawn from a sheet).
 
 Real sites have no fixed answers, so each is graded on what can be told without reading the answer through:
-the parts asked for are there, it links to pages the browser really opened (a link to a site it never visited
-does not count), prices carry a currency, a task that must stop before committing says where it stopped, and no
+the parts asked for are there, citations point to a site visited in Chrome or an exact page returned with
+content by `web_read`, prices carry a currency, a task that must stop before committing says where it stopped, and no
 committing step went through. A site that shows a CAPTCHA or turns automated visits away is recorded as
 "blocked" beside passed and failed, and is never worked around. Every task carries the same rules in its own
 text: no sign-in, no account, no payment, no personal details, a few pages a site. The run answers its tasks'
 approvals as the check does, except that every committing step and every hand-over of the screen is refused.
+A completed form waiting for its required owner handoff is graded `needs_you`, including in headless Chrome.
 Each line gives the time, the tool calls and the approvals asked; the result is kept in
 `assistant/check-real.json`, and each task opens from its row on the Check screen (finished check tasks are not
 listed among the owner's own).
