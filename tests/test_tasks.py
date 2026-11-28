@@ -109,7 +109,7 @@ class ShoppingAndSupport(unittest.TestCase):
     def setUp(self):
         self.site = sites.Sites(TODAY)
         self.client = TestClient(self.site.app)
-        self.message = f"Why is my {self.site.points:,}-point AirMiles transfer still pending?"
+        self.message = f"Why is my {self.site.points:,}-point SkyHop transfer still pending?"
 
     def test_compare_requires_all_three_local_inventories_and_delivered_price(self):
         offers = sites.drink_offers(TODAY)
@@ -265,7 +265,7 @@ class RenderedButtons(unittest.IsolatedAsyncioTestCase):
         await self.click("Points activity")
         await self.click("Chat with us")
         self.assertNotIn('button "Send message"', (await self.browser.snapshot())["content"])
-        message = f"Why is my {self.site.points:,}-point AirMiles transfer still pending?"
+        message = f"Why is my {self.site.points:,}-point SkyHop transfer still pending?"
         typed = await self.browser.type(await self.ref("textbox", "Write a message"), message)
         self.assertTrue(typed["ok"], typed)
         await self.click("Send message")
@@ -281,7 +281,7 @@ class RenderedButtons(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"{self.site.points:,} points", content)
         self.assertIn("Pending", content)
         self.assertEqual(self.site.complaints, [])
-        self.assert_grade("rewards-draft", f"Why is my {self.site.points:,}-point AirMiles transfer pending?")
+        self.assert_grade("rewards-draft", f"Why is my {self.site.points:,}-point SkyHop transfer pending?")
 
 
 class MeterTests(unittest.IsolatedAsyncioTestCase):

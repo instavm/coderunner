@@ -420,8 +420,8 @@ class Sites:
             self.complaints.append(message)
             body = f"<h1>Message received</h1><p>Case number {self.ticket}</p>"
         elif request.url.path.endswith("/activity"):
-            body = (f"<h1>Points activity</h1><p>AirMiles transfer · {self.points:,} points · Pending</p>"
-                    "<p>Gift card · 900 points · Complete</p><p>AirMiles transfer · 800 points · Complete</p>")
+            body = (f"<h1>Points activity</h1><p>SkyHop transfer · {self.points:,} points · Pending</p>"
+                    "<p>Gift card · 900 points · Complete</p><p>SkyHop transfer · 800 points · Complete</p>")
         elif request.url.path.endswith("/chat"):
             body = """<h1>Rewards support</h1><form id="complaint" method="post">
 <label id="caption">Write a message</label>

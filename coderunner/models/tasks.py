@@ -27,7 +27,7 @@ from . import hardware, sites as fixtures
 from .bench import fingerprint, load as bench_load
 
 SLOW_SHARE = 0.5         # a task whose model wrote at under this share of its measured speed was slowed down
-SUITE = 6                 # change when tasks change: results of different suites are not compared
+SUITE = 7                 # change when tasks change: results of different suites are not compared
 TASK_SECONDS = 900        # a task still running after this counts as failed
 COMMITTING = re.compile(r"\b(pay|book|reserve|purchase|checkout|check out|place order|confirm)", re.I)
 
@@ -100,7 +100,7 @@ def check_groceries(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
 
 def _describes_transfer(text: str, site: fixtures.Sites) -> bool:
     return bool(re.search(rf"(?<!\d){site.points}(?!\d)", _digits(text))
-                and re.search(r"air[ -]?miles", text, re.I)
+                and re.search(r"sky[ -]?hop", text, re.I)
                 and re.search(r"pending|delay|still waiting|not (?:yet )?(?:received|completed|credited)", text, re.I))
 
 
@@ -179,12 +179,12 @@ TASKS = [
          check_groceries, 9, buttons=tuple(f"Check stock at {store}" for store in fixtures.STORES)),
     Task("rewards-chat", "read the right points entry and send a complaint through the chat editor",
          lambda s: (f"On my demo rewards account at {s.base}/rewards/, check my activity and send support one "
-                    "message about my pending AirMiles transfer. Include the number of points debited, ask "
+                    "message about my pending SkyHop transfer. Include the number of points debited, ask "
                     "why it is delayed, and tell me the case number you get back."),
          check_rewards_chat, 7, buttons=("Points activity", "Chat with us", "Send message")),
     Task("rewards-draft", "prepare the same kind of support inquiry and stop before sending",
          lambda s: (f"From my demo account activity at {s.base}/rewards/, draft a message to support asking "
-                    "about my pending AirMiles transfer. Include the number of points. Show me the draft "
+                    "about my pending SkyHop transfer. Include the number of points. Show me the draft "
                     "here and leave it unsent."),
          check_rewards_draft, 4, buttons=("Points activity",)),
 ]
