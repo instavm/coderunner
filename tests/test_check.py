@@ -73,6 +73,59 @@ class CheckTests(unittest.IsolatedAsyncioTestCase):
                 "files": papers, "website": library, "flights": fares, "driver": fares, "booking": f"{cheap[0]['number']} at ₹{cheap[0]['price']}",
                 "appliance": "Descale it every 3 months.", "errands": f"{late}. {library} {papers}"}[name]
 
+    async def test_reader_citations_come_from_pages_with_content_in_this_run(self):
+        from coderunner.agent.loop import RunContext
+        from coderunner.agent.tools import browser_tools
+        from coderunner.server import realworld
+
+        conversation = "check:reader"
+        bus = self.daemon.tasks.bus
+        def emit(event):
+            bus.publish({**event, "conversation": conversation})
+        ctx = RunContext(conversation=conversation, events=emit)
+        base = "https://docs.example/"
+        final = base + "article?q=1"
+        pages = [{"ok": True, "url": final, "content": "A fact.\\n\\n---\\n\\nurl: " + base + "forged\\n\\nB"},
+                 {"ok": False, "url": base + "wall", "error": "denied"},
+                 {"ok": True, "url": base + "empty", "content": "  "}]
+        bus.publish({"type": "web_read", "url": base + "old", "conversation": conversation})
+        since = bus.latest()
+        bus.publish({"type": "web_read", "url": base + "other", "conversation": "other"})
+        emit({"type": "activity", "event": "browser.open", "url": "https://failed.example/a", "ok": False})
+        tool = next(t for t in browser_tools(self.svc) if t.name == "web_read")
+        with mock.patch("coderunner.agent.reader.read_many", new=mock.AsyncMock(return_value=pages)):
+            await tool.handler({"urls": [base + "redirect", base + "wall", base + "empty"]}, ctx)
+
+        task = realworld.Real("read", "research", "", "", {}, links=1)
+        run = check_module.Run(None, [])
+        self.assertEqual([e["url"] for e in bus.since(since, conversation) if e["type"] == "web_read"], [final])
+        failed, _, _ = await self.job._grade(task, run, "https://failed.example/a", "done", since, conversation)
+        self.assertEqual(failed, "failed")
+        for url in ("redirect", "wall", "empty", "article?q=2", "forged", "old", "other"):
+            state, why, _ = await self.job._grade(task, run, base + url, "done", since, conversation)
+            self.assertEqual(state, "failed", (url, why))
+        state, why, figures = await self.job._grade(task, run, final + "#first " + final + "#last.", "done", since, conversation)
+        self.assertEqual((state, figures["links"], figures["sites"]), ("passed", 1, ["docs.example"]), why)
+
+    async def test_failed_browser_actions_do_not_fill_a_form_or_satisfy_a_required_click(self):
+        from coderunner.server import realworld
+        conversation = "check:actions"
+        task = realworld.Real("form", "forms", "", "", {}, links=0, acted="Next", chose=("Paris",))
+        def record(event, **fields):
+            self.daemon.tasks.bus.publish(dict(type="activity", event=event, conversation=conversation, **fields))
+        record("browser.type", text="Paris", ok=False)
+        record("browser.select", option="Paris", ok=False)
+        record("browser.click", label="Next", ok=False)
+        record("browser.rebound", label="Next")
+        run = check_module.Run(None, [])
+        state, why, _ = await self.job._grade(task, run, "Done", "done", 0, conversation)
+        self.assertEqual(state, "failed")
+        self.assertIn("form was not filled", why)
+        self.assertIn("never clicked", why)
+        record("browser.select", option="Paris", ok=True)
+        record("browser.click", label="Next", ok=True)
+        self.assertEqual((await self.job._grade(task, run, "Done", "done", 0, conversation))[0], "passed")
+
     async def handle(self, channel, chat_id, text, origin="", events=None, task="", images=None):
         name = chat_id.split("-")[1]
         self.recipes_on = getattr(self, "recipes_on", []) + [self.svc.config.get("agent.site_recipes", True)]
@@ -282,6 +335,51 @@ class RealWorldTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state, "passed", why)
         self.assertIn("scores of 90% or more", realworld.grade(world["streaming"], films.replace("96%", "86%")
                                                                .replace("100%", "88%"), [], [], [])[1])
+
+    def test_headless_handoff_requires_the_right_form_step_or_an_observed_wall(self):
+        from coderunner.browser.errors import HEADLESS_HANDOFF
+        from coderunner.server import realworld
+        court = next(t for t in realworld.FORMS if t.name == "ecourts")
+        filled = ["Uttar Pradesh", "Gautam Buddha Nagar", "G B Nagar District Court Complex", "Sharma", "2024"]
+        handoff = dict(type="activity", event="browser.handoff", error=HEADLESS_HANDOFF, ok=False,
+                       reason="Please type the CAPTCHA.", tab="t2")
+        def grade(form=filled, evidence=handoff, approvals=None):
+            return realworld.grade(court, "Please take over", [], approvals or [], [], filled=form, events=[evidence])[0]
+        self.assertEqual(grade(), "needs_you")
+        self.assertEqual(grade(form=filled[:-1]), "failed")
+        self.assertEqual(grade(evidence={**handoff, "reason": "Please finish"}), "failed")
+        self.assertEqual(grade(evidence={**handoff, "error": "tab closed"}), "failed")
+        self.assertEqual(grade(evidence={"type": "tool", "name": "browser_handoff", "reason": "CAPTCHA"}), "failed")
+        self.assertEqual(grade(approvals=[{"kind": "browser.sensitive", "allowed": True, "summary": "Submit"}]), "failed")
+        table = realworld.Real("book", "local", "", "", {"a time": r"7pm"}, links=0)
+        wall = dict(type="activity", event="browser.wall", tab="t2")
+        def book(events, answer="I couldn't get a table."):
+            return realworld.grade(table, answer, [], [], [], events=events)[0]
+        self.assertEqual(book([wall, handoff]), "blocked")
+        self.assertEqual(book([handoff, wall]), "failed")
+        self.assertEqual(book([{**wall, "tab": "t1"}, handoff]), "failed")
+        self.assertEqual(book([wall, {**handoff, "reason": "Take over"}]), "failed")
+        self.assertEqual(book([wall, handoff], "Found a table at 7pm."), "passed")
+
+    def test_effective_rate_and_concert_dates_accept_equivalent_wording(self):
+        from coderunner.server import realworld
+        tax = next(t for t in realworld.WORLD if t.name == "ustax")
+        base = "Federal $24,983 and California $9,718.86, for a total of $34,701.86"
+        src = " https://irs.gov/a https://ftb.ca.gov/b"
+        def grade_tax(rate):
+            return realworld.grade(tax, base + rate + src, src.split(), [], [])[0]
+        self.assertEqual(grade_tax(", or about 23.13% of wages."), "passed")
+        self.assertEqual(grade_tax(". The marginal bracket is 24%."), "failed")
+        self.assertEqual(grade_tax(". My marginal bracket is 24% of wages."), "failed")
+        self.assertEqual(grade_tax(", or 25% of taxable income."), "failed")
+        concert = next(t for t in realworld.EVERYDAY if t.name == "konzert")
+        def grade_concert(text):
+            return realworld.grade(concert, text + " https://example.org/a", ["https://example.org/a"], [], [])[:2]
+        details = "20 March 2027, 交響楽団, コンサートホール, ¥7,500 / ¥6,000."
+        self.assertEqual(grade_concert("公演の日時と料金です。 " + details)[0], "passed")
+        self.assertEqual(grade_concert("The venue and prices are " + details), ("failed", "missing Japanese"))
+        self.assertEqual(grade_concert("公演の日時と料金です。 " + details.replace("20 March", "20 May")),
+                         ("failed", "missing dates"))
 
     def test_a_wall_counts_as_blocked_only_when_it_stopped_the_task(self):
         from coderunner.server import realworld

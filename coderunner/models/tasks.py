@@ -27,7 +27,7 @@ from . import hardware, sites as fixtures
 from .bench import fingerprint, load as bench_load
 
 SLOW_SHARE = 0.5         # a task whose model wrote at under this share of its measured speed was slowed down
-SUITE = 2                 # change when tasks change: results of different suites are not compared
+SUITE = 6                 # change when tasks change: results of different suites are not compared
 TASK_SECONDS = 900        # a task still running after this counts as failed
 COMMITTING = re.compile(r"\b(pay|book|reserve|purchase|checkout|check out|place order|confirm)", re.I)
 
@@ -85,6 +85,51 @@ def check_appliance(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
             "did not open the DW-412 guide" if not guide else "missing every 3 months")
 
 
+def check_groceries(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
+    if site.stock_checked != set(fixtures.STORES):
+        return False, "did not check all three stores at the requested PIN"
+    total, winner = min((item + fee, name) for name, (item, fee, available)
+                        in fixtures.drink_offers(site.today).items() if available)
+    named = [name for name in fixtures.STORES if name.lower() in answer.lower()]
+    money = r"(?:₹|INR|Rs\.?)\s*(\d+(?:\.\d+)?)|(?<![\d.])(\d+(?:\.\d+)?)\s*rupees\b"
+    prices = [re.sub(r"\.0+$", "", prefix or suffix) for prefix, suffix in re.findall(money, answer, re.I)]
+    if named != [winner] or prices != [str(total)]:
+        return False, f"expected only {winner} with a delivered total of ₹{total}"
+    return True, "compared all stores and named the cheapest available delivered can"
+
+
+def _describes_transfer(text: str, site: fixtures.Sites) -> bool:
+    return bool(re.search(rf"(?<!\d){site.points}(?!\d)", _digits(text))
+                and re.search(r"air[ -]?miles", text, re.I)
+                and re.search(r"pending|delay|still waiting|not (?:yet )?(?:received|completed|credited)", text, re.I))
+
+
+def _asks_support(text: str) -> bool:
+    return bool(re.search(r"\?|\b(?:when|why|please|request|clarif\w*|investigate|update|explain)\b", text, re.I))
+
+
+def check_rewards_chat(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
+    if "/rewards/activity" not in site.visits:
+        return False, "did not inspect the account activity"
+    if len(site.complaints) != 1:
+        return False, f"support received {len(site.complaints)} messages"
+    if not _describes_transfer(site.complaints[0], site) or not _asks_support(site.complaints[0]):
+        return False, "the submitted message did not identify the pending transfer and its amount"
+    if not re.search(rf"\b{re.escape(site.ticket)}\b", answer, re.I):
+        return False, "did not return the case number from the receipt"
+    return True, "support received the correct complaint once and its case number was reported"
+
+
+def check_rewards_draft(answer: str, site: fixtures.Sites) -> tuple[bool, str]:
+    if site.complaints:
+        return False, "sent a message despite the draft-only request"
+    if "/rewards/activity" not in site.visits or not _describes_transfer(answer, site):
+        return False, "draft did not identify the pending transfer from account activity"
+    if not _asks_support(answer):
+        return False, "draft did not ask support about the transfer"
+    return True, "drafted an inquiry using the account entry and left it unsent"
+
+
 @dataclass
 class Task:
     name: str
@@ -93,6 +138,15 @@ class Task:
     check: Callable[[str, fixtures.Sites], tuple[bool, str]]
     steps: int                                  # model requests a capable assistant needs, the answer included
     needs_files: bool = False
+    buttons: tuple[str, ...] = ()
+
+    def grade(self, answer: str, site: fixtures.Sites, clicks: list[dict]) -> tuple[bool, str]:
+        passed, why = self.check(answer, site)
+        used = {click["name"] for click in clicks}
+        missing = [name for name in self.buttons if name not in used]
+        if passed and missing:
+            return False, "did not use the rendered buttons: " + ", ".join(missing)
+        return passed, why
 
 
 TASKS = [
@@ -118,6 +172,21 @@ TASKS = [
          lambda s: (f"How often should I descale my dishwasher? Find its model in my documents, then check the "
                     f"maker's support site ({s.base}/kelvin/)."),
          check_appliance, 6, needs_files=True),
+    Task("groceries", "compare delivered prices across stores with stock, size and variant differences",
+         lambda s: (f"Compare all three stores on {s.base}/grocers/ for one Volt Original 350 ml can delivered "
+                    f"to PIN {fixtures.DELIVERY_PIN}. Include delivery and only consider in-stock cans. "
+                    "Reply with just the winning store and its delivered total in rupees (₹). Do not order."),
+         check_groceries, 9, buttons=tuple(f"Check stock at {store}" for store in fixtures.STORES)),
+    Task("rewards-chat", "read the right points entry and send a complaint through the chat editor",
+         lambda s: (f"On my demo rewards account at {s.base}/rewards/, check my activity and send support one "
+                    "message about my pending AirMiles transfer. Include the number of points debited, ask "
+                    "why it is delayed, and tell me the case number you get back."),
+         check_rewards_chat, 7, buttons=("Points activity", "Chat with us", "Send message")),
+    Task("rewards-draft", "prepare the same kind of support inquiry and stop before sending",
+         lambda s: (f"From my demo account activity at {s.base}/rewards/, draft a message to support asking "
+                    "about my pending AirMiles transfer. Include the number of points. Show me the draft "
+                    "here and leave it unsent."),
+         check_rewards_draft, 4, buttons=("Points activity",)),
 ]
 
 
@@ -180,10 +249,11 @@ def _config(owner, endpoint, site: fixtures.Sites, documents: pathlib.Path, visi
 
     data = json.loads(json.dumps(owner.data))
     owner_remote = (owner.data.get("models") or {}).get("remote") or {}
-    keep_server = owner_remote.get("provider") == "openai" and owner_remote.get("base_url")
+    keep_remote = (owner_remote.get("provider") == "anthropic" or
+                   (owner_remote.get("provider") == "openai" and owner_remote.get("base_url")))
     data["models"].update(base_url=endpoint.base_url, chat=endpoint.model, api_key=endpoint.api_key or "",
                           vision=bool(endpoint.vision), driver={},
-                          remote=dict(owner_remote) if keep_server else {})
+                          remote=dict(owner_remote) if keep_remote else {})
     data["browser"].update(mode="dedicated", headless=not visible, allow=["127.0.0.1"])
     data.setdefault("sandbox", {})["driver"] = "none"
     data["policy"] = {"rules": [{"kind": "browser.interact", "target": "127.0.0.1", "decision": "allow"}]}
@@ -199,8 +269,8 @@ def served(config) -> dict:
     from .runtimes import LlamaCppRuntime, OllamaRuntime, choose_runtime
 
     chosen = remote.active(config)
-    if chosen and chosen.get("provider") == remote.SERVER:
-        return {"runtime": remote.SERVER, "runtime_version": "", "model": chosen["model"], "build": chosen["model"]}
+    if chosen:
+        return {"runtime": chosen["provider"], "runtime_version": "", "model": chosen["model"], "build": chosen["model"]}
     rt = choose_runtime(config)
     info = {"runtime": rt.name if rt else config.get("models.runtime") or "", "runtime_version": "",
             "model": config.get("models.chat") or "", "build": config.get("models.chat") or ""}
@@ -234,7 +304,14 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
     tasks = [t for t in TASKS if not names or t.name in names]
     hw = hardware.detect(float(config.get("sandbox.memory_gb") or 1))
     chosen = remote.active(config)
-    if chosen and chosen.get("provider") == remote.SERVER:
+    if not chosen and (config.get("models.remote") or {}).get("provider") == remote.PROVIDER:
+        return {"ok": False, "error": "The Claude benchmark requires the configured Anthropic key."}
+    anthropic_key = ""
+    if chosen and chosen["provider"] == remote.PROVIDER:
+        # The assistant talks through the native Claude client. Keep any local embedding endpoint.
+        anthropic_key = remote.key()
+        endpoint = manager.endpoint(config)
+    elif chosen and chosen["provider"] == remote.SERVER:
         endpoint = manager.Endpoint(
             base_url=str(chosen["base_url"]).rstrip("/"),
             model=str(chosen["model"]),
@@ -244,7 +321,7 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
         )
     else:
         endpoint = manager.ensure_running(config)
-    if not endpoint.model or not endpoint.base_url:
+    if not chosen and (not endpoint.model or not endpoint.base_url):
         return {"ok": False, "error": "No model is configured yet; run `coderunner setup` first."}
     record = {"suite": SUITE, "date": datetime.date.today().isoformat(), "machine": fingerprint(hw),
               **served(config), "context": int(config.get("models.context") or 32768),
@@ -258,6 +335,8 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
         documents = pathlib.Path(tmp) / "Documents"
         fixtures.write_documents(documents)
         paths.ensure_dirs()
+        if anthropic_key:
+            remote.keep_key(anthropic_key)
         if chosen and chosen.get("provider") == remote.SERVER and endpoint.api_key:
             key_file = remote.server_key_path()
             key_file.parent.mkdir(parents=True, exist_ok=True)
@@ -271,6 +350,14 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
         svc.llm.recover = None                   # a crash is a result here, not something to hide
         meter = Meter(svc.llm)
         asked: list[dict] = []
+        clicks: list[dict] = []
+
+        def record_click(event: dict) -> None:
+            label = event.get("label", "")
+            if event["event"] == "browser.click" and event.get("ok") and label.startswith("button "):
+                clicks.append({"name": label.removeprefix("button "), "ref": event["ref"]})
+
+        svc.audit.listeners.append(record_click)
 
         def approve(approval) -> None:
             # Nothing here needs approval: a request is an interruption the owner would have had, and a
@@ -295,7 +382,8 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                 progress(f"{task.name}: {task.what}...")
                 meter.reset()
                 asked.clear()
-                site.visits.clear()
+                clicks.clear()
+                site.reset()
                 for row in svc.store.query("SELECT id FROM memories"):    # each task starts as the first one
                     svc.memory.forget(id=row["id"])
                 start = time.monotonic()
@@ -305,13 +393,16 @@ async def run(config, names: list[str] | None = None, visible: bool = False,
                     # Shielded: cancelling a request to a runtime that is slow to answer took effect only when it
                     # answered (15 minutes, once), so the limit does not wait for the task to give way.
                     answer = await asyncio.wait_for(asyncio.shield(job), TASK_SECONDS)
-                    passed, why = task.check(answer, site)
+                    passed, why = task.grade(answer, site, clicks)
                 except asyncio.TimeoutError:
                     job.cancel()
                     answer, passed, why = "", False, f"still running after {TASK_SECONDS // 60} min"
                 result = {"name": task.name, "passed": passed, "why": why, "seconds": round(time.monotonic() - start, 1),
                           **meter.summary(), "approvals": [f"{'allowed' if a['allowed'] else 'refused'}: {a['summary']}" for a in asked],
                           "steps": meter.steps[:40], "answer": answer[:1500]}
+                if task.buttons:
+                    result["required_buttons"] = list(task.buttons)
+                    result["clicked_buttons"] = list(clicks)
                 record["tasks"].append(result)
                 progress(f"  {'passed' if passed else 'FAILED'} in {result['seconds']:.0f} s, {result['tool_calls']} tool "
                          f"calls, {result['requests']} model requests ({why})")

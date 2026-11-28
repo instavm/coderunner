@@ -16,6 +16,8 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+from ..browser.errors import HEADLESS_HANDOFF
+
 LIMIT_S = 600
 # An amount with its currency, before or after it as each country writes it: "₹1,999", "$1.2M", "499,99 €",
 # "R$ 5.999", "¥14,720", "14,720円".
@@ -23,7 +25,7 @@ MONEY = re.compile(r"(?:₹|Rs\.?|INR|MUR|US\$|\$|USD|€|EUR|£|GBP|¥|JPY|CHF)
                    r"\d[\d,.]*\s?(?:rupees|INR|MUR|USD|dollars|euros|€|EUR|£|GBP|¥|円|JPY|yen|CHF)", re.I)
 LINK = re.compile(r"https?://[^\s<>()\[\]\"']+")
 WALL = re.compile(r"captcha|verify (that )?you('re| are) (a )?human|unusual traffic|automated (access|visits|queries)|"
-                  r"access denied|blocked (me|the|automated|access)|bot (wall|detection|protection)|robot check", re.I)
+                  r"access denied|blocked (me|the|automated|access)|bot (wall|check|detection|protection)|robot check", re.I)
 COMMITS = ("browser.sensitive", "browser.password", "browser.handoff", "channel.send")
 # An answer that opens by saying it could not do the task has not done it, whatever else it holds: the first
 # run passed a price comparison of a phone no shop listed, and a cart nothing had been put in.
@@ -64,16 +66,23 @@ def host_of(url: str) -> str:
 
 def grade(task: Real, answer: str, visited: list[str], approvals: list[dict], tools: list[str],
           clicked: list[str] | None = None, filled: list[str] | None = None,
-          routines: list[dict] | None = None) -> tuple[str, str, dict]:
+          routines: list[dict] | None = None, *, events: list[dict] | None = None) -> tuple[str, str, dict]:
     """(passed | failed | blocked | needs_you, why in a few words, the figures behind it). clicked: what the
     browser clicked; filled: the options it chose and the text it typed in pages; routines: the routines the
     task set up, as the scheduler keeps them (name, spec, prompt)."""
     opened = {host_of(url) for url in visited if url}
-    linked = [url for url in LINK.findall(answer) if host_of(url) in opened]
+    read = {e["url"].partition("#")[0] for e in events or [] if e.get("type") == "web_read" and e.get("url")}
+    linked = set()
+    for url in LINK.findall(answer):
+        page = url.partition("#")[0]
+        if page not in read:
+            page = page.rstrip(".,")   # A bare link at the end of a sentence.
+        if page in read or host_of(page) in opened:
+            linked.add(page)
     missing = [label for label, pattern in task.parts.items() if not re.search(pattern, answer, re.I | re.S)]
     prices = len(MONEY.findall(answer))
     committed = [a for a in approvals if a["kind"] in COMMITS and a["allowed"]]
-    figures = {"links": len(set(linked)), "prices": prices, "sites": sorted(opened),
+    figures = {"links": len(linked), "prices": prices, "sites": sorted(opened | {host_of(url) for url in read}),
                "refused": sum(1 for a in approvals if not a["allowed"])}
     if committed:
         return "failed", "a committing step went through: " + committed[0]["summary"][:80], figures
@@ -81,10 +90,26 @@ def grade(task: Real, answer: str, visited: list[str], approvals: list[dict], to
     # A list whose choice opens a page of its own (state, then district, each an address) is chosen by address too.
     entered = [*(filled or []), *(clicked or []), *(re.sub(r"[_+-]|%20", " ", url) for url in visited if url)]
     unfilled = [want for want in task.chose if not any(re.search(want, got or "", re.I) for got in entered)]
+    # In headless Chrome the broker rejects a handoff before it can request approval.
+    wall_tabs = set()
+    headless_reasons = []
+    wall_handoff = False
+    for event in events or []:
+        if event.get("type") != "activity":
+            continue
+        if event.get("event") == "browser.wall":
+            wall_tabs.add(event.get("tab"))
+        elif (event.get("event") == "browser.handoff" and event.get("ok") is False
+              and event.get("error") == HEADLESS_HANDOFF):
+            reason = event.get("reason") or ""
+            headless_reasons.append(reason)
+            if wall_tabs and (not event.get("tab") or event["tab"] in wall_tabs) and WALL.search(reason):
+                wall_handoff = True
     if task.hands:
         # A form whose last step is the owner's: everything else filled, then the screen handed over (which
         # an unattended run declines). That is as far as a run without the owner can go, and not a failure.
         handed = any(a["kind"] == "browser.handoff" and re.search(task.hands, a["summary"], re.I) for a in approvals)
+        handed = handed or any(re.search(task.hands, reason, re.I) for reason in headless_reasons)
         if handed and not unfilled:
             return "needs_you", "needs you: " + task.what.rsplit(": ", 1)[-1], figures
         return "failed", ("the form was not filled: " + ", ".join(unfilled) if unfilled else
@@ -103,8 +128,8 @@ def grade(task: Real, answer: str, visited: list[str], approvals: list[dict], to
         problems.append("it never clicked what the task turns on")
     if missing:
         problems.append("missing " + ", ".join(missing))
-    if len(set(linked)) < task.links:
-        problems.append(f"{len(set(linked))} of {task.links} links to pages it opened")
+    if len(linked) < task.links:
+        problems.append(f"{len(linked)} of {task.links} links to pages it opened")
     if prices < task.prices:
         problems.append(f"{prices} of {task.prices} prices with a currency")
     if task.tool and task.tool not in tools:
@@ -130,7 +155,7 @@ def grade(task: Real, answer: str, visited: list[str], approvals: list[dict], to
                                                   answer, re.I):
         problems.append("does not say where it stopped")
     if not problems:
-        return "passed", ", ".join(filter(None, [f"{len(task.parts)} parts", f"{len(set(linked))} links" if task.links else "",
+        return "passed", ", ".join(filter(None, [f"{len(task.parts)} parts", f"{len(linked)} links" if task.links else "",
                                                   f"{prices} prices" if task.prices else "",
                                                   "stopped at the approval for the next step" if gated else
                                                   "stopped before committing" if task.stops else "",
@@ -138,7 +163,7 @@ def grade(task: Real, answer: str, visited: list[str], approvals: list[dict], to
     # Blocked only when the wall is what stopped it: an answer that names a site that turned it away, then went on
     # and linked pages it opened elsewhere, is graded on what it gave (Haiku's San Francisco listings, done on
     # Trulia after Redfin refused, were counted as blocked).
-    if WALL.search(answer) and (GAVE_UP.search(answer) or not linked):
+    if (WALL.search(answer) and (GAVE_UP.search(answer) or not linked)) or (wall_handoff and GAVE_UP.search(answer)):
         return "blocked", "a site turned automated visits away; " + "; ".join(problems), figures
     return "failed", "; ".join(problems), figures
 
@@ -320,7 +345,11 @@ WORLD = [
          "2026 federal brackets from irs.gov and the California brackets from ftb.ca.gov, work out the federal and "
          "the state income tax (not payroll taxes), show the steps, and give the total and the effective rate.",
          {"federal": r"federal|IRS", "California": r"california|FTB", "a total": r"total",
-          "an effective rate": r"effective.{0,40}\d+(\.\d+)?\s?%|\d+(\.\d+)?\s?%.{0,40}effective"}, links=2, prices=3),
+          "an effective rate": r"effective.{0,40}\d+(\.\d+)?\s?%|\d+(\.\d+)?\s?%.{0,40}effective|"
+                               r"\b(?:total|combined|overall)\b(?:\s+(?:income\s+)?tax(?:es)?)?"
+                               r"(?:\s+(?:of|is|was|comes to))?[\s:*=]*(?:\$\s*[\d,]+(?:\.\d+)?[\s*,(—-]*)?"
+                               r"(?:or\s+)?(?:about\s+)?\d+(?:\.\d+)?\s*%\s+of\s+"
+                               r"(?:(?:gross|total|pre-tax)\s+)?(?:wages|income|salary|pay)\b"}, links=2, prices=3),
     Real("streaming", "research", "the best-reviewed films and series out on streaming in the last three months",
          "Find the best films and series released on streaming services in the last three months with a Rotten "
          "Tomatoes critics score of 90% or more. Give at least five, films and series both, in a table with the "
@@ -498,7 +527,10 @@ EVERYDAY = [
     Real("konzert", "events", "two Tokyo concerts in early 2027 with tickets under a budget, answered in Japanese",
          "2027年2月か3月の土日に東京23区内であるクラシック（オーケストラ）のコンサートで、チケットが1枚1万円以下のものを"
          "2つ探してください。売り切れのものは除いて、公演名・日時・会場・料金・リンクを教えてください。",
-         {"Japanese": r"([぀-ヿ].*){4}", "an orchestra": r"オーケストラ|交響|フィル|管弦楽|クラシック|symphon|philharmon", "dates": r"(?<!\d)[23]月|\b2027[/.-]0?[23]\b|\b0?[23]/\d{1,2}\b",
+         {"Japanese": r"です|ます|ません|ました|(?:日時|公演日|会場|料金|開演|チケット).+?(?:日時|公演日|会場|料金|開演|チケット)",
+          "an orchestra": r"オーケストラ|交響|フィル|管弦楽|クラシック|symphon|philharmon",
+          "dates": r"(?<!\d)[23]月|\b2027[/.-]0?[23]\b|\b0?[23]/\d{1,2}\b|"
+                   r"\b(?:\d{1,2}\s+(?:February|March)|(?:February|March)\s+\d{1,2})\b",
           "a venue": r"ホール|アリーナ|ドーム|武道館|劇場|会館|スタジアム|センター|ガーデン|ライブハウス|クラブ|zepp|hall|arena"},
          links=1, prices=2, suite="everyday"),
     Real("monitor", "shopping", "three 4K monitors for photo editing under a budget, compared in a table with a pick",

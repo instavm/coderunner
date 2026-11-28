@@ -671,6 +671,8 @@ def browser_tools(svc) -> list[Tool]:
         for item in results:
             url = item.get("url") or ""
             if item.get("ok"):
+                if url and item["content"].strip():
+                    ctx.emit({"type": "web_read", "url": url})
                 if isinstance(trail, list):
                     trail.append({"action": "open", "url": url, "ok": True})
                     del trail[:-200]
